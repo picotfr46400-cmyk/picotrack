@@ -331,9 +331,8 @@ function renderApercu(){
     container.innerHTML='<div style="text-align:center;padding:40px;color:var(--tl)">Aucun champ à prévisualiser</div>';
     return;
   }
-  const color=formColor||'#3b82f6';
+  const color='#0ea5e9';
   const nomForm=document.getElementById('b-nom')?document.getElementById('b-nom').value||'Formulaire sans nom':'Formulaire';
-  const fields=builderFields.filter(f=>mode==='sup'?f.vis_sup!==false:f.vis_nom!==false);
 
   let html=`<div class="apercu-form">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:14px;border-bottom:1.5px solid var(--bd)">
@@ -342,11 +341,14 @@ function renderApercu(){
         <div style="font-size:15px;font-weight:800">${h(nomForm)}</div>
         <div style="font-size:11px;color:var(--tl);margin-top:2px">${mode==='sup'?'🖥 Vue Supervision':'📱 Vue App nomade'} — <span style="color:var(--w);font-weight:700">Mode test</span></div>
       </div>
-      <button onclick="resetPreview()" class="btn btn-sm" style="font-size:11px;padding:4px 10px;color:var(--tm)">↺ Réinitialiser</button>
+      <button onclick="resetPreview()" class="btn btn-sm" style="font-size:11px;padding:4px 10px">↺ Réinitialiser</button>
     </div>`;
 
-  fields.forEach(f=>{
-    const fd=FD[f.type]||{l:f.nom};
+  builderFields.forEach(f=>{
+    // Compatibilité : f.label OU f.nom, f.required OU f.obligatoire, f.options OU f.valeurs
+    const nom=f.label||f.nom||'Champ';
+    const obligatoire=f.required||f.obligatoire||false;
+    const valeurs=f.options||f.valeurs||[];
     const curVal=previewValues[f.id];
     const isVisible=evalCond(f);
     const isLayout=['separator','image','titre'].includes(f.type);
@@ -354,104 +356,108 @@ function renderApercu(){
     html+=`<div class="ap-field" id="ap-wrap-${f.id}" style="display:${isVisible?'block':'none'}">`;
 
     if(!isLayout){
-      html+=`<div class="ap-label">${h(f.nom||fd.l)}${f.obligatoire?'<span style="color:var(--d)"> *</span>':''}</div>`;
-      if(f.afficher_legende&&f.legendeText)html+=`<div class="ap-hint" style="margin-bottom:6px">${h(f.legendeText)}</div>`;
+      html+=`<div class="ap-label">${h(nom)}${obligatoire?'<span style="color:var(--d)"> *</span>':''}</div>`;
     }
 
     switch(f.type){
       case 'text':
-        html+=`<input class="ap-input" style="width:100%;background:#fff;cursor:text;height:auto;padding:10px 12px;outline:none" 
-          placeholder="${h(f.afficher_placeholder&&f.placeholder?f.placeholder:'Saisir un texte...')}"
-          value="${h(curVal||'')}"
-          oninput="apChange('${f.id}',this.value)">`;
-        break;
       case 'textarea':
-        html+=`<textarea class="ap-input" style="width:100%;background:#fff;cursor:text;height:80px;padding:10px 12px;outline:none;resize:none;font-family:inherit"
-          placeholder="${h(f.afficher_placeholder&&f.placeholder?f.placeholder:'Saisir un texte long...')}"
-          oninput="apChange('${f.id}',this.value)">${h(curVal||'')}</textarea>`;
+        const isTA=f.type==='textarea';
+        html+=`<${isTA?'textarea':'input'} class="ap-input" 
+          style="background:#fff;width:100%;padding:10px 12px;outline:none;${isTA?'height:72px;resize:none;':'height:auto;'}font-family:inherit"
+          placeholder="Saisir ${isTA?'un texte long':'un texte'}..."
+          ${isTA?'':` value="${h(curVal||'')}"`}
+          oninput="apChange('${f.id}',this.value)">${isTA?h(curVal||''):''}${isTA?'</textarea>':''}`;
         break;
       case 'number':
-        const numVal=curVal||0;
         html+=`<div style="display:flex;align-items:center;gap:8px">
-          <button onclick="apChange('${f.id}',+(document.getElementById('ni-${f.id}').value||0)-${f.pas||1});document.getElementById('ni-${f.id}').value=+(document.getElementById('ni-${f.id}').value||0)-${f.pas||1}" 
-            style="width:34px;height:34px;border:1.5px solid var(--bd);border-radius:8px;background:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--tm)">−</button>
-          <input id="ni-${f.id}" type="number" class="ap-input" style="width:100px;text-align:center;background:#fff;padding:8px;outline:none;cursor:text"
-            value="${numVal}" step="${f.pas||1}" ${f.activer_min?`min="${f.min||0}"`:''}${f.activer_max?` max="${f.max||100}"`:''}
-            oninput="apChange('${f.id}',+this.value)">
-          <button onclick="apChange('${f.id}',+(document.getElementById('ni-${f.id}').value||0)+${f.pas||1});document.getElementById('ni-${f.id}').value=+(document.getElementById('ni-${f.id}').value||0)+${f.pas||1}"
-            style="width:34px;height:34px;border:1.5px solid var(--bd);border-radius:8px;background:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--p)">+</button>
+          <button onclick="const n=document.getElementById('ni${f.id}');n.value=+n.value-1;apChange('${f.id}',+n.value)"
+            style="width:34px;height:34px;border:1.5px solid var(--bd);border-radius:8px;background:#fff;font-size:18px;cursor:pointer">−</button>
+          <input id="ni${f.id}" type="number" class="ap-input" 
+            style="width:90px;text-align:center;background:#fff;padding:8px;outline:none"
+            value="${curVal||0}" oninput="apChange('${f.id}',+this.value)">
+          <button onclick="const n=document.getElementById('ni${f.id}');n.value=+n.value+1;apChange('${f.id}',+n.value)"
+            style="width:34px;height:34px;border:1.5px solid var(--bd);border-radius:8px;background:#fff;font-size:18px;cursor:pointer;color:var(--p)">+</button>
         </div>`;
         break;
       case 'checkbox':
-        const chkVal=curVal===true||curVal==='true';
         html+=`<label style="display:flex;align-items:center;gap:9px;cursor:pointer;padding:4px 0">
-          <input type="checkbox" ${chkVal?'checked':''} onchange="apChange('${f.id}',this.checked)"
-            style="width:18px;height:18px;cursor:pointer;accent-color:var(--p)">
-          <span style="font-size:13px;color:var(--tm)">Cocher si applicable</span>
+          <input type="checkbox" ${curVal?'checked':''} onchange="apChange('${f.id}',this.checked)"
+            style="width:18px;height:18px;accent-color:var(--p)">
+          <span style="color:var(--tm)">Cocher si applicable</span>
         </label>`;
         break;
       case 'select':
-        html+=`<select class="ap-input" style="background:#fff;cursor:pointer;appearance:none;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;outline:none;width:100%"
+        html+=`<select class="ap-input" style="background:#fff;cursor:pointer;outline:none;appearance:none;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;width:100%"
           onchange="apChange('${f.id}',this.value)">
           <option value="">Sélectionner...</option>
-          ${(f.valeurs||[]).map(v=>`<option${curVal===v?' selected':''}>${h(v)}</option>`).join('')}
+          ${valeurs.map(v=>`<option${curVal===v?' selected':''}>${h(v)}</option>`).join('')}
         </select>`;
         break;
       case 'multiselect':
         const ms=Array.isArray(curVal)?curVal:[];
         html+=`<div style="display:flex;flex-wrap:wrap;gap:7px;padding:4px 0">
-          ${(f.valeurs||[]).map(v=>`<label style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1.5px solid ${ms.includes(v)?'var(--p)':'var(--bd)'};border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;background:${ms.includes(v)?'var(--pl)':'#fff'};color:${ms.includes(v)?'var(--p)':'var(--tm)'};transition:all .15s">
+          ${valeurs.map(v=>`<label style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1.5px solid ${ms.includes(v)?'var(--p)':'var(--bd)'};border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;background:${ms.includes(v)?'var(--pl)':'#fff'};color:${ms.includes(v)?'var(--p)':'var(--tm)'}">
             <input type="checkbox" ${ms.includes(v)?'checked':''} onchange="apChangeMulti('${f.id}','${v.replace(/'/g,"\\'")}',this.checked)" style="display:none">
             ${ms.includes(v)?'✓ ':''}${h(v)}
           </label>`).join('')}
         </div>`;
         break;
       case 'date':
-        html+=`<input type="date" class="ap-input" style="background:#fff;width:100%;outline:none;cursor:pointer"
-          value="${curVal||''}" onchange="apChange('${f.id}',this.value)">`;
-        break;
-      case 'heure':
-        html+=`<input type="time" class="ap-input" style="background:#fff;width:100%;outline:none;cursor:pointer"
-          value="${curVal||''}" onchange="apChange('${f.id}',this.value)">`;
+        html+=`<input type="date" class="ap-input" style="background:#fff;cursor:pointer;outline:none;width:100%" value="${curVal||''}" onchange="apChange('${f.id}',this.value)">`;
         break;
       case 'datetime':
-        html+=`<input type="datetime-local" class="ap-input" style="background:#fff;width:100%;outline:none;cursor:pointer"
-          value="${curVal||''}" onchange="apChange('${f.id}',this.value)">`;
+        html+=`<input type="datetime-local" class="ap-input" style="background:#fff;cursor:pointer;outline:none;width:100%" value="${curVal||''}" onchange="apChange('${f.id}',this.value)">`;
         break;
       case 'photo':
-        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:13px">📷 Simulation photo — non disponible en mode test</div>`;
+        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:13px">📷 Photo — non disponible en mode test</div>`;
         break;
       case 'signature':
-        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:13px">✍ Simulation signature — non disponible en mode test</div>`;
+        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:13px">✍ Signature — non disponible en mode test</div>`;
         break;
       case 'file':
-        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:14px;text-align:center;color:var(--tl);font-size:13px">📎 Simulation fichier — non disponible en mode test</div>`;
-        break;
-      case 'location':
-        html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:13px">📍 Carte (simulation)</div>`;
+        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:14px;text-align:center;color:var(--tl);font-size:13px">📎 Fichier — non disponible en mode test</div>`;
         break;
       case 'image':
-        html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:70px;display:flex;align-items:center;justify-content:center;color:var(--tl)">🖼 Image</div>`;
+        html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:60px;display:flex;align-items:center;justify-content:center;color:var(--tl)">🖼 Image</div>`;
         break;
       case 'titre':
-        html+=`<div style="font-size:15px;font-weight:800;border-bottom:2px solid var(--bd);padding-bottom:7px;margin-bottom:4px">${h(f.nom)}</div>`;
+        html+=`<div style="font-size:15px;font-weight:800;border-bottom:2px solid var(--bd);padding-bottom:7px">${h(nom)}</div>`;
         break;
       case 'separator':
         html+=`<hr style="border:none;border-top:1.5px solid var(--bd)">`;
         break;
       default:
-        html+=`<div class="ap-input" style="color:var(--tl)">${fd.l||'—'}</div>`;
+        html+=`<div class="ap-input" style="color:var(--tl)">—</div>`;
     }
     html+=`</div>`;
   });
 
-  // Boutons de validation
   html+=`<div style="display:flex;justify-content:flex-end;gap:8px;padding-top:16px;border-top:1.5px solid var(--bd);margin-top:8px">
     <button class="btn btn-sm" onclick="resetPreview()">Annuler</button>
-    <button class="btn btn-sm" style="background:${color};color:#fff;border-color:${color}" onclick="validatePreview()">Valider</button>
+    <button onclick="validatePreview()" style="padding:7px 16px;border-radius:8px;border:none;background:${color};color:#fff;font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer">Valider</button>
   </div></div>`;
 
   container.innerHTML=html;
+}
+
+function validatePreview(){
+  const errors=builderFields.filter(f=>{
+    if(!evalCond(f))return false;
+    const obligatoire=f.required||f.obligatoire||false;
+    if(!obligatoire)return false;
+    const v=previewValues[f.id];
+    return !v||v===''||(Array.isArray(v)&&!v.length);
+  });
+  if(errors.length){
+    toast('e','⚠️ '+errors.length+' champ(s) obligatoire(s) manquant(s)');
+    errors.forEach(f=>{
+      const w=document.getElementById('ap-wrap-'+f.id);
+      if(w){w.style.outline='2px solid var(--d)';w.style.borderRadius='8px';setTimeout(()=>w.style.outline='',2000);}
+    });
+  } else {
+    toast('s','✅ Formulaire valide !');
+  }
 }
 
 function validatePreview(){
