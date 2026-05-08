@@ -194,3 +194,8 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);display:fle
 .toast{background:#fff;border:1.5px solid var(--bd);border-radius:9px;padding:10px 14px;box-shadow:0 4px 16px rgba(0,0,0,.1);max-width:280px;animation:tin .25s ease both;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:8px}
 .toast.s{border-left:3px solid var(--s)}.toast.e{border-left:3px solid var(--d)}.toast.w{border-left:3px solid var(--w)}.toast.i{border-left:3px solid var(--p)}
 @keyframes tin{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
+.prod-form-card:hover {
+  border-color: var(--pr);
+  box-shadow: 0 4px 16px rgba(0,0,0,.08);
+  transform: translateY(-1px);
+}
