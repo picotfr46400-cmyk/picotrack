@@ -382,8 +382,7 @@ function renderSaisieForm(f){
   html+=`<div style="display:flex;justify-content:space-between;align-items:center;padding-top:20px;border-top:2px solid var(--bd);margin-top:8px;gap:12px">
     <button class="btn" onclick="goProduction()" style="padding:9px 20px;border-radius:8px;font-size:13px">← Annuler</button>
     <div style="display:flex;gap:10px">
-      <button class="btn" onclick="resetSaisie()" style="padding:9px 18px;border-radius:
-      8px;font-size:13px">↺ Réinitialiser</button>
+      <button class="btn" onclick="resetSaisie()" style="padding:9px 18px;border-radius:8px;font-size:13px">↺ Réinitialiser</button>
 <button onclick="submitSaisie()" id="btn-submit-saisie"
      style="padding:10px 26px;border-radius:8px;border:none;background:${color};color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .15s"
      onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">✅ Valider la saisie</button>
