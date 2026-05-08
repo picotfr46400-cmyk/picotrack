@@ -264,30 +264,214 @@ function saveCfg(){
 }
 
 // ══ APERCU ══
-function renderApercu(){
-  const nom=document.getElementById('builder-name').value||'Formulaire sans titre';
-  let html=`<div class="apercu-form">`;
-  if(!builderFields.length){html+='<div style="text-align:center;padding:40px;color:var(--tl)">Aucun champ à afficher</div>';}
-  builderFields.forEach(f=>{
-    const fd=FD[f.type]||{l:f.label};
-    html+=`<div class="ap-field"><div class="ap-label">${f.label}${f.required?'<span style="color:var(--d)"> *</span>':''}</div>`;
-    if(['text','textarea'].includes(f.type))html+=`<div class="ap-input" style="color:var(--tl)">${f.type==='textarea'?'Texte long...':'Texte...'}</div>`;
-    else if(f.type==='number')html+=`<div style="display:flex;gap:8px;align-items:center"><div style="width:30px;height:30px;border:1.5px solid var(--bd);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer">−</div><div class="ap-input" style="width:80px;text-align:center">0</div><div style="width:30px;height:30px;border:1.5px solid var(--bd);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer">+</div></div>`;
-    else if(f.type==='checkbox')html+=`<div style="width:22px;height:22px;border:2px solid var(--bd);border-radius:5px"></div>`;
-    else if(f.type==='signature')html+=`<div style="border:2px dashed var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:12.5px">✍ Zone de signature</div>`;
-    else if(f.type==='photo')html+=`<div style="border:2px dashed var(--bd);border-radius:8px;height:70px;display:flex;align-items:center;justify-content:center;color:var(--tl);gap:7px;font-size:12.5px">📷 Prendre une photo</div>`;
-    else if(f.type==='image')html+=`<div style="text-align:center;padding:10px 0;font-size:11px;color:var(--tl)">[Image: ${f.label}]</div>`;
-    else if(['select','multiselect'].includes(f.type))html+=`<div class="ap-input" style="color:var(--tl)">Sélectionner...</div>`;
-    else if(f.type==='date'||f.type==='datetime')html+=`<div class="ap-input" style="color:var(--tl)">${f.type==='datetime'?'jj/mm/aaaa hh:mm':'jj/mm/aaaa'}</div>`;
-    else html+=`<div class="ap-input" style="color:var(--tl)">—</div>`;
-    html+='</div>';
-  });
-  html+='</div>';
-  document.getElementById('apercu-content').innerHTML=html;
-}
-function setApercu(m,el){document.querySelectorAll('.ap-tog').forEach(e=>e.classList.remove('on'));el.classList.add('on');renderApercu()}
+// ══ APERÇU INTERACTIF ══
+let previewValues={};
+let previewMode='sup';
 
-// ══ DECLENCHEURS ══
+function setApercu(m,el){
+  document.querySelectorAll('.ap-tog').forEach(e=>e.classList.remove('on'));
+  el.classList.add('on');
+  previewMode=m;
+  renderApercu();
+}
+
+function apChange(fid,val){
+  previewValues[fid]=val;
+  // Réévaluer la visibilité de tous les champs sans recréer tout le DOM
+  builderFields.forEach(f=>{
+    const wrap=document.getElementById('ap-wrap-'+f.id);
+    if(!wrap)return;
+    const visible=evalCond(f);
+    wrap.style.display=visible?'':'none';
+    wrap.style.animation=visible?'vu .2s ease both':'';
+  });
+}
+
+function apChangeMulti(fid,val,checked){
+  if(!Array.isArray(previewValues[fid]))previewValues[fid]=[];
+  if(checked)previewValues[fid].push(val);
+  else previewValues[fid]=previewValues[fid].filter(v=>v!==val);
+  builderFields.forEach(f=>{
+    const wrap=document.getElementById('ap-wrap-'+f.id);
+    if(!wrap)return;
+    wrap.style.display=evalCond(f)?'':'none';
+  });
+}
+
+function evalCond(f){
+  const conds=f.conditions||[];
+  if(!conds.length)return true;
+  const op=f.condOp||'all';
+  const results=conds.map(c=>{
+    const srcField=builderFields.find(x=>x.nom===c.field);
+    if(!srcField)return true;
+    const val=previewValues[srcField.id];
+    const curVal=Array.isArray(val)?val.join(','):(val||'');
+    switch(c.op){
+      case '=': return curVal===c.val;
+      case '!=': return curVal!==c.val;
+      case 'contains': return curVal.includes(c.val);
+      case 'empty': return !curVal;
+      default: return true;
+    }
+  });
+  return op==='all'?results.every(Boolean):results.some(Boolean);
+}
+
+function resetPreview(){
+  previewValues={};
+  renderApercu();
+  toast('i','🔄 Aperçu réinitialisé');
+}
+
+function renderApercu(){
+  const mode=previewMode;
+  const container=document.getElementById('apercu-content');
+  if(!builderFields.length){
+    container.innerHTML='<div style="text-align:center;padding:40px;color:var(--tl)">Aucun champ à prévisualiser</div>';
+    return;
+  }
+  const color=formColor||'#3b82f6';
+  const nomForm=document.getElementById('b-nom')?document.getElementById('b-nom').value||'Formulaire sans nom':'Formulaire';
+  const fields=builderFields.filter(f=>mode==='sup'?f.vis_sup!==false:f.vis_nom!==false);
+
+  let html=`<div class="apercu-form">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:14px;border-bottom:1.5px solid var(--bd)">
+      <div style="width:6px;height:36px;border-radius:3px;background:${color};flex-shrink:0"></div>
+      <div style="flex:1">
+        <div style="font-size:15px;font-weight:800">${h(nomForm)}</div>
+        <div style="font-size:11px;color:var(--tl);margin-top:2px">${mode==='sup'?'🖥 Vue Supervision':'📱 Vue App nomade'} — <span style="color:var(--w);font-weight:700">Mode test</span></div>
+      </div>
+      <button onclick="resetPreview()" class="btn btn-sm" style="font-size:11px;padding:4px 10px;color:var(--tm)">↺ Réinitialiser</button>
+    </div>`;
+
+  fields.forEach(f=>{
+    const fd=FD[f.type]||{l:f.nom};
+    const curVal=previewValues[f.id];
+    const isVisible=evalCond(f);
+    const isLayout=['separator','image','titre'].includes(f.type);
+
+    html+=`<div class="ap-field" id="ap-wrap-${f.id}" style="display:${isVisible?'block':'none'}">`;
+
+    if(!isLayout){
+      html+=`<div class="ap-label">${h(f.nom||fd.l)}${f.obligatoire?'<span style="color:var(--d)"> *</span>':''}</div>`;
+      if(f.afficher_legende&&f.legendeText)html+=`<div class="ap-hint" style="margin-bottom:6px">${h(f.legendeText)}</div>`;
+    }
+
+    switch(f.type){
+      case 'text':
+        html+=`<input class="ap-input" style="width:100%;background:#fff;cursor:text;height:auto;padding:10px 12px;outline:none" 
+          placeholder="${h(f.afficher_placeholder&&f.placeholder?f.placeholder:'Saisir un texte...')}"
+          value="${h(curVal||'')}"
+          oninput="apChange('${f.id}',this.value)">`;
+        break;
+      case 'textarea':
+        html+=`<textarea class="ap-input" style="width:100%;background:#fff;cursor:text;height:80px;padding:10px 12px;outline:none;resize:none;font-family:inherit"
+          placeholder="${h(f.afficher_placeholder&&f.placeholder?f.placeholder:'Saisir un texte long...')}"
+          oninput="apChange('${f.id}',this.value)">${h(curVal||'')}</textarea>`;
+        break;
+      case 'number':
+        const numVal=curVal||0;
+        html+=`<div style="display:flex;align-items:center;gap:8px">
+          <button onclick="apChange('${f.id}',+(document.getElementById('ni-${f.id}').value||0)-${f.pas||1});document.getElementById('ni-${f.id}').value=+(document.getElementById('ni-${f.id}').value||0)-${f.pas||1}" 
+            style="width:34px;height:34px;border:1.5px solid var(--bd);border-radius:8px;background:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--tm)">−</button>
+          <input id="ni-${f.id}" type="number" class="ap-input" style="width:100px;text-align:center;background:#fff;padding:8px;outline:none;cursor:text"
+            value="${numVal}" step="${f.pas||1}" ${f.activer_min?`min="${f.min||0}"`:''}${f.activer_max?` max="${f.max||100}"`:''}
+            oninput="apChange('${f.id}',+this.value)">
+          <button onclick="apChange('${f.id}',+(document.getElementById('ni-${f.id}').value||0)+${f.pas||1});document.getElementById('ni-${f.id}').value=+(document.getElementById('ni-${f.id}').value||0)+${f.pas||1}"
+            style="width:34px;height:34px;border:1.5px solid var(--bd);border-radius:8px;background:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--p)">+</button>
+        </div>`;
+        break;
+      case 'checkbox':
+        const chkVal=curVal===true||curVal==='true';
+        html+=`<label style="display:flex;align-items:center;gap:9px;cursor:pointer;padding:4px 0">
+          <input type="checkbox" ${chkVal?'checked':''} onchange="apChange('${f.id}',this.checked)"
+            style="width:18px;height:18px;cursor:pointer;accent-color:var(--p)">
+          <span style="font-size:13px;color:var(--tm)">Cocher si applicable</span>
+        </label>`;
+        break;
+      case 'select':
+        html+=`<select class="ap-input" style="background:#fff;cursor:pointer;appearance:none;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;outline:none;width:100%"
+          onchange="apChange('${f.id}',this.value)">
+          <option value="">Sélectionner...</option>
+          ${(f.valeurs||[]).map(v=>`<option${curVal===v?' selected':''}>${h(v)}</option>`).join('')}
+        </select>`;
+        break;
+      case 'multiselect':
+        const ms=Array.isArray(curVal)?curVal:[];
+        html+=`<div style="display:flex;flex-wrap:wrap;gap:7px;padding:4px 0">
+          ${(f.valeurs||[]).map(v=>`<label style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1.5px solid ${ms.includes(v)?'var(--p)':'var(--bd)'};border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;background:${ms.includes(v)?'var(--pl)':'#fff'};color:${ms.includes(v)?'var(--p)':'var(--tm)'};transition:all .15s">
+            <input type="checkbox" ${ms.includes(v)?'checked':''} onchange="apChangeMulti('${f.id}','${v.replace(/'/g,"\\'")}',this.checked)" style="display:none">
+            ${ms.includes(v)?'✓ ':''}${h(v)}
+          </label>`).join('')}
+        </div>`;
+        break;
+      case 'date':
+        html+=`<input type="date" class="ap-input" style="background:#fff;width:100%;outline:none;cursor:pointer"
+          value="${curVal||''}" onchange="apChange('${f.id}',this.value)">`;
+        break;
+      case 'heure':
+        html+=`<input type="time" class="ap-input" style="background:#fff;width:100%;outline:none;cursor:pointer"
+          value="${curVal||''}" onchange="apChange('${f.id}',this.value)">`;
+        break;
+      case 'datetime':
+        html+=`<input type="datetime-local" class="ap-input" style="background:#fff;width:100%;outline:none;cursor:pointer"
+          value="${curVal||''}" onchange="apChange('${f.id}',this.value)">`;
+        break;
+      case 'photo':
+        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:13px">📷 Simulation photo — non disponible en mode test</div>`;
+        break;
+      case 'signature':
+        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:13px">✍ Simulation signature — non disponible en mode test</div>`;
+        break;
+      case 'file':
+        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:14px;text-align:center;color:var(--tl);font-size:13px">📎 Simulation fichier — non disponible en mode test</div>`;
+        break;
+      case 'location':
+        html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:13px">📍 Carte (simulation)</div>`;
+        break;
+      case 'image':
+        html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:70px;display:flex;align-items:center;justify-content:center;color:var(--tl)">🖼 Image</div>`;
+        break;
+      case 'titre':
+        html+=`<div style="font-size:15px;font-weight:800;border-bottom:2px solid var(--bd);padding-bottom:7px;margin-bottom:4px">${h(f.nom)}</div>`;
+        break;
+      case 'separator':
+        html+=`<hr style="border:none;border-top:1.5px solid var(--bd)">`;
+        break;
+      default:
+        html+=`<div class="ap-input" style="color:var(--tl)">${fd.l||'—'}</div>`;
+    }
+    html+=`</div>`;
+  });
+
+  // Boutons de validation
+  html+=`<div style="display:flex;justify-content:flex-end;gap:8px;padding-top:16px;border-top:1.5px solid var(--bd);margin-top:8px">
+    <button class="btn btn-sm" onclick="resetPreview()">Annuler</button>
+    <button class="btn btn-sm" style="background:${color};color:#fff;border-color:${color}" onclick="validatePreview()">Valider</button>
+  </div></div>`;
+
+  container.innerHTML=html;
+}
+
+function validatePreview(){
+  // Vérifier les champs obligatoires visibles
+  const errors=builderFields.filter(f=>{
+    if(!evalCond(f))return false;
+    if(!f.obligatoire)return false;
+    const v=previewValues[f.id];
+    return !v||v===''||(Array.isArray(v)&&!v.length);
+  });
+  if(errors.length){
+    toast('e',`⚠️ ${errors.length} champ(s) obligatoire(s) manquant(s)`);
+    errors.forEach(f=>{
+      const wrap=document.getElementById('ap-wrap-'+f.id);
+      if(wrap){wrap.style.outline='2px solid var(--d)';wrap.style.borderRadius='8px';setTimeout(()=>wrap.style.outline='',2000);}
+    });
+  } else {
+    toast('s','✅ Formulaire valide — tous les champs obligatoires sont remplis');
+  }
+}
 let declItems=[{id:1,title:'',si:[{l:'Type de sauvegarde',vals:['Création','Modification']},{l:'Formulaire rempli depuis',vals:['Supervision','Application nomade']}],alors:[{l:'Envoyer une notification',val:''}]}];
 function renderDecl(){
   const list=document.getElementById('decl-list');
