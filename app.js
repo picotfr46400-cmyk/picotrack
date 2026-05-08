@@ -512,60 +512,112 @@ function resizeCol(rid,ci,delta){
   col.size=newSize;renderLayout();
 }
 
-// ══ APERÇU ══
-function setApercu(mode,btn){document.querySelectorAll('.ap-tog').forEach(b=>b.classList.remove('on'));btn.classList.add('on');renderApercu(mode)}
-function renderApercu(mode='sup'){
+// ══ APERÇU INTERACTIF ══
+let previewValues={},previewMode='sup';
+function setApercu(mode,btn){
+  document.querySelectorAll('.ap-tog').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');previewMode=mode;renderApercu();
+}
+function apChange(fid,val){
+  previewValues[fid]=val;
+  builderFields.forEach(f=>{
+    const w=document.getElementById('apw-'+f.id);if(!w)return;
+    w.style.display=evalCond(f)?'block':'none';
+  });
+}
+function apChangeMulti(fid,val,checked){
+  if(!Array.isArray(previewValues[fid]))previewValues[fid]=[];
+  if(checked)previewValues[fid].push(val);
+  else previewValues[fid]=previewValues[fid].filter(v=>v!==val);
+  apChange(fid,previewValues[fid]);
+}
+function evalCond(f){
+  const conds=f.conditions||[];if(!conds.length)return true;
+  const op=f.condOp||'all';
+  const results=conds.map(c=>{
+    const src=builderFields.find(x=>x.nom===c.field);if(!src)return true;
+    const v=previewValues[src.id],cv=Array.isArray(v)?v.join(','):(v||'');
+    if(c.op==='=')return cv===c.val;if(c.op==='!=')return cv!==c.val;
+    if(c.op==='contains')return cv.includes(c.val);if(c.op==='empty')return !cv;return true;
+  });
+  return op==='all'?results.every(Boolean):results.some(Boolean);
+}
+function resetPreview(){previewValues={};renderApercu();toast('i','↺ Aperçu réinitialisé');}
+function renderApercu(){
+  const mode=previewMode;
   const container=document.getElementById('apercu-content');
-  if(!builderFields.length){container.innerHTML='<div style="text-align:center;padding:40px;color:var(--tl)">Aucun champ à prévisualiser</div>';return}
-  const visible=builderFields.filter(f=>mode==='sup'?f.vis_sup!==false:f.vis_nom!==false);
+  if(!builderFields.length){container.innerHTML='<div style="text-align:center;padding:40px;color:var(--tl)">Aucun champ à prévisualiser</div>';return;}
   const color=formColor||'#3b82f6';
-  const nomForm=document.getElementById('b-nom').value||'Formulaire sans nom';
+  const nomForm=document.getElementById('b-nom')?document.getElementById('b-nom').value||'Formulaire sans nom':'Formulaire';
+  const fields=builderFields.filter(f=>mode==='sup'?f.vis_sup!==false:f.vis_nom!==false);
   let html=`<div class="apercu-form">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--bd)">
-      <div style="width:8px;height:38px;border-radius:4px;background:${color};flex-shrink:0"></div>
-      <div style="font-size:16px;font-weight:800">${h(nomForm)}</div>
-      ${mode==='nom'?'<span style="margin-left:auto;background:#1e293b;color:#fff;font-size:10px;font-weight:800;padding:3px 9px;border-radius:20px">📱 Nomade</span>':''}
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:14px;border-bottom:1.5px solid var(--bd)">
+      <div style="width:6px;height:36px;border-radius:3px;background:${color};flex-shrink:0"></div>
+      <div style="flex:1"><div style="font-size:15px;font-weight:800">${h(nomForm)}</div>
+      <div style="font-size:11px;color:var(--tl);margin-top:2px">${mode==='sup'?'🖥 Supervision':'📱 App nomade'} — <span style="color:var(--w);font-weight:700">Mode test</span></div></div>
+      <button onclick="resetPreview()" class="btn btn-sm" style="font-size:11px">↺ Réinitialiser</button>
     </div>`;
-  visible.forEach(f=>{
+  fields.forEach(f=>{
     const fd=FD[f.type]||{l:f.nom};
-    html+=`<div class="ap-field">
-      <div class="ap-label">${h(f.nom||fd.l)}${f.obligatoire?` <span style="color:var(--d)">*</span>`:''}</div>`;
+    const cv=previewValues[f.id];
+    const show=evalCond(f);
+    const isLayout=['separator','image','titre'].includes(f.type);
+    html+=`<div class="ap-field" id="apw-${f.id}" style="display:${show?'block':'none'}">`;
+    if(!isLayout)html+=`<div class="ap-label">${h(f.nom||fd.l)}${f.obligatoire?'<span style="color:var(--d)"> *</span>':''}</div>`;
+    if(f.afficher_legende&&f.legendeText)html+=`<div class="ap-hint" style="margin-bottom:6px">${h(f.legendeText)}</div>`;
     switch(f.type){
-      case 'text':case 'textarea':
-        html+=`<div class="ap-input" style="${f.type==='textarea'?'height:80px':'height:42px'};display:flex;align-items:flex-start;padding-top:${f.type==='textarea'?'10':'0'}px;align-items:${f.type==='textarea'?'flex-start':'center'}"><span style="color:var(--tl)">${h(f.afficher_placeholder&&f.placeholder?f.placeholder:'Saisir un texte...')}</span></div>`;break;
+      case 'text':
+        html+=`<input class="ap-input" style="background:#fff;height:auto;padding:10px 12px;outline:none;width:100%" placeholder="${h(f.afficher_placeholder&&f.placeholder?f.placeholder:'Saisir un texte...')}" value="${h(cv||'')}" oninput="apChange('${f.id}',this.value)">`;break;
+      case 'textarea':
+        html+=`<textarea class="ap-input" style="background:#fff;height:72px;resize:none;padding:10px 12px;outline:none;width:100%;font-family:inherit" placeholder="Saisir un texte..." oninput="apChange('${f.id}',this.value)">${h(cv||'')}</textarea>`;break;
       case 'number':
-        html+=`<div class="ap-input" style="height:42px;display:flex;align-items:center"><span style="color:var(--tl)">0${f.precision>0?','+('0'.repeat(f.precision)):''}</span></div>`;break;
-      case 'select':
-        html+=`<div class="ap-input" style="height:42px;display:flex;align-items:center;justify-content:space-between"><span style="color:var(--tl)">Sélectionner...</span><span style="color:var(--tl)">▾</span></div>`;break;
-      case 'multiselect':
-        html+=`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:2px">${(f.valeurs||['Option 1','Option 2']).slice(0,4).map(v=>`<div style="padding:6px 12px;border:1.5px solid var(--bd);border-radius:20px;font-size:12px;font-weight:600;color:var(--tm)">${h(v)}</div>`).join('')}</div>`;break;
+        html+=`<div style="display:flex;align-items:center;gap:8px">
+          <button onclick="var n=document.getElementById('ni_${f.id}');n.value=+n.value-${f.pas||1};apChange('${f.id}',+n.value)" style="width:34px;height:34px;border:1.5px solid var(--bd);border-radius:8px;background:#fff;font-size:18px;cursor:pointer">−</button>
+          <input id="ni_${f.id}" type="number" class="ap-input" style="width:90px;text-align:center;background:#fff;padding:8px;outline:none" value="${cv||0}" step="${f.pas||1}" oninput="apChange('${f.id}',+this.value)">
+          <button onclick="var n=document.getElementById('ni_${f.id}');n.value=+n.value+${f.pas||1};apChange('${f.id}',+n.value)" style="width:34px;height:34px;border:1.5px solid var(--bd);border-radius:8px;background:#fff;font-size:18px;cursor:pointer;color:var(--p)">+</button>
+        </div>`;break;
       case 'checkbox':
-        html+=`<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><div style="width:18px;height:18px;border:2px solid var(--bd);border-radius:4px;flex-shrink:0"></div><span style="font-size:13px;color:var(--tl)">Oui / Non</span></div>`;break;
-      case 'date':case 'datetime':case 'heure':
-        html+=`<div class="ap-input" style="height:42px;display:flex;align-items:center;gap:8px"><span>${f.type==='heure'?'🕐':'📅'}</span><span style="color:var(--tl)">${f.type==='heure'?'HH:mm':f.type==='datetime'?'JJ/MM/AAAA HH:mm':'JJ/MM/AAAA'}</span></div>`;break;
-      case 'photo':case 'signature':
-        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:13px">${f.type==='photo'?'📷 Prendre une photo':'✍ Signer ici'}</div>`;break;
-      case 'file':
-        html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:16px;text-align:center;color:var(--tl);font-size:13px">📎 Sélectionner un fichier</div>`;break;
-      case 'location':
-        html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:13px">📍 Carte</div>`;break;
-      case 'image':
-        html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl)">🖼 Image</div>`;break;
-      case 'titre':
-        html+=`<div style="font-size:15px;font-weight:800;border-bottom:2px solid var(--bd);padding-bottom:6px">${h(f.nom)}</div>`;break;
-      case 'separator':
-        html+=`<hr style="border:none;border-top:1px solid var(--bd)">`;break;
-      default:
-        html+=`<div class="ap-input" style="height:42px;display:flex;align-items:center"><span style="color:var(--tl)">${fd.l}</span></div>`;
+        html+=`<label style="display:flex;align-items:center;gap:9px;cursor:pointer;padding:4px 0"><input type="checkbox" ${cv?'checked':''} onchange="apChange('${f.id}',this.checked)" style="width:18px;height:18px;accent-color:var(--p)"><span style="color:var(--tm)">Cocher si applicable</span></label>`;break;
+      case 'select':
+        html+=`<select class="ap-input" style="background:#fff;cursor:pointer;outline:none;appearance:none;background-image:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%2210%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2394a3b8%22 stroke-width=%222%22><path d=%22M6 9l6 6 6-6%22/></svg>');background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;width:100%" onchange="apChange('${f.id}',this.value)">
+          <option value="">Sélectionner...</option>
+          ${(f.valeurs||[]).map(v=>`<option${cv===v?' selected':''}>${h(v)}</option>`).join('')}
+        </select>`;break;
+      case 'multiselect':
+        const ms=Array.isArray(cv)?cv:[];
+        html+=`<div style="display:flex;flex-wrap:wrap;gap:7px;padding:4px 0">${(f.valeurs||[]).map(v=>`<label style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1.5px solid ${ms.includes(v)?'var(--p)':'var(--bd)'};border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;background:${ms.includes(v)?'var(--pl)':'#fff'};color:${ms.includes(v)?'var(--p)':'var(--tm)'}"><input type="checkbox" ${ms.includes(v)?'checked':''} onchange="apChangeMulti('${f.id}','${v.replace(/'/g,"\\'")}',this.checked)" style="display:none">${ms.includes(v)?'✓ ':''}${h(v)}</label>`).join('')}</div>`;break;
+      case 'date':
+        html+=`<input type="date" class="ap-input" style="background:#fff;cursor:pointer;outline:none;width:100%" value="${cv||''}" onchange="apChange('${f.id}',this.value)">`;break;
+      case 'heure':
+        html+=`<input type="time" class="ap-input" style="background:#fff;cursor:pointer;outline:none;width:100%" value="${cv||''}" onchange="apChange('${f.id}',this.value)">`;break;
+      case 'datetime':
+        html+=`<input type="datetime-local" class="ap-input" style="background:#fff;cursor:pointer;outline:none;width:100%" value="${cv||''}" onchange="apChange('${f.id}',this.value)">`;break;
+      case 'photo':html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:13px">📷 Simulation — non disponible en mode test</div>`;break;
+      case 'signature':html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:13px">✍ Simulation — non disponible en mode test</div>`;break;
+      case 'file':html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:14px;text-align:center;color:var(--tl);font-size:13px">📎 Simulation — non disponible en mode test</div>`;break;
+      case 'location':html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl)">📍 Carte (simulation)</div>`;break;
+      case 'image':html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:70px;display:flex;align-items:center;justify-content:center;color:var(--tl)">🖼 Image</div>`;break;
+      case 'titre':html+=`<div style="font-size:15px;font-weight:800;border-bottom:2px solid var(--bd);padding-bottom:7px">${h(f.nom)}</div>`;break;
+      case 'separator':html+=`<hr style="border:none;border-top:1.5px solid var(--bd)">`;break;
+      default:html+=`<div class="ap-input" style="color:var(--tl)">${fd.l||'—'}</div>`;
     }
-    if(f.afficher_legende&&f.legendeText)html+=`<div class="ap-hint">${h(f.legendeText)}</div>`;
     html+=`</div>`;
   });
-  html+=`<div style="display:flex;justify-content:flex-end;gap:8px;padding-top:16px;border-top:1px solid var(--bd);margin-top:8px">
-    <button class="btn btn-sm">Annuler</button>
-    <button class="btn btn-sm" style="background:${color};color:#fff;border-color:${color}">Valider</button>
+  html+=`<div style="display:flex;justify-content:flex-end;gap:8px;padding-top:16px;border-top:1.5px solid var(--bd);margin-top:8px">
+    <button class="btn btn-sm" onclick="resetPreview()">Annuler</button>
+    <button onclick="validatePreview()" style="padding:7px 16px;border-radius:8px;border:none;background:${color};color:#fff;font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer">Valider</button>
   </div></div>`;
   container.innerHTML=html;
+}
+function validatePreview(){
+  const errs=builderFields.filter(f=>{
+    if(!evalCond(f))return false;if(!f.obligatoire)return false;
+    const v=previewValues[f.id];return !v||v===''||(Array.isArray(v)&&!v.length);
+  });
+  if(errs.length){
+    toast('e','⚠️ '+errs.length+' champ(s) obligatoire(s) manquant(s)');
+    errs.forEach(f=>{const w=document.getElementById('apw-'+f.id);if(w){w.style.outline='2px solid var(--d)';w.style.borderRadius='8px';setTimeout(()=>w.style.outline='',2000);}});
+  }else toast('s','✅ Formulaire valide !');
 }
 
 // ══ DÉCLENCHEURS ══
