@@ -1,3 +1,4 @@
+function h(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 // ══ DONNÉES ══
 const FORMS_DATA=[
   {id:1,nom:'Arrivage CNPE Blaye',desc:'Formulaire pour tous les arrivages',mods:['Général','Nomade'],actif:true,resp:32720,fields:[]},
