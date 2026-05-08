@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>PicoTrack — Formulaires</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div id="sb">
+  <div class="sb-logo"><div class="sb-li">📍</div><div class="sb-lt">Pico<em>Track</em></div></div>
+  <div class="sb-env"><div class="sb-env-dot"></div><div><div class="sb-env-nm">EDF Blayais</div></div></div>
+  <div class="sb-s">Administration</div>
+  <div class="sb-i" onclick="goList()">📊 Dashboard</div>
+  <div class="sb-i" onclick="goList()">👥 Utilisateurs <span class="sb-bk">10</span></div>
+  <div class="sb-i" onclick="goList()">🔑 Rôles</div>
+  <div class="sb-i on" id="sb-forms" onclick="goList()">📋 Formulaires</div>
+  <div class="sb-i" onclick="goList()">⚡ Services</div>
+  <div class="sb-s">Production</div>
+  <div class="sb-i" onclick="goList()">📱 Saisie <span class="sb-bk">4</span></div>
+  <div class="sb-bot"><div class="u-av">CP</div><div><div style="font-size:12px;font-weight:700">Picot Clément</div></div></div>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+  <div id="topbar">
+    <div id="tb-t">Formulaires</div>
+  </div>
+
+  <!-- BREADCRUMB -->
+  <div class="breadcrumb" id="breadcrumb">
+    <span class="bc-link" onclick="goList()">▶ Formulaires</span>
+  </div>
+
+  <!-- LIST VIEW -->
+  <div class="view on" id="v-list">
+    <div style="padding:18px 22px;flex:1">
+
+      <!-- FILTER BOX -->
+      <div class="fbox">
+        <div class="fbox-head">
+          <button class="btn bw" id="filter-btn" style="border-radius:20px" onclick="toggleFilters()">
+            ▼ Filtrer <span id="filter-bdg" class="fbadge" style="display:none">0</span>
+          </button>
+          <button class="btn" style="border-radius:20px;font-size:12px" onclick="clearFilters()">Voir tout ＋</button>
+          <div class="ic-btn">⚙</div>
+        </div>
+        <div id="fbox-grid" class="fbox-grid">
+          <div class="fg">
+            <div class="fl">Nom</div>
+            <div class="frow">
+              <select class="fsel"><option>Contient</option><option>Égal à</option><option>Commence par</option></select>
+              <input class="finp" id="f-nom" placeholder="Saisir une valeur" oninput="applyFilters()">
+            </div>
+          </div>
+          <div class="fg">
+            <div class="fl">Description</div>
+            <div class="frow">
+              <select class="fsel"><option>Contient</option><option>Égal à</option></select>
+              <input class="finp" id="f-desc" placeholder="Saisir une valeur" oninput="applyFilters()">
+            </div>
+          </div>
+          <div class="fg">
+            <div class="fl">Modules</div>
+            <div class="frow">
+              <select class="fsel" style="min-width:78px"><option>Égal à</option><option>Contient</option></select>
+              <select class="finp" id="f-mod" style="appearance:none;cursor:pointer" onchange="applyFilters()">
+                <option value="">Sélectionner...</option>
+                <option>Général</option><option>Services</option><option>Nomade</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TOOLBAR -->
+      <div class="toolbar">
+        <button class="btn bp pill" onclick="openBuilder(null)">＋ Ajouter</button>
+        <button class="btn pill">📥 Importer</button>
+        <div class="drop-w">
+          <button class="btn pill" id="exp-btn" onclick="toggleDrop('exp-menu')">📤 Exporter ▾</button>
+          <div class="drop-m" id="exp-menu">
+            <div class="drop-i" onclick="exportCSV()">📄 Exporter en CSV</div>
+            <div class="drop-sep"></div>
+            <div class="drop-i" onclick="exportExcel()">📊 Exporter en Excel (.xlsx)</div>
+          </div>
+        </div>
+        <div class="sp"></div>
+        <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchForms(this.value)"></div>
+        <div class="ic-btn">⚙</div>
+      </div>
+
+      <!-- TABLE -->
+      <div class="dt">
+        <div class="dth">
+          <div class="dt-th" onclick="sortBy('nom')">Nom <div class="sort-ic"><span></span><span></span></div></div>
+          <div class="dt-th">Description</div>
+          <div class="dt-th">Modules</div>
+          <div class="dt-th">Actif</div>
+          <div class="dt-th" onclick="sortBy('resp')">Réponses <div class="sort-ic"><span></span><span></span></div></div>
+          <div class="dt-th"></div>
+        </div>
+        <div id="table-body"></div>
+        <div class="pagination">
+          <select class="pg-s" onchange="setPageSize(+this.value)"><option>10</option><option>25</option><option>50</option></select>
+          <span style="font-size:11.5px;color:var(--tl)">éléments</span>
+          <div class="pg-info" id="pg-info"></div>
+          <div class="pg-btns" id="pg-btns"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BUILDER VIEW -->
+  <div class="view" id="v-builder">
+    <!-- BUILDER TOPBAR -->
+    <div class="btb">
+      <button class="btn btn-sm" onclick="goList()">← Retour</button>
+      <div class="btb-sep"></div>
+      <input class="btb-nm" id="builder-name" placeholder="Nom du formulaire..." value="">
+      <div class="sp"></div>
+      <span id="builder-status" style="font-size:12px;color:var(--tl)">Brouillon</span>
+      <div class="btb-sep"></div>
+      <button class="btn btn-sm" onclick="saveForm(false)">Enregistrer</button>
+      <button class="btn bp btn-sm" onclick="saveForm(true)">💾 Enregistrer &amp; quitter</button>
+    </div>
+
+    <!-- BUILDER TABS -->
+    <div class="b-tabs">
+      <div class="b-tab on" id="btab-gen" onclick="setBTab('gen')"><span class="tab-dot"></span>Général</div>
+      <div class="b-tab" id="btab-fields" onclick="setBTab('fields')"><span class="tab-dot"></span>Champs<span class="b-tab-cnt" id="fields-cnt" style="display:none">0</span></div>
+      <div class="b-tab" id="btab-layout" onclick="setBTab('layout')"><span class="tab-dot"></span>Mise en page</div>
+      <div class="b-tab" id="btab-apercu" onclick="setBTab('apercu')"><span class="tab-dot"></span>Aperçu</div>
+      <div class="b-tab" id="btab-decl" onclick="setBTab('decl')" style="display:none"><span class="tab-dot"></span>Déclencheurs<span class="b-tab-cnt" id="decl-cnt" style="display:none">1</span></div>
+    </div>
+
+    <!-- TAB CONTENT -->
+    <div class="bwrap">
+      <!-- GENERAL -->
+      <div class="b-area" id="barea-gen">
+        <div class="b-sec">
+          <div class="b-sec-t">Informations générales</div>
+          <div class="ig" style="margin-bottom:12px">
+            <div class="fg"><div class="fl2">Nom <span class="req">*</span></div><input class="fi" id="b-nom" placeholder="Ex : Checklist sécurité..."></div>
+            <div class="fg"><div class="fl2">Description</div><textarea class="fi fi-ta" id="b-desc" placeholder="Description optionnelle..."></textarea></div>
+          </div>
+          <div class="fg">
+            <div class="fl2">Modules</div>
+            <div class="mod-check">
+              <div class="mod-c" onclick="toggleMod(this,'Général')"><div class="mc-radio"></div>🗂 Général</div>
+              <div class="mod-c on" onclick="toggleMod(this,'Services')"><div class="mc-radio"></div>⚡ Services</div>
+              <div class="mod-c" onclick="toggleMod(this,'Nomade')"><div class="mc-radio"></div>📱 Nomade</div>
+            </div>
+            <div class="f-hint">Le formulaire sera accessible dans les modules sélectionnés</div>
+          </div>
+        </div>
+        <div class="b-sec">
+          <div class="b-sec-t">Classification</div>
+          <div class="ig ig2">
+            <div class="fg"><div class="fl2">Tags</div><input class="fi" placeholder="Ajouter des tags..."></div>
+            <div class="fg"><div class="fl2">Statut</div>
+              <div style="display:flex;align-items:center;gap:9px;padding:8px 0">
+                <div class="tog on" id="status-tog" onclick="toggleStatus()"></div>
+                <span id="status-lbl" style="font-size:13px;font-weight:600">Actif</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FIELDS -->
+      <div class="b-area" id="barea-fields" style="display:none;padding:0">
+        <div class="f-layout">
+          <div class="f-canvas" id="f-canvas">
+            <div class="drop-zone" id="drop-zone" onclick="focusPalette()">
+              <div style="font-size:28px;margin-bottom:8px;opacity:.4">⊞</div>
+              <div>Aucun champ — cliquez sur un élément de la palette pour l'ajouter</div>
+            </div>
+          </div>
+          <div class="f-palette" id="f-palette">
+            <div class="pal-s">Éléments</div>
+            <div class="pal-chip" onclick="addField('image')"><div class="pal-ic" style="background:#6b7280">🖼</div>Image</div>
+            <div class="pal-chip" onclick="addField('titre')"><div class="pal-ic" style="background:#6b7280">Aa</div>Titre</div>
+            <div class="pal-chip" onclick="addField('separator')"><div class="pal-ic" style="background:#6b7280">─</div>Séparateur</div>
+            <div class="pal-s">Champs de saisie</div>
+            <div class="pal-chip" onclick="addField('text')"><div class="pal-ic" style="background:#3b82f6">Aa</div>Texte</div>
+            <div class="pal-chip" onclick="addField('textarea')"><div class="pal-ic" style="background:#3b82f6">¶</div>Texte multiligne</div>
+            <div class="pal-chip" onclick="addField('number')"><div class="pal-ic" style="background:#3b82f6">1↕</div>Nombre</div>
+            <div class="pal-chip" onclick="addField('select')"><div class="pal-ic" style="background:#f59e0b">☰</div>Liste choix unique</div>
+            <div class="pal-chip" onclick="addField('multiselect')"><div class="pal-ic" style="background:#f59e0b">⊞</div>Liste choix multiple</div>
+            <div class="pal-chip" onclick="addField('checkbox')"><div class="pal-ic" style="background:#f59e0b">☑</div>Case à cocher</div>
+            <div class="pal-chip" onclick="addField('date')"><div class="pal-ic" style="background:#06b6d4">📅</div>Date</div>
+            <div class="pal-chip" onclick="addField('datetime')"><div class="pal-ic" style="background:#06b6d4">📆</div>Date et heure</div>
+            <div class="pal-chip" onclick="addField('photo')"><div class="pal-ic" style="background:#10b981">📷</div>Photo</div>
+            <div class="pal-chip" onclick="addField('file')"><div class="pal-ic" style="background:#10b981">📎</div>Fichier</div>
+            <div class="pal-chip" onclick="addField('signature')"><div class="pal-ic" style="background:#10b981">✍</div>Signature</div>
+            <div class="pal-chip" onclick="addField('location')"><div class="pal-ic" style="background:#ef4444">📍</div>Localisation</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LAYOUT -->
+      <div class="b-area" id="barea-layout" style="display:none">
+        <div class="b-sec" style="text-align:center;padding:40px">
+          <div style="font-size:36px;margin-bottom:12px">🗂</div>
+          <div style="font-size:15px;font-weight:700;margin-bottom:8px">Mise en page</div>
+          <div style="font-size:13px;color:var(--tm);max-width:400px;margin:0 auto">Disposez vos champs côte à côte ou sur plusieurs colonnes. Ajoutez d'abord des champs dans l'onglet <strong>Champs</strong>.</div>
+        </div>
+        <div id="layout-grid" style="display:grid;grid-template-columns:repeat(12,1fr);gap:8px;padding:0 10px"></div>
+      </div>
+
+      <!-- APERCU -->
+      <div class="b-area" id="barea-apercu" style="display:none;flex-direction:column">
+        <div class="apercu-toggle">
+          <button class="ap-tog on" id="ap-sup" onclick="setApercu('sup',this)">🖥 Supervision</button>
+          <button class="ap-tog" id="ap-nom" onclick="setApercu('nom',this)">📱 Application nomade</button>
+        </div>
+        <div id="apercu-content" style="flex:1;overflow-y:auto;padding:0 22px 22px"></div>
+      </div>
+
+      <!-- DECLENCHEURS -->
+      <div class="b-area" id="barea-decl" style="display:none">
+        <div id="decl-list"></div>
+        <button class="btn bp" style="border-radius:20px;margin-top:4px" onclick="addDecl()">＋ Ajouter un déclencheur</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FIELD CONFIG PANEL -->
+<div id="cfg-bd" onclick="closeCfg()"></div>
+<div id="cfg-panel">
+  <div class="ctabs">
+    <div class="ctab on" id="ctab-G" onclick="setCfgTab('G')" title="Général">G</div>
+    <div class="ctab" id="ctab-V" onclick="setCfgTab('V')" title="Validateurs">V</div>
+    <div class="ctab" id="ctab-A" onclick="setCfgTab('A')" title="Affichage">A</div>
+  </div>
+  <div class="ccon">
+    <div class="cfg-hd">
+      <div class="cfg-hd-ic" id="cfg-ic" style="background:#3b82f6">Aa</div>
+      <div class="cfg-hd-t" id="cfg-title">Modifier un champ</div>
+      <div class="cfg-close" onclick="closeCfg()">✕</div>
+    </div>
+    <div class="cfg-body" id="cfg-body"></div>
+    <div class="cfg-ft">
+      <button class="btn btn-sm" onclick="closeCfg()">Annuler</button>
+      <button class="btn bw btn-sm" onclick="saveCfg()">Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOASTS -->
+<div id="toasts"></div>
+
+<script src="app.js"></script>
+</script>
+</body>
+</html>
