@@ -77,7 +77,45 @@ function initModules(sel=[]){
   document.getElementById('mod-grid').innerHTML=MODULES_DEF.map(m=>`<div class="mod-c${sel.includes(m.value)?' on':''}" onclick="this.classList.toggle('on')"><div class="mc-dot"></div>${m.label}</div>`).join('');
 }
 function toggleHistoSub(tog){tog.classList.toggle('on');tog.classList.toggle('off');document.getElementById('sub-histo').classList.toggle('show',tog.classList.contains('on'))}
+// ══ PRODUCTION ══
+function goProduction(){
+  document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
+  document.getElementById('sb-prod-forms').classList.add('on');
+  show('v-prod-forms');
+  document.getElementById('tb-t').textContent='Formulaires';
+  document.getElementById('breadcrumb').innerHTML='<span style="color:var(--tl)">▶ Production / Formulaires</span>';
+  renderProdForms(FORMS_DATA);
+  document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(f=>f.actif!==false).length;
+}
 
+function renderProdForms(list){
+  const actifs=list.filter(f=>f.actif!==false);
+  const grid=document.getElementById('prod-forms-grid');
+  if(!actifs.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--tl)">Aucun formulaire actif</div>`;return;}
+  grid.innerHTML=actifs.map(f=>`
+    <div onclick="openFormSaisie('${f.id}')" style="background:var(--bg);border:1.5px solid var(--bd);border-left:4px solid ${f.couleur||'#3b82f6'};border-radius:12px;padding:18px;cursor:pointer;transition:all .15s">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <div style="width:9px;height:9px;border-radius:50%;background:${f.couleur||'#3b82f6'}"></div>
+        <div style="font-weight:700;font-size:14px">${h(f.nom)}</div>
+      </div>
+      ${f.desc?`<div style="font-size:12px;color:var(--tl);margin-bottom:10px">${h(f.desc)}</div>`:''}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+        <span style="font-size:11px;color:var(--tl)">${f.resp||0} réponse(s)</span>
+        <button class="btn bp pill" style="font-size:12px;padding:5px 14px">Remplir →</button>
+      </div>
+    </div>`).join('');
+}
+
+function searchProdForms(q){
+  renderProdForms(FORMS_DATA.filter(f=>f.actif!==false&&(f.nom.toLowerCase().includes(q.toLowerCase())||f.desc?.toLowerCase().includes(q.toLowerCase()))));
+}
+
+function openFormSaisie(id){
+  const f=FORMS_DATA.find(x=>x.id===id);if(!f)return;
+  document.getElementById('tb-t').textContent=f.nom;
+  document.getElementById('breadcrumb').innerHTML=`<span class="bc-link" onclick="goProduction()">▶ Production / Formulaires</span> › <span>${h(f.nom)}</span>`;
+  toast('s',`📋 "${f.nom}" — saisie à venir`);
+}
 // ══ LIST ══
 function renderTable(){
   const s=(page-1)*pageSize,rows=filtered.slice(s,s+pageSize);
