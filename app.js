@@ -739,33 +739,56 @@ function goProduction(){
 }
 
 function renderProdForms(list){
-  const actifs=list.filter(f=>f.actif!==false);
-  const grid=document.getElementById('prod-forms-grid');
+  const actifs = list.filter(f => f.actif !== false);
+  const grid = document.getElementById('prod-forms-grid');
   if(!actifs.length){
-    grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--tl)">Aucun formulaire actif disponible</div>`;
+    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:var(--tl);font-size:14px">
+      <div style="font-size:32px;margin-bottom:12px;opacity:.3">📋</div>
+      Aucun formulaire actif disponible
+    </div>`;
     return;
   }
-  grid.innerHTML=actifs.map(f=>`
-    <div class="prod-form-card" onclick="openFormSaisie('${f.id}')" style="
-      background:var(--bg);border:1.5px solid var(--bd);border-radius:12px;
-      padding:18px;cursor:pointer;transition:all .15s;
-      border-left:4px solid ${f.couleur||'#3b82f6'}">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-        <div style="width:10px;height:10px;border-radius:50%;background:${f.couleur||'#3b82f6'};flex-shrink:0"></div>
-        <div style="font-weight:700;font-size:14px;color:var(--tx)">${h(f.nom)}</div>
-      </div>
-      ${f.desc?`<div style="font-size:12px;color:var(--tl);margin-bottom:12px;line-height:1.4">${h(f.desc)}</div>`:''}
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
-        ${(f.type||[]).map(m=>`<span class="mod-tag ${m}">${MODULE_LABELS[m]||m}</span>`).join('')}
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:11px;color:var(--tl)">${f.resp||0} réponse${(f.resp||0)>1?'s':''}</span>
-        <button class="btn bp pill" style="font-size:12px;padding:5px 14px">Remplir →</button>
-      </div>
-    </div>
-  `).join('');
-}
+  grid.innerHTML = actifs.map(f => {
+    const color = f.couleur || '#3b82f6';
+    const initials = h(f.nom).substring(0,2).toUpperCase();
+    return `<div onclick="openFormSaisie('${f.id}')" style="
+        background:#fff;
+        border-radius:12px;
+        box-shadow:0 2px 8px rgba(0,0,0,.07);
+        border:1.5px solid var(--bd);
+        cursor:pointer;
+        transition:all .18s;
+        overflow:hidden;
+        display:flex;flex-direction:column"
+      onmouseover="this.style.transform='translateY(-3px)';this.style.boxShadow='0 6px 20px rgba(0,0,0,.12)';this.style.borderColor='${color}'"
+      onmouseout="this.style.transform='';this.style.boxShadow='0 2px 8px rgba(0,0,0,.07)';this.style.borderColor='var(--bd)'">
 
+      <!-- Bandeau couleur -->
+      <div style="height:7px;background:${color};flex-shrink:0"></div>
+
+      <!-- Corps de la carte -->
+      <div style="padding:16px;flex:1;display:flex;flex-direction:column;gap:10px">
+
+        <!-- Icône + Nom -->
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:38px;height:38px;border-radius:9px;background:${color}18;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;font-weight:800;color:${color}">${initials}</div>
+          <div style="font-weight:700;font-size:13.5px;color:var(--tx);line-height:1.3">${h(f.nom)}</div>
+        </div>
+
+        <!-- Description -->
+        ${f.desc ? `<div style="font-size:11.5px;color:var(--tl);line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${h(f.desc)}</div>` : ''}
+
+        <!-- Séparateur -->
+        <div style="border-top:1px solid var(--bd);margin-top:auto;padding-top:10px;display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:11px;color:var(--tl)">${(f.resp||0).toLocaleString()} réponse${(f.resp||0)>1?'s':''}</span>
+          <div style="display:inline-flex;align-items:center;gap:5px;background:${color};color:#fff;font-size:11.5px;font-weight:700;padding:5px 12px;border-radius:20px">
+            Saisir →
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
 function searchProdForms(q){
   const res=FORMS_DATA.filter(f=>f.actif!==false&&(f.nom.toLowerCase().includes(q.toLowerCase())||f.desc?.toLowerCase().includes(q.toLowerCase())));
   renderProdForms(res);
