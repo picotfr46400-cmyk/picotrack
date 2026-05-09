@@ -808,7 +808,9 @@ const SVC_COUNTERS = {};
 let curService = null, svcTab = 'gen';
 let svcBuilderStatuses = [], svcBuilderActions = [], svcBuilderFlux = [];
 let svcBuilderColor = '#3b82f6', svcBuilderFormId = null;
-let curInstanceId = null;
+let curInstanceId = null, curKanbanGroupId = null;
+let svcBuilderCardConfig = {couleur:'#3b82f6', titleFieldId:null, subtitle1FieldId:null, subtitle2FieldId:null};
+let svcBuilderKanbanGroups = [];
 
 // ══ NAVIGATION ══
 function goServices() {
@@ -883,9 +885,14 @@ function openServiceBuilder(id) {
     svcBuilderFlux     = JSON.parse(JSON.stringify(curService.flux));
     svcBuilderColor    = curService.couleur;
     svcBuilderFormId   = curService.formId;
+    svcBuilderCardConfig   = curService.cardConfig   ? JSON.parse(JSON.stringify(curService.cardConfig))   : {couleur:'#3b82f6',titleFieldId:null,subtitle1FieldId:null,subtitle2FieldId:null};
+    svcBuilderKanbanGroups = curService.kanbanGroups ? JSON.parse(JSON.stringify(curService.kanbanGroups)) : [];
+    svcBuilderActions = JSON.parse(JSON.stringify(curService.actions)).map(a=>({...a, effects: a.effects||(a.type?[{type:a.type,config:a.config||{}}]:[{type:'change_status',config:{}}])}));
   } else {
     svcBuilderStatuses = []; svcBuilderActions = []; svcBuilderFlux = [];
     svcBuilderColor = '#3b82f6'; svcBuilderFormId = null;
+    svcBuilderCardConfig = {couleur:'#3b82f6',titleFieldId:null,subtitle1FieldId:null,subtitle2FieldId:null};
+    svcBuilderKanbanGroups = [];
   }
   document.getElementById('sb2-name').value = curService ? curService.nom : '';
   document.getElementById('tb-t').textContent = curService ? 'Modifier : ' + curService.nom : 'Nouveau service';
@@ -898,7 +905,7 @@ function openServiceBuilder(id) {
 
 function setSvcTab(t) {
   svcTab = t;
-  ['gen','statuses','actions','flux'].forEach(x => {
+  ['gen','formulaires','statuses','actions','flux','kanban'].forEach(x => {
     const tab = document.getElementById('svctab-' + x);
     if (tab) tab.classList.toggle('on', x === t);
   });
@@ -907,10 +914,12 @@ function setSvcTab(t) {
 
 function renderSvcTab() {
   const area = document.getElementById('svc-area'); if (!area) return;
-  if (svcTab === 'gen')      renderSvcGen(area);
-  else if (svcTab === 'statuses') renderSvcStatuses(area);
-  else if (svcTab === 'actions')  renderSvcActions(area);
-  else if (svcTab === 'flux')     renderSvcFlux(area);
+  if      (svcTab === 'gen')         renderSvcGen(area);
+  else if (svcTab === 'formulaires') renderSvcFormulaires(area);
+  else if (svcTab === 'statuses')    renderSvcStatuses(area);
+  else if (svcTab === 'actions')     renderSvcActions(area);
+  else if (svcTab === 'flux')        renderSvcFlux(area);
+  else if (svcTab === 'kanban')      renderSvcKanbanConfig(area);
 }
 
 // ── Onglet Général ──
@@ -957,6 +966,91 @@ function renderSvcGen(area) {
     const el = document.getElementById('svc-nom'); if (el) el.value = e.target.value;
   });
 }
+// ── Onglet Formulaires + étiquette ──
+function renderSvcFormulaires(area) {
+  const formOptions = FORMS_DATA.filter(f=>f.actif!==false).map(f=>`<option value="${f.id}" ${svcBuilderFormId===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
+  const f = svcBuilderFormId ? FORMS_DATA.find(x=>x.id===svcBuilderFormId) : null;
+  const fields = f ? (f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)) : [];
+  const cc = svcBuilderCardConfig;
+  const fo = (sel) => `<option value="">— Aucun —</option>`+fields.map(fld=>`<option value="${fld.id}" ${sel===fld.id?'selected':''}>${h(fld.nom)}</option>`).join('');
+  const tV = fields.find(x=>x.id===cc.titleFieldId)?.nom||'Titre';
+  const s1V = fields.find(x=>x.id===cc.subtitle1FieldId)?.nom||null;
+  const s2V = fields.find(x=>x.id===cc.subtitle2FieldId)?.nom||null;
+  area.innerHTML = `
+    <div class="b-sec">
+      <div class="b-sec-t">Formulaire déclencheur <span class="req">*</span></div>
+      <select class="fi" style="appearance:none" onchange="svcBuilderFormId=+this.value||null;renderSvcTab()">
+        <option value="">— Sélectionner —</option>${formOptions}
+      </select>
+    </div>
+    ${f ? `<div class="b-sec">
+      <div class="b-sec-t">Étiquette de la carte kanban</div>
+      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1;min-width:240px;display:flex;flex-direction:column;gap:12px">
+          <div><div class="fl2">Couleur</div>
+            <div class="color-row" id="cc-row">${COLORS.map(c=>`<div class="c-swatch${cc.couleur===c?' on':''}" style="background:${c}" onclick="svcBuilderCardConfig.couleur='${c}';document.querySelectorAll('#cc-row .c-swatch').forEach(e=>e.classList.remove('on'));this.classList.add('on');updateCardPreview()"></div>`).join('')}</div>
+          </div>
+          <div><div class="fl2">Titre <span class="req">*</span></div>
+            <select class="fi" style="appearance:none" id="cc-title" onchange="svcBuilderCardConfig.titleFieldId=this.value||null;updateCardPreview()">${fo(cc.titleFieldId)}</select>
+          </div>
+          <div><div class="fl2">Sous-titre 1</div>
+            <select class="fi" style="appearance:none" id="cc-sub1" onchange="svcBuilderCardConfig.subtitle1FieldId=this.value||null;updateCardPreview()">${fo(cc.subtitle1FieldId)}</select>
+          </div>
+          <div><div class="fl2">Sous-titre 2</div>
+            <select class="fi" style="appearance:none" id="cc-sub2" onchange="svcBuilderCardConfig.subtitle2FieldId=this.value||null;updateCardPreview()">${fo(cc.subtitle2FieldId)}</select>
+          </div>
+        </div>
+        <div style="width:250px;flex-shrink:0">
+          <div class="fl2" style="margin-bottom:8px">Aperçu</div>
+          <div id="card-preview-wrap">${buildCardPreviewHtml(cc,{tV,s1V,s2V})}</div>
+        </div>
+      </div>
+    </div>` : '<div class="f-hint" style="padding:20px;text-align:center">Sélectionnez d\'abord un formulaire.</div>'}`;
+}
+function buildCardPreviewHtml(cc,{tV,s1V,s2V}){
+  const c=cc.couleur||'#3b82f6';
+  return `<div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)"><div style="height:4px;background:${c}"></div><div style="padding:12px 14px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><span style="font-size:10.5px;font-family:'DM Mono',monospace;color:var(--tl)"># REF-2026-0001</span><span style="font-size:10px;padding:2px 8px;border-radius:10px;background:${c}20;color:${c};font-weight:800">Nouveau</span></div><div style="font-size:13px;font-weight:800;margin-bottom:4px">${h(tV)}</div>${s1V?`<div style="font-size:11.5px;color:var(--tl)">${h(s1V)}</div>`:''}${s2V?`<div style="font-size:11.5px;color:var(--tl)">${h(s2V)}</div>`:''}</div></div>`;
+}
+function updateCardPreview(){
+  const wrap=document.getElementById('card-preview-wrap');if(!wrap)return;
+  const f=svcBuilderFormId?FORMS_DATA.find(x=>x.id===svcBuilderFormId):null;if(!f)return;
+  const fields=(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
+  const cc=svcBuilderCardConfig;
+  const tV=fields.find(x=>x.id===cc.titleFieldId)?.nom||'Titre...';
+  const s1V=fields.find(x=>x.id===cc.subtitle1FieldId)?.nom||null;
+  const s2V=fields.find(x=>x.id===cc.subtitle2FieldId)?.nom||null;
+  wrap.innerHTML=buildCardPreviewHtml(cc,{tV,s1V,s2V});
+}
+
+// ── Onglet Vue Kanban ──
+function renderSvcKanbanConfig(area) {
+  area.innerHTML=`<div class="b-sec">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="b-sec-t" style="margin:0">Groupes de statuts (onglets kanban)</div>
+      <button class="btn bp btn-sm pill" onclick="addKanbanGroup()">＋ Ajouter</button>
+    </div>
+    <div class="f-hint" style="margin-bottom:12px">Chaque groupe = un onglet dans le kanban. Les statuts cochés = les colonnes visibles. ↑↓ pour réordonner.</div>
+    ${!svcBuilderKanbanGroups.length
+      ?`<div style="text-align:center;padding:32px;color:var(--tl);border:2px dashed var(--bd);border-radius:10px"><div style="font-size:24px;opacity:.3">⊞</div>Sans groupe, tous les statuts sont dans un seul onglet.</div>`
+      :svcBuilderKanbanGroups.map((g,gi)=>`
+        <div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:10px">
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
+            <div class="tog ${g.visible?'on':'off'}" onclick="svcBuilderKanbanGroups[${gi}].visible=!svcBuilderKanbanGroups[${gi}].visible;renderSvcTab()" title="Visible"></div>
+            <input class="ci" style="flex:1" value="${h(g.nom)}" oninput="svcBuilderKanbanGroups[${gi}].nom=this.value">
+            <button class="ic-btn" onclick="moveKanbanGroup(${gi},-1)" ${gi===0?'disabled':''}>↑</button>
+            <button class="ic-btn" onclick="moveKanbanGroup(${gi},1)" ${gi===svcBuilderKanbanGroups.length-1?'disabled':''}>↓</button>
+            <button class="ic-btn" onclick="svcBuilderKanbanGroups.splice(${gi},1);renderSvcTab()">🗑</button>
+          </div>
+          <div class="fl2" style="margin-bottom:6px">Colonnes (statuts inclus)</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${svcBuilderStatuses.map(s=>{const on=g.statusIds.includes(s.id);return`<label style="display:flex;align-items:center;gap:5px;padding:5px 11px;border:1.5px solid ${on?s.couleur:'var(--bd)'};border-radius:20px;cursor:pointer;font-size:12px;font-weight:700;background:${on?s.couleur+'18':'#fff'};color:${on?s.couleur:'var(--tm)'}"><input type="checkbox" ${on?'checked':''} style="display:none" onchange="toggleKanbanStatus(${gi},'${s.id}',this.checked)">${h(s.nom)}</label>`;}).join('')}
+          </div>
+        </div>`).join('')}
+  </div>`;
+}
+function addKanbanGroup(){svcBuilderKanbanGroups.push({id:'kg'+Date.now(),nom:'Nouveau groupe',statusIds:[],visible:true,order:svcBuilderKanbanGroups.length});renderSvcTab();}
+function moveKanbanGroup(gi,dir){const ni=gi+dir;if(ni<0||ni>=svcBuilderKanbanGroups.length)return;[svcBuilderKanbanGroups[gi],svcBuilderKanbanGroups[ni]]=[svcBuilderKanbanGroups[ni],svcBuilderKanbanGroups[gi]];renderSvcTab();}
+function toggleKanbanStatus(gi,sid,checked){const g=svcBuilderKanbanGroups[gi];if(checked){if(!g.statusIds.includes(sid))g.statusIds.push(sid);}else g.statusIds=g.statusIds.filter(id=>id!==sid);renderSvcTab();}
 
 // ── Onglet Statuts ──
 function renderSvcStatuses(area) {
@@ -1006,55 +1100,41 @@ function addSvcStatus() {
 function renderSvcActions(area) {
   const cnt = document.getElementById('svc-action-cnt');
   if (cnt) { cnt.textContent = svcBuilderActions.length; cnt.style.display = svcBuilderActions.length ? '' : 'none'; }
-  const ACTION_TYPES = [
-    {v:'change_status',l:'Changer le statut'},
-    {v:'edit_form',    l:'Modifier le formulaire'},
-    {v:'fill_form',    l:'Remplir un formulaire'},
-    {v:'assign',       l:'Affecter'},
-    {v:'send_email',   l:'Envoyer un email'},
-    {v:'comment',      l:'Commenter'},
-  ];
-  const statusOpts = svcBuilderStatuses.map(s => `<option value="${s.id}">${h(s.nom)}</option>`).join('');
-  const formOpts   = FORMS_DATA.filter(f=>f.actif!==false).map(f => `<option value="${f.id}">${h(f.nom)}</option>`).join('');
-  area.innerHTML = `
-    <div class="b-sec">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-        <div class="b-sec-t" style="margin:0">Boutons d'action</div>
-        <button class="btn bp btn-sm pill" onclick="addSvcAction()">＋ Ajouter</button>
-      </div>
-      ${!svcBuilderActions.length
-        ? `<div style="text-align:center;padding:32px;color:var(--tl);border:2px dashed var(--bd);border-radius:10px">
-             <div style="font-size:24px;margin-bottom:8px;opacity:.3">◉</div>
-             Ajoutez les boutons que verront les utilisateurs sur chaque demande.
-           </div>`
-        : svcBuilderActions.map((a, i) => `
-          <div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;padding:12px 14px;margin-bottom:8px">
-            <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
-              <input class="ci" style="flex:1" value="${h(a.nom)}" placeholder="Nom du bouton" oninput="svcBuilderActions[${i}].nom=this.value">
-              <div style="display:flex;gap:4px">
-                ${COLORS.slice(0,6).map(c => `<div style="width:18px;height:18px;border-radius:4px;background:${c};cursor:pointer;
-                  border:2px solid ${a.couleur===c?'#fff':'transparent'};box-shadow:${a.couleur===c?'0 0 0 2px '+c:'none'};flex-shrink:0"
-                  onclick="svcBuilderActions[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}
-              </div>
-              <button class="ic-btn" onclick="svcBuilderActions.splice(${i},1);renderSvcTab()">🗑</button>
+  const ET = [{v:'change_status',l:'Changer le statut'},{v:'fill_form',l:'Remplir un formulaire'},{v:'assign',l:'Affecter'},{v:'send_email',l:'Envoyer un email'},{v:'comment',l:'Commenter'},{v:'edit_form',l:'Modifier le formulaire'}];
+  const sOpts = svcBuilderStatuses.map(s=>`<option value="${s.id}">${h(s.nom)}</option>`).join('');
+  const fOpts = FORMS_DATA.filter(f=>f.actif!==false).map(f=>`<option value="${f.id}">${h(f.nom)}</option>`).join('');
+  area.innerHTML = `<div class="b-sec">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="b-sec-t" style="margin:0">Boutons d'action</div>
+      <button class="btn bp btn-sm pill" onclick="addSvcAction()">＋ Ajouter</button>
+    </div>
+    ${!svcBuilderActions.length
+      ?`<div style="text-align:center;padding:32px;color:var(--tl);border:2px dashed var(--bd);border-radius:10px"><div style="font-size:24px;opacity:.3">◉</div>Aucun bouton.</div>`
+      :svcBuilderActions.map((a,i)=>{
+        const effects=a.effects||[{type:a.type||'change_status',config:a.config||{}}];
+        return `<div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:10px">
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
+            <input class="ci" style="flex:1" value="${h(a.nom)}" oninput="svcBuilderActions[${i}].nom=this.value">
+            <div style="display:flex;gap:4px">${COLORS.slice(0,6).map(c=>`<div style="width:18px;height:18px;border-radius:4px;background:${c};cursor:pointer;border:2px solid ${a.couleur===c?'#fff':'transparent'};box-shadow:${a.couleur===c?'0 0 0 2px '+c:'none'}" onclick="svcBuilderActions[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}</div>
+            <button class="ic-btn" onclick="svcBuilderActions.splice(${i},1);renderSvcTab()">🗑</button>
+          </div>
+          <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">Effets séquentiels</div>
+          ${effects.map((ef,ei)=>`<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;background:var(--bg);border-radius:8px;padding:8px 10px">
+            <span style="font-size:11px;font-weight:800;color:var(--tl);min-width:16px;margin-top:6px">${ei+1}</span>
+            <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+              <select class="ci" onchange="updateEffect(${i},${ei},'type',this.value)">${ET.map(t=>`<option value="${t.v}" ${ef.type===t.v?'selected':''}>${t.l}</option>`).join('')}</select>
+              ${ef.type==='change_status'?`<select class="ci" onchange="updateEffect(${i},${ei},'targetStatusId',this.value)"><option value="">— Statut cible —</option>${sOpts}</select>`:''}
+              ${ef.type==='fill_form'?`<select class="ci" onchange="updateEffect(${i},${ei},'formId',+this.value)"><option value="">— Formulaire —</option>${fOpts}</select>`:''}
             </div>
-            <select class="ci" style="margin-bottom:${['change_status','fill_form'].includes(a.type)?'8px':'0'}"
-              onchange="svcBuilderActions[${i}].type=this.value;svcBuilderActions[${i}].config={};renderSvcTab()">
-              ${ACTION_TYPES.map(t => `<option value="${t.v}" ${a.type===t.v?'selected':''}>${t.l}</option>`).join('')}
-            </select>
-            ${a.type==='change_status' ? `
-              <div><div class="fl2" style="margin-bottom:4px">Statut cible</div>
-              <select class="ci" onchange="svcBuilderActions[${i}].config={targetStatusId:this.value}">
-                <option value="">— Choisir —</option>${statusOpts.replace(`value="${a.config?.targetStatusId||''}"`,`value="${a.config?.targetStatusId||''}" selected`)}
-              </select></div>` : ''}
-            ${a.type==='fill_form' ? `
-              <div><div class="fl2" style="margin-bottom:4px">Formulaire à remplir</div>
-              <select class="ci" onchange="svcBuilderActions[${i}].config={formId:+this.value}">
-                <option value="">— Choisir —</option>${formOpts}
-              </select></div>` : ''}
+            <button class="ic-btn" onclick="removeEffect(${i},${ei})">✕</button>
           </div>`).join('')}
-    </div>`;
+          <button style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--bd);background:transparent;color:var(--tm);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit" onclick="addEffect(${i})">＋ Ajouter un effet</button>
+        </div>`;}).join('')}
+  </div>`;
 }
+function updateEffect(ai,ei,key,val){if(!svcBuilderActions[ai].effects)svcBuilderActions[ai].effects=[];const ef=svcBuilderActions[ai].effects[ei];if(!ef)return;if(key==='type'){ef.type=val;ef.config={};renderSvcTab();}else if(key==='targetStatusId')ef.config={targetStatusId:val};else if(key==='formId')ef.config={formId:+val};}
+function addEffect(ai){(svcBuilderActions[ai].effects=svcBuilderActions[ai].effects||[{type:'change_status',config:{}}]).push({type:'change_status',config:{}});renderSvcTab();}
+function removeEffect(ai,ei){svcBuilderActions[ai].effects.splice(ei,1);if(!svcBuilderActions[ai].effects.length)svcBuilderActions[ai].effects=[{type:'change_status',config:{}}];renderSvcTab();}
 
 function addSvcAction() {
   svcBuilderActions.push({id:'a'+Date.now(), nom:'Nouvelle action', couleur:'#3b82f6', type:'change_status', config:{}});
@@ -1136,9 +1216,11 @@ function saveService(quit) {
     id:       curService ? curService.id : Date.now(),
     nom:      nom.trim(), desc, couleur: svcBuilderColor,
     formId:   svcBuilderFormId, idPattern: pattern, actif: true,
-    statuses: JSON.parse(JSON.stringify(svcBuilderStatuses)),
-    actions:  JSON.parse(JSON.stringify(svcBuilderActions)),
-    flux:     JSON.parse(JSON.stringify(svcBuilderFlux)),
+    statuses:      JSON.parse(JSON.stringify(svcBuilderStatuses)),
+    actions:       JSON.parse(JSON.stringify(svcBuilderActions)),
+    flux:          JSON.parse(JSON.stringify(svcBuilderFlux)),
+    cardConfig:    JSON.parse(JSON.stringify(svcBuilderCardConfig)),
+    kanbanGroups:  JSON.parse(JSON.stringify(svcBuilderKanbanGroups)),
   };
   if (curService) {
     const i = SERVICES_DATA.findIndex(s => s.id === curService.id);
@@ -1348,46 +1430,93 @@ function renderInstanceHistory(inst, svc) {
 
 // ── Exécuter une action ──
 function executeAction(instId, actionId) {
-  const inst = SERVICE_INSTANCES_DATA.find(x => x.id === instId); if (!inst) return;
-  const svc  = SERVICES_DATA.find(s => s.id === inst.serviceId);  if (!svc) return;
-  const action = svc.actions.find(a => a.id === actionId);        if (!action) return;
-  const now = new Date().toLocaleString('fr-FR');
-
-  if (action.type === 'change_status') {
-    const fromStatus = svc.statuses.find(s => s.id === inst.currentStatusId);
-    const toStatus   = svc.statuses.find(s => s.id === action.config?.targetStatusId);
-    if (!toStatus) { toast('e','⚠️ Statut cible manquant — reconfigurez l\'action'); return; }
-    inst.currentStatusId = toStatus.id;
-    inst.events.push({id:Date.now(), type:'status_changed', actor:'Picot Clément', at:now, payload:{fromStatus:fromStatus?.nom, toStatus:toStatus.nom}});
-    toast('s', `🔄 Statut → ${toStatus.nom}`);
-    renderInstanceDetail(inst, svc);
-  }
-  else if (action.type === 'comment') {
-    addComment(instId);
-  }
-  else if (action.type === 'assign') {
-    const who = prompt('Affecter la demande à :');
-    if (!who) return;
-    inst.assignedTo = who;
-    inst.events.push({id:Date.now(), type:'assigned', actor:'Picot Clément', at:now, payload:{toUser:who}});
-    toast('s', `👤 Affecté à ${who}`);
-    renderInstanceDetail(inst, svc);
-  }
-  else if (action.type === 'fill_form') {
-    const f = FORMS_DATA.find(x => x.id === action.config?.formId);
-    if (!f) { toast('e','⚠️ Formulaire introuvable — reconfigurez l\'action'); return; }
-    openLinkedFormModal(inst, svc, action, f);
-  }
-  else if (action.type === 'edit_form') {
-    toast('i','ℹ️ Modification du formulaire — à implémenter en V2');
-  }
-  else if (action.type === 'send_email') {
-    inst.events.push({id:Date.now(), type:'email_sent', actor:'Picot Clément', at:now, payload:{to:'destinataire@exemple.fr'}});
-    toast('s','📧 Email envoyé');
-    renderInstanceDetail(inst, svc);
-  }
+  const inst=SERVICE_INSTANCES_DATA.find(x=>x.id===instId);if(!inst)return;
+  const svc=SERVICES_DATA.find(s=>s.id===inst.serviceId);if(!svc)return;
+  const action=svc.actions.find(a=>a.id===actionId);if(!action)return;
+  const effects=action.effects||(action.type?[{type:action.type,config:action.config||{}}]:[]);
+  const now=new Date().toLocaleString('fr-FR');
+  if(effects.some(ef=>ef.type==='comment')){const inp=document.getElementById('comment-input-'+instId);if(!inp||!inp.value.trim()){toast('e','⚠️ Ce bouton requiert un commentaire');inp&&inp.focus();return;}}
+  effects.forEach(ef=>{
+    if(ef.type==='change_status'){const from=svc.statuses.find(s=>s.id===inst.currentStatusId);const to=svc.statuses.find(s=>s.id===ef.config?.targetStatusId);if(!to){toast('e','⚠️ Statut cible manquant');return;}inst.currentStatusId=to.id;inst.events.push({id:Date.now(),type:'status_changed',actor:'Picot Clément',at:now,payload:{fromStatus:from?.nom,toStatus:to.nom}});toast('s',`🔄 → ${to.nom}`);}
+    else if(ef.type==='comment'){const inp=document.getElementById('comment-input-'+instId);const txt=inp?inp.value.trim():'';if(!txt)return;inst.events.push({id:Date.now(),type:'commented',actor:'Picot Clément',at:now,payload:{comment:txt}});if(inp)inp.value='';toast('s','💬 Commentaire ajouté');}
+    else if(ef.type==='assign'){const who=prompt('Affecter à :');if(!who)return;inst.assignedTo=who;inst.events.push({id:Date.now(),type:'assigned',actor:'Picot Clément',at:now,payload:{toUser:who}});toast('s',`👤 → ${who}`);}
+    else if(ef.type==='fill_form'){const f=FORMS_DATA.find(x=>x.id===ef.config?.formId);if(!f){toast('e','⚠️ Formulaire introuvable');return;}openLinkedFormModal(inst,svc,action,f);}
+    else if(ef.type==='send_email'){inst.events.push({id:Date.now(),type:'email_sent',actor:'Picot Clément',at:now,payload:{}});toast('s','📧 Email envoyé');}
+    else if(ef.type==='edit_form'){toast('i','ℹ️ Disponible en V2');}
+  });
+  const isKanban=document.getElementById('v-service-kanban')?.classList.contains('on');
+  if(isKanban)renderKanbanBoard(svc,curKanbanGroupId);else renderInstanceDetail(inst,svc);
 }
-
+// ── Navigation production services ──
+function goProdServices(){
+  document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
+  document.getElementById('sb-prod-services').classList.add('on');
+  show('v-prod-services-list');
+  document.getElementById('tb-t').textContent='Services';
+  document.getElementById('breadcrumb').innerHTML='<span style="color:var(--tl)">▶ Production / Services</span>';
+  renderProdServices();
+}
+function renderProdServices(list){
+  list=(list||SERVICES_DATA).filter(s=>s.actif!==false);
+  const grid=document.getElementById('prod-services-grid');
+  if(!list.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;opacity:.3">⚡</div>Aucun service actif.</div>`;return;}
+  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div onclick="openServiceKanban(${svc.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="padding:5px 14px;border-radius:20px;background:${c};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div></div></div></div>`;}).join('');
+}
+function searchProdServices(q){renderProdServices(SERVICES_DATA.filter(s=>s.nom.toLowerCase().includes(q.toLowerCase())));}
+function openServiceKanban(svcId){
+  const svc=SERVICES_DATA.find(s=>s.id===svcId);if(!svc)return;curService=svc;
+  const groups=(svc.kanbanGroups||[]).filter(g=>g.visible).sort((a,b)=>a.order-b.order);
+  curKanbanGroupId=groups.length?groups[0].id:'__all__';
+  document.getElementById('breadcrumb').innerHTML=`<span class="bc-link" onclick="goProdServices()">▶ Production / Services</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(svc.nom)}</span>`;
+  document.getElementById('tb-t').textContent=svc.nom;
+  renderKanbanTabs(svc);renderKanbanBoard(svc,curKanbanGroupId);show('v-service-kanban');
+  document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
+  document.getElementById('sb-prod-services').classList.add('on');
+}
+function renderKanbanTabs(svc){
+  const groups=(svc.kanbanGroups||[]).filter(g=>g.visible).sort((a,b)=>a.order-b.order);
+  const el=document.getElementById('kanban-group-tabs');if(!groups.length){el.innerHTML='';return;}
+  el.innerHTML=groups.map(g=>{const cnt=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&g.statusIds.includes(i.currentStatusId)).length;const on=g.id===curKanbanGroupId;return`<div onclick="curKanbanGroupId='${g.id}';renderKanbanTabs(curService);renderKanbanBoard(curService,'${g.id}')" style="padding:12px 20px;font-size:13px;font-weight:700;cursor:pointer;border-bottom:3px solid ${on?'var(--p)':'transparent'};color:${on?'var(--p)':'var(--tl)'};white-space:nowrap;display:flex;align-items:center;gap:7px">${h(g.nom)}<span style="font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;background:${on?'var(--pl)':'#f1f5f9'};color:${on?'var(--p)':'var(--tl)'}">${cnt}</span></div>`;}).join('');
+}
+function renderKanbanBoard(svc,groupId){
+  const board=document.getElementById('kanban-board');if(!board)return;
+  const groups=(svc.kanbanGroups||[]).filter(g=>g.visible).sort((a,b)=>a.order-b.order);
+  const statusIds=groups.length?(groups.find(g=>g.id===groupId)?.statusIds||[]):svc.statuses.map(s=>s.id);
+  const cols=svc.statuses.filter(s=>statusIds.includes(s.id));
+  if(!cols.length){board.innerHTML=`<div style="color:var(--tl);padding:40px">Aucun statut dans ce groupe.</div>`;return;}
+  board.innerHTML=cols.map(status=>{
+    const instances=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&i.currentStatusId===status.id);
+    return`<div style="min-width:280px;max-width:320px;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px 14px;background:#fff;border-radius:10px;border:1.5px solid var(--bd);border-left:4px solid ${status.couleur}">
+        <span style="font-size:13px;font-weight:800">${h(status.nom)}</span>
+        <span style="font-size:11px;font-weight:800;padding:1px 8px;border-radius:20px;background:${status.couleur}20;color:${status.couleur};margin-left:auto">${instances.length}</span>
+        <button onclick="openCreateInstance(${svc.id})" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--bd);background:#fff;cursor:pointer;font-size:14px;color:var(--tl)" title="Nouvelle demande">＋</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;min-height:60px">
+        ${instances.length?instances.map(inst=>buildKanbanCardHtml(inst,svc,status)).join(''):`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:12px">Aucune demande</div>`}
+      </div>
+    </div>`;
+  }).join('');
+}
+function buildKanbanCardHtml(inst,svc,status){
+  const cc=svc.cardConfig||{};const sub=SUBMISSIONS_DATA.find(s=>s.id===inst.submissionId);const c=cc.couleur||svc.couleur||'#3b82f6';
+  const gv=fid=>{if(!fid||!sub)return null;const v=sub.values[fid];return Array.isArray(v)?v.join(', '):(v||null);};
+  const tV=gv(cc.titleFieldId)||inst.reference;const s1=gv(cc.subtitle1FieldId);const s2=gv(cc.subtitle2FieldId);
+  const acts=svc.actions.filter(a=>svc.flux.find(fl=>fl.statusId===status.id&&fl.actionId===a.id&&fl.enabled));
+  return`<div onclick="openInstanceDetail(${inst.id})" style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}'" onmouseout="this.style.borderColor='var(--bd)'">
+    <div style="height:3px;background:${c}"></div>
+    <div style="padding:11px 13px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+        <span style="font-size:10.5px;font-family:'DM Mono',monospace;color:var(--tl)">${h(inst.reference)}</span>
+        ${inst.assignedTo?`<span style="font-size:10px;padding:1px 7px;border-radius:20px;background:var(--pl);color:var(--p)">👤 ${h(inst.assignedTo)}</span>`:''}
+      </div>
+      <div style="font-size:13px;font-weight:800;margin-bottom:3px">${h(tV)}</div>
+      ${s1?`<div style="font-size:11.5px;color:var(--tl)">${h(s1)}</div>`:''}
+      ${s2?`<div style="font-size:11.5px;color:var(--tl)">${h(s2)}</div>`:''}
+      ${acts.length?`<div onclick="event.stopPropagation()" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bg)">${acts.map(a=>`<button onclick="event.stopPropagation();executeAction(${inst.id},'${a.id}')" style="padding:4px 10px;border-radius:6px;border:none;background:${a.couleur};color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">${h(a.nom)}</button>`).join('')}</div>`:''}
+    </div>
+  </div>`;
+}
 function addComment(instId) {
   const inst = SERVICE_INSTANCES_DATA.find(x => x.id === instId); if (!inst) return;
   const svc  = SERVICES_DATA.find(s => s.id === inst.serviceId);
