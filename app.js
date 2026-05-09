@@ -223,7 +223,7 @@ function renderProdForms(list){
   grid.innerHTML=actifs.map(f=>{
     const color=f.couleur||'#3b82f6';
     const initials=h(f.nom).substring(0,2).toUpperCase();
-    return `<div onclick="openFormSaisie(${f.id})" style="background:var(--card,#fff);border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.07);border:1.5px solid var(--bd);cursor:pointer;transition:all .18s;overflow:hidden;display:flex;flex-direction:column"
+    return `<div onclick="openSubmissions(${f.id})" style="background:var(--card,#fff);border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.07);border:1.5px solid var(--bd);cursor:pointer;transition:all .18s;overflow:hidden;display:flex;flex-direction:column"
       onmouseover="this.style.transform='translateY(-3px)';this.style.boxShadow='0 6px 20px rgba(0,0,0,.12)';this.style.borderColor='${color}'"
       onmouseout="this.style.transform='';this.style.boxShadow='0 2px 8px rgba(0,0,0,.07)';this.style.borderColor='var(--bd)'">
       <div style="height:7px;background:${color};flex-shrink:0"></div>
@@ -240,6 +240,38 @@ function renderProdForms(list){
       </div>
     </div>`;
   }).join('');
+}
+function openSubmissions(id){
+  const f=FORMS_DATA.find(x=>x.id===id);if(!f)return;
+  curSaisieFormId=id;
+  document.getElementById('breadcrumb').innerHTML=`<span class="bc-link" onclick="goProduction()">▶ Production / Formulaires</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(f.nom)}</span>`;
+  document.getElementById('tb-t').textContent=f.nom;
+  renderSubmissions(f);show('v-submissions');
+}
+function renderSubmissions(f){
+  const color=f.couleur||'#3b82f6';
+  const subs=SUBMISSIONS_DATA.filter(s=>s.formId===f.id).reverse();
+  const fields=(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
+  document.getElementById('sub-wrap').innerHTML=`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+      <div><div style="font-size:17px;font-weight:800;color:var(--tx)">${h(f.nom)}</div>
+      <div style="font-size:12px;color:var(--tl);margin-top:2px">${subs.length} saisie${subs.length>1?'s':''}</div></div>
+      <button class="btn bp" onclick="openFormSaisie(${f.id})" style="background:${color};border-color:${color}">＋ Nouvelle saisie</button>
+    </div>
+    ${!subs.length
+      ?`<div style="text-align:center;padding:60px 20px;color:var(--tl);background:var(--card);border-radius:12px;border:1.5px dashed var(--bd)"><div style="font-size:32px;margin-bottom:10px">📭</div>Aucune saisie enregistrée</div>`
+      :`<div style="background:var(--card);border-radius:12px;border:1.5px solid var(--bd);overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:var(--bg);border-bottom:2px solid var(--bd)">
+          <th style="padding:10px 14px;text-align:left;color:var(--tl)">Date</th>
+          <th style="padding:10px 14px;text-align:left;color:var(--tl)">Utilisateur</th>
+          ${fields.slice(0,4).map(x=>`<th style="padding:10px 14px;text-align:left;color:var(--tl)">${h(x.nom)}</th>`).join('')}
+        </tr></thead>
+        <tbody>${subs.map((s,i)=>`<tr style="border-bottom:1px solid var(--bd);background:${i%2?'var(--bg)':'var(--card)'}">
+          <td style="padding:10px 14px;color:var(--tl);white-space:nowrap">${s.dateLabel}</td>
+          <td style="padding:10px 14px;font-weight:600;color:var(--tx)">${h(s.utilisateur)}</td>
+          ${fields.slice(0,4).map(x=>{const v=s.values[x.id];return`<td style="padding:10px 14px;color:var(--tx)">${h(Array.isArray(v)?v.join(', '):(v||'—'))}</td>`;}).join('')}
+        </tr>`).join('')}</tbody>
+      </table></div>`}`;
 }
 function searchProdForms(q){
   renderProdForms(FORMS_DATA.filter(f=>f.actif!==false&&(f.nom.toLowerCase().includes(q.toLowerCase())||(f.desc||'').toLowerCase().includes(q.toLowerCase()))));
@@ -379,7 +411,7 @@ function submitSaisie(){
   const btn=document.getElementById('btn-submit-saisie');
   if(btn){btn.textContent='✅ Enregistré !';btn.style.background='#10b981';btn.style.pointerEvents='none';}
   toast('s','✅ Saisie enregistrée ! ('+f.resp.toLocaleString()+' réponse'+(f.resp>1?'s':'')+')');
-  setTimeout(()=>goProduction(),900);
+  setTimeout(()=>openSubmissions(curSaisieFormId),900);
 }
 
 // ══ BUILDER ══
