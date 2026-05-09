@@ -1143,6 +1143,7 @@ ${ef.type==='update_db_row'? renderDbEffectHtml(i,ei,ef) :''}
 function updateEffect(ai,ei,key,val){if(!svcBuilderActions[ai].effects)svcBuilderActions[ai].effects=[];const ef=svcBuilderActions[ai].effects[ei];if(!ef)return;if(key==='type'){ef.type=val;ef.config={};renderSvcTab();}else if(key==='targetStatusId')ef.config={targetStatusId:val};else if(key==='formId'){
   if(ef.type==='update_db_row'){ef.config={formId:+val,matchCriteria:ef.config?.matchCriteria||[],updates:ef.config?.updates||[]};renderSvcTab();}
   else ef.config={formId:+val};
+  }
 }
 function addEffect(ai){(svcBuilderActions[ai].effects=svcBuilderActions[ai].effects||[{type:'change_status',config:{}}]).push({type:'change_status',config:{}});renderSvcTab();}
 function removeEffect(ai,ei){svcBuilderActions[ai].effects.splice(ei,1);if(!svcBuilderActions[ai].effects.length)svcBuilderActions[ai].effects=[{type:'change_status',config:{}}];renderSvcTab();}
