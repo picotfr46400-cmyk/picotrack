@@ -268,7 +268,8 @@ function renderSubmissions(f){
     fields.slice(0,4).forEach(x=>{html+='<th style="padding:10px 14px;text-align:left;color:var(--tl)">'+h(x.nom)+'</th>';});
     html+='</tr></thead><tbody>';
     subs.forEach((s,i)=>{
-      html+='<tr style="border-bottom:1px solid var(--bd);background:'+(i%2?'var(--bg)':'var(--card)')+'">';
+      const bg=i%2?'var(--bg)':'var(--card)';
+html+='<tr onclick="openSubmission('+s.id+')" style="cursor:pointer;border-bottom:1px solid var(--bd);background:'+bg+'" onmouseover="this.style.background=\'var(--pl)\'" onmouseout="this.style.background=\''+bg+'\'">';
       html+='<td style="padding:10px 14px;color:var(--tl);white-space:nowrap">'+s.dateLabel+'</td>';
       html+='<td style="padding:10px 14px;font-weight:600;color:var(--tx)">'+h(s.utilisateur)+'</td>';
       fields.slice(0,4).forEach(x=>{const v=s.values[x.id];html+='<td style="padding:10px 14px;color:var(--tx)">'+h(Array.isArray(v)?v.join(', '):(v||'—'))+'</td>';});
@@ -277,6 +278,39 @@ function renderSubmissions(f){
     html+='</tbody></table></div>';
   }
   document.getElementById('sub-wrap').innerHTML=html;
+}
+function openSubmission(id){
+  const s=SUBMISSIONS_DATA.find(x=>x.id===id);if(!s)return;
+  const f=FORMS_DATA.find(x=>x.id===s.formId);if(!f)return;
+  document.getElementById('breadcrumb').innerHTML='<span class="bc-link" onclick="goProduction()">▶ Production / Formulaires</span><span style="color:var(--tl);margin:0 4px">/</span><span class="bc-link" onclick="openSubmissions('+f.id+')">'+h(f.nom)+'</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">Saisie du '+s.dateLabel+'</span>';
+  document.getElementById('tb-t').textContent=f.nom;
+  renderSubmissionDetail(s,f);
+  show('v-submission-detail');
+}
+function renderSubmissionDetail(s,f){
+  const color=f.couleur||'#3b82f6';
+  const fields=(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
+  let main='<div style="background:var(--card,#fff);border-radius:12px;border:1.5px solid var(--bd);padding:24px">';
+  main+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;padding-bottom:16px;border-bottom:2px solid var(--bd)">';
+  main+='<div style="width:5px;height:36px;border-radius:3px;background:'+color+';flex-shrink:0"></div>';
+  main+='<div><div style="font-size:15px;font-weight:800;color:var(--tx)">'+h(f.nom)+'</div>';
+  main+='<div style="font-size:11px;color:var(--tl);margin-top:2px">'+s.dateLabel+' — '+h(s.utilisateur)+'</div></div></div>';
+  fields.forEach(fld=>{
+    const v=s.values[fld.id];const val=Array.isArray(v)?v.join(', '):(v||'—');
+    main+='<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--bg)">';
+    main+='<div style="font-size:10.5px;font-weight:700;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">'+h(fld.nom)+'</div>';
+    main+='<div style="font-size:13.5px;color:'+(val==='—'?'var(--tl)':'var(--tx)')+';font-weight:'+(val==='—'?'400':'600')+'">'+h(val)+'</div></div>';
+  });
+  main+='</div>';
+  let hist='<div style="background:var(--card,#fff);border-radius:12px;border:1.5px solid var(--bd);padding:18px">';
+  hist+='<div style="font-size:10.5px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:14px">Historique</div>';
+  hist+='<div style="display:flex;gap:10px;align-items:flex-start">';
+  hist+='<div style="width:28px;height:28px;border-radius:8px;background:var(--sl);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0">✏️</div>';
+  hist+='<div><div style="font-size:12px;font-weight:700;color:var(--tx)">Saisie créée</div>';
+  hist+='<div style="font-size:11px;color:var(--tl);margin-top:2px">'+h(s.utilisateur)+'</div>';
+  hist+='<div style="font-size:11px;color:var(--tl)">'+s.dateLabel+'</div></div></div></div>';
+  document.getElementById('sd-main').innerHTML=main;
+  document.getElementById('sd-history').innerHTML=hist;
 }
 function searchProdForms(q){
   renderProdForms(FORMS_DATA.filter(f=>f.actif!==false&&(f.nom.toLowerCase().includes(q.toLowerCase())||(f.desc||'').toLowerCase().includes(q.toLowerCase()))));
