@@ -254,26 +254,29 @@ function renderSubmissions(f){
   const color=f.couleur||'#3b82f6';
   const subs=SUBMISSIONS_DATA.filter(s=>s.formId===f.id).reverse();
   const fields=(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
-  document.getElementById('sub-wrap').innerHTML=`
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">
-      <div><div style="font-size:17px;font-weight:800;color:var(--tx)">${h(f.nom)}</div>
-      <div style="font-size:12px;color:var(--tl);margin-top:2px">${subs.length} saisie${subs.length>1?'s':''}</div></div>
-      <button class="btn bp" onclick="openFormSaisie(${f.id})" style="background:${color};border-color:${color}">＋ Nouvelle saisie</button>
-    </div>
-    ${!subs.length
-      ?`<div style="text-align:center;padding:60px 20px;color:var(--tl);background:var(--card);border-radius:12px;border:1.5px dashed var(--bd)"><div style="font-size:32px;margin-bottom:10px">📭</div>Aucune saisie enregistrée</div>`
-      :`<div style="background:var(--card);border-radius:12px;border:1.5px solid var(--bd);overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="background:var(--bg);border-bottom:2px solid var(--bd)">
-          <th style="padding:10px 14px;text-align:left;color:var(--tl)">Date</th>
-          <th style="padding:10px 14px;text-align:left;color:var(--tl)">Utilisateur</th>
-          ${fields.slice(0,4).map(x=>`<th style="padding:10px 14px;text-align:left;color:var(--tl)">${h(x.nom)}</th>`).join('')}
-        </tr></thead>
-        <tbody>${subs.map((s,i)=>`<tr style="border-bottom:1px solid var(--bd);background:${i%2?'var(--bg)':'var(--card)'}">
-          <td style="padding:10px 14px;color:var(--tl);white-space:nowrap">${s.dateLabel}</td>
-          <td style="padding:10px 14px;font-weight:600;color:var(--tx)">${h(s.utilisateur)}</td>
-          ${fields.slice(0,4).map(x=>{const v=s.values[x.id];return`<td style="padding:10px 14px;color:var(--tx)">${h(Array.isArray(v)?v.join(', '):(v||'—'))}</td>`;}).join('')}
-        </tr>`).join('')}</tbody>
-      </table></div>`}`;
+  let html='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">';
+  html+='<div><div style="font-size:17px;font-weight:800;color:var(--tx)">'+h(f.nom)+'</div>';
+  html+='<div style="font-size:12px;color:var(--tl);margin-top:2px">'+subs.length+' saisie'+(subs.length>1?'s':'')+'</div></div>';
+  html+='<button class="btn bp" onclick="openFormSaisie('+f.id+')" style="background:'+color+';border-color:'+color+'">＋ Nouvelle saisie</button></div>';
+  if(!subs.length){
+    html+='<div style="text-align:center;padding:60px 20px;color:var(--tl);background:var(--card);border-radius:12px;border:1.5px dashed var(--bd)"><div style="font-size:32px;margin-bottom:10px">📭</div>Aucune saisie enregistrée</div>';
+  } else {
+    html+='<div style="background:var(--card);border-radius:12px;border:1.5px solid var(--bd);overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
+    html+='<thead><tr style="background:var(--bg);border-bottom:2px solid var(--bd)">';
+    html+='<th style="padding:10px 14px;text-align:left;color:var(--tl)">Date</th>';
+    html+='<th style="padding:10px 14px;text-align:left;color:var(--tl)">Utilisateur</th>';
+    fields.slice(0,4).forEach(x=>{html+='<th style="padding:10px 14px;text-align:left;color:var(--tl)">'+h(x.nom)+'</th>';});
+    html+='</tr></thead><tbody>';
+    subs.forEach((s,i)=>{
+      html+='<tr style="border-bottom:1px solid var(--bd);background:'+(i%2?'var(--bg)':'var(--card)')+'">';
+      html+='<td style="padding:10px 14px;color:var(--tl);white-space:nowrap">'+s.dateLabel+'</td>';
+      html+='<td style="padding:10px 14px;font-weight:600;color:var(--tx)">'+h(s.utilisateur)+'</td>';
+      fields.slice(0,4).forEach(x=>{const v=s.values[x.id];html+='<td style="padding:10px 14px;color:var(--tx)">'+h(Array.isArray(v)?v.join(', '):(v||'—'))+'</td>';});
+      html+='</tr>';
+    });
+    html+='</tbody></table></div>';
+  }
+  document.getElementById('sub-wrap').innerHTML=html;
 }
 function searchProdForms(q){
   renderProdForms(FORMS_DATA.filter(f=>f.actif!==false&&(f.nom.toLowerCase().includes(q.toLowerCase())||(f.desc||'').toLowerCase().includes(q.toLowerCase()))));
