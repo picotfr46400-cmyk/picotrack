@@ -107,6 +107,73 @@
     <div id="sd-history" style="width:260px;flex-shrink:0"></div>
   </div>
 </div>
+  <!--
+  ════════════════════════════════════════════════════════
+  PATCH index.html — 2 modifications à faire
+  ════════════════════════════════════════════════════════
+-->
+
+<!-- ─────────────────────────────────────────────────────
+  MODIFICATION 1 : Sidebar — Remplacer cette ligne :
+    <div class="sb-i">⚡ Services</div>
+  Par :
+───────────────────────────────────────────────────────── -->
+<div class="sb-i" id="sb-services" onclick="goServices()">⚡ Services</div>
+
+
+<!-- ─────────────────────────────────────────────────────
+  MODIFICATION 2 : Vues — Coller les 4 blocs suivants
+  juste AVANT la ligne : <!-- BUILDER VIEW -->
+───────────────────────────────────────────────────────── -->
+
+<!-- SERVICES : LISTE -->
+<div class="view" id="v-services">
+  <div style="padding:18px 22px;flex:1;overflow-y:auto">
+    <div class="toolbar">
+      <button class="btn bp pill" onclick="openServiceBuilder(null)">＋ Nouveau service</button>
+      <div class="sp"></div>
+      <div class="sbar">
+        <span style="color:var(--tl)">🔍</span>
+        <input placeholder="Rechercher un service..." oninput="searchServices(this.value)">
+      </div>
+    </div>
+    <div id="services-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+  </div>
+</div>
+
+<!-- SERVICE BUILDER -->
+<div class="view" id="v-service-builder">
+  <div class="btb">
+    <button class="btn btn-sm" onclick="goServices()">← Retour</button>
+    <div class="btb-sep"></div>
+    <input class="btb-nm" id="sb2-name" placeholder="Nom du service...">
+    <div class="sp"></div>
+    <button class="btn btn-sm" onclick="saveService(false)">Enregistrer</button>
+    <button class="btn bp btn-sm" onclick="saveService(true)">💾 Enregistrer &amp; quitter</button>
+  </div>
+  <div class="b-tabs">
+    <div class="b-tab on" id="svctab-gen" onclick="setSvcTab('gen')"><span class="tab-dot"></span>Général</div>
+    <div class="b-tab" id="svctab-statuses" onclick="setSvcTab('statuses')"><span class="tab-dot"></span>Statuts <span class="b-tab-cnt" id="svc-status-cnt" style="display:none">0</span></div>
+    <div class="b-tab" id="svctab-actions" onclick="setSvcTab('actions')"><span class="tab-dot"></span>Actions <span class="b-tab-cnt" id="svc-action-cnt" style="display:none">0</span></div>
+    <div class="b-tab" id="svctab-flux" onclick="setSvcTab('flux')"><span class="tab-dot"></span>Flux</div>
+  </div>
+  <div style="flex:1;overflow-y:auto;padding:22px" id="svc-area"></div>
+</div>
+
+<!-- SERVICE INSTANCES : LISTE -->
+<div class="view" id="v-service-instances">
+  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
+    <div id="svc-instances-wrap" style="max-width:960px;margin:0 auto"></div>
+  </div>
+</div>
+
+<!-- SERVICE INSTANCE : DETAIL -->
+<div class="view" id="v-service-instance-detail">
+  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg);display:flex;gap:20px;align-items:flex-start">
+    <div id="sid-main" style="flex:1;min-width:0"></div>
+    <div id="sid-history" style="width:280px;flex-shrink:0"></div>
+  </div>
+</div>
   <!-- BUILDER VIEW -->
   <div class="view" id="v-builder">
     <div class="btb">
