@@ -225,6 +225,7 @@ function renderProdForms(list){
   grid.innerHTML=actifs.map(f=>{
     const color=f.couleur||'#3b82f6';
     const initials=h(f.nom).substring(0,2).toUpperCase();
+    const cnt=SUBMISSIONS_DATA.filter(s=>s.formId===f.id).length;
     return `<div onclick="openSubmissions(${f.id})" style="background:var(--card,#fff);border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.07);border:1.5px solid var(--bd);cursor:pointer;transition:all .18s;overflow:hidden;display:flex;flex-direction:column"
       onmouseover="this.style.transform='translateY(-3px)';this.style.boxShadow='0 6px 20px rgba(0,0,0,.12)';this.style.borderColor='${color}'"
       onmouseout="this.style.transform='';this.style.boxShadow='0 2px 8px rgba(0,0,0,.07)';this.style.borderColor='var(--bd)'">
@@ -236,8 +237,7 @@ function renderProdForms(list){
         </div>
         ${f.desc?`<div style="font-size:11.5px;color:var(--tl);line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${h(f.desc)}</div>`:''}
         <div style="border-top:1px solid var(--bd);margin-top:auto;padding-top:10px;display:flex;align-items:center;justify-content:space-between">
-          <span style="font-size:11px;color:var(--tl)">${SUBMISSIONS_DATA.filter(s=>s.formId===f.id).length.toLocaleString()} réponse${(f.resp||0)>1?'s':''}</span>
-          SUBMISSIONS_DATA.filter(s=>s.formId===f.id).length>1?'s':''
+          <span style="font-size:11px;color:var(--tl)">${cnt.toLocaleString()} réponse${cnt>1?'s':''}</span>
           <div style="display:inline-flex;align-items:center;gap:5px;background:${color};color:#fff;font-size:11.5px;font-weight:700;padding:5px 14px;border-radius:20px">Saisir →</div>
         </div>
       </div>
