@@ -769,3 +769,700 @@ function toggleHistoSub(tog){tog.classList.toggle('on');tog.classList.toggle('of
 
 // ══ INIT ══
 renderTable();
+// ════════════════════════════════════════════════════════
+// PATCH app.js — Coller CE BLOC ENTIER à la fin du fichier
+// ════════════════════════════════════════════════════════
+
+// ══ DONNÉES SERVICES ══
+let SERVICES_DATA = [
+  {
+    id: 1,
+    nom: "Demande d'intervention",
+    desc: 'Gestion des demandes terrain',
+    couleur: '#3b82f6',
+    formId: 1,
+    idPattern: 'INT-{YYYY}-{0000}',
+    actif: true,
+    statuses: [
+      {id:'s1', nom:'Nouveau',     couleur:'#64748b', position:0,   type:'initial'},
+      {id:'s2', nom:'En cours',    couleur:'#f59e0b', position:50,  type:'normal'},
+      {id:'s3', nom:'Clôturé',     couleur:'#10b981', position:100, type:'terminal'},
+    ],
+    actions: [
+      {id:'a1', nom:'Prendre en charge', couleur:'#3b82f6', type:'change_status', config:{targetStatusId:'s2'}},
+      {id:'a2', nom:'Clôturer',          couleur:'#10b981', type:'change_status', config:{targetStatusId:'s3'}},
+      {id:'a3', nom:'Commenter',         couleur:'#8b5cf6', type:'comment',        config:{}},
+    ],
+    flux: [
+      {statusId:'s1', actionId:'a1', enabled:true},
+      {statusId:'s1', actionId:'a3', enabled:true},
+      {statusId:'s2', actionId:'a2', enabled:true},
+      {statusId:'s2', actionId:'a3', enabled:true},
+    ],
+  }
+];
+let SERVICE_INSTANCES_DATA = [];
+const SVC_COUNTERS = {};
+
+// builder state
+let curService = null, svcTab = 'gen';
+let svcBuilderStatuses = [], svcBuilderActions = [], svcBuilderFlux = [];
+let svcBuilderColor = '#3b82f6', svcBuilderFormId = null;
+let curInstanceId = null;
+
+// ══ NAVIGATION ══
+function goServices() {
+  document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
+  document.getElementById('sb-services').classList.add('on');
+  show('v-services');
+  document.getElementById('tb-t').textContent = 'Services';
+  document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Services</span>';
+  renderServices();
+}
+
+// ══ LISTE SERVICES ══
+function renderServices(list) {
+  list = list || SERVICES_DATA;
+  const grid = document.getElementById('services-grid');
+  if (!list.length) {
+    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)">
+      <div style="font-size:32px;margin-bottom:12px;opacity:.3">⚡</div>Aucun service créé</div>`;
+    return;
+  }
+  grid.innerHTML = list.map(svc => {
+    const f = FORMS_DATA.find(x => x.id === svc.formId);
+    const all = SERVICE_INSTANCES_DATA.filter(i => i.serviceId === svc.id);
+    const pending = all.filter(i => !isTerminalStatus(svc, i.currentStatusId)).length;
+    const color = svc.couleur || '#3b82f6';
+    return `<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;display:flex;flex-direction:column">
+      <div style="height:5px;background:${color}"></div>
+      <div style="padding:16px;flex:1">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <div style="width:36px;height:36px;border-radius:9px;background:${color}22;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">⚡</div>
+          <div style="flex:1">
+            <div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>
+            ${svc.desc ? `<div style="font-size:11px;color:var(--tl);margin-top:1px">${h(svc.desc)}</div>` : ''}
+          </div>
+          <button class="ic-btn" onclick="event.stopPropagation();openServiceBuilder(${svc.id})" title="Configurer">✏️</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+          <span style="font-size:11px;padding:3px 9px;border-radius:20px;background:#f1f5f9;color:var(--tm)">${svc.statuses.length} statuts</span>
+          <span style="font-size:11px;padding:3px 9px;border-radius:20px;background:#f1f5f9;color:var(--tm)">${svc.actions.length} actions</span>
+          ${f
+            ? `<span style="font-size:11px;padding:3px 9px;border-radius:20px;background:${color}18;color:${color}">📋 ${h(f.nom)}</span>`
+            : `<span style="font-size:11px;padding:3px 9px;border-radius:20px;background:var(--dl);color:var(--d)">⚠ Formulaire manquant</span>`}
+        </div>
+        <div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <span style="font-size:13px;font-weight:800;color:var(--tx)">${pending}</span>
+            <span style="font-size:11px;color:var(--tl)"> en cours</span>
+            <span style="font-size:11px;color:var(--tl);margin-left:6px">/ ${all.length} total</span>
+          </div>
+          <button onclick="openServiceInstances(${svc.id})" style="padding:6px 16px;border-radius:20px;background:${color};color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Voir →</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function isTerminalStatus(svc, statusId) {
+  const s = svc.statuses.find(x => x.id === statusId);
+  return s && s.type === 'terminal';
+}
+
+function searchServices(q) {
+  renderServices(SERVICES_DATA.filter(s => s.nom.toLowerCase().includes(q.toLowerCase())));
+}
+
+// ══ SERVICE BUILDER ══
+function openServiceBuilder(id) {
+  curService = id ? SERVICES_DATA.find(s => s.id === id) : null;
+  if (curService) {
+    svcBuilderStatuses = JSON.parse(JSON.stringify(curService.statuses));
+    svcBuilderActions  = JSON.parse(JSON.stringify(curService.actions));
+    svcBuilderFlux     = JSON.parse(JSON.stringify(curService.flux));
+    svcBuilderColor    = curService.couleur;
+    svcBuilderFormId   = curService.formId;
+  } else {
+    svcBuilderStatuses = []; svcBuilderActions = []; svcBuilderFlux = [];
+    svcBuilderColor = '#3b82f6'; svcBuilderFormId = null;
+  }
+  document.getElementById('sb2-name').value = curService ? curService.nom : '';
+  document.getElementById('tb-t').textContent = curService ? 'Modifier : ' + curService.nom : 'Nouveau service';
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span class="bc-sep"> › </span><span class="bc-cur">${curService ? h(curService.nom) : 'Nouveau service'}</span>`;
+  document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
+  document.getElementById('sb-services').classList.add('on');
+  show('v-service-builder');
+  setSvcTab('gen');
+}
+
+function setSvcTab(t) {
+  svcTab = t;
+  ['gen','statuses','actions','flux'].forEach(x => {
+    const tab = document.getElementById('svctab-' + x);
+    if (tab) tab.classList.toggle('on', x === t);
+  });
+  renderSvcTab();
+}
+
+function renderSvcTab() {
+  const area = document.getElementById('svc-area'); if (!area) return;
+  if (svcTab === 'gen')      renderSvcGen(area);
+  else if (svcTab === 'statuses') renderSvcStatuses(area);
+  else if (svcTab === 'actions')  renderSvcActions(area);
+  else if (svcTab === 'flux')     renderSvcFlux(area);
+}
+
+// ── Onglet Général ──
+function renderSvcGen(area) {
+  const formOptions = FORMS_DATA.filter(f => f.actif !== false).map(f =>
+    `<option value="${f.id}" ${svcBuilderFormId === f.id ? 'selected' : ''}>${h(f.nom)}</option>`
+  ).join('');
+  area.innerHTML = `
+    <div class="b-sec">
+      <div class="b-sec-t">Informations générales</div>
+      <div class="ig" style="margin-bottom:12px">
+        <div class="fg"><div class="fl2">Nom du service <span class="req">*</span></div>
+          <input class="fi" id="svc-nom" value="${h(curService ? curService.nom : '')}" placeholder="Ex : Demande d'intervention..."
+            oninput="document.getElementById('sb2-name').value=this.value">
+        </div>
+        <div class="fg"><div class="fl2">Description</div>
+          <textarea class="fi fi-ta" id="svc-desc" placeholder="Description optionnelle...">${h(curService ? curService.desc || '' : '')}</textarea>
+        </div>
+      </div>
+      <div class="ig ig2">
+        <div class="fg">
+          <div class="fl2">Couleur</div>
+          <div class="color-row" id="svc-color-row">
+            ${COLORS.map(c => `<div class="c-swatch${svcBuilderColor===c?' on':''}" style="background:${c}"
+              onclick="svcBuilderColor='${c}';document.querySelectorAll('#svc-color-row .c-swatch').forEach(e=>e.classList.remove('on'));this.classList.add('on')"></div>`).join('')}
+          </div>
+        </div>
+        <div class="fg">
+          <div class="fl2">Format identifiant</div>
+          <input class="fi" id="svc-pattern" value="${h(curService ? curService.idPattern||'SVC-{YYYY}-{0000}' : 'SVC-{YYYY}-{0000}')}" placeholder="SVC-{YYYY}-{0000}">
+          <div class="f-hint">Variables : {YYYY} = année, {0000} = numéro auto</div>
+        </div>
+      </div>
+    </div>
+    <div class="b-sec">
+      <div class="b-sec-t">Formulaire déclencheur <span class="req">*</span></div>
+      <div class="f-hint" style="margin-bottom:10px">Ce formulaire est utilisé pour créer une nouvelle demande.</div>
+      <select class="fi" id="svc-form" style="appearance:none" onchange="svcBuilderFormId=+this.value||null">
+        <option value="">— Sélectionner un formulaire —</option>${formOptions}
+      </select>
+    </div>`;
+  // sync top bar name
+  document.getElementById('sb2-name').addEventListener('input', e => {
+    const el = document.getElementById('svc-nom'); if (el) el.value = e.target.value;
+  });
+}
+
+// ── Onglet Statuts ──
+function renderSvcStatuses(area) {
+  const cnt = document.getElementById('svc-status-cnt');
+  if (cnt) { cnt.textContent = svcBuilderStatuses.length; cnt.style.display = svcBuilderStatuses.length ? '' : 'none'; }
+  area.innerHTML = `
+    <div class="b-sec">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="b-sec-t" style="margin:0">Statuts</div>
+        <button class="btn bp btn-sm pill" onclick="addSvcStatus()">＋ Ajouter</button>
+      </div>
+      ${!svcBuilderStatuses.length
+        ? `<div style="text-align:center;padding:32px;color:var(--tl);border:2px dashed var(--bd);border-radius:10px">
+             <div style="font-size:24px;margin-bottom:8px;opacity:.3">◎</div>
+             Ajoutez au moins 1 statut Initial et 1 statut Terminal.
+           </div>`
+        : svcBuilderStatuses.map((s, i) => `
+          <div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;gap:10px;align-items:center">
+            <div style="width:10px;height:10px;border-radius:50%;background:${s.couleur};flex-shrink:0"></div>
+            <input class="ci" style="flex:1" value="${h(s.nom)}" placeholder="Nom du statut" oninput="svcBuilderStatuses[${i}].nom=this.value">
+            <select class="ci" style="width:130px" onchange="svcBuilderStatuses[${i}].type=this.value">
+              <option value="initial"  ${s.type==='initial' ?'selected':''}>Initial</option>
+              <option value="normal"   ${s.type==='normal'  ?'selected':''}>Normal</option>
+              <option value="terminal" ${s.type==='terminal'?'selected':''}>Terminal</option>
+            </select>
+            <input type="number" class="ci" style="width:65px;text-align:center" value="${s.position}" min="0" max="100" title="Position %" oninput="svcBuilderStatuses[${i}].position=+this.value">
+            <div style="display:flex;gap:4px">
+              ${COLORS.slice(0,6).map(c => `<div style="width:18px;height:18px;border-radius:4px;background:${c};cursor:pointer;
+                border:2px solid ${s.couleur===c?'#fff':'transparent'};box-shadow:${s.couleur===c?'0 0 0 2px '+c:'none'};flex-shrink:0"
+                onclick="svcBuilderStatuses[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}
+            </div>
+            <button class="ic-btn" onclick="svcBuilderStatuses.splice(${i},1);renderSvcTab()">🗑</button>
+          </div>`).join('')}
+    </div>
+    <div class="f-hint">💡 "Initial" = statut à la création. "Terminal" = clôture définitive (aucune action possible).</div>`;
+}
+
+function addSvcStatus() {
+  svcBuilderStatuses.push({
+    id: 's' + Date.now(), nom: 'Nouveau statut', couleur: '#64748b', position: 50,
+    type: svcBuilderStatuses.find(s => s.type === 'initial') ? 'normal' : 'initial'
+  });
+  renderSvcTab();
+}
+
+// ── Onglet Actions ──
+function renderSvcActions(area) {
+  const cnt = document.getElementById('svc-action-cnt');
+  if (cnt) { cnt.textContent = svcBuilderActions.length; cnt.style.display = svcBuilderActions.length ? '' : 'none'; }
+  const ACTION_TYPES = [
+    {v:'change_status',l:'Changer le statut'},
+    {v:'edit_form',    l:'Modifier le formulaire'},
+    {v:'fill_form',    l:'Remplir un formulaire'},
+    {v:'assign',       l:'Affecter'},
+    {v:'send_email',   l:'Envoyer un email'},
+    {v:'comment',      l:'Commenter'},
+  ];
+  const statusOpts = svcBuilderStatuses.map(s => `<option value="${s.id}">${h(s.nom)}</option>`).join('');
+  const formOpts   = FORMS_DATA.filter(f=>f.actif!==false).map(f => `<option value="${f.id}">${h(f.nom)}</option>`).join('');
+  area.innerHTML = `
+    <div class="b-sec">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="b-sec-t" style="margin:0">Boutons d'action</div>
+        <button class="btn bp btn-sm pill" onclick="addSvcAction()">＋ Ajouter</button>
+      </div>
+      ${!svcBuilderActions.length
+        ? `<div style="text-align:center;padding:32px;color:var(--tl);border:2px dashed var(--bd);border-radius:10px">
+             <div style="font-size:24px;margin-bottom:8px;opacity:.3">◉</div>
+             Ajoutez les boutons que verront les utilisateurs sur chaque demande.
+           </div>`
+        : svcBuilderActions.map((a, i) => `
+          <div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;padding:12px 14px;margin-bottom:8px">
+            <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+              <input class="ci" style="flex:1" value="${h(a.nom)}" placeholder="Nom du bouton" oninput="svcBuilderActions[${i}].nom=this.value">
+              <div style="display:flex;gap:4px">
+                ${COLORS.slice(0,6).map(c => `<div style="width:18px;height:18px;border-radius:4px;background:${c};cursor:pointer;
+                  border:2px solid ${a.couleur===c?'#fff':'transparent'};box-shadow:${a.couleur===c?'0 0 0 2px '+c:'none'};flex-shrink:0"
+                  onclick="svcBuilderActions[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}
+              </div>
+              <button class="ic-btn" onclick="svcBuilderActions.splice(${i},1);renderSvcTab()">🗑</button>
+            </div>
+            <select class="ci" style="margin-bottom:${['change_status','fill_form'].includes(a.type)?'8px':'0'}"
+              onchange="svcBuilderActions[${i}].type=this.value;svcBuilderActions[${i}].config={};renderSvcTab()">
+              ${ACTION_TYPES.map(t => `<option value="${t.v}" ${a.type===t.v?'selected':''}>${t.l}</option>`).join('')}
+            </select>
+            ${a.type==='change_status' ? `
+              <div><div class="fl2" style="margin-bottom:4px">Statut cible</div>
+              <select class="ci" onchange="svcBuilderActions[${i}].config={targetStatusId:this.value}">
+                <option value="">— Choisir —</option>${statusOpts.replace(`value="${a.config?.targetStatusId||''}"`,`value="${a.config?.targetStatusId||''}" selected`)}
+              </select></div>` : ''}
+            ${a.type==='fill_form' ? `
+              <div><div class="fl2" style="margin-bottom:4px">Formulaire à remplir</div>
+              <select class="ci" onchange="svcBuilderActions[${i}].config={formId:+this.value}">
+                <option value="">— Choisir —</option>${formOpts}
+              </select></div>` : ''}
+          </div>`).join('')}
+    </div>`;
+}
+
+function addSvcAction() {
+  svcBuilderActions.push({id:'a'+Date.now(), nom:'Nouvelle action', couleur:'#3b82f6', type:'change_status', config:{}});
+  renderSvcTab();
+}
+
+// ── Onglet Flux (matrice) ──
+function renderSvcFlux(area) {
+  if (!svcBuilderStatuses.length || !svcBuilderActions.length) {
+    area.innerHTML = `<div style="text-align:center;padding:60px;color:var(--tl)">
+      <div style="font-size:32px;margin-bottom:12px;opacity:.3">⊞</div>
+      Définissez d'abord des statuts et des actions.</div>`;
+    return;
+  }
+  area.innerHTML = `
+    <div class="b-sec">
+      <div class="b-sec-t">Matrice Flux — Statuts × Actions</div>
+      <div class="f-hint" style="margin-bottom:14px">✔ = bouton visible dans ce statut. Les statuts terminaux n'ont aucune action possible.</div>
+      <div style="overflow-x:auto">
+        <table style="border-collapse:collapse;font-size:12.5px;min-width:100%">
+          <thead>
+            <tr>
+              <th style="padding:10px 14px;text-align:left;background:var(--bg);border:1px solid var(--bd);min-width:150px;
+                font-size:10.5px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px">Statut ↓ / Action →</th>
+              ${svcBuilderActions.map(a => `
+                <th style="padding:8px 10px;text-align:center;background:var(--bg);border:1px solid var(--bd);min-width:110px">
+                  <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+                    <div style="width:10px;height:10px;border-radius:50%;background:${a.couleur}"></div>
+                    <span style="font-size:11px;font-weight:700;color:var(--tx)">${h(a.nom)}</span>
+                  </div>
+                </th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${svcBuilderStatuses.map(s => {
+              const isTerminal = s.type === 'terminal';
+              return `<tr style="background:${isTerminal?'var(--bg)':'#fff'}">
+                <td style="padding:10px 14px;border:1px solid var(--bd);font-weight:700">
+                  <div style="display:flex;align-items:center;gap:7px">
+                    <div style="width:9px;height:9px;border-radius:50%;background:${s.couleur};flex-shrink:0"></div>
+                    ${h(s.nom)}
+                    ${s.type==='initial'?'<span style="font-size:9px;padding:1px 6px;border-radius:10px;background:var(--pl);color:var(--p);font-weight:800">Initial</span>':''}
+                    ${isTerminal?'<span style="font-size:9px;padding:1px 6px;border-radius:10px;background:var(--sl);color:var(--s);font-weight:800">Terminal</span>':''}
+                  </div>
+                </td>
+                ${svcBuilderActions.map(a => {
+                  const enabled = svcBuilderFlux.find(f => f.statusId===s.id && f.actionId===a.id)?.enabled;
+                  return `<td style="padding:10px;text-align:center;border:1px solid var(--bd)">
+                    ${isTerminal
+                      ? `<span style="color:var(--tl)">—</span>`
+                      : `<input type="checkbox" ${enabled?'checked':''} style="width:17px;height:17px;accent-color:${a.couleur};cursor:pointer"
+                           onchange="toggleFlux('${s.id}','${a.id}',this.checked)">`}
+                  </td>`;
+                }).join('')}
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function toggleFlux(statusId, actionId, enabled) {
+  const existing = svcBuilderFlux.find(f => f.statusId===statusId && f.actionId===actionId);
+  if (existing) existing.enabled = enabled;
+  else svcBuilderFlux.push({statusId, actionId, enabled});
+}
+
+// ── Sauvegarde service ──
+function saveService(quit) {
+  const nom = document.getElementById('sb2-name')?.value || document.getElementById('svc-nom')?.value || '';
+  if (!nom.trim())                                    { toast('e','⚠️ Nom obligatoire'); return; }
+  if (!svcBuilderFormId)                              { toast('e','⚠️ Sélectionnez un formulaire'); setSvcTab('gen'); return; }
+  if (!svcBuilderStatuses.find(s=>s.type==='initial')){ toast('e','⚠️ Ajoutez 1 statut Initial'); setSvcTab('statuses'); return; }
+  if (!svcBuilderStatuses.find(s=>s.type==='terminal')){ toast('e','⚠️ Ajoutez 1 statut Terminal'); setSvcTab('statuses'); return; }
+  const desc    = document.getElementById('svc-desc')?.value || '';
+  const pattern = document.getElementById('svc-pattern')?.value || 'SVC-{YYYY}-{0000}';
+  const data = {
+    id:       curService ? curService.id : Date.now(),
+    nom:      nom.trim(), desc, couleur: svcBuilderColor,
+    formId:   svcBuilderFormId, idPattern: pattern, actif: true,
+    statuses: JSON.parse(JSON.stringify(svcBuilderStatuses)),
+    actions:  JSON.parse(JSON.stringify(svcBuilderActions)),
+    flux:     JSON.parse(JSON.stringify(svcBuilderFlux)),
+  };
+  if (curService) {
+    const i = SERVICES_DATA.findIndex(s => s.id === curService.id);
+    if (i > -1) SERVICES_DATA[i] = data; else SERVICES_DATA.push(data);
+    curService = data;
+  } else {
+    SERVICES_DATA.push(data);
+    curService = data;
+  }
+  toast('s','✅ Service enregistré');
+  if (quit) setTimeout(() => goServices(), 400);
+}
+
+// ══ INSTANCES (DEMANDES) ══
+function generateRef(svc) {
+  if (!SVC_COUNTERS[svc.id]) SVC_COUNTERS[svc.id] = 0;
+  SVC_COUNTERS[svc.id]++;
+  const n = String(SVC_COUNTERS[svc.id]).padStart(4,'0');
+  return (svc.idPattern || 'SVC-{YYYY}-{0000}')
+    .replace('{YYYY}', new Date().getFullYear())
+    .replace('{0000}', n);
+}
+
+function openServiceInstances(id) {
+  const svc = SERVICES_DATA.find(s => s.id === id); if (!svc) return;
+  curService = svc;
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(svc.nom)}</span>`;
+  document.getElementById('tb-t').textContent = svc.nom;
+  renderServiceInstances(svc);
+  show('v-service-instances');
+}
+
+function renderServiceInstances(svc) {
+  const color = svc.couleur || '#3b82f6';
+  const instances = SERVICE_INSTANCES_DATA.filter(i => i.serviceId === svc.id).reverse();
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <div>
+      <div style="font-size:17px;font-weight:800">${h(svc.nom)}</div>
+      <div style="font-size:12px;color:var(--tl);margin-top:2px">${instances.length} demande${instances.length>1?'s':''}</div>
+    </div>
+    <button class="btn bp" onclick="openCreateInstance(${svc.id})" style="background:${color};border-color:${color}">＋ Nouvelle demande</button>
+  </div>`;
+  if (!instances.length) {
+    html += `<div style="text-align:center;padding:60px;color:var(--tl);background:#fff;border-radius:12px;border:1.5px dashed var(--bd)">
+      <div style="font-size:32px;margin-bottom:10px">📭</div>Aucune demande. Créez-en une.</div>`;
+  } else {
+    html += instances.map(inst => {
+      const status = svc.statuses.find(s => s.id === inst.currentStatusId);
+      const title  = getInstanceTitle(svc, inst);
+      return `<div onclick="openInstanceDetail(${inst.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px 18px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:14px;transition:all .15s"
+        onmouseover="this.style.borderColor='${color}';this.style.boxShadow='0 2px 10px rgba(0,0,0,.08)'"
+        onmouseout="this.style.borderColor='var(--bd)';this.style.boxShadow='none'">
+        <div style="font-size:11.5px;font-weight:800;font-family:'DM Mono',monospace;color:var(--tl);min-width:130px">${h(inst.reference)}</div>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">${h(title)}</div>
+          <div style="font-size:11px;color:var(--tl);margin-top:2px">${inst.createdAt}</div>
+        </div>
+        ${status ? `<span style="padding:4px 12px;border-radius:20px;font-size:11px;font-weight:800;background:${status.couleur}22;color:${status.couleur}">${h(status.nom)}</span>` : ''}
+        <div style="color:var(--tl);font-size:18px">›</div>
+      </div>`;
+    }).join('');
+  }
+  document.getElementById('svc-instances-wrap').innerHTML = html;
+}
+
+function getInstanceTitle(svc, inst) {
+  const f = FORMS_DATA.find(x => x.id === svc.formId);
+  const sub = SUBMISSIONS_DATA.find(s => s.id === inst.submissionId);
+  if (!f || !sub) return inst.reference;
+  const firstText = f.fields.find(fld => fld.type === 'text');
+  return (firstText && sub.values[firstText.id]) ? sub.values[firstText.id] : inst.reference;
+}
+
+function openCreateInstance(svcId) {
+  const svc = SERVICES_DATA.find(s => s.id === svcId); if (!svc) return;
+  const f = FORMS_DATA.find(x => x.id === svc.formId);
+  if (!f) { toast('e','⚠️ Formulaire introuvable — configurez le service'); return; }
+  curService = svc; curSaisieFormId = f.id; saisieValues = {};
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="openServiceInstances(${svc.id})">▶ ${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">Nouvelle demande</span>`;
+  document.getElementById('tb-t').textContent = svc.nom;
+  renderSaisieForm(f);
+  // patch le bouton submit
+  const btn = document.getElementById('btn-submit-saisie');
+  if (btn) btn.onclick = () => submitServiceInstance(f, svc);
+  show('v-saisie');
+}
+
+function submitServiceInstance(f, svc) {
+  const errors = (f.fields||[]).filter(fld => {
+    if (!saisieEvalCond(fld, f.fields)) return false;
+    if (!fld.obligatoire) return false;
+    const v = saisieValues[fld.id];
+    return v===undefined||v===''||v===false||(Array.isArray(v)&&!v.length);
+  });
+  if (errors.length) { toast('e','⚠️ '+errors.length+' champ(s) obligatoire(s)'); return; }
+  const initialStatus = svc.statuses.find(s => s.type === 'initial');
+  const subId = Date.now();
+  const now = new Date().toLocaleString('fr-FR');
+  SUBMISSIONS_DATA.push({id:subId, formId:f.id, formNom:f.nom, date:new Date().toISOString(), dateLabel:now, utilisateur:'Picot Clément', values:{...saisieValues}});
+  f.resp = (f.resp||0) + 1;
+  const ref = generateRef(svc);
+  const instId = subId + 1;
+  SERVICE_INSTANCES_DATA.push({
+    id: instId, serviceId: svc.id, reference: ref, submissionId: subId,
+    currentStatusId: initialStatus ? initialStatus.id : svc.statuses[0]?.id,
+    assignedTo: null, priority: 'normal', createdBy: 'Picot Clément', createdAt: now,
+    events: [{id: Date.now(), type:'created', actor:'Picot Clément', at: now, payload:{}}]
+  });
+  toast('s', `✅ Demande ${ref} créée`);
+  setTimeout(() => openInstanceDetail(instId), 500);
+}
+
+// ── Détail d'une demande ──
+function openInstanceDetail(id) {
+  const inst = SERVICE_INSTANCES_DATA.find(x => x.id === id); if (!inst) return;
+  const svc  = SERVICES_DATA.find(s => s.id === inst.serviceId); if (!svc) return;
+  curService = svc; curInstanceId = id;
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span style="color:var(--tl);margin:0 4px">/</span><span class="bc-link" onclick="openServiceInstances(${svc.id})">${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(inst.reference)}</span>`;
+  document.getElementById('tb-t').textContent = inst.reference;
+  renderInstanceDetail(inst, svc);
+  show('v-service-instance-detail');
+}
+
+function renderInstanceDetail(inst, svc) {
+  const color = svc.couleur || '#3b82f6';
+  const f   = FORMS_DATA.find(x => x.id === svc.formId);
+  const sub = SUBMISSIONS_DATA.find(s => s.id === inst.submissionId);
+  const currentStatus = svc.statuses.find(s => s.id === inst.currentStatusId);
+  const availableActions = svc.actions.filter(a =>
+    svc.flux.find(fl => fl.statusId===inst.currentStatusId && fl.actionId===a.id && fl.enabled)
+  );
+
+  // ── Panneau principal ──
+  let main = `<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:22px;margin-bottom:16px">`;
+  main += `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:14px;border-bottom:2px solid var(--bd)">
+    <div style="width:5px;height:42px;border-radius:3px;background:${color};flex-shrink:0"></div>
+    <div style="flex:1">
+      <div style="font-size:16px;font-weight:800">${h(inst.reference)}</div>
+      <div style="font-size:11px;color:var(--tl);margin-top:2px">${h(svc.nom)} — ${inst.createdAt}</div>
+    </div>
+    ${currentStatus ? `<span style="padding:6px 14px;border-radius:20px;font-size:12px;font-weight:800;background:${currentStatus.couleur}22;color:${currentStatus.couleur}">${h(currentStatus.nom)}</span>` : ''}
+  </div>`;
+
+  // Données formulaire
+  if (f && sub) {
+    const fields = (f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
+    main += `<div style="margin-bottom:18px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">Données du formulaire</div>`;
+    fields.forEach(fld => {
+      const v = sub.values[fld.id];
+      const val = Array.isArray(v) ? v.join(', ') : (v||'—');
+      main += `<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--bg)">
+        <div style="font-size:11.5px;color:var(--tl);width:140px;flex-shrink:0">${h(fld.nom)}</div>
+        <div style="font-size:12.5px;font-weight:600;color:${val==='—'?'var(--tl)':'var(--tx)'}">${h(val)}</div>
+      </div>`;
+    });
+    main += `</div>`;
+  }
+
+  // Boutons d'action
+  if (availableActions.length) {
+    main += `<div style="margin-bottom:18px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">Actions disponibles</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">`;
+    availableActions.forEach(a => {
+      main += `<button onclick="executeAction(${inst.id},'${a.id}')"
+        style="padding:8px 20px;border-radius:8px;border:none;background:${a.couleur};color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s"
+        onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">${h(a.nom)}</button>`;
+    });
+    main += `</div></div>`;
+  } else if (currentStatus && currentStatus.type === 'terminal') {
+    main += `<div style="padding:12px;background:var(--sl);border-radius:8px;color:var(--s);font-size:12.5px;font-weight:700;text-align:center;margin-bottom:18px">✅ Demande clôturée</div>`;
+  }
+
+  // Zone commentaire
+  main += `<div><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">Commentaire</div>
+    <textarea id="comment-input-${inst.id}" style="width:100%;border:1.5px solid var(--bd);border-radius:8px;padding:10px;font-family:'Plus Jakarta Sans',sans-serif;font-size:13px;resize:none;height:72px;outline:none;box-sizing:border-box;transition:border-color .15s" placeholder="Votre commentaire..."
+      onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'"></textarea>
+    <div style="display:flex;justify-content:flex-end;margin-top:8px">
+      <button onclick="addComment(${inst.id})" style="padding:7px 18px;border-radius:8px;border:none;background:${color};color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit">Envoyer</button>
+    </div>
+  </div></div>`;
+
+  document.getElementById('sid-main').innerHTML = main;
+  renderInstanceHistory(inst, svc);
+}
+
+function renderInstanceHistory(inst, svc) {
+  const ICONS = {created:'✏️', status_changed:'🔄', commented:'💬', assigned:'👤', form_filled:'📋', email_sent:'📧'};
+  const LABELS = {created:'Demande créée', status_changed:'Statut modifié', commented:'Commentaire', assigned:'Affectation', form_filled:'Formulaire rempli', email_sent:'Email envoyé'};
+  const events = [...(inst.events||[])].reverse();
+  let html = `<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:16px;position:sticky;top:0">
+    <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:14px">Historique</div>`;
+  events.forEach((ev, i) => {
+    html += `<div style="display:flex;gap:9px;${i<events.length-1?'margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--bg)':''}">
+      <div style="width:28px;height:28px;border-radius:8px;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0">${ICONS[ev.type]||'•'}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:700">${LABELS[ev.type]||ev.type}</div>
+        ${ev.payload?.comment    ? `<div style="font-size:11.5px;color:var(--tm);margin-top:2px;font-style:italic">"${h(ev.payload.comment)}"</div>` : ''}
+        ${ev.payload?.fromStatus ? `<div style="font-size:11px;color:var(--tl);margin-top:2px">${h(ev.payload.fromStatus)} → ${h(ev.payload.toStatus)}</div>` : ''}
+        ${ev.payload?.toUser     ? `<div style="font-size:11px;color:var(--tl);margin-top:2px">→ ${h(ev.payload.toUser)}</div>` : ''}
+        <div style="font-size:11px;color:var(--tl);margin-top:1px">${ev.actor} · ${ev.at}</div>
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+  document.getElementById('sid-history').innerHTML = html;
+}
+
+// ── Exécuter une action ──
+function executeAction(instId, actionId) {
+  const inst = SERVICE_INSTANCES_DATA.find(x => x.id === instId); if (!inst) return;
+  const svc  = SERVICES_DATA.find(s => s.id === inst.serviceId);  if (!svc) return;
+  const action = svc.actions.find(a => a.id === actionId);        if (!action) return;
+  const now = new Date().toLocaleString('fr-FR');
+
+  if (action.type === 'change_status') {
+    const fromStatus = svc.statuses.find(s => s.id === inst.currentStatusId);
+    const toStatus   = svc.statuses.find(s => s.id === action.config?.targetStatusId);
+    if (!toStatus) { toast('e','⚠️ Statut cible manquant — reconfigurez l\'action'); return; }
+    inst.currentStatusId = toStatus.id;
+    inst.events.push({id:Date.now(), type:'status_changed', actor:'Picot Clément', at:now, payload:{fromStatus:fromStatus?.nom, toStatus:toStatus.nom}});
+    toast('s', `🔄 Statut → ${toStatus.nom}`);
+    renderInstanceDetail(inst, svc);
+  }
+  else if (action.type === 'comment') {
+    addComment(instId);
+  }
+  else if (action.type === 'assign') {
+    const who = prompt('Affecter la demande à :');
+    if (!who) return;
+    inst.assignedTo = who;
+    inst.events.push({id:Date.now(), type:'assigned', actor:'Picot Clément', at:now, payload:{toUser:who}});
+    toast('s', `👤 Affecté à ${who}`);
+    renderInstanceDetail(inst, svc);
+  }
+  else if (action.type === 'fill_form') {
+    const f = FORMS_DATA.find(x => x.id === action.config?.formId);
+    if (!f) { toast('e','⚠️ Formulaire introuvable — reconfigurez l\'action'); return; }
+    openLinkedFormModal(inst, svc, action, f);
+  }
+  else if (action.type === 'edit_form') {
+    toast('i','ℹ️ Modification du formulaire — à implémenter en V2');
+  }
+  else if (action.type === 'send_email') {
+    inst.events.push({id:Date.now(), type:'email_sent', actor:'Picot Clément', at:now, payload:{to:'destinataire@exemple.fr'}});
+    toast('s','📧 Email envoyé');
+    renderInstanceDetail(inst, svc);
+  }
+}
+
+function addComment(instId) {
+  const inst = SERVICE_INSTANCES_DATA.find(x => x.id === instId); if (!inst) return;
+  const svc  = SERVICES_DATA.find(s => s.id === inst.serviceId);
+  const input = document.getElementById('comment-input-' + instId);
+  const text  = input ? input.value.trim() : '';
+  if (!text) { toast('e','⚠️ Saisissez un commentaire'); if (input) input.focus(); return; }
+  const now = new Date().toLocaleString('fr-FR');
+  inst.events.push({id:Date.now(), type:'commented', actor:'Picot Clément', at:now, payload:{comment:text}});
+  if (input) input.value = '';
+  toast('s','💬 Commentaire ajouté');
+  if (svc) renderInstanceDetail(inst, svc);
+}
+
+// ── Modal formulaire lié (fill_form) ──
+function openLinkedFormModal(inst, svc, action, f) {
+  const old = document.getElementById('linked-form-modal');
+  if (old) old.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'linked-form-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1100;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.dataset.instId = inst.id;
+  modal.dataset.actionId = action.id;
+  modal.dataset.formId = f.id;
+
+  const color = f.couleur || '#3b82f6';
+  const fields = (f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
+
+  let fieldsHtml = '';
+  fields.forEach(fld => {
+    const fd = FD[fld.type]||{l:fld.nom};
+    fieldsHtml += `<div style="margin-bottom:14px">
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:5px">${h(fld.nom)}${fld.obligatoire?'<span style="color:#ef4444"> *</span>':''}</div>`;
+    if (fld.type==='text')     fieldsHtml += `<input class="ci" data-fid="${fld.id}" placeholder="Saisir..." style="width:100%">`;
+    else if (fld.type==='textarea') fieldsHtml += `<textarea class="ci" data-fid="${fld.id}" style="width:100%;height:72px;resize:none" placeholder="Saisir..."></textarea>`;
+    else if (fld.type==='select') fieldsHtml += `<select class="ci" data-fid="${fld.id}" style="width:100%"><option value="">— Sélectionner —</option>${(fld.valeurs||[]).map(v=>`<option>${h(v)}</option>`).join('')}</select>`;
+    else if (fld.type==='date') fieldsHtml += `<input type="date" class="ci" data-fid="${fld.id}">`;
+    else if (fld.type==='number') fieldsHtml += `<input type="number" class="ci" data-fid="${fld.id}" value="0">`;
+    else fieldsHtml += `<input class="ci" data-fid="${fld.id}" placeholder="${fd.l}" style="width:100%">`;
+    fieldsHtml += `</div>`;
+  });
+
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:14px;width:100%;max-width:560px;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.25)">
+      <div style="padding:16px 20px;border-bottom:1.5px solid var(--bd);display:flex;align-items:center;gap:10px;flex-shrink:0">
+        <div style="font-size:15px;font-weight:800;flex:1">${h(action.nom)} — ${h(f.nom)}</div>
+        <button onclick="document.getElementById('linked-form-modal').remove()" style="width:30px;height:30px;border-radius:7px;border:1.5px solid var(--bd);background:#fff;cursor:pointer;font-size:14px;color:var(--tm)">✕</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:20px">${fieldsHtml||'<div style="color:var(--tl);text-align:center;padding:20px">Ce formulaire n\'a pas de champ de saisie.</div>'}</div>
+      <div style="padding:14px 20px;border-top:1.5px solid var(--bd);display:flex;justify-content:flex-end;gap:8px;flex-shrink:0">
+        <button onclick="document.getElementById('linked-form-modal').remove()" class="btn btn-sm">Annuler</button>
+        <button onclick="submitLinkedForm()" class="btn bp btn-sm">✅ Valider</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function submitLinkedForm() {
+  const modal = document.getElementById('linked-form-modal'); if (!modal) return;
+  const instId = +modal.dataset.instId;
+  const formId = +modal.dataset.formId;
+  const inst = SERVICE_INSTANCES_DATA.find(x => x.id === instId); if (!inst) return;
+  const svc  = SERVICES_DATA.find(s => s.id === inst.serviceId);
+  const f = FORMS_DATA.find(x => x.id === formId); if (!f) return;
+
+  const values = {};
+  modal.querySelectorAll('[data-fid]').forEach(el => { values[el.dataset.fid] = el.value; });
+
+  const now = new Date().toLocaleString('fr-FR');
+  const subId = Date.now();
+  SUBMISSIONS_DATA.push({id:subId, formId:f.id, formNom:f.nom, date:new Date().toISOString(), dateLabel:now, utilisateur:'Picot Clément', values});
+  f.resp = (f.resp||0) + 1;
+  inst.events.push({id:Date.now(), type:'form_filled', actor:'Picot Clément', at:now, payload:{formNom:f.nom, submissionId:subId}});
+
+  modal.remove();
+  toast('s', `📋 "${f.nom}" soumis`);
+  if (svc) renderInstanceDetail(inst, svc);
+}
