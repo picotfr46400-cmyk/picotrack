@@ -82,9 +82,11 @@ let saisieValues={},curSaisieFormId=null;
 
 // ══ DÉPLACER v-saisie hors de v-prod-forms ══
 (function(){
-  const vs=document.getElementById('v-saisie');
   const main=document.getElementById('main');
-  if(vs&&main&&vs.parentElement!==main)main.appendChild(vs);
+  ['v-saisie','v-submissions'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el&&main&&el.parentElement!==main)main.appendChild(el);
+  });
 })();
 
 // ══ UTILITAIRES ══
