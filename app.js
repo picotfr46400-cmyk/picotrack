@@ -1630,7 +1630,68 @@ function renderDatabaseTable(f) {
       <button class="btn pill" onclick="exportDatabaseCSV(${f.id})">📤 Exporter CSV</button>
     </div>
   </div>`;
+// Bloc API
+  const activeKey = API_CONFIG.keys.find(k => k.active);
+  const apiUrl = `https://api.picotrack.fr/v1/database/${f.id}`;
+  html += `<div style="background:#fff;border:1.5px solid var(--bd);border-radius:12px;padding:18px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="width:28px;height:28px;border-radius:7px;background:var(--pl);display:flex;align-items:center;justify-content:center;font-size:14px">🔌</div>
+        <div style="font-size:13px;font-weight:800">Accès API</div>
+      </div>
+      <span style="font-size:11px;padding:3px 10px;border-radius:20px;background:${activeKey?'var(--sl)':'var(--dl)'};color:${activeKey?'var(--s)':'var(--d)'};font-weight:700">${activeKey?'✓ Clé active':'⚠ Aucune clé active'}</span>
+    </div>
 
+    <!-- Endpoint -->
+    <div style="margin-bottom:12px">
+      <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Endpoint</div>
+      <div style="display:flex;align-items:center;gap:8px;background:var(--bg);border-radius:8px;padding:10px 13px">
+        <span style="padding:2px 8px;border-radius:5px;background:#3b82f618;color:#3b82f6;font-size:11px;font-weight:800;font-family:'DM Mono',monospace;flex-shrink:0">GET</span>
+        <code style="font-family:'DM Mono',monospace;font-size:12.5px;color:var(--tx);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${apiUrl}</code>
+        <button onclick="copyKey('${apiUrl}')" style="padding:4px 10px;border-radius:6px;border:1.5px solid var(--bd);background:#fff;font-size:11px;font-weight:700;cursor:pointer;color:var(--tm);font-family:inherit;flex-shrink:0">📋 Copier</button>
+      </div>
+    </div>
+
+    <!-- cURL -->
+    <div style="margin-bottom:12px">
+      <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">cURL</div>
+      <div style="background:#1e293b;border-radius:8px;padding:11px 14px;display:flex;align-items:flex-start;gap:10px">
+        <code style="font-family:'DM Mono',monospace;font-size:11.5px;color:#e2e8f0;flex:1;line-height:1.6;white-space:pre-wrap">curl -X GET "${apiUrl}" \\
+  -H "Authorization: Bearer ${activeKey?activeKey.key.substring(0,20)+'...':'&lt;votre-clé&gt;'}" \\
+  -H "Accept: application/json"</code>
+        <button onclick="copyKey('curl -X GET &quot;${apiUrl}&quot; -H &quot;Authorization: Bearer ${activeKey?activeKey.key:'<votre-clé>'}&quot; -H &quot;Accept: application/json&quot;')" style="padding:4px 10px;border-radius:6px;border:1.5px solid #334155;background:#334155;font-size:11px;font-weight:700;cursor:pointer;color:#94a3b8;font-family:inherit;flex-shrink:0;margin-top:2px">📋</button>
+      </div>
+    </div>
+
+    <!-- Power Query -->
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px">Power Query (Excel / Power BI)</div>
+        <span style="font-size:10px;padding:2px 8px;border-radius:20px;background:var(--wl);color:#92400e;font-weight:700">⏳ Disponible avec le backend</span>
+      </div>
+      <div style="background:#1e293b;border-radius:8px;padding:11px 14px;display:flex;align-items:flex-start;gap:10px">
+        <code style="font-family:'DM Mono',monospace;font-size:11px;color:#e2e8f0;flex:1;line-height:1.7;white-space:pre-wrap">let
+  Source = Json.Document(
+    Web.Contents("${apiUrl}",
+      [Headers = [
+        Authorization = "Bearer ${activeKey?activeKey.key:'<votre-clé>'}",
+        Accept = "application/json"
+      ]]
+    )
+  ),
+  Rows = Source[rows],
+  Table = Table.FromList(Rows, Splitter.SplitByNothing()),
+  Expanded = Table.ExpandRecordColumn(Table, "Column1",
+    {"date", "user", ${(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)).slice(0,3).map(fld=>`"${fld.id}"`).join(', ')}})
+in
+  Expanded</code>
+        <button onclick="copyKey('let\\n  Source = Json.Document(Web.Contents(&quot;${apiUrl}&quot;,[Headers=[Authorization=&quot;Bearer ${activeKey?activeKey.key:'<clé>'}&quot;,Accept=&quot;application/json&quot;]]))\\nin\\n  Source')" style="padding:4px 10px;border-radius:6px;border:1.5px solid #334155;background:#334155;font-size:11px;font-weight:700;cursor:pointer;color:#94a3b8;font-family:inherit;flex-shrink:0;margin-top:2px">📋</button>
+      </div>
+      <div style="font-size:11px;color:var(--tl);margin-top:7px;line-height:1.5">
+        Dans Excel : <strong>Données → Obtenir des données → Depuis le web</strong> → coller l'URL + ajouter le header Authorization. Ou utiliser l'éditeur avancé Power Query avec le script ci-dessus.
+      </div>
+    </div>
+  </div>`;
   if (!fields.length) {
     wrap.innerHTML = html + `<div style="text-align:center;padding:60px;color:var(--tl);background:#fff;border-radius:12px;border:1.5px dashed var(--bd)">Ce formulaire n'a aucun champ de données.</div>`;
     return;
