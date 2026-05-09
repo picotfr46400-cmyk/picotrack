@@ -1107,7 +1107,7 @@ function addSvcStatus() {
 function renderSvcActions(area) {
   const cnt = document.getElementById('svc-action-cnt');
   if (cnt) { cnt.textContent = svcBuilderActions.length; cnt.style.display = svcBuilderActions.length ? '' : 'none'; }
-  const ET = [{v:'change_status',l:'Changer le statut'},{v:'fill_form',l:'Remplir un formulaire'},{v:'assign',l:'Affecter'},{v:'send_email',l:'Envoyer un email'},{v:'comment',l:'Commenter'},{v:'edit_form',l:'Modifier le formulaire'}];
+  const ET = [{v:'change_status',l:'Changer le statut'},{v:'fill_form',l:'Remplir un formulaire'},{v:'assign',l:'Affecter'},{v:'send_email',l:'Envoyer un email'},{v:'comment',l:'Commenter'},{v:'edit_form',l:'Modifier le formulaire'},{v:'update_db_row', l:'Modifier une ligne (base de données)'}];
   const sOpts = svcBuilderStatuses.map(s=>`<option value="${s.id}">${h(s.nom)}</option>`).join('');
   const fOpts = FORMS_DATA.filter(f=>f.actif!==false).map(f=>`<option value="${f.id}">${h(f.nom)}</option>`).join('');
   area.innerHTML = `<div class="b-sec">
@@ -1132,6 +1132,7 @@ function renderSvcActions(area) {
               <select class="ci" onchange="updateEffect(${i},${ei},'type',this.value)">${ET.map(t=>`<option value="${t.v}" ${ef.type===t.v?'selected':''}>${t.l}</option>`).join('')}</select>
               ${ef.type==='change_status'?`<select class="ci" onchange="updateEffect(${i},${ei},'targetStatusId',this.value)"><option value="">— Statut cible —</option>${sOpts}</select>`:''}
               ${ef.type==='fill_form'?`<select class="ci" onchange="updateEffect(${i},${ei},'formId',+this.value)"><option value="">— Formulaire —</option>${fOpts}</select>`:''}
+${ef.type==='update_db_row'? renderDbEffectHtml(i,ei,ef) :''}
             </div>
             <button class="ic-btn" onclick="removeEffect(${i},${ei})">✕</button>
           </div>`).join('')}
@@ -1139,7 +1140,10 @@ function renderSvcActions(area) {
         </div>`;}).join('')}
   </div>`;
 }
-function updateEffect(ai,ei,key,val){if(!svcBuilderActions[ai].effects)svcBuilderActions[ai].effects=[];const ef=svcBuilderActions[ai].effects[ei];if(!ef)return;if(key==='type'){ef.type=val;ef.config={};renderSvcTab();}else if(key==='targetStatusId')ef.config={targetStatusId:val};else if(key==='formId')ef.config={formId:+val};}
+function updateEffect(ai,ei,key,val){if(!svcBuilderActions[ai].effects)svcBuilderActions[ai].effects=[];const ef=svcBuilderActions[ai].effects[ei];if(!ef)return;if(key==='type'){ef.type=val;ef.config={};renderSvcTab();}else if(key==='targetStatusId')ef.config={targetStatusId:val};else if(key==='formId'){
+  if(ef.type==='update_db_row'){ef.config={formId:+val,matchCriteria:ef.config?.matchCriteria||[],updates:ef.config?.updates||[]};renderSvcTab();}
+  else ef.config={formId:+val};
+}
 function addEffect(ai){(svcBuilderActions[ai].effects=svcBuilderActions[ai].effects||[{type:'change_status',config:{}}]).push({type:'change_status',config:{}});renderSvcTab();}
 function removeEffect(ai,ei){svcBuilderActions[ai].effects.splice(ei,1);if(!svcBuilderActions[ai].effects.length)svcBuilderActions[ai].effects=[{type:'change_status',config:{}}];renderSvcTab();}
 
@@ -1414,8 +1418,8 @@ function renderInstanceDetail(inst, svc) {
 }
 
 function renderInstanceHistory(inst, svc) {
-  const ICONS = {created:'✏️', status_changed:'🔄', commented:'💬', assigned:'👤', form_filled:'📋', email_sent:'📧'};
-  const LABELS = {created:'Demande créée', status_changed:'Statut modifié', commented:'Commentaire', assigned:'Affectation', form_filled:'Formulaire rempli', email_sent:'Email envoyé'};
+  const ICONS = {created:'✏️', status_changed:'🔄', commented:'💬', assigned:'👤', form_filled:'📋', email_sent:'📧', db_updated:'🗃'};
+const LABELS = {created:'Demande créée', status_changed:'Statut modifié', commented:'Commentaire', assigned:'Affectation', form_filled:'Formulaire rempli', email_sent:'Email envoyé', db_updated:'Base de données mise à jour'};
   const events = [...(inst.events||[])].reverse();
   let html = `<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:16px;position:sticky;top:0">
     <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:14px">Historique</div>`;
@@ -1450,6 +1454,25 @@ function executeAction(instId, actionId) {
     else if(ef.type==='fill_form'){const f=FORMS_DATA.find(x=>x.id===ef.config?.formId);if(!f){toast('e','⚠️ Formulaire introuvable');return;}openLinkedFormModal(inst,svc,action,f);}
     else if(ef.type==='send_email'){inst.events.push({id:Date.now(),type:'email_sent',actor:'Picot Clément',at:now,payload:{}});toast('s','📧 Email envoyé');}
     else if(ef.type==='edit_form'){toast('i','ℹ️ Disponible en V2');}
+    else if(ef.type==='update_db_row'){
+  const targetFid=ef.config?.formId;
+  if(!targetFid){toast('e','⚠️ Base non configurée');return;}
+  const svcSub=SUBMISSIONS_DATA.find(s=>s.id===inst.submissionId);
+  const criteria=ef.config?.matchCriteria||[];
+  const updates=ef.config?.updates||[];
+  if(!updates.length){toast('w','⚠️ Aucune modification définie');return;}
+  const targetRows=SUBMISSIONS_DATA.filter(s=>s.formId===targetFid);
+  const matched=criteria.length?targetRows.filter(row=>criteria.every(c=>{
+    if(!c.dbFieldId)return true;
+    const dbVal=String(row.values[c.dbFieldId]||'');
+    const srcVal=c.sourceType==='form_field'?String(svcSub?.values[c.sourceFieldId]||''):String(c.value||'');
+    return dbVal===srcVal;
+  })):targetRows;
+  if(!matched.length){toast('w','⚠️ Aucune ligne correspondante');return;}
+  matched.forEach(row=>{updates.forEach(u=>{if(!u.dbFieldId)return;row.values[u.dbFieldId]=u.sourceType==='form_field'?(svcSub?.values[u.sourceFieldId]||''):(u.value||'');});});
+  inst.events.push({id:Date.now(),type:'db_updated',actor:'Picot Clément',at:now,payload:{db:FORMS_DATA.find(x=>x.id===targetFid)?.nom,lignes:matched.length}});
+  toast('s',`🗃 ${matched.length} ligne${matched.length>1?'s':''} mise${matched.length>1?'s':''} à jour`);
+}
   });
   const isKanban=document.getElementById('v-service-kanban')?.classList.contains('on');
   if(isKanban)renderKanbanBoard(svc,curKanbanGroupId);else renderInstanceDetail(inst,svc);
@@ -1691,6 +1714,60 @@ function exportDatabaseCSV(formId) {
   dl('\ufeff' + csv, `${f.nom.replace(/\s/g,'_')}_export.csv`, 'text/csv;charset=utf-8');
   toast('s', '📤 Export CSV téléchargé');
 }
+                                     // ── DB Effect helpers ──
+function renderDbEffectHtml(ai,ei,ef){
+  const svcForm=svcBuilderFormId?FORMS_DATA.find(x=>x.id===svcBuilderFormId):null;
+  const svcFields=svcForm?(svcForm.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)):[];
+  const targetForm=ef.config?.formId?FORMS_DATA.find(x=>x.id===ef.config.formId):null;
+  const dbFields=targetForm?(targetForm.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)):[];
+  const fOpts=FORMS_DATA.filter(f=>f.actif!==false).map(f=>`<option value="${f.id}" ${ef.config?.formId===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
+  const dbFOpts=(sel)=>dbFields.map(f=>`<option value="${f.id}" ${sel===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
+  const svcFOpts=(sel)=>svcFields.map(f=>`<option value="${f.id}" ${sel===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
+  const criteria=ef.config?.matchCriteria||[];const updates=ef.config?.updates||[];
+  let html=`<div style="margin-top:6px">
+    <div class="fl2" style="margin-bottom:4px">Base de données cible</div>
+    <select class="ci" onchange="updateEffect(${ai},${ei},'formId',+this.value)">
+      <option value="">— Choisir —</option>${fOpts}
+    </select></div>`;
+  if(!targetForm)return html;
+  // Critères
+  html+=`<div style="margin-top:10px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">🔍 Critères (identifier la ligne)</div>`;
+  criteria.forEach((c,ci)=>{html+=`<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:7px;padding:7px 8px">
+    <select class="ci" style="flex:1;font-size:11.5px" onchange="updateMatchCriteria(${ai},${ei},${ci},'dbFieldId',this.value)"><option value="">Colonne DB</option>${dbFOpts(c.dbFieldId)}</select>
+    <span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span>
+    <select class="ci" style="width:120px;font-size:11.5px" onchange="updateMatchCriteria(${ai},${ei},${ci},'sourceType',this.value)">
+      <option value="form_field" ${c.sourceType==='form_field'?'selected':''}>Champ actuel</option>
+      <option value="fixed" ${c.sourceType==='fixed'?'selected':''}>Valeur fixe</option>
+    </select>
+    ${c.sourceType==='form_field'
+      ?`<select class="ci" style="flex:1;font-size:11.5px" onchange="updateMatchCriteria(${ai},${ei},${ci},'sourceFieldId',this.value)"><option value="">Champ</option>${svcFOpts(c.sourceFieldId)}</select>`
+      :`<input class="ci" style="flex:1;font-size:11.5px" value="${h(c.value||'')}" placeholder="Valeur..." oninput="updateMatchCriteria(${ai},${ei},${ci},'value',this.value)">`}
+    <button class="ic-btn" onclick="removeMatchCriteria(${ai},${ei},${ci})">✕</button>
+  </div>`;});
+  html+=`<button style="width:100%;padding:5px;border-radius:6px;border:1.5px dashed var(--bd);background:transparent;color:var(--p);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" onclick="addMatchCriteria(${ai},${ei})">＋ Ajouter un critère</button></div>`;
+  // Modifications
+  html+=`<div style="margin-top:10px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">✏️ Modifications à apporter</div>`;
+  updates.forEach((u,ui)=>{html+=`<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;background:#f0fdf4;border-radius:7px;padding:7px 8px">
+    <select class="ci" style="flex:1;font-size:11.5px" onchange="updateDbUpdate(${ai},${ei},${ui},'dbFieldId',this.value)"><option value="">Colonne à modifier</option>${dbFOpts(u.dbFieldId)}</select>
+    <span style="font-size:11px;color:var(--s);flex-shrink:0">→</span>
+    <select class="ci" style="width:120px;font-size:11.5px" onchange="updateDbUpdate(${ai},${ei},${ui},'sourceType',this.value)">
+      <option value="fixed" ${u.sourceType==='fixed'?'selected':''}>Valeur fixe</option>
+      <option value="form_field" ${u.sourceType==='form_field'?'selected':''}>Champ actuel</option>
+    </select>
+    ${u.sourceType==='form_field'
+      ?`<select class="ci" style="flex:1;font-size:11.5px" onchange="updateDbUpdate(${ai},${ei},${ui},'sourceFieldId',this.value)"><option value="">Champ</option>${svcFOpts(u.sourceFieldId)}</select>`
+      :`<input class="ci" style="flex:1;font-size:11.5px" value="${h(u.value||'')}" placeholder="Nouvelle valeur..." oninput="updateDbUpdate(${ai},${ei},${ui},'value',this.value)">`}
+    <button class="ic-btn" onclick="removeDbUpdate(${ai},${ei},${ui})">✕</button>
+  </div>`;});
+  html+=`<button style="width:100%;padding:5px;border-radius:6px;border:1.5px dashed var(--s);background:transparent;color:var(--s);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" onclick="addDbUpdate(${ai},${ei})">＋ Ajouter une modification</button></div>`;
+  return html;
+}
+function addMatchCriteria(ai,ei){const ef=svcBuilderActions[ai].effects[ei];if(!ef.config)ef.config={};if(!ef.config.matchCriteria)ef.config.matchCriteria=[];ef.config.matchCriteria.push({dbFieldId:'',sourceType:'form_field',sourceFieldId:'',value:''});renderSvcTab();}
+function removeMatchCriteria(ai,ei,ci){svcBuilderActions[ai].effects[ei].config.matchCriteria.splice(ci,1);renderSvcTab();}
+function updateMatchCriteria(ai,ei,ci,key,val){const c=svcBuilderActions[ai].effects[ei].config.matchCriteria[ci];if(!c)return;c[key]=val;if(key==='sourceType')renderSvcTab();}
+function addDbUpdate(ai,ei){const ef=svcBuilderActions[ai].effects[ei];if(!ef.config)ef.config={};if(!ef.config.updates)ef.config.updates=[];ef.config.updates.push({dbFieldId:'',sourceType:'fixed',value:''});renderSvcTab();}
+function removeDbUpdate(ai,ei,ui){svcBuilderActions[ai].effects[ei].config.updates.splice(ui,1);renderSvcTab();}
+function updateDbUpdate(ai,ei,ui,key,val){const u=svcBuilderActions[ai].effects[ei].config.updates[ui];if(!u)return;u[key]=val;if(key==='sourceType')renderSvcTab();}
 function addComment(instId) {
   const inst = SERVICE_INSTANCES_DATA.find(x => x.id === instId); if (!inst) return;
   const svc  = SERVICES_DATA.find(s => s.id === inst.serviceId);
