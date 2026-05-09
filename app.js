@@ -1628,12 +1628,13 @@ function renderDatabaseTable(f) {
     <div style="display:flex;gap:8px">
       <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Filtrer..." oninput="filterDatabaseTable(${f.id}, this.value)" style="width:180px"></div>
       <button class="btn pill" onclick="exportDatabaseCSV(${f.id})">📤 Exporter CSV</button>
+      <button class="btn pill" id="api-toggle-${f.id}" onclick="toggleDbApiBlock(${f.id})">🔌 API</button>
     </div>
   </div>`;
 // Bloc API
   const activeKey = API_CONFIG.keys.find(k => k.active);
   const apiUrl = `https://api.picotrack.fr/v1/database/${f.id}`;
-  html += `<div style="background:#fff;border:1.5px solid var(--bd);border-radius:12px;padding:18px;margin-bottom:16px">
+ html += `<div id="db-api-block-${f.id}" style="display:none;background:#fff;border:1.5px solid var(--bd);border-radius:12px;padding:18px;margin-bottom:16px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
       <div style="display:flex;align-items:center;gap:8px">
         <div style="width:28px;height:28px;border-radius:7px;background:var(--pl);display:flex;align-items:center;justify-content:center;font-size:14px">🔌</div>
@@ -1759,7 +1760,18 @@ function filterDatabaseTable(formId, q) {
   const existing = wrap.querySelector('div:last-child');
   if (existing) existing.outerHTML = renderDbTableHtml(f, fields, filtered, color);
 }
-
+function toggleDbApiBlock(formId) {
+  const block = document.getElementById('db-api-block-' + formId);
+  const btn   = document.getElementById('api-toggle-' + formId);
+  if (!block) return;
+  const isOpen = block.style.display !== 'none';
+  block.style.display = isOpen ? 'none' : 'block';
+  if (btn) {
+    btn.style.background    = isOpen ? '' : 'var(--p)';
+    btn.style.color         = isOpen ? '' : '#fff';
+    btn.style.borderColor   = isOpen ? '' : 'var(--p)';
+  }
+}
 function exportDatabaseCSV(formId) {
   const f = FORMS_DATA.find(x => x.id === formId); if (!f) return;
   const fields = (f.fields || []).filter(x => !['separator','image','titre','son','video'].includes(x.type));
