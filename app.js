@@ -236,7 +236,8 @@ function renderProdForms(list){
         </div>
         ${f.desc?`<div style="font-size:11.5px;color:var(--tl);line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${h(f.desc)}</div>`:''}
         <div style="border-top:1px solid var(--bd);margin-top:auto;padding-top:10px;display:flex;align-items:center;justify-content:space-between">
-          <span style="font-size:11px;color:var(--tl)">${(f.resp||0).toLocaleString()} réponse${(f.resp||0)>1?'s':''}</span>
+          <span style="font-size:11px;color:var(--tl)">${SUBMISSIONS_DATA.filter(s=>s.formId===f.id).length.toLocaleString()} réponse${(f.resp||0)>1?'s':''}</span>
+          SUBMISSIONS_DATA.filter(s=>s.formId===f.id).length>1?'s':''
           <div style="display:inline-flex;align-items:center;gap:5px;background:${color};color:#fff;font-size:11.5px;font-weight:700;padding:5px 14px;border-radius:20px">Saisir →</div>
         </div>
       </div>
@@ -252,32 +253,50 @@ function openSubmissions(id){
 }
 function renderSubmissions(f){
   const color=f.couleur||'#3b82f6';
-  const subs=SUBMISSIONS_DATA.filter(s=>s.formId===f.id).reverse();
+  const allSubs=SUBMISSIONS_DATA.filter(s=>s.formId===f.id).reverse();
   const fields=(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
-  let html='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px">';
+  let html='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">';
   html+='<div><div style="font-size:17px;font-weight:800;color:var(--tx)">'+h(f.nom)+'</div>';
-  html+='<div style="font-size:12px;color:var(--tl);margin-top:2px">'+subs.length+' saisie'+(subs.length>1?'s':'')+'</div></div>';
+  html+='<div style="font-size:12px;color:var(--tl);margin-top:2px" id="sub-count">'+allSubs.length+' saisie'+(allSubs.length>1?'s':'')+'</div></div>';
   html+='<button class="btn bp" onclick="openFormSaisie('+f.id+')" style="background:'+color+';border-color:'+color+'">＋ Nouvelle saisie</button></div>';
-  if(!subs.length){
-    html+='<div style="text-align:center;padding:60px 20px;color:var(--tl);background:var(--card);border-radius:12px;border:1.5px dashed var(--bd)"><div style="font-size:32px;margin-bottom:10px">📭</div>Aucune saisie enregistrée</div>';
-  } else {
-    html+='<div style="background:var(--card);border-radius:12px;border:1.5px solid var(--bd);overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
-    html+='<thead><tr style="background:var(--bg);border-bottom:2px solid var(--bd)">';
-    html+='<th style="padding:10px 14px;text-align:left;color:var(--tl)">Date</th>';
-    html+='<th style="padding:10px 14px;text-align:left;color:var(--tl)">Utilisateur</th>';
-    fields.slice(0,4).forEach(x=>{html+='<th style="padding:10px 14px;text-align:left;color:var(--tl)">'+h(x.nom)+'</th>';});
-    html+='</tr></thead><tbody>';
-    subs.forEach((s,i)=>{
-      const bg=i%2?'var(--bg)':'var(--card)';
-html+='<tr onclick="openSubmission('+s.id+')" style="cursor:pointer;border-bottom:1px solid var(--bd);background:'+bg+'" onmouseover="this.style.background=\'var(--pl)\'" onmouseout="this.style.background=\''+bg+'\'">';
-      html+='<td style="padding:10px 14px;color:var(--tl);white-space:nowrap">'+s.dateLabel+'</td>';
-      html+='<td style="padding:10px 14px;font-weight:600;color:var(--tx)">'+h(s.utilisateur)+'</td>';
-      fields.slice(0,4).forEach(x=>{const v=s.values[x.id];html+='<td style="padding:10px 14px;color:var(--tx)">'+h(Array.isArray(v)?v.join(', '):(v||'—'))+'</td>';});
-      html+='</tr>';
+  if(fields.length){
+    html+='<div style="background:var(--card,#fff);border-radius:12px;border:1.5px solid var(--bd);padding:16px 20px;margin-bottom:16px">';
+    html+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span style="font-size:11px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px">Filtres</span>';
+    html+='<button onclick="resetSubFilters('+f.id+')" style="font-size:11px;padding:3px 9px;border-radius:6px;border:1.5px solid var(--bd);background:#fff;cursor:pointer;color:var(--tl);font-family:inherit">Tout afficher</button></div>';
+    html+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">';
+    fields.forEach(fld=>{
+      html+='<div><div style="font-size:10.5px;font-weight:700;color:var(--tm);margin-bottom:4px">'+h(fld.nom)+'</div>';
+      if(fld.type==='select'||fld.type==='multiselect'){
+        html+='<select id="sf-'+fld.id+'" onchange="filterSubs('+f.id+')" style="width:100%;border:1.5px solid var(--bd);border-radius:7px;padding:6px 10px;font-size:12px;font-family:inherit;color:var(--tx);background:#fff;outline:none">';
+        html+='<option value="">Tous</option>';
+        (fld.valeurs||[]).forEach(v=>{html+='<option value="'+h(v)+'">'+h(v)+'</option>';});
+        html+='</select>';
+      } else {
+        html+='<input id="sf-'+fld.id+'" oninput="filterSubs('+f.id+')" placeholder="Filtrer..." style="width:100%;border:1.5px solid var(--bd);border-radius:7px;padding:6px 10px;font-size:12px;font-family:inherit;color:var(--tx);outline:none">';
+      }
+      html+='</div>';
     });
-    html+='</tbody></table></div>';
+    html+='</div></div>';
   }
+  html+='<div id="sub-table-wrap"></div>';
   document.getElementById('sub-wrap').innerHTML=html;
+  renderSubTable(f,allSubs);
+}
+function filterSubs(formId){
+  const f=FORMS_DATA.find(x=>x.id===formId);if(!f)return;
+  const fields=(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
+  const filtered=SUBMISSIONS_DATA.filter(s=>s.formId===formId).reverse().filter(s=>
+    fields.every(fld=>{const el=document.getElementById('sf-'+fld.id);if(!el||!el.value)return true;
+      const v=s.values[fld.id];const val=Array.isArray(v)?v.join(', '):(v||'');
+      return val.toLowerCase().includes(el.value.toLowerCase());})
+  );
+  const c=document.getElementById('sub-count');if(c)c.textContent=filtered.length+' saisie'+(filtered.length>1?'s':'');
+  renderSubTable(f,filtered);
+}
+function resetSubFilters(formId){
+  const f=FORMS_DATA.find(x=>x.id===formId);if(!f)return;
+  (f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)).forEach(fld=>{const el=document.getElementById('sf-'+fld.id);if(el)el.value='';});
+  filterSubs(formId);
 }
 function openSubmission(id){
   const s=SUBMISSIONS_DATA.find(x=>x.id===id);if(!s)return;
