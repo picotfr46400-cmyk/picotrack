@@ -38,6 +38,7 @@ const DECL_ACTIONS=[
   {type:'export',ic:'📤',label:'Exporter automatiquement'},
   {type:'status',ic:'🔄',label:'Changer le statut'},
   {type:'print',ic:'🖨',label:'Imprimer une étiquette'},
+  {type:'db_row', ic:'🗃', label:'Ajouter une ligne à la base de données dynamique'},
 ];
 const COLORS=['#3b82f6','#ef4444','#10b981','#f59e0b','#8b5cf6','#ec4899','#06b6d4','#84cc16','#f97316','#6366f1','#14b8a6','#0ea5e9'];
 
@@ -70,7 +71,7 @@ const FORMS_DATA=[
 
 // ══ SAISIES RÉELLES ══
 let SUBMISSIONS_DATA=[];
-
+let DB_DATA = {}; // { formId: [{id, date, user, values}] }
 // ══ ÉTAT ══
 let curForm=null,filtered=[...FORMS_DATA],sortCol='nom',sortDir=1;
 let pageSize=10,curPage=1;
@@ -483,6 +484,12 @@ function submitSaisie(){
     toast('e','⚠️ '+errors.length+' champ(s) obligatoire(s) non rempli(s)');
     errors.forEach(fld=>{const w=document.getElementById('sw-'+fld.id);if(w){w.style.outline='2px solid #ef4444';w.style.borderRadius='8px';w.scrollIntoView({behavior:'smooth',block:'nearest'});setTimeout(()=>w.style.outline='',2800);}});
     return;
+  }
+  // Déclencheur base de données dynamique
+  const _dbTrigger = declItems.find(d => d.type === 'db_row');
+  if (_dbTrigger) {
+    if (!DB_DATA[f.id]) DB_DATA[f.id] = [];
+    DB_DATA[f.id].push({id: Date.now(), date: new Date().toISOString(), dateLabel: new Date().toLocaleString('fr-FR'), user: 'Picot Clément', values: {...saisieValues}});
   }
   SUBMISSIONS_DATA.push({id:Date.now(),formId:f.id,formNom:f.nom,date:new Date().toISOString(),dateLabel:new Date().toLocaleString('fr-FR'),utilisateur:'Picot Clément',values:{...saisieValues}});
   f.resp=(f.resp||0)+1;
@@ -1516,6 +1523,173 @@ function buildKanbanCardHtml(inst,svc,status){
       ${acts.length?`<div onclick="event.stopPropagation()" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bg)">${acts.map(a=>`<button onclick="event.stopPropagation();executeAction(${inst.id},'${a.id}')" style="padding:4px 10px;border-radius:6px;border:none;background:${a.couleur};color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">${h(a.nom)}</button>`).join('')}</div>`:''}
     </div>
   </div>`;
+}
+// ══ PRODUCTION : BASE DE DONNÉES DYNAMIQUE ══
+function goProDatabase() {
+  document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
+  document.getElementById('sb-prod-db').classList.add('on');
+  show('v-prod-database');
+  document.getElementById('tb-t').textContent = 'Base de données';
+  document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Production / Base de données</span>';
+  renderProDatabase(FORMS_DATA);
+}
+
+function renderProDatabase(list) {
+  // Seuls les formulaires ayant le déclencheur db_row OU ayant déjà des données
+  // En prototype : on affiche tous les formulaires actifs (le trigger est dans declItems du builder, pas encore persisté par form)
+  // On affiche les forms actifs et on compte les lignes en DB_DATA
+  const actifs = (list || FORMS_DATA).filter(f => f.actif !== false);
+  const grid = document.getElementById('prod-db-grid');
+  if (!actifs.length) {
+    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)">
+      <div style="font-size:32px;margin-bottom:12px;opacity:.3">🗃</div>
+      Aucune base disponible. Activez le déclencheur "Base de données" dans le builder d'un formulaire.</div>`;
+    return;
+  }
+  grid.innerHTML = actifs.map(f => {
+    const rows = (DB_DATA[f.id] || []).length;
+    const subRows = SUBMISSIONS_DATA.filter(s => s.formId === f.id).length;
+    const total = Math.max(rows, subRows); // affiche tout ce qui est saisi
+    const color = f.couleur || '#3b82f6';
+    const fields = (f.fields || []).filter(x => !['separator','image','titre','son','video'].includes(x.type));
+    return `<div onclick="openDatabaseTable(${f.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s"
+      onmouseover="this.style.borderColor='${color}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''">
+      <div style="height:5px;background:${color}"></div>
+      <div style="padding:16px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <div style="width:36px;height:36px;border-radius:9px;background:${color}22;display:flex;align-items:center;justify-content:center;font-size:18px">🗃</div>
+          <div style="flex:1">
+            <div style="font-weight:800;font-size:14px">${h(f.nom)}</div>
+            <div style="font-size:11px;color:var(--tl);margin-top:2px">${fields.length} colonne${fields.length > 1 ? 's' : ''}</div>
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <span style="font-size:20px;font-weight:800">${total.toLocaleString()}</span>
+            <span style="font-size:11px;color:var(--tl);margin-left:4px">ligne${total > 1 ? 's' : ''}</span>
+          </div>
+          <div style="padding:5px 14px;border-radius:20px;background:${color};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function searchProDatabase(q) {
+  renderProDatabase(FORMS_DATA.filter(f => f.actif !== false && f.nom.toLowerCase().includes(q.toLowerCase())));
+}
+
+function openDatabaseTable(formId) {
+  const f = FORMS_DATA.find(x => x.id === formId); if (!f) return;
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goProDatabase()">▶ Base de données</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(f.nom)}</span>`;
+  document.getElementById('tb-t').textContent = f.nom;
+  show('v-prod-database-table');
+  renderDatabaseTable(f);
+}
+
+function renderDatabaseTable(f) {
+  const wrap = document.getElementById('prod-db-table-wrap');
+  const color = f.couleur || '#3b82f6';
+  const fields = (f.fields || []).filter(x => !['separator','image','titre','son','video'].includes(x.type));
+  // Fusionner DB_DATA et SUBMISSIONS_DATA pour ce form
+  const dbRows = DB_DATA[f.id] || [];
+  const subRows = SUBMISSIONS_DATA.filter(s => s.formId === f.id);
+  // Dédupliquer : on prend les submissions comme source de vérité
+  const allRows = subRows.length ? subRows.map(s => ({
+    id: s.id, dateLabel: s.dateLabel, user: s.utilisateur, values: s.values
+  })) : dbRows;
+  const total = allRows.length;
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <div>
+      <div style="font-size:17px;font-weight:800">${h(f.nom)}</div>
+      <div style="font-size:12px;color:var(--tl);margin-top:2px" id="db-row-count">${total.toLocaleString()} ligne${total > 1 ? 's' : ''} · ${fields.length} colonne${fields.length > 1 ? 's' : ''}</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Filtrer..." oninput="filterDatabaseTable(${f.id}, this.value)" style="width:180px"></div>
+      <button class="btn pill" onclick="exportDatabaseCSV(${f.id})">📤 Exporter CSV</button>
+    </div>
+  </div>`;
+
+  if (!fields.length) {
+    wrap.innerHTML = html + `<div style="text-align:center;padding:60px;color:var(--tl);background:#fff;border-radius:12px;border:1.5px dashed var(--bd)">Ce formulaire n'a aucun champ de données.</div>`;
+    return;
+  }
+  html += renderDbTableHtml(f, fields, allRows, color);
+  wrap.innerHTML = html;
+}
+
+function renderDbTableHtml(f, fields, rows, color) {
+  if (!rows.length) {
+    return `<div style="text-align:center;padding:60px;color:var(--tl);background:#fff;border-radius:12px;border:1.5px dashed var(--bd)">
+      <div style="font-size:32px;margin-bottom:10px">📭</div>Aucune donnée. Remplissez le formulaire en production.</div>`;
+  }
+  let html = `<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);overflow:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+      <thead>
+        <tr style="background:var(--bg);border-bottom:2px solid var(--bd)">
+          <th style="padding:10px 14px;text-align:left;color:var(--tl);white-space:nowrap;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px">#</th>
+          <th style="padding:10px 14px;text-align:left;color:var(--tl);white-space:nowrap;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px">Date</th>
+          <th style="padding:10px 14px;text-align:left;color:var(--tl);white-space:nowrap;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px">Utilisateur</th>`;
+  fields.forEach(fld => {
+    const fd = FD[fld.type] || {ic:'?', bg:'#6b7280'};
+    html += `<th style="padding:10px 14px;text-align:left;white-space:nowrap;min-width:120px">
+      <div style="display:flex;align-items:center;gap:6px">
+        <div style="width:18px;height:18px;border-radius:4px;background:${fd.bg};display:flex;align-items:center;justify-content:center;font-size:9px;color:#fff;flex-shrink:0">${fd.ic}</div>
+        <span style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px">${h(fld.nom)}</span>
+      </div>
+    </th>`;
+  });
+  html += `</tr></thead><tbody>`;
+  rows.forEach((row, i) => {
+    const bg = i % 2 ? 'var(--bg)' : '#fff';
+    html += `<tr style="border-bottom:1px solid var(--bd);background:${bg}" onmouseover="this.style.background='var(--pl)'" onmouseout="this.style.background='${bg}'">
+      <td style="padding:9px 14px;color:var(--tl);font-family:'DM Mono',monospace;font-size:11px">${i + 1}</td>
+      <td style="padding:9px 14px;color:var(--tl);white-space:nowrap;font-size:12px">${row.dateLabel}</td>
+      <td style="padding:9px 14px;font-weight:600;white-space:nowrap">${h(row.user)}</td>`;
+    fields.forEach(fld => {
+      const v = row.values[fld.id];
+      const val = Array.isArray(v) ? v.join(', ') : (v !== undefined && v !== '' ? v : '—');
+      const isEmpty = val === '—';
+      html += `<td style="padding:9px 14px;color:${isEmpty ? 'var(--tl)' : 'var(--tx)'};max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(String(val))}</td>`;
+    });
+    html += `</tr>`;
+  });
+  html += `</tbody></table></div>`;
+  return html;
+}
+
+function filterDatabaseTable(formId, q) {
+  const f = FORMS_DATA.find(x => x.id === formId); if (!f) return;
+  const fields = (f.fields || []).filter(x => !['separator','image','titre','son','video'].includes(x.type));
+  const subRows = SUBMISSIONS_DATA.filter(s => s.formId === formId);
+  const allRows = subRows.map(s => ({id:s.id, dateLabel:s.dateLabel, user:s.utilisateur, values:s.values}));
+  const lower = q.toLowerCase();
+  const filtered = allRows.filter(row =>
+    row.user.toLowerCase().includes(lower) ||
+    row.dateLabel.toLowerCase().includes(lower) ||
+    fields.some(fld => {const v = row.values[fld.id]; return String(Array.isArray(v)?v.join(', '):(v||'')).toLowerCase().includes(lower);})
+  );
+  const color = f.couleur || '#3b82f6';
+  const cnt = document.getElementById('db-row-count');
+  if (cnt) cnt.textContent = `${filtered.length.toLocaleString()} ligne${filtered.length > 1 ? 's' : ''} · ${fields.length} colonne${fields.length > 1 ? 's' : ''}`;
+  const wrap = document.getElementById('prod-db-table-wrap');
+  // Remplacer seulement le tableau (après les 2 premiers divs)
+  const existing = wrap.querySelector('div:last-child');
+  if (existing) existing.outerHTML = renderDbTableHtml(f, fields, filtered, color);
+}
+
+function exportDatabaseCSV(formId) {
+  const f = FORMS_DATA.find(x => x.id === formId); if (!f) return;
+  const fields = (f.fields || []).filter(x => !['separator','image','titre','son','video'].includes(x.type));
+  const rows = SUBMISSIONS_DATA.filter(s => s.formId === formId);
+  const header = ['#', 'Date', 'Utilisateur', ...fields.map(fld => fld.nom)];
+  const lines = rows.map((s, i) => [
+    i + 1, s.dateLabel, s.utilisateur,
+    ...fields.map(fld => { const v = s.values[fld.id]; return Array.isArray(v) ? v.join(', ') : (v || ''); })
+  ]);
+  const csv = [header, ...lines].map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  dl('\ufeff' + csv, `${f.nom.replace(/\s/g,'_')}_export.csv`, 'text/csv;charset=utf-8');
+  toast('s', '📤 Export CSV téléchargé');
 }
 function addComment(instId) {
   const inst = SERVICE_INSTANCES_DATA.find(x => x.id === instId); if (!inst) return;
