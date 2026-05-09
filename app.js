@@ -298,6 +298,27 @@ function resetSubFilters(formId){
   (f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)).forEach(fld=>{const el=document.getElementById('sf-'+fld.id);if(el)el.value='';});
   filterSubs(formId);
 }
+function renderSubTable(f,subs){
+  const fields=(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
+  const wrap=document.getElementById('sub-table-wrap');if(!wrap)return;
+  if(!subs.length){wrap.innerHTML='<div style="text-align:center;padding:60px 20px;color:var(--tl);background:var(--card,#fff);border-radius:12px;border:1.5px dashed var(--bd)"><div style="font-size:32px;margin-bottom:10px">📭</div>Aucune saisie correspondante</div>';return;}
+  let html='<div style="background:var(--card,#fff);border-radius:12px;border:1.5px solid var(--bd);overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
+  html+='<thead><tr style="background:var(--bg);border-bottom:2px solid var(--bd)">';
+  html+='<th style="padding:10px 14px;text-align:left;color:var(--tl);white-space:nowrap">Date</th>';
+  html+='<th style="padding:10px 14px;text-align:left;color:var(--tl);white-space:nowrap">Utilisateur</th>';
+  fields.forEach(fld=>{html+='<th style="padding:10px 14px;text-align:left;color:var(--tl);white-space:nowrap">'+h(fld.nom)+'</th>';});
+  html+='</tr></thead><tbody>';
+  subs.forEach((s,i)=>{
+    const bg=i%2?'var(--bg)':'var(--card,#fff)';
+    html+='<tr onclick="openSubmission('+s.id+')" style="cursor:pointer;border-bottom:1px solid var(--bd);background:'+bg+'" onmouseover="this.style.background=\'var(--pl)\'" onmouseout="this.style.background=\''+bg+'\'">';
+    html+='<td style="padding:10px 14px;color:var(--tl);white-space:nowrap">'+s.dateLabel+'</td>';
+    html+='<td style="padding:10px 14px;font-weight:600;color:var(--tx)">'+h(s.utilisateur)+'</td>';
+    fields.forEach(fld=>{const v=s.values[fld.id];html+='<td style="padding:10px 14px;color:var(--tx)">'+h(Array.isArray(v)?v.join(', '):(v||'—'))+'</td>';});
+    html+='</tr>';
+  });
+  html+='</tbody></table></div>';
+  wrap.innerHTML=html;
+}
 function openSubmission(id){
   const s=SUBMISSIONS_DATA.find(x=>x.id===id);if(!s)return;
   const f=FORMS_DATA.find(x=>x.id===s.formId);if(!f)return;
