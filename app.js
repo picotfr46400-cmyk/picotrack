@@ -73,6 +73,34 @@ const FORMS_DATA=[
 let SUBMISSIONS_DATA=[];
 let DB_DATA = {}; // { formId: [{id, date, user, values}] }
 let DATABASES_DATA = []; // Bases autonomes : [{id, nom, couleur, columns:[{id,nom,type}], rows:[]}]
+let USERS_DATA = [
+  {id:1,nom:'Picot Clément',   initiales:'CP',email:'clement.picot@picotrack.fr',  roleId:1,actif:true},
+  {id:2,nom:'Alexandra Domens',initiales:'AD',email:'alexandra.domens@edf.fr',      roleId:2,actif:true},
+  {id:3,nom:'Anais Laffargue', initiales:'AL',email:'anais.laffargue@edf.fr',       roleId:3,actif:true},
+  {id:4,nom:'Alain Tourneur',  initiales:'AT',email:'alain.tourneur@edf.fr',        roleId:3,actif:true},
+  {id:5,nom:'Agnes Vinsonneau',initiales:'AV',email:'agnes.vinsonneau@edf.fr',      roleId:3,actif:true},
+  {id:6,nom:'Andy Logghe',     initiales:'AN',email:'andy.logghe@edf.fr',           roleId:2,actif:true},
+  {id:7,nom:'Celine Genet',    initiales:'CG',email:'celine.genet@edf.fr',          roleId:3,actif:true},
+  {id:8,nom:'Marc Dupont',     initiales:'MD',email:'marc.dupont@edf.fr',           roleId:3,actif:false},
+  {id:9,nom:'Sophie Bernard',  initiales:'SB',email:'sophie.bernard@edf.fr',        roleId:2,actif:true},
+  {id:10,nom:'Paul Martin',    initiales:'PM',email:'paul.martin@edf.fr',           roleId:3,actif:true},
+];
+let ROLES_DATA = [
+  {id:1,nom:'Administrateur',desc:'Accès complet à la plateforme',permissions:{dashboard:'admin',users:'admin',roles:'admin',forms_admin:'admin',services_admin:'admin',api:'admin',forms_prod:'write',services_prod:'write',database:'write'}},
+  {id:2,nom:'Manager',       desc:'Pilotage des opérations',        permissions:{dashboard:'read', users:'read', roles:'none', forms_admin:'read', services_admin:'read', api:'none', forms_prod:'write',services_prod:'write',database:'read'}},
+  {id:3,nom:'Opérateur',     desc:'Saisie terrain',                 permissions:{dashboard:'none',users:'none', roles:'none', forms_admin:'none', services_admin:'none',api:'none', forms_prod:'write',services_prod:'read', database:'none'}},
+];
+const PERM_MODULES = [
+  {id:'dashboard',      label:'Dashboard',              section:'Administration'},
+  {id:'users',          label:'Utilisateurs',           section:'Administration'},
+  {id:'roles',          label:'Rôles',                  section:'Administration'},
+  {id:'forms_admin',    label:'Formulaires (config)',   section:'Administration'},
+  {id:'services_admin', label:'Services (config)',      section:'Administration'},
+  {id:'api',            label:'API & Intégrations',     section:'Administration'},
+  {id:'forms_prod',     label:'Formulaires (saisie)',   section:'Production'},
+  {id:'services_prod',  label:'Services (opérationnel)',section:'Production'},
+  {id:'database',       label:'Base de données',        section:'Production'},
+];
 // ══ ÉTAT ══
 let curForm=null,filtered=[...FORMS_DATA],sortCol='nom',sortDir=1;
 let pageSize=10,curPage=1;
@@ -1194,8 +1222,9 @@ ${ef.type==='update_db_row'? renderDbEffectHtml(i,ei,ef) :''}
   </div>`;
 }
 function updateEffect(ai,ei,key,val){if(!svcBuilderActions[ai].effects)svcBuilderActions[ai].effects=[];const ef=svcBuilderActions[ai].effects[ei];if(!ef)return;if(key==='type'){ef.type=val;ef.config={};renderSvcTab();}else if(key==='targetStatusId')ef.config={targetStatusId:val};else if(key==='formId'){
-  if(ef.type==='update_db_row'){ef.config={formId:+val,matchCriteria:ef.config?.matchCriteria||[],updates:ef.config?.updates||[]};renderSvcTab();}
-  else ef.config={formId:+val};
+    const fid = String(val).startsWith('sdb_') ? val : +val;
+    if(ef.type==='update_db_row'){ef.config={formId:fid,matchCriteria:[],updates:[]};renderSvcTab();}
+    else ef.config={formId:fid};
   }
 }
 function addEffect(ai){(svcBuilderActions[ai].effects=svcBuilderActions[ai].effects||[{type:'change_status',config:{}}]).push({type:'change_status',config:{}});renderSvcTab();}
@@ -1509,24 +1538,40 @@ function executeAction(instId, actionId) {
     else if(ef.type==='send_email'){inst.events.push({id:Date.now(),type:'email_sent',actor:'Picot Clément',at:now,payload:{}});toast('s','📧 Email envoyé');}
     else if(ef.type==='edit_form'){toast('i','ℹ️ Disponible en V2');}
     else if(ef.type==='update_db_row'){
-  const targetFid=ef.config?.formId;
-  if(!targetFid){toast('e','⚠️ Base non configurée');return;}
-  const svcSub=SUBMISSIONS_DATA.find(s=>s.id===inst.submissionId);
-  const criteria=ef.config?.matchCriteria||[];
-  const updates=ef.config?.updates||[];
-  if(!updates.length){toast('w','⚠️ Aucune modification définie');return;}
-  const targetRows=SUBMISSIONS_DATA.filter(s=>s.formId===targetFid);
-  const matched=criteria.length?targetRows.filter(row=>criteria.every(c=>{
-    if(!c.dbFieldId)return true;
-    const dbVal=String(row.values[c.dbFieldId]||'');
-    const srcVal=c.sourceType==='form_field'?String(svcSub?.values[c.sourceFieldId]||''):String(c.value||'');
-    return dbVal===srcVal;
-  })):targetRows;
-  if(!matched.length){toast('w','⚠️ Aucune ligne correspondante');return;}
-  matched.forEach(row=>{updates.forEach(u=>{if(!u.dbFieldId)return;row.values[u.dbFieldId]=u.sourceType==='form_field'?(svcSub?.values[u.sourceFieldId]||''):(u.value||'');});});
-  inst.events.push({id:Date.now(),type:'db_updated',actor:'Picot Clément',at:now,payload:{db:FORMS_DATA.find(x=>x.id===targetFid)?.nom,lignes:matched.length}});
-  toast('s',`🗃 ${matched.length} ligne${matched.length>1?'s':''} mise${matched.length>1?'s':''} à jour`);
-}
+      const targetFid=ef.config?.formId;
+      if(!targetFid){toast('e','⚠️ Base non configurée');return;}
+      const svcSub=SUBMISSIONS_DATA.find(s=>s.id===inst.submissionId);
+      const criteria=ef.config?.matchCriteria||[];
+      const updates=ef.config?.updates||[];
+      if(!updates.length){toast('w','⚠️ Aucune modification définie');return;}
+      const isSdb=String(targetFid).startsWith('sdb_');
+      let matched=[], dbName='';
+      if(isSdb){
+        const sdb=DATABASES_DATA.find(x=>x.id===parseInt(String(targetFid).replace('sdb_','')));
+        if(!sdb){toast('e','⚠️ Base introuvable');return;}
+        dbName=sdb.nom;
+        matched=criteria.length?sdb.rows.filter(row=>criteria.every(c=>{
+          if(!c.dbFieldId)return true;
+          const dbVal=String(row.values[c.dbFieldId]||'');
+          const srcVal=c.sourceType==='form_field'?String(svcSub?.values[c.sourceFieldId]||''):String(c.value||'');
+          return dbVal===srcVal;
+        })):sdb.rows;
+        if(!matched.length){toast('w','⚠️ Aucune ligne correspondante');return;}
+        matched.forEach(row=>{updates.forEach(u=>{if(!u.dbFieldId)return;row.values[u.dbFieldId]=u.sourceType==='form_field'?(svcSub?.values[u.sourceFieldId]||''):(u.value||'');});});
+      } else {
+        dbName=FORMS_DATA.find(x=>x.id===targetFid)?.nom||'';
+        const targetRows=SUBMISSIONS_DATA.filter(s=>s.formId===targetFid);
+        matched=criteria.length?targetRows.filter(row=>criteria.every(c=>{
+          if(!c.dbFieldId)return true;
+          const dbVal=String(row.values[c.dbFieldId]||'');
+          const srcVal=c.sourceType==='form_field'?String(svcSub?.values[c.sourceFieldId]||''):String(c.value||'');
+          return dbVal===srcVal;
+        })):targetRows;
+        if(!matched.length){toast('w','⚠️ Aucune ligne correspondante');return;}
+        matched.forEach(row=>{updates.forEach(u=>{if(!u.dbFieldId)return;row.values[u.dbFieldId]=u.sourceType==='form_field'?(svcSub?.values[u.sourceFieldId]||''):(u.value||'');});});
+      }
+      inst.events.push({id:Date.now(),type:'db_updated',actor:'Picot Clément',at:now,payload:{db:dbName,lignes:matched.length}});
+      toast('s',`🗃 ${matched.length} ligne${matched.length>1?'s':''} mise${matched.length>1?
   });
   const isKanban=document.getElementById('v-service-kanban')?.classList.contains('on');
   if(isKanban)renderKanbanBoard(svc,curKanbanGroupId);else renderInstanceDetail(inst,svc);
@@ -1677,6 +1722,31 @@ function renderStandaloneDBTable(db) {
   const wrap = document.getElementById('prod-db-table-wrap');
   const color = db.couleur || '#3b82f6';
   const total = db.rows.length;
+  const activeKey = API_CONFIG.keys.find(k => k.active);
+  const apiUrl = `https://api.picotrack.fr/v1/database/sdb_${db.id}`;
+  const apiBlock = `<div id="sdb-api-block-${db.id}" style="display:none;background:#fff;border:1.5px solid var(--bd);border-radius:12px;padding:18px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:8px"><div style="width:28px;height:28px;border-radius:7px;background:var(--pl);display:flex;align-items:center;justify-content:center;font-size:14px">🔌</div><div style="font-size:13px;font-weight:800">Accès API</div></div>
+      <span style="font-size:11px;padding:3px 10px;border-radius:20px;background:${activeKey?'var(--sl)':'var(--dl)'};color:${activeKey?'var(--s)':'var(--d)'};font-weight:700">${activeKey?'✓ Clé active':'⚠ Aucune clé active'}</span>
+    </div>
+    <div style="margin-bottom:12px">
+      <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Endpoint</div>
+      <div style="display:flex;align-items:center;gap:8px;background:var(--bg);border-radius:8px;padding:10px 13px">
+        <span style="padding:2px 8px;border-radius:5px;background:#3b82f618;color:#3b82f6;font-size:11px;font-weight:800;font-family:'DM Mono',monospace;flex-shrink:0">GET</span>
+        <code style="font-family:'DM Mono',monospace;font-size:12.5px;color:var(--tx);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${apiUrl}</code>
+        <button onclick="copyKey('${apiUrl}')" style="padding:4px 10px;border-radius:6px;border:1.5px solid var(--bd);background:#fff;font-size:11px;font-weight:700;cursor:pointer;color:var(--tm);font-family:inherit;flex-shrink:0">📋 Copier</button>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">cURL</div>
+      <div style="background:#1e293b;border-radius:8px;padding:11px 14px;display:flex;align-items:flex-start;gap:10px">
+        <code style="font-family:'DM Mono',monospace;font-size:11.5px;color:#e2e8f0;flex:1;line-height:1.6;white-space:pre-wrap">curl -X GET "${apiUrl}" \\
+  -H "Authorization: Bearer ${activeKey?activeKey.key.substring(0,20)+'...':'&lt;votre-clé&gt;'}" \\
+  -H "Accept: application/json"</code>
+        <button onclick="copyKey('curl -X GET &quot;${apiUrl}&quot; -H &quot;Authorization: Bearer ${activeKey?activeKey.key:'<clé>'}&quot;')" style="padding:4px 10px;border-radius:6px;border:1.5px solid #334155;background:#334155;font-size:11px;font-weight:700;cursor:pointer;color:#94a3b8;font-family:inherit;flex-shrink:0;margin-top:2px">📋</button>
+      </div>
+    </div>
+  </div>`;
   wrap.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
       <div>
@@ -1687,9 +1757,11 @@ function renderStandaloneDBTable(db) {
         <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Filtrer..." oninput="_filterSDB(${db.id},this.value)" style="width:160px"></div>
         <button class="btn bp pill" onclick="addManualRowModal(${db.id})">＋ Ligne</button>
         <button class="btn pill" onclick="exportStandaloneCSV(${db.id})">📤 CSV</button>
-        <button class="btn pill" onclick="createDatabaseModal(${db.id})">⚙ Colonnes</button>
+       <button class="btn pill" onclick="createDatabaseModal(${db.id})">⚙ Colonnes</button>
+        <button class="btn pill" id="sdb-api-btn-${db.id}" onclick="_toggleSdbApi(${db.id})">🔌 API</button>
       </div>
     </div>
+    ${apiBlock}
     <div id="sdb-table-${db.id}">${_renderSDBTable(db, db.rows)}</div>`;
 }
 
@@ -1719,7 +1791,14 @@ function _renderSDBTable(db, rows) {
       }).join('')}</tbody>
     </table></div>`;
 }
-
+function _toggleSdbApi(dbId) {
+  const block = document.getElementById('sdb-api-block-'+dbId);
+  const btn   = document.getElementById('sdb-api-btn-'+dbId);
+  if (!block) return;
+  const isOpen = block.style.display !== 'none';
+  block.style.display = isOpen ? 'none' : 'block';
+  if (btn) { btn.style.background=isOpen?'':'var(--p)'; btn.style.color=isOpen?'':'#fff'; btn.style.borderColor=isOpen?'':'var(--p)'; }
+}
 function _filterSDB(dbId, q) {
   const db = DATABASES_DATA.find(x=>x.id===dbId); if (!db) return;
   const lower = q.toLowerCase();
@@ -2043,50 +2122,16 @@ function exportDatabaseCSV(formId) {
 function renderDbEffectHtml(ai,ei,ef){
   const svcForm=svcBuilderFormId?FORMS_DATA.find(x=>x.id===svcBuilderFormId):null;
   const svcFields=svcForm?(svcForm.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)):[];
-  const targetForm=ef.config?.formId?FORMS_DATA.find(x=>x.id===ef.config.formId):null;
-  const dbFields=targetForm?(targetForm.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)):[];
-  const fOpts=FORMS_DATA.filter(f=>f.actif!==false).map(f=>`<option value="${f.id}" ${ef.config?.formId===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
-  const dbFOpts=(sel)=>dbFields.map(f=>`<option value="${f.id}" ${sel===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
-  const svcFOpts=(sel)=>svcFields.map(f=>`<option value="${f.id}" ${sel===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
-  const criteria=ef.config?.matchCriteria||[];const updates=ef.config?.updates||[];
-  let html=`<div style="margin-top:6px">
-    <div class="fl2" style="margin-bottom:4px">Base de données cible</div>
-    <select class="ci" onchange="updateEffect(${ai},${ei},'formId',+this.value)">
-      <option value="">— Choisir —</option>${fOpts}
-    </select></div>`;
-  if(!targetForm)return html;
-  // Critères
-  html+=`<div style="margin-top:10px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">🔍 Critères (identifier la ligne)</div>`;
-  criteria.forEach((c,ci)=>{html+=`<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:7px;padding:7px 8px">
-    <select class="ci" style="flex:1;font-size:11.5px" onchange="updateMatchCriteria(${ai},${ei},${ci},'dbFieldId',this.value)"><option value="">Colonne DB</option>${dbFOpts(c.dbFieldId)}</select>
-    <span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span>
-    <select class="ci" style="width:120px;font-size:11.5px" onchange="updateMatchCriteria(${ai},${ei},${ci},'sourceType',this.value)">
-      <option value="form_field" ${c.sourceType==='form_field'?'selected':''}>Champ actuel</option>
-      <option value="fixed" ${c.sourceType==='fixed'?'selected':''}>Valeur fixe</option>
-    </select>
-    ${c.sourceType==='form_field'
-      ?`<select class="ci" style="flex:1;font-size:11.5px" onchange="updateMatchCriteria(${ai},${ei},${ci},'sourceFieldId',this.value)"><option value="">Champ</option>${svcFOpts(c.sourceFieldId)}</select>`
-      :`<input class="ci" style="flex:1;font-size:11.5px" value="${h(c.value||'')}" placeholder="Valeur..." oninput="updateMatchCriteria(${ai},${ei},${ci},'value',this.value)">`}
-    <button class="ic-btn" onclick="removeMatchCriteria(${ai},${ei},${ci})">✕</button>
-  </div>`;});
-  html+=`<button style="width:100%;padding:5px;border-radius:6px;border:1.5px dashed var(--bd);background:transparent;color:var(--p);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" onclick="addMatchCriteria(${ai},${ei})">＋ Ajouter un critère</button></div>`;
-  // Modifications
-  html+=`<div style="margin-top:10px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">✏️ Modifications à apporter</div>`;
-  updates.forEach((u,ui)=>{html+=`<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;background:#f0fdf4;border-radius:7px;padding:7px 8px">
-    <select class="ci" style="flex:1;font-size:11.5px" onchange="updateDbUpdate(${ai},${ei},${ui},'dbFieldId',this.value)"><option value="">Colonne à modifier</option>${dbFOpts(u.dbFieldId)}</select>
-    <span style="font-size:11px;color:var(--s);flex-shrink:0">→</span>
-    <select class="ci" style="width:120px;font-size:11.5px" onchange="updateDbUpdate(${ai},${ei},${ui},'sourceType',this.value)">
-      <option value="fixed" ${u.sourceType==='fixed'?'selected':''}>Valeur fixe</option>
-      <option value="form_field" ${u.sourceType==='form_field'?'selected':''}>Champ actuel</option>
-    </select>
-    ${u.sourceType==='form_field'
-      ?`<select class="ci" style="flex:1;font-size:11.5px" onchange="updateDbUpdate(${ai},${ei},${ui},'sourceFieldId',this.value)"><option value="">Champ</option>${svcFOpts(u.sourceFieldId)}</select>`
-      :`<input class="ci" style="flex:1;font-size:11.5px" value="${h(u.value||'')}" placeholder="Nouvelle valeur..." oninput="updateDbUpdate(${ai},${ei},${ui},'value',this.value)">`}
-    <button class="ic-btn" onclick="removeDbUpdate(${ai},${ei},${ui})">✕</button>
-  </div>`;});
-  html+=`<button style="width:100%;padding:5px;border-radius:6px;border:1.5px dashed var(--s);background:transparent;color:var(--s);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" onclick="addDbUpdate(${ai},${ei})">＋ Ajouter une modification</button></div>`;
-  return html;
-}
+  // Support bases autonomes (sdb_ID) et formulaires (ID numérique)
+  const isSdb = String(ef.config?.formId||'').startsWith('sdb_');
+  const targetForm = !isSdb && ef.config?.formId ? FORMS_DATA.find(x=>x.id===ef.config.formId) : null;
+  const targetSDB  = isSdb ? DATABASES_DATA.find(x=>x.id===parseInt(String(ef.config.formId).replace('sdb_',''))) : null;
+  const dbFields = targetForm ? (targetForm.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type))
+                 : targetSDB  ? targetSDB.columns : [];
+  const fOpts = [
+    `<optgroup label="Bases autonomes">${DATABASES_DATA.map(db=>`<option value="sdb_${db.id}" ${ef.config?.formId==='sdb_'+db.id?'selected':''}>${h(db.nom)}</option>`).join('')}</optgroup>`,
+    `<optgroup label="Liées aux formulaires">${FORMS_DATA.filter(f=>f.actif!==false).map(f=>`<option value="${f.id}" ${ef.config?.formId===f.id?'selected':''}>${h(f.nom)}</option>`).join('')}</optgroup>`
+  ].join('');
 function addMatchCriteria(ai,ei){const ef=svcBuilderActions[ai].effects[ei];if(!ef.config)ef.config={};if(!ef.config.matchCriteria)ef.config.matchCriteria=[];ef.config.matchCriteria.push({dbFieldId:'',sourceType:'form_field',sourceFieldId:'',value:''});renderSvcTab();}
 function removeMatchCriteria(ai,ei,ci){svcBuilderActions[ai].effects[ei].config.matchCriteria.splice(ci,1);renderSvcTab();}
 function updateMatchCriteria(ai,ei,ci,key,val){const c=svcBuilderActions[ai].effects[ei].config.matchCriteria[ci];if(!c)return;c[key]=val;if(key==='sourceType')renderSvcTab();}
