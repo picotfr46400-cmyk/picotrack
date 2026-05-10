@@ -1142,6 +1142,10 @@ function _setDeclMapping(i, colId, fieldId) {
   const idx = m.findIndex(x=>x.colId===colId);
   if (fieldId) { if(idx>=0) m[idx].fieldId=fieldId; else m.push({colId,fieldId}); }
   else { if(idx>=0) m.splice(idx,1); }
+  const m = declItems[i].config.mappings;
+  const idx = m.findIndex(x=>x.colId===colId);
+  if (fieldId) { if(idx>=0) m[idx].fieldId=fieldId; else m.push({colId,fieldId}); }
+  else { if(idx>=0) m.splice(idx,1); }
 }
 function toggleHistoSub(tog){tog.classList.toggle('on');tog.classList.toggle('off');document.getElementById('sub-histo').classList.toggle('show',tog.classList.contains('on'));}
 // ════════════════════════════════════════════════════════
