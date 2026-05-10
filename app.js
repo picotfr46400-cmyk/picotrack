@@ -489,8 +489,20 @@ function submitSaisie(){
   // Déclencheur base de données dynamique
   const _dbTrigger = declItems.find(d => d.type === 'db_row');
   if (_dbTrigger) {
-    if (!DB_DATA[f.id]) DB_DATA[f.id] = [];
-    DB_DATA[f.id].push({id: Date.now(), date: new Date().toISOString(), dateLabel: new Date().toLocaleString('fr-FR'), user: 'Picot Clément', values: {...saisieValues}});
+    const cfg = _dbTrigger.config || {};
+    if (cfg.dbId) {
+      // Écriture dans une base autonome avec mapping
+      const targetDB = DATABASES_DATA.find(x=>x.id===cfg.dbId);
+      if (targetDB) {
+        const mappedValues = {};
+        (cfg.mappings||[]).forEach(m=>{ if(saisieValues[m.fieldId]!==undefined) mappedValues[m.colId]=saisieValues[m.fieldId]; });
+        targetDB.rows.push({id:Date.now(),date:new Date().toISOString(),dateLabel:new Date().toLocaleString('fr-FR'),source:'form:'+f.nom,values:mappedValues});
+      }
+    } else {
+      // Fallback : écriture dans DB_DATA liée au formulaire (ancien comportement)
+      if (!DB_DATA[f.id]) DB_DATA[f.id] = [];
+      DB_DATA[f.id].push({id:Date.now(),date:new Date().toISOString(),dateLabel:new Date().toLocaleString('fr-FR'),user:'Picot Clément',values:{...saisieValues}});
+    }
   }
   SUBMISSIONS_DATA.push({id:Date.now(),formId:f.id,formNom:f.nom,date:new Date().toISOString(),dateLabel:new Date().toLocaleString('fr-FR'),utilisateur:'Picot Clément',values:{...saisieValues}});
   f.resp=(f.resp||0)+1;
@@ -769,9 +781,52 @@ function renderDecl(){
   const area=document.getElementById('barea-decl');if(!area)return;
   let html=`<div style="padding:16px">`;
   if(!declItems.length)html+=`<div style="text-align:center;padding:32px;color:var(--tl)"><div style="font-size:28px;margin-bottom:8px;opacity:.3">⚡</div><div style="font-size:13px">Aucun déclencheur configuré</div></div>`;
-  else html+=declItems.map((d,i)=>{const def=DECL_ACTIONS.find(a=>a.type===d.type)||{ic:'?',label:d.type};return`<div style="border:1.5px solid var(--bd);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px"><span style="font-size:18px">${def.ic}</span><div style="flex:1"><div style="font-size:13px;font-weight:700">${def.label}</div></div><button class="ic-btn" onclick="declItems.splice(${i},1);renderDecl()">🗑</button></div>`;}).join('');
+  else html+=declItems.map((d,i)=>{
+    const def=DECL_ACTIONS.find(a=>a.type===d.type)||{ic:'?',label:d.type};
+    let extra='';
+    if(d.type==='db_row'){
+      const dbOpts=DATABASES_DATA.map(db=>`<option value="sdb_${db.id}" ${d.config?.dbId===db.id?'selected':''}>${h(db.nom)}</option>`).join('');
+      const selectedDb = d.config?.dbId ? DATABASES_DATA.find(x=>x.id===d.config.dbId) : null;
+      const mappingHtml = selectedDb ? selectedDb.columns.map(col=>{
+        const fOpts=builderFields.filter(f=>!['separator','image','titre'].includes(f.type)).map(f=>`<option value="${f.id}" ${d.config?.mappings?.find(m=>m.colId===col.id)?.fieldId===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
+        return `<div style="display:grid;grid-template-columns:1fr 20px 1fr;gap:6px;align-items:center;margin-bottom:5px">
+          <div style="font-size:11.5px;font-weight:600;background:var(--bg);border-radius:6px;padding:5px 9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(col.nom)}</div>
+          <div style="text-align:center;color:var(--tl);font-size:12px">←</div>
+          <select class="ci" style="font-size:11.5px" onchange="_setDeclMapping(${i},'${col.id}',this.value)">
+            <option value="">— Aucun —</option>${fOpts}
+          </select>
+        </div>`;
+      }).join('') : '';
+      extra=`<div style="margin-top:10px;padding:10px 12px;background:var(--bg);border-radius:8px">
+        <div class="fl2" style="margin-bottom:6px">Base cible</div>
+        <select class="ci" style="width:100%;margin-bottom:${selectedDb?'10px':'0'}" onchange="_setDeclDB(${i},this.value)">
+          <option value="">— Choisir une base autonome —</option>${dbOpts}
+        </select>
+        ${selectedDb?`<div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Mapping colonne ← champ formulaire</div>${mappingHtml}`:''}
+      </div>`;
+    }
+    return`<div style="border:1.5px solid var(--bd);border-radius:10px;padding:12px 14px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-size:18px">${def.ic}</span><div style="flex:1;font-size:13px;font-weight:700">${def.label}</div><button class="ic-btn" onclick="declItems.splice(${i},1);renderDecl()">🗑</button></div>
+      ${extra}
+    </div>`;
+  }).join('');
   html+=`<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px">${DECL_ACTIONS.map(a=>`<button class="btn btn-sm" onclick="declItems.push({type:'${a.type}',desc:''});renderDecl();toast('i','${a.label} ajouté')">${a.ic} ${a.label}</button>`).join('')}</div></div>`;
   area.innerHTML=html;
+}
+function _setDeclDB(i, val) {
+  if (!declItems[i].config) declItems[i].config = {};
+  if (val.startsWith('sdb_')) { declItems[i].config.dbId = parseInt(val.replace('sdb_','')); }
+  else { delete declItems[i].config.dbId; }
+  declItems[i].config.mappings = [];
+  renderDecl();
+}
+function _setDeclMapping(i, colId, fieldId) {
+  if (!declItems[i].config) declItems[i].config = {};
+  if (!declItems[i].config.mappings) declItems[i].config.mappings = [];
+  const m = declItems[i].config.mappings;
+  const idx = m.findIndex(x=>x.colId===colId);
+  if (fieldId) { if(idx>=0) m[idx].fieldId=fieldId; else m.push({colId,fieldId}); }
+  else { if(idx>=0) m.splice(idx,1); }
 }
 function toggleHistoSub(tog){tog.classList.toggle('on');tog.classList.toggle('off');document.getElementById('sub-histo').classList.toggle('show',tog.classList.contains('on'));}
 // ════════════════════════════════════════════════════════
@@ -1546,6 +1601,187 @@ function buildKanbanCardHtml(inst,svc,status){
     </div>
   </div>`;
 }
+// ══ BASES AUTONOMES ══
+function createDatabaseModal(editId) {
+  const db = editId ? DATABASES_DATA.find(x=>x.id===editId) : null;
+  const TYPES = [{v:'text',l:'Texte'},{v:'number',l:'Nombre'},{v:'date',l:'Date'},{v:'boolean',l:'Oui/Non'},{v:'select',l:'Liste'}];
+  const modal = document.createElement('div');
+  modal.id = 'db-create-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999';
+  modal._cols = db ? db.columns.map(c=>({...c})) : [{id:'col_'+Date.now(),nom:'',type:'text'}];
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:16px;width:560px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="padding:18px 20px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:15px;font-weight:800">${editId?'Modifier':'Créer'} une base de données</div>
+        <button onclick="document.getElementById('db-create-modal').remove()" style="border:none;background:none;font-size:22px;cursor:pointer;color:var(--tl)">×</button>
+      </div>
+      <div style="padding:20px">
+        <div class="fl2">Nom <span class="req">*</span></div>
+        <input id="db-modal-nom" class="fi" placeholder="Ex : Stock matériel" value="${h(db?.nom||'')}" style="margin-bottom:14px">
+        <div class="fl2" style="margin-bottom:6px">Couleur</div>
+        <div class="color-row" id="db-modal-colors" style="margin-bottom:16px">
+          ${['#3b82f6','#ef4444','#10b981','#f59e0b','#8b5cf6','#ec4899','#06b6d4','#84cc16'].map(c=>`<div class="c-swatch${(db?.couleur||'#3b82f6')===c?' on':''}" style="background:${c}" onclick="document.querySelectorAll('#db-modal-colors .c-swatch').forEach(x=>x.classList.remove('on'));this.classList.add('on')"></div>`).join('')}
+        </div>
+        <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Colonnes</div>
+        <div id="db-modal-cols"></div>
+        <button class="btn btn-sm" style="margin-top:4px" onclick="document.getElementById('db-create-modal')._cols.push({id:'col_'+Date.now(),nom:'',type:'text'});_refreshDBCols()">＋ Ajouter une colonne</button>
+      </div>
+      <div style="padding:14px 20px;border-top:1px solid var(--bd);display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="document.getElementById('db-create-modal').remove()">Annuler</button>
+        <button class="btn bp" onclick="saveStandaloneDB(${editId||'null'})">${editId?'Enregistrer':'Créer la base'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  _refreshDBCols();
+}
+
+function _refreshDBCols() {
+  const modal = document.getElementById('db-create-modal'); if (!modal) return;
+  const TYPES = [{v:'text',l:'Texte'},{v:'number',l:'Nombre'},{v:'date',l:'Date'},{v:'boolean',l:'Oui/Non'},{v:'select',l:'Liste'}];
+  document.getElementById('db-modal-cols').innerHTML = modal._cols.map((c,i)=>`
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:7px">
+      <input class="fi" style="flex:1" placeholder="Nom de la colonne" value="${h(c.nom)}" oninput="document.getElementById('db-create-modal')._cols[${i}].nom=this.value">
+      <select class="fi" style="width:110px" onchange="document.getElementById('db-create-modal')._cols[${i}].type=this.value">
+        ${TYPES.map(t=>`<option value="${t.v}" ${c.type===t.v?'selected':''}>${t.l}</option>`).join('')}
+      </select>
+      <button onclick="document.getElementById('db-create-modal')._cols.splice(${i},1);_refreshDBCols()" style="border:none;background:none;cursor:pointer;color:var(--tl);font-size:16px;padding:0 4px">🗑</button>
+    </div>`).join('');
+}
+
+function saveStandaloneDB(editId) {
+  const modal = document.getElementById('db-create-modal');
+  const nom = document.getElementById('db-modal-nom').value.trim();
+  if (!nom) { toast('e','⚠ Nom requis'); return; }
+  const cols = (modal._cols||[]).filter(c=>c.nom.trim());
+  if (!cols.length) { toast('e','⚠ Au moins une colonne requise'); return; }
+  const couleur = document.querySelector('#db-modal-colors .c-swatch.on')?.style?.background || '#3b82f6';
+  if (editId) {
+    const db = DATABASES_DATA.find(x=>x.id===editId);
+    if (db) { db.nom=nom; db.couleur=couleur; db.columns=cols; }
+    modal.remove(); toast('s','✅ Base modifiée'); renderStandaloneDBTable(DATABASES_DATA.find(x=>x.id===editId));
+  } else {
+    DATABASES_DATA.push({id:Date.now(),nom,couleur,columns:cols,rows:[]});
+    modal.remove(); toast('s','✅ Base créée'); renderProDatabase();
+  }
+}
+
+function openStandaloneDB(dbId) {
+  const db = DATABASES_DATA.find(x=>x.id===dbId); if (!db) return;
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goProDatabase()">▶ Base de données</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(db.nom)}</span>`;
+  document.getElementById('tb-t').textContent = db.nom;
+  show('v-prod-database-table');
+  renderStandaloneDBTable(db);
+}
+
+function renderStandaloneDBTable(db) {
+  const wrap = document.getElementById('prod-db-table-wrap');
+  const color = db.couleur || '#3b82f6';
+  const total = db.rows.length;
+  wrap.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:17px;font-weight:800">${h(db.nom)}</div>
+        <div style="font-size:12px;color:var(--tl);margin-top:2px">${total} ligne${total>1?'s':''} · ${db.columns.length} colonne${db.columns.length>1?'s':''}</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Filtrer..." oninput="_filterSDB(${db.id},this.value)" style="width:160px"></div>
+        <button class="btn bp pill" onclick="addManualRowModal(${db.id})">＋ Ligne</button>
+        <button class="btn pill" onclick="exportStandaloneCSV(${db.id})">📤 CSV</button>
+        <button class="btn pill" onclick="createDatabaseModal(${db.id})">⚙ Colonnes</button>
+      </div>
+    </div>
+    <div id="sdb-table-${db.id}">${_renderSDBTable(db, db.rows)}</div>`;
+}
+
+function _renderSDBTable(db, rows) {
+  const color = db.couleur || '#3b82f6';
+  if (!rows.length) return `<div style="text-align:center;padding:50px;color:var(--tl);border:2px dashed var(--bd);border-radius:12px"><div style="font-size:28px;opacity:.3;margin-bottom:8px">🗃</div>Aucune ligne — cliquez sur "+ Ligne"</div>`;
+  return `<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);overflow:auto">
+    <table style="width:100%;border-collapse:collapse;min-width:600px">
+      <thead style="background:var(--bg)"><tr>
+        <th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd);white-space:nowrap">#</th>
+        <th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd);white-space:nowrap">Date</th>
+        <th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Source</th>
+        ${db.columns.map(c=>`<th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd);white-space:nowrap">${h(c.nom)}</th>`).join('')}
+        <th style="border-bottom:1.5px solid var(--bd);width:40px"></th>
+      </tr></thead>
+      <tbody>${rows.map((row,i)=>{
+        const src = row.source==='manual'
+          ? `<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#f1f5f9;color:var(--tl)">Manuel</span>`
+          : `<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:${color}18;color:${color}">Formulaire</span>`;
+        return `<tr style="border-bottom:1px solid var(--bg)" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
+          <td style="padding:9px 14px;font-size:12px;color:var(--tl)">${i+1}</td>
+          <td style="padding:9px 14px;font-size:12px;color:var(--tl);white-space:nowrap">${row.dateLabel||''}</td>
+          <td style="padding:9px 14px">${src}</td>
+          ${db.columns.map(c=>{const v=row.values[c.id];return`<td style="padding:9px 14px;font-size:13px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(String(v!==undefined&&v!==''?v:'—'))}</td>`;}).join('')}
+          <td style="padding:9px 14px;text-align:center"><button onclick="deleteStandaloneRow(${db.id},${row.id})" style="border:none;background:none;cursor:pointer;color:var(--tl);font-size:13px;opacity:.4" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.4">🗑</button></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
+}
+
+function _filterSDB(dbId, q) {
+  const db = DATABASES_DATA.find(x=>x.id===dbId); if (!db) return;
+  const lower = q.toLowerCase();
+  const filtered = db.rows.filter(r=>(r.dateLabel||'').toLowerCase().includes(lower)||db.columns.some(c=>String(r.values[c.id]||'').toLowerCase().includes(lower)));
+  const el = document.getElementById('sdb-table-'+dbId);
+  if (el) el.innerHTML = _renderSDBTable(db, filtered);
+}
+
+function deleteStandaloneRow(dbId, rowId) {
+  const db = DATABASES_DATA.find(x=>x.id===dbId); if (!db) return;
+  db.rows = db.rows.filter(r=>r.id!==rowId);
+  renderStandaloneDBTable(db); toast('s','🗑 Ligne supprimée');
+}
+
+function exportStandaloneCSV(dbId) {
+  const db = DATABASES_DATA.find(x=>x.id===dbId); if (!db) return;
+  const header = ['#','Date','Source',...db.columns.map(c=>c.nom)];
+  const lines = db.rows.map((r,i)=>[i+1,r.dateLabel||'',r.source,...db.columns.map(c=>r.values[c.id]||'')]);
+  const csv = [header,...lines].map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  dl('\ufeff'+csv,`${db.nom.replace(/\s/g,'_')}_export.csv`,'text/csv;charset=utf-8');
+  toast('s','📤 Export CSV');
+}
+
+function addManualRowModal(dbId) {
+  const db = DATABASES_DATA.find(x=>x.id===dbId); if (!db) return;
+  const inputFor = c => ({
+    text:    `<input id="mrow-${c.id}" class="fi" placeholder="${h(c.nom)}">`,
+    number:  `<input id="mrow-${c.id}" class="fi" type="number" placeholder="0">`,
+    date:    `<input id="mrow-${c.id}" class="fi" type="date">`,
+    boolean: `<select id="mrow-${c.id}" class="fi"><option value="">—</option><option>Oui</option><option>Non</option></select>`,
+    select:  `<input id="mrow-${c.id}" class="fi" placeholder="Valeur...">`,
+  })[c.type] || `<input id="mrow-${c.id}" class="fi">`;
+
+  const modal = document.createElement('div');
+  modal.id = 'db-row-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999';
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:14px;width:460px;max-width:95vw;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:14px;font-weight:800">Ajouter une ligne — ${h(db.nom)}</div>
+        <button onclick="document.getElementById('db-row-modal').remove()" style="border:none;background:none;font-size:22px;cursor:pointer;color:var(--tl)">×</button>
+      </div>
+      <div style="padding:18px 20px;display:flex;flex-direction:column;gap:12px">
+        ${db.columns.map(c=>`<div><div class="fl2">${h(c.nom)}</div>${inputFor(c)}</div>`).join('')}
+      </div>
+      <div style="padding:12px 20px;border-top:1px solid var(--bd);display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="document.getElementById('db-row-modal').remove()">Annuler</button>
+        <button class="btn bp" onclick="saveManualRow(${dbId})">Enregistrer</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function saveManualRow(dbId) {
+  const db = DATABASES_DATA.find(x=>x.id===dbId); if (!db) return;
+  const values = {};
+  db.columns.forEach(c=>{ const el=document.getElementById('mrow-'+c.id); if(el) values[c.id]=el.value; });
+  db.rows.push({id:Date.now(),date:new Date().toISOString(),dateLabel:new Date().toLocaleString('fr-FR'),source:'manual',values});
+  document.getElementById('db-row-modal')?.remove();
+  toast('s','✅ Ligne ajoutée');
+  renderStandaloneDBTable(db);
+}
 // ══ PRODUCTION : BASE DE DONNÉES DYNAMIQUE ══
 function goProDatabase() {
   document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
@@ -1555,51 +1791,68 @@ function goProDatabase() {
   document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Production / Base de données</span>';
   renderProDatabase(FORMS_DATA);
 }
-
-function renderProDatabase(list) {
-  // Seuls les formulaires ayant le déclencheur db_row OU ayant déjà des données
-  // En prototype : on affiche tous les formulaires actifs (le trigger est dans declItems du builder, pas encore persisté par form)
-  // On affiche les forms actifs et on compte les lignes en DB_DATA
-  const actifs = (list || FORMS_DATA).filter(f => f.actif !== false);
+function renderProDatabase(filterQ) {
+  const q = (filterQ||'').toLowerCase();
   const grid = document.getElementById('prod-db-grid');
-  if (!actifs.length) {
-    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)">
-      <div style="font-size:32px;margin-bottom:12px;opacity:.3">🗃</div>
-      Aucune base disponible. Activez le déclencheur "Base de données" dans le builder d'un formulaire.</div>`;
+  // Bases autonomes
+  const standalones = DATABASES_DATA.filter(db => !q || db.nom.toLowerCase().includes(q));
+  // Bases liées aux formulaires actifs
+  const formDBs = FORMS_DATA.filter(f => f.actif !== false && (!q || f.nom.toLowerCase().includes(q)));
+
+  if (!standalones.length && !formDBs.length) {
+    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;margin-bottom:12px;opacity:.3">🗃</div><div>Aucune base. Créez-en une ou activez le déclencheur "Base de données" dans un formulaire.</div></div>`;
     return;
   }
-  grid.innerHTML = actifs.map(f => {
-    const rows = (DB_DATA[f.id] || []).length;
-    const subRows = SUBMISSIONS_DATA.filter(s => s.formId === f.id).length;
-    const total = Math.max(rows, subRows); // affiche tout ce qui est saisi
-    const color = f.couleur || '#3b82f6';
-    const fields = (f.fields || []).filter(x => !['separator','image','titre','son','video'].includes(x.type));
-    return `<div onclick="openDatabaseTable(${f.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s"
-      onmouseover="this.style.borderColor='${color}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''">
-      <div style="height:5px;background:${color}"></div>
-      <div style="padding:16px">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-          <div style="width:36px;height:36px;border-radius:9px;background:${color}22;display:flex;align-items:center;justify-content:center;font-size:18px">🗃</div>
-          <div style="flex:1">
-            <div style="font-weight:800;font-size:14px">${h(f.nom)}</div>
-            <div style="font-size:11px;color:var(--tl);margin-top:2px">${fields.length} colonne${fields.length > 1 ? 's' : ''}</div>
-          </div>
-        </div>
-        <div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between">
-          <div>
-            <span style="font-size:20px;font-weight:800">${total.toLocaleString()}</span>
-            <span style="font-size:11px;color:var(--tl);margin-left:4px">ligne${total > 1 ? 's' : ''}</span>
-          </div>
-          <div style="padding:5px 14px;border-radius:20px;background:${color};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-}
 
-function searchProDatabase(q) {
-  renderProDatabase(FORMS_DATA.filter(f => f.actif !== false && f.nom.toLowerCase().includes(q.toLowerCase())));
+  let html = '';
+
+  if (standalones.length) {
+    html += `<div style="grid-column:1/-1;font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px">Bases autonomes</div>`;
+    html += standalones.map(db => {
+      const color = db.couleur || '#3b82f6';
+      return `<div onclick="openStandaloneDB(${db.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${color}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''">
+        <div style="height:5px;background:${color}"></div>
+        <div style="padding:16px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <div style="width:36px;height:36px;border-radius:9px;background:${color}22;display:flex;align-items:center;justify-content:center;font-size:18px">🗃</div>
+            <div style="flex:1"><div style="font-weight:800;font-size:14px">${h(db.nom)}</div><div style="font-size:11px;color:var(--tl);margin-top:2px">${db.columns.length} colonne${db.columns.length>1?'s':''}</div></div>
+            <span style="font-size:10px;padding:2px 8px;border-radius:10px;background:#f1f5f9;color:var(--tl);font-weight:700">Autonome</span>
+          </div>
+          <div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between">
+            <div><span style="font-size:20px;font-weight:800">${db.rows.length}</span><span style="font-size:11px;color:var(--tl);margin-left:4px">ligne${db.rows.length>1?'s':''}</span></div>
+            <div style="padding:5px 14px;border-radius:20px;background:${color};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  if (formDBs.length) {
+    html += `<div style="grid-column:1/-1;font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin:${standalones.length?'12px':0} 0 4px">Liées aux formulaires</div>`;
+    html += formDBs.map(f => {
+      const total = Math.max((DB_DATA[f.id]||[]).length, SUBMISSIONS_DATA.filter(s=>s.formId===f.id).length);
+      const color = f.couleur || '#3b82f6';
+      const fields = (f.fields||[]).filter(x=>!['separator','image','titre','son','video'].includes(x.type));
+      return `<div onclick="openDatabaseTable(${f.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${color}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''">
+        <div style="height:5px;background:${color}"></div>
+        <div style="padding:16px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <div style="width:36px;height:36px;border-radius:9px;background:${color}22;display:flex;align-items:center;justify-content:center;font-size:18px">🗃</div>
+            <div style="flex:1"><div style="font-weight:800;font-size:14px">${h(f.nom)}</div><div style="font-size:11px;color:var(--tl);margin-top:2px">${fields.length} colonne${fields.length>1?'s':''}</div></div>
+            <span style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--pl);color:var(--p);font-weight:700">Formulaire</span>
+          </div>
+          <div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between">
+            <div><span style="font-size:20px;font-weight:800">${total}</span><span style="font-size:11px;color:var(--tl);margin-left:4px">ligne${total>1?'s':''}</span></div>
+            <div style="padding:5px 14px;border-radius:20px;background:${color};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  grid.innerHTML = html;
 }
+function searchProDatabase(q) { renderProDatabase(q); }
 
 function openDatabaseTable(formId) {
   const f = FORMS_DATA.find(x => x.id === formId); if (!f) return;
