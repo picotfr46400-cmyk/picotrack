@@ -2483,6 +2483,40 @@ function renderDbEffectHtml(ai,ei,ef){
     `<optgroup label="Bases autonomes">${DATABASES_DATA.map(db=>`<option value="sdb_${db.id}" ${ef.config?.formId==='sdb_'+db.id?'selected':''}>${h(db.nom)}</option>`).join('')}</optgroup>`,
     `<optgroup label="Liées aux formulaires">${FORMS_DATA.filter(f=>f.actif!==false).map(f=>`<option value="${f.id}" ${ef.config?.formId===f.id?'selected':''}>${h(f.nom)}</option>`).join('')}</optgroup>`
   ].join('');
+  const dbFOpts=(sel)=>dbFields.map(f=>`<option value="${f.id}" ${sel===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
+  const svcFOpts=(sel)=>svcFields.map(f=>`<option value="${f.id}" ${sel===f.id?'selected':''}>${h(f.nom)}</option>`).join('');
+  const criteria=ef.config?.matchCriteria||[];const updates=ef.config?.updates||[];
+  let html=`<div style="margin-top:6px"><div class="fl2" style="margin-bottom:4px">Base de données cible</div>
+    <select class="ci" onchange="updateEffect(${ai},${ei},'formId',this.value)">
+      <option value="">— Choisir —</option>${fOpts}
+    </select></div>`;
+  if(!targetForm&&!targetSDB)return html;
+  html+=`<div style="margin-top:10px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">🔍 Critères (identifier la ligne)</div>`;
+  criteria.forEach((c,ci)=>{html+=`<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:7px;padding:7px 8px">
+    <select class="ci" style="flex:1;font-size:11.5px" onchange="updateMatchCriteria(${ai},${ei},${ci},'dbFieldId',this.value)"><option value="">Colonne DB</option>${dbFOpts(c.dbFieldId)}</select>
+    <span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span>
+    <select class="ci" style="width:120px;font-size:11.5px" onchange="updateMatchCriteria(${ai},${ei},${ci},'sourceType',this.value)">
+      <option value="form_field" ${c.sourceType==='form_field'?'selected':''}>Champ actuel</option>
+      <option value="fixed" ${c.sourceType==='fixed'?'selected':''}>Valeur fixe</option>
+    </select>
+    ${c.sourceType==='form_field'?`<select class="ci" style="flex:1;font-size:11.5px" onchange="updateMatchCriteria(${ai},${ei},${ci},'sourceFieldId',this.value)"><option value="">Champ</option>${svcFOpts(c.sourceFieldId)}</select>`:`<input class="ci" style="flex:1;font-size:11.5px" value="${h(c.value||'')}" placeholder="Valeur fixe..." oninput="updateMatchCriteria(${ai},${ei},${ci},'value',this.value)">`}
+    <button class="ic-btn" onclick="removeMatchCriteria(${ai},${ei},${ci})">✕</button>
+  </div>`;});
+  html+=`<button style="width:100%;padding:5px;border-radius:6px;border:1.5px dashed var(--p);background:transparent;color:var(--p);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" onclick="addMatchCriteria(${ai},${ei})">＋ Ajouter un critère</button></div>`;
+  html+=`<div style="margin-top:10px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">✏️ Modifications à appliquer</div>`;
+  updates.forEach((u,ui)=>{html+=`<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:7px;padding:7px 8px">
+    <select class="ci" style="flex:1;font-size:11.5px" onchange="updateDbUpdate(${ai},${ei},${ui},'dbFieldId',this.value)"><option value="">Colonne DB</option>${dbFOpts(u.dbFieldId)}</select>
+    <span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span>
+    <select class="ci" style="width:120px;font-size:11.5px" onchange="updateDbUpdate(${ai},${ei},${ui},'sourceType',this.value)">
+      <option value="fixed" ${u.sourceType==='fixed'?'selected':''}>Valeur fixe</option>
+      <option value="form_field" ${u.sourceType==='form_field'?'selected':''}>Champ actuel</option>
+    </select>
+    ${u.sourceType==='form_field'?`<select class="ci" style="flex:1;font-size:11.5px" onchange="updateDbUpdate(${ai},${ei},${ui},'sourceFieldId',this.value)"><option value="">Champ</option>${svcFOpts(u.sourceFieldId)}</select>`:`<input class="ci" style="flex:1;font-size:11.5px" value="${h(u.value||'')}" placeholder="Nouvelle valeur..." oninput="updateDbUpdate(${ai},${ei},${ui},'value',this.value)">`}
+    <button class="ic-btn" onclick="removeDbUpdate(${ai},${ei},${ui})">✕</button>
+  </div>`;});
+  html+=`<button style="width:100%;padding:5px;border-radius:6px;border:1.5px dashed var(--s);background:transparent;color:var(--s);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" onclick="addDbUpdate(${ai},${ei})">＋ Ajouter une modification</button></div>`;
+  return html;
+}
 function addMatchCriteria(ai,ei){const ef=svcBuilderActions[ai].effects[ei];if(!ef.config)ef.config={};if(!ef.config.matchCriteria)ef.config.matchCriteria=[];ef.config.matchCriteria.push({dbFieldId:'',sourceType:'form_field',sourceFieldId:'',value:''});renderSvcTab();}
 function removeMatchCriteria(ai,ei,ci){svcBuilderActions[ai].effects[ei].config.matchCriteria.splice(ci,1);renderSvcTab();}
 function updateMatchCriteria(ai,ei,ci,key,val){const c=svcBuilderActions[ai].effects[ei].config.matchCriteria[ci];if(!c)return;c[key]=val;if(key==='sourceType')renderSvcTab();}
