@@ -1147,6 +1147,28 @@ function visibilityBadge(visibleBy) {
     return r ? `<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--pl);color:var(--p);font-weight:700">${h(r.nom)}</span>` : '';
   }).join('');
 }
+function _toggleStatusVis(i, roleId, labelEl) {
+  if (!svcBuilderStatuses[i].visibleBy) svcBuilderStatuses[i].visibleBy = [];
+  const idx = svcBuilderStatuses[i].visibleBy.indexOf(roleId);
+  const on = idx < 0;
+  if (on) svcBuilderStatuses[i].visibleBy.push(roleId);
+  else svcBuilderStatuses[i].visibleBy.splice(idx,1);
+  labelEl.style.background = on ? 'var(--pl)' : '#fff';
+  labelEl.style.borderColor = on ? 'var(--p)' : 'var(--bd)';
+  const chk = labelEl.querySelector('div');
+  if(chk){chk.style.background=on?'var(--p)':'#fff';chk.style.borderColor=on?'var(--p)':'var(--bd)';chk.textContent=on?'✓':'';}
+}
+function _toggleActionVis(i, roleId, labelEl) {
+  if (!svcBuilderActions[i].visibleBy) svcBuilderActions[i].visibleBy = [];
+  const idx = svcBuilderActions[i].visibleBy.indexOf(roleId);
+  const on = idx < 0;
+  if (on) svcBuilderActions[i].visibleBy.push(roleId);
+  else svcBuilderActions[i].visibleBy.splice(idx,1);
+  labelEl.style.background = on ? 'var(--pl)' : '#fff';
+  labelEl.style.borderColor = on ? 'var(--p)' : 'var(--bd)';
+  const chk = labelEl.querySelector('div');
+  if(chk){chk.style.background=on?'var(--p)':'#fff';chk.style.borderColor=on?'var(--p)':'var(--bd)';chk.textContent=on?'✓':'';}
+}
 function _toggleFormVis(roleId, labelEl) {
   if (!curForm) curForm = {};
   if (!curForm.visibleBy) curForm.visibleBy = [];
@@ -1490,9 +1512,14 @@ function renderSvcStatuses(area) {
                 onclick="svcBuilderStatuses[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}
             </div>
             <button class="ic-btn" onclick="svcBuilderStatuses.splice(${i},1);renderSvcTab()">🗑</button>
-          </div>`).join('')}
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0 2px;flex-wrap:wrap">
+            <span style="font-size:11px;font-weight:700;color:var(--tl);flex-shrink:0">Visible par :</span>
+            ${renderVisibilitySelector(s.visibleBy||[], `_toggleStatusVis.bind(null,${i})`)}
+          </div>
+        </div>`).join('')}
     </div>
-    <div class="f-hint">💡 "Initial" = statut à la création. "Terminal" = clôture définitive (aucune action possible).</div>`;
+    <div class="f-hint">💡 "Initial" = statut à la création.
 }
 
 function addSvcStatus() {
@@ -1524,6 +1551,10 @@ function renderSvcActions(area) {
             <input class="ci" style="flex:1" value="${h(a.nom)}" oninput="svcBuilderActions[${i}].nom=this.value">
             <div style="display:flex;gap:4px">${COLORS.slice(0,6).map(c=>`<div style="width:18px;height:18px;border-radius:4px;background:${c};cursor:pointer;border:2px solid ${a.couleur===c?'#fff':'transparent'};box-shadow:${a.couleur===c?'0 0 0 2px '+c:'none'}" onclick="svcBuilderActions[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}</div>
             <button class="ic-btn" onclick="svcBuilderActions.splice(${i},1);renderSvcTab()">🗑</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0 8px;flex-wrap:wrap">
+            <span style="font-size:11px;font-weight:700;color:var(--tl);flex-shrink:0">Visible par :</span>
+            ${renderVisibilitySelector(a.visibleBy||[], `_toggleActionVis.bind(null,${i})`)}
           </div>
           <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">Effets séquentiels</div>
           ${effects.map((ef,ei)=>`<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;background:var(--bg);border-radius:8px;padding:8px 10px">
