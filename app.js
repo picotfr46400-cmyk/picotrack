@@ -1147,6 +1147,19 @@ function visibilityBadge(visibleBy) {
     return r ? `<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--pl);color:var(--p);font-weight:700">${h(r.nom)}</span>` : '';
   }).join('');
 }
+function _toggleFormVis(roleId, labelEl) {
+  if (!curForm) curForm = {};
+  if (!curForm.visibleBy) curForm.visibleBy = [];
+  const idx = curForm.visibleBy.indexOf(roleId);
+  const isOn = idx >= 0;
+  if (isOn) { curForm.visibleBy.splice(idx, 1); }
+  else { curForm.visibleBy.push(roleId); }
+  const on = !isOn;
+  labelEl.style.background = on ? 'var(--pl)' : '#fff';
+  labelEl.style.borderColor = on ? 'var(--p)' : 'var(--bd)';
+  const chk = labelEl.querySelector('div');
+  if (chk) { chk.style.background = on ? 'var(--p)' : '#fff'; chk.style.borderColor = on ? 'var(--p)' : 'var(--bd)'; chk.textContent = on ? '✓' : ''; }
+}
 function _setDeclDB(i, val) {
   if (!declItems[i].config) declItems[i].config = {};
   if (val.startsWith('sdb_')) { declItems[i].config.dbId = parseInt(val.replace('sdb_','')); }
