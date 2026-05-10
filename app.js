@@ -72,6 +72,7 @@ const FORMS_DATA=[
 // ══ SAISIES RÉELLES ══
 let SUBMISSIONS_DATA=[];
 let DB_DATA = {}; // { formId: [{id, date, user, values}] }
+let DATABASES_DATA = []; // Bases autonomes : [{id, nom, couleur, columns:[{id,nom,type}], rows:[]}]
 // ══ ÉTAT ══
 let curForm=null,filtered=[...FORMS_DATA],sortCol='nom',sortDir=1;
 let pageSize=10,curPage=1;
