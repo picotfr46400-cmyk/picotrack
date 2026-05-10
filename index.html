@@ -13,9 +13,9 @@
   <div class="sb-logo"><div class="sb-li">📍</div><div class="sb-lt">Pico<em>Track</em></div></div>
   <div class="sb-env"><div class="sb-env-dot"></div><div><div class="sb-env-nm">EDF Blayais</div></div></div>
   <div class="sb-s">Administration</div>
-  <div class="sb-i">📊 Dashboard</div>
-  <div class="sb-i">👥 Utilisateurs <span class="sb-bk">10</span></div>
-  <div class="sb-i">🔑 Rôles</div>
+ <div class="sb-i" onclick="goDashboard()">📊 Dashboard</div>
+  <div class="sb-i" id="sb-users" onclick="goUsers()">👥 Utilisateurs <span class="sb-bk" id="sb-users-cnt">10</span></div>
+  <div class="sb-i" id="sb-roles" onclick="goRoles()">🔑 Rôles</div>
   <div class="sb-i on" id="sb-forms" onclick="goList()">📋 Formulaires</div>
   <div class="sb-i" id="sb-services" onclick="goServices()">⚡ Services</div>
   <div class="sb-i" id="sb-api" onclick="goApiConfig()">🔌 API</div>
@@ -30,7 +30,32 @@
 <div id="main">
   <div id="topbar"><div id="tb-t">Formulaires</div></div>
   <div class="breadcrumb" id="breadcrumb"><span class="bc-link" onclick="goList()">▶ Formulaires</span></div>
+<!-- VUE : LISTE DES RÔLES -->
+<div class="view" id="v-roles">
+  <div style="padding:18px 22px;flex:1;overflow-y:auto">
+    <div class="toolbar">
+      <button class="btn bp pill" onclick="openRoleEditor(null)">＋ Créer un rôle</button>
+      <div class="sp"></div>
+      <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="renderRolesList(this.value)"></div>
+    </div>
+    <div id="roles-grid" style="margin-top:16px"></div>
+  </div>
+</div>
 
+<!-- VUE : EDITEUR DE RÔLE -->
+<div class="view" id="v-role-editor">
+  <div style="display:flex;flex-direction:column;height:100%">
+    <div class="btb">
+      <button class="btn btn-sm" onclick="goRoles()">← Retour</button>
+      <div class="btb-sep"></div>
+      <input class="btb-nm" id="role-editor-name" placeholder="Nom du rôle...">
+      <div class="sp"></div>
+      <button class="btn btn-sm" onclick="saveRole(false)">Enregistrer</button>
+      <button class="btn bp btn-sm" onclick="saveRole(true)">💾 Enregistrer & quitter</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:22px;background:var(--bg);display:flex;flex-direction:column;gap:16px" id="role-editor-body"></div>
+  </div>
+</div>
   <!-- LIST VIEW -->
   <div class="view on" id="v-list">
     <div style="padding:18px 22px;flex:1">
