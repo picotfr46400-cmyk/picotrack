@@ -1128,6 +1128,25 @@ function _saveUser(userId, btn) {
   document.getElementById('sb-users-cnt').textContent = USERS_DATA.length;
   if (document.getElementById('v-users')?.classList.contains('on')) renderUsersList();
 }
+// ══ HELPER : sélecteur de visibilité par rôles ══
+function renderVisibilitySelector(currentRoles, onChangeCallback) {
+  const opts = ROLES_DATA.map(r => {
+    const selected = (currentRoles||[]).includes(r.id);
+    return `<label style="display:flex;align-items:center;gap:7px;padding:6px 10px;border-radius:7px;cursor:pointer;background:${selected?'var(--pl)':'#fff'};border:1.5px solid ${selected?'var(--p)':'var(--bd)'}" onclick="${onChangeCallback}(${r.id},this)">
+      <div style="width:14px;height:14px;border-radius:4px;border:2px solid ${selected?'var(--p)':'var(--bd)'};background:${selected?'var(--p)':'#fff'};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:9px;color:#fff">${selected?'✓':''}</div>
+      <span style="font-size:12px;font-weight:600">${h(r.nom)}</span>
+    </label>`;
+  }).join('');
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${opts}</div>`;
+}
+
+function visibilityBadge(visibleBy) {
+  if (!visibleBy || !visibleBy.length) return `<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:#f1f5f9;color:var(--tl)">Tous</span>`;
+  return visibleBy.map(rid => {
+    const r = ROLES_DATA.find(x=>x.id===rid);
+    return r ? `<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--pl);color:var(--p);font-weight:700">${h(r.nom)}</span>` : '';
+  }).join('');
+}
 function _setDeclDB(i, val) {
   if (!declItems[i].config) declItems[i].config = {};
   if (val.startsWith('sdb_')) { declItems[i].config.dbId = parseInt(val.replace('sdb_','')); }
