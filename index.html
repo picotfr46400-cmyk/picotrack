@@ -310,7 +310,10 @@
         </div>
         <div class="b-sec">
           <div class="b-sec-t">Visibilité et droits</div>
-          <div class="cg"><div class="fl2">Visible par</div><select class="fi" style="appearance:none;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px"><option>Tous les rôles</option><option>Superviseurs</option><option>Agents terrain</option><option>Administrateurs</option></select><div class="f-hint">S'applique uniquement pour les modules Général et Nomade</div></div>
+          <div class="cg"><div class="fl2" style="margin-bottom:6px">Visible par</div>
+            <div id="form-visibility-wrap">${renderVisibilitySelector(curForm?.visibleBy||[], '_toggleFormVis')}</div>
+            <div class="f-hint" style="margin-top:6px">Laisser vide = visible par tous les rôles</div>
+          </div>
         </div>
       </div>
 
