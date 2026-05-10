@@ -18,7 +18,7 @@
   <div class="sb-i" id="sb-roles" onclick="goRoles()">🔑 Rôles</div>
   <div class="sb-i on" id="sb-forms" onclick="goList()">📋 Formulaires</div>
   <div class="sb-i" id="sb-services" onclick="goServices()">⚡ Services</div>
-  <div class="sb-i" id="sb-api" onclick="goApiConfig()">🔌 API</div>
+  <div class="sb-i" id="sb-api" onclick="goApiConfig && goApiConfig() || show('v-api-config') || setNavActive('sb-api','API & Intégrations')">🔌 API</div>
   <div class="sb-s">Production</div>
   <div class="sb-i" id="sb-prod-forms" onclick="goProduction()">📋 Formulaires <span class="sb-bk" id="prod-forms-count">4</span></div>
   <div class="sb-i" id="sb-prod-services" onclick="goProdServices()">⚡ Services</div>
