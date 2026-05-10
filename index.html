@@ -191,7 +191,7 @@
   <!-- PROD : LISTE DES BASES -->
 <div class="view" id="v-prod-database">
   <div style="padding:18px 22px;flex:1;overflow-y:auto">
-    <div class="toolbar"><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProDatabase(this.value)"></div></div>
+    <div class="toolbar"><button class="btn bp pill" onclick="createDatabaseModal()">＋ Créer une base</button><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProDatabase(this.value)"></div></div>
     <div id="prod-db-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
   </div>
 </div>
