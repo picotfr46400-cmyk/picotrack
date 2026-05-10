@@ -2778,3 +2778,4 @@ function renderApiLogs(area) {
 }
 // ══ INIT ══
 renderTable();
+}
