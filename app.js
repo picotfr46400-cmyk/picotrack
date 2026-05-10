@@ -1858,7 +1858,8 @@ function executeAction(instId, actionId) {
         matched.forEach(row=>{updates.forEach(u=>{if(!u.dbFieldId)return;row.values[u.dbFieldId]=u.sourceType==='form_field'?(svcSub?.values[u.sourceFieldId]||''):(u.value||'');});});
       }
       inst.events.push({id:Date.now(),type:'db_updated',actor:'Picot Clément',at:now,payload:{db:dbName,lignes:matched.length}});
-      toast('s',`🗃 ${matched.length} ligne${matched.length>1?'s':''} mise${matched.length>1?
+      toast('s',`🗃 ${matched.length} ligne${matched.length>1?'s':''} mise${matched.length>1?'s à jour':' à jour'}`);
+    }
   });
   const isKanban=document.getElementById('v-service-kanban')?.classList.contains('on');
   if(isKanban)renderKanbanBoard(svc,curKanbanGroupId);else renderInstanceDetail(inst,svc);
