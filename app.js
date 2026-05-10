@@ -2156,7 +2156,7 @@ function goProDatabase() {
   show('v-prod-database');
   document.getElementById('tb-t').textContent = 'Base de données';
   document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Production / Base de données</span>';
-  renderProDatabase(FORMS_DATA);
+ renderProDatabase();
 }
 function renderProDatabase(filterQ) {
   const q = (filterQ||'').toLowerCase();
