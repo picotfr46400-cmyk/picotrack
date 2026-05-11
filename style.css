@@ -885,11 +885,9 @@ body{
 /* ═══════════════════════════════════════════════════════════════
    PICOTRACK — FLOW BUILDER MODE
    ═══════════════════════════════════════════════════════════════ */
-
-.b-tabs{
+#v-builder > .b-tabs{
   display:none!important;
 }
-
 .flow-tabs{
   height:72px;
   background:rgba(255,255,255,.88);
