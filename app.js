@@ -1519,7 +1519,7 @@ function renderSvcStatuses(area) {
           </div>
         </div>`).join('')}
     </div>
-    <div class="f-hint">💡 "Initial" = statut à la création.
+   <div class="f-hint">💡 "Initial" = statut à la création.</div>`;
 }
 
 function addSvcStatus() {
@@ -2875,4 +2875,3 @@ function renderApiLogs(area) {
 }
 // ══ INIT ══
 renderTable();
-}
