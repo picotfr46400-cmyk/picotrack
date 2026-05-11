@@ -411,3 +411,59 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);display:fle
 .dash-icon{
   background:linear-gradient(135deg,rgba(0,194,255,.14),rgba(46,196,182,.14))!important;
 }
+/* FIX NEXUS LOGO */
+.sb-logo{
+  display:flex!important;
+  align-items:center!important;
+  gap:12px!important;
+  padding:18px 16px!important;
+  min-height:auto!important;
+}
+
+.sb-li{
+  width:42px!important;
+  height:42px!important;
+  min-width:42px!important;
+  min-height:42px!important;
+  border-radius:14px!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  background:linear-gradient(135deg,#00C2FF,#2EC4B6)!important;
+  color:#0B132B!important;
+  font-size:18px!important;
+  font-weight:900!important;
+  box-shadow:0 8px 18px rgba(0,194,255,.18)!important;
+}
+
+.sb-brand{
+  display:flex!important;
+  flex-direction:column!important;
+  line-height:1.05!important;
+}
+
+.sb-lt{
+  color:#ffffff!important;
+  font-size:20px!important;
+  font-weight:900!important;
+}
+
+.sb-lt em{
+  color:#00C2FF!important;
+  font-style:normal!important;
+}
+
+.sb-nexus{
+  color:#2EC4B6!important;
+  font-size:10px!important;
+  font-weight:900!important;
+  letter-spacing:3px!important;
+  margin-top:3px!important;
+}
+
+.sb-tag{
+  color:rgba(255,255,255,.45)!important;
+  font-size:9px!important;
+  margin-top:4px!important;
+  letter-spacing:.4px!important;
+}
