@@ -467,3 +467,37 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);display:fle
   margin-top:4px!important;
   letter-spacing:.4px!important;
 }
+/* FIX GLOBAL LAYOUT NEXUS */
+html, body{
+  width:100%!important;
+  height:100%!important;
+  margin:0!important;
+  overflow:hidden!important;
+}
+
+#sb{
+  position:fixed!important;
+  top:0!important;
+  left:0!important;
+  width:250px!important;
+  height:100vh!important;
+  z-index:1000!important;
+  overflow-y:auto!important;
+  background:#0B132B!important;
+}
+
+#main{
+  position:fixed!important;
+  top:0!important;
+  left:250px!important;
+  right:0!important;
+  bottom:0!important;
+  height:100vh!important;
+  overflow:hidden!important;
+  background:#F4F7FB!important;
+}
+
+.view{
+  height:calc(100vh - 96px)!important;
+  overflow:auto!important;
+}
