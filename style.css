@@ -864,3 +864,22 @@ body{
 body{
   outline:10px solid red!important;
 }
+/* TEST CHANGEMENT VISIBLE UI */
+#sb{
+  background:linear-gradient(180deg,#07111F 0%, #102A43 100%)!important;
+}
+
+#main{
+  background:#EAF2F8!important;
+}
+
+.fbox,
+.dt{
+  border:1px solid rgba(0,194,255,.18)!important;
+  box-shadow:0 18px 45px rgba(11,19,43,.12)!important;
+}
+
+.sb-i.on{
+  background:linear-gradient(135deg,#00C2FF,#2EC4B6)!important;
+  color:#07111F!important;
+}
