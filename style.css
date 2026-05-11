@@ -737,3 +737,127 @@ body{
   height:auto;
   display:block;
 }
+/* ===== PICOTRACK UI POLISH V2 ===== */
+
+/* Sidebar plus premium */
+#sb{
+  background:linear-gradient(180deg,#0B132B 0%, #0F1B3D 100%)!important;
+  width:270px!important;
+}
+
+/* Main plus clean */
+#main{
+  left:270px!important;
+  background:#F1F5F9!important;
+}
+
+/* Sections sidebar */
+.sb-s{
+  color:#7C8DB5!important;
+  font-size:11px!important;
+  letter-spacing:2px!important;
+  margin-top:8px!important;
+}
+
+/* Menu */
+.sb-i{
+  border-radius:10px!important;
+  margin:4px 10px!important;
+  padding:11px 14px!important;
+  color:#D6E1FF!important;
+  font-weight:600!important;
+}
+
+.sb-i:hover{
+  background:rgba(255,255,255,.08)!important;
+}
+
+.sb-i.on{
+  background:linear-gradient(135deg,#00C2FF,#00E5B4)!important;
+  color:#0B132B!important;
+  font-weight:800!important;
+}
+
+/* Badges */
+.sb-bk{
+  background:rgba(255,255,255,.12)!important;
+  color:#fff!important;
+}
+
+/* Topbar */
+#topbar{
+  height:62px!important;
+  padding:0 26px!important;
+  background:rgba(255,255,255,.85)!important;
+  backdrop-filter:blur(10px)!important;
+}
+
+/* Titre */
+#tb-t{
+  font-size:18px!important;
+  font-weight:800!important;
+}
+
+/* Cards */
+.fbox,
+.dt{
+  border:none!important;
+  box-shadow:0 8px 24px rgba(15,23,42,.06)!important;
+  border-radius:18px!important;
+}
+
+/* Bouton principal */
+.bp{
+  background:linear-gradient(135deg,#00C2FF,#00E5B4)!important;
+  border:none!important;
+  color:#0B132B!important;
+  font-weight:800!important;
+}
+
+.bp:hover{
+  transform:translateY(-1px)!important;
+  box-shadow:0 8px 20px rgba(0,194,255,.25)!important;
+}
+
+/* Bouton filtre */
+.bw{
+  background:#0EA5E9!important;
+  border:none!important;
+  color:#fff!important;
+}
+
+/* Inputs */
+.frow,
+.sbar{
+  background:#F8FAFC!important;
+  border:1.5px solid #DCE6F4!important;
+}
+
+.frow:focus-within,
+.sbar:focus-within{
+  border-color:#00C2FF!important;
+  box-shadow:0 0 0 4px rgba(0,194,255,.08)!important;
+}
+
+/* Tableau header */
+.dth{
+  background:#F8FAFC!important;
+}
+
+/* Lignes */
+.dtr:hover{
+  background:#F0F9FF!important;
+}
+
+/* Modules badges */
+.mod-tag{
+  background:#E0F7FF!important;
+  color:#0284C7!important;
+  font-weight:700!important;
+}
+
+/* Pagination active */
+.pg-btn.on{
+  background:#0EA5E9!important;
+  color:#fff!important;
+}
