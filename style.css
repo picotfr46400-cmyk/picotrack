@@ -199,3 +199,79 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);display:fle
   box-shadow: 0 4px 16px rgba(0,0,0,.08);
   transform: translateY(-1px);
 }
+
+/* ══ PHASE 5 — Dashboard clean SaaS ══ */
+.dash-top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
+.dash-title{font-size:26px;font-weight:950;color:var(--tx);letter-spacing:-.5px}
+.dash-sub{font-size:12.5px;color:var(--tl);margin-top:4px}
+.dash-env-pill{border:1.5px solid var(--bd);background:#fff;border-radius:12px;padding:10px 14px;font-size:12.5px;font-weight:800;color:var(--tm);box-shadow:0 1px 4px rgba(15,23,42,.04)}
+.dash-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:16px}
+.dash-kpi{background:#fff;border:1.5px solid var(--bd);border-radius:16px;padding:18px 20px;display:flex;gap:14px;align-items:flex-start;box-shadow:0 2px 10px rgba(15,23,42,.05)}
+.dash-kpi-ic{width:42px;height:42px;border-radius:12px;background:#eff6ff;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0}
+.dash-kpi-label{font-size:13px;font-weight:900;color:var(--tm);margin-bottom:8px}
+.dash-kpi-value{font-size:28px;font-weight:950;color:var(--tx);letter-spacing:-.8px}
+.dash-kpi-sub{font-size:12px;color:var(--tl);margin-top:4px}
+.dash-kpi-trend{font-size:11.5px;color:#16a34a;margin-top:8px;font-weight:800}
+.dash-grid-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin-bottom:16px}
+.dash-grid-bottom{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.72fr);gap:16px}
+.dash-card{background:#fff;border:1.5px solid var(--bd);border-radius:16px;box-shadow:0 2px 10px rgba(15,23,42,.05);overflow:hidden}
+.dash-card-h{padding:16px 18px;border-bottom:1px solid var(--bd);font-size:15px;font-weight:950;color:var(--tx)}
+.dash-split{padding:22px;display:flex;gap:34px;align-items:center;min-height:230px}
+.dash-donut{width:150px;height:150px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.dash-donut>div{width:82px;height:82px;border-radius:50%;background:#fff}
+.dash-legend{flex:1;display:flex;flex-direction:column;gap:12px;min-width:220px}
+.dash-legend-row{display:grid;grid-template-columns:16px 1fr auto;align-items:center;gap:10px;font-size:13px;color:var(--tm)}
+.dash-legend-row strong{font-size:12.5px;color:var(--tx)}
+.dash-dot{width:10px;height:10px;border-radius:4px;display:inline-block}
+.dash-total{margin-top:10px;padding-top:14px;border-top:1px solid var(--bd);font-weight:950;color:var(--tx);font-size:13.5px}
+.dash-bars{height:240px;padding:24px 22px 18px;display:flex;align-items:flex-end;justify-content:space-around;gap:14px;background:linear-gradient(to top,#f8fafc,#fff)}
+.dash-bar-wrap{height:170px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:8px;flex:1;max-width:70px}
+.dash-bar{width:100%;border-radius:10px 10px 4px 4px;background:linear-gradient(180deg,#3b82f6,#93c5fd);box-shadow:0 8px 18px rgba(59,130,246,.18)}
+.dash-bar-wrap span{font-size:11px;color:var(--tl);font-weight:700}
+.dash-quick-grid{padding:16px 18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.dash-quick{border:1.5px solid var(--bd);background:#fff;border-radius:13px;padding:13px;text-align:left;display:flex;gap:12px;align-items:center;cursor:pointer;font-family:inherit;color:var(--tx);transition:.16s}
+.dash-quick:hover{border-color:#93c5fd;transform:translateY(-1px);box-shadow:0 6px 16px rgba(15,23,42,.08)}
+.dash-quick span{width:38px;height:38px;border-radius:11px;background:#f5f3ff;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}
+.dash-quick strong{display:block;font-size:13px;font-weight:950;color:var(--tx)}
+.dash-quick small{display:block;font-size:11.5px;color:var(--tl);margin-top:2px}
+.dash-env-card{padding:22px;display:flex;gap:16px;align-items:center}
+.dash-env-ico{width:58px;height:58px;border-radius:14px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0}
+.dash-env-name{font-size:23px;font-weight:950;color:var(--tx);letter-spacing:-.4px}
+.dash-muted{font-size:12px;color:var(--tl)}
+.dash-ok{font-size:12px;color:#16a34a;font-weight:800;margin-top:6px}
+.dash-rule{margin:0 22px 22px;padding:12px;border-radius:12px;background:#f8fafc;border:1px solid var(--bd);font-size:12px;line-height:1.45;color:var(--tm)}
+@media(max-width:1000px){.dash-grid-main,.dash-grid-bottom{grid-template-columns:1fr}.dash-split{flex-direction:column;align-items:flex-start}.dash-quick-grid{grid-template-columns:1fr}}
+
+
+/* ══ LICENCES & PAD — Vue client propre ══ */
+.access-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+.access-title{font-size:24px;font-weight:950;color:var(--tx);letter-spacing:-.4px}
+.access-sub{font-size:12.5px;color:var(--tl);margin-top:4px;max-width:780px;line-height:1.45}
+.access-search{max-width:360px;background:#fff}
+.access-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:16px}
+.access-kpi{background:#fff;border:1.5px solid var(--bd);border-radius:15px;padding:16px;display:flex;align-items:center;gap:13px;box-shadow:0 2px 10px rgba(15,23,42,.05)}
+.access-kpi>span{width:42px;height:42px;border-radius:12px;background:#eff6ff;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.access-kpi strong{display:block;font-size:24px;font-weight:950;color:var(--tx);letter-spacing:-.4px}
+.access-kpi small{display:block;color:var(--tl);font-size:11.5px;margin-top:3px;font-weight:700}
+.access-rule{background:#fff;border:1.5px solid var(--bd);border-radius:15px;padding:16px 18px;margin-bottom:16px;display:flex;justify-content:space-between;gap:18px;align-items:flex-start;box-shadow:0 2px 10px rgba(15,23,42,.05)}
+.access-rule strong{color:var(--tx);font-size:14px}.access-rule span,.access-rule p{color:var(--tl);font-size:12px;line-height:1.45}.access-rule p{margin:0;max-width:520px}
+.access-layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+.access-card{background:#fff;border:1.5px solid var(--bd);border-radius:15px;box-shadow:0 2px 10px rgba(15,23,42,.05);overflow:hidden}
+.access-card-head{padding:15px 17px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.access-card-head strong{font-size:15px;color:var(--tx);font-weight:950}.access-card-head small{display:block;font-size:11.5px;color:var(--tl);margin-top:2px}
+.access-side{display:flex;flex-direction:column;gap:16px}
+@media(max-width:1100px){.access-layout{grid-template-columns:1fr}.access-side{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}.access-rule{flex-direction:column}.access-search{max-width:100%;width:100%}}
+
+/* Phase 5.2 - Licences & PAD full-width */
+.licensing-page{padding:22px;flex:1;overflow-y:auto;background:var(--bg);width:100%;box-sizing:border-box}
+#v-licensing{width:100%;min-width:0}
+#licensing-wrap{width:100%;max-width:none;margin:0 auto}
+#v-licensing .access-head{width:100%;margin-bottom:18px}
+#v-licensing .access-kpis{grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px;margin-bottom:18px}
+#v-licensing .access-rule{width:100%;box-sizing:border-box;margin-bottom:18px;display:grid;grid-template-columns:minmax(260px,.9fr) minmax(360px,1.1fr);align-items:center}
+#v-licensing .access-layout{grid-template-columns:minmax(0,2fr) minmax(320px,.9fr);gap:18px;width:100%}
+#v-licensing .access-main{min-width:0}
+#v-licensing .access-side{min-width:0}
+#v-licensing .access-card table{min-width:760px}
+@media(max-width:1300px){#v-licensing .access-kpis{grid-template-columns:repeat(2,minmax(220px,1fr))}#v-licensing .access-layout{grid-template-columns:1fr}#v-licensing .access-side{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr))}}
+@media(max-width:850px){#v-licensing .access-kpis{grid-template-columns:1fr}#v-licensing .access-rule{grid-template-columns:1fr}#v-licensing .access-side{grid-template-columns:1fr}.licensing-page{padding:16px}}

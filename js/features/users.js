@@ -2,10 +2,21 @@
 function renderUsersList() {
   const wrap = document.getElementById('v-users');
   if (!wrap) return;
-  const total = USERS_DATA.length;
+  const env = getCurrentEnvironment();
+  const licensedUsers = getAssignedUserLicenseCount(env.id);
+  const userSlots = getUserLicenseSlots(env.id).length;
+  const freeSlots = getAvailableUserLicenseCount(env.id);
+  const addDisabled = !IS_PLATFORM_OWNER && freeSlots <= 0;
   wrap.innerHTML = `<div style="padding:18px 22px;flex:1;overflow-y:auto">
+    <div style="background:var(--card,#fff);border:1.5px solid var(--bd);border-radius:12px;padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:900;color:var(--tx)">Licences utilisateur</div>
+        <div style="font-size:12px;color:var(--tl);margin-top:3px">${licensedUsers}/${userSlots} licence(s) attribuée(s) — ${freeSlots} disponible(s). La création est bloquée si aucune licence n’est ouverte.</div>
+      </div>
+      <span style="font-size:11px;font-weight:900;color:${freeSlots>0?'var(--s)':'#f97316'};background:${freeSlots>0?'var(--sl)':'#f9731620'};border-radius:999px;padding:6px 10px">${freeSlots>0?'Création autorisée':'Capacité atteinte'}</span>
+    </div>
     <div class="toolbar">
-      <button class="btn bp pill" onclick="openUserModal(null)">＋ Ajouter</button>
+      <button class="btn bp pill" onclick="openUserModal(null)" ${addDisabled?'disabled style="opacity:.45;cursor:not-allowed" title="Aucune licence disponible"':''}>＋ Ajouter</button>
       <div class="sp"></div>
       <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="_filterUsers(this.value)"></div>
     </div>
@@ -58,6 +69,10 @@ function _renderUsersTable(list) {
 
 function openUserModal(userId) {
   const u = userId ? USERS_DATA.find(x=>x.id===userId) : null;
+  if (!u && !IS_PLATFORM_OWNER && getAvailableUserLicenseCount(CURRENT_ENVIRONMENT_ID)<=0) {
+    toast('e','Création impossible : aucune licence utilisateur disponible. Augmentation à faire côté propriétaire après devis signé.');
+    return;
+  }
   const modal = document.createElement('div');
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999';
   modal.innerHTML = `<div style="background:#fff;border-radius:14px;width:440px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
@@ -100,6 +115,10 @@ function _saveUser(userId, btn) {
     const u = USERS_DATA.find(x=>x.id===userId);
     if (u) { u.nom=nom; u.initiales=init; u.email=email; u.roleId=roleId; u.actif=actif; }
   } else {
+    if (!IS_PLATFORM_OWNER && getAvailableUserLicenseCount(CURRENT_ENVIRONMENT_ID)<=0) {
+      toast('e','Création impossible : aucune licence utilisateur disponible.');
+      return;
+    }
     USERS_DATA.push({id:Date.now(),nom,initiales:init,email,roleId,actif});
   }
   modal.remove();

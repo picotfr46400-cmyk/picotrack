@@ -13,7 +13,7 @@
   <div class="sb-logo"><div class="sb-li">📍</div><div class="sb-lt">Pico<em>Track</em></div></div>
   <div class="sb-env"><div class="sb-env-dot"></div><div><div class="sb-env-nm">EDF Blayais</div></div></div>
   <div class="sb-s">Administration</div>
- <div class="sb-i" onclick="goDashboard()">📊 Dashboard</div>
+ <div class="sb-i" id="sb-dashboard" onclick="goDashboard()">📊 Dashboard</div>
   <div class="sb-i" id="sb-users" onclick="goUsers()">👥 Utilisateurs <span class="sb-bk" id="sb-users-cnt">10</span></div>
   <div class="sb-i" id="sb-roles" onclick="goRoles()">🔑 Rôles</div>
   <div class="sb-i on" id="sb-forms" onclick="goList()">📋 Formulaires</div>
@@ -30,6 +30,11 @@
 <div id="main">
   <div id="topbar"><div id="tb-t">Formulaires</div></div>
   <div class="breadcrumb" id="breadcrumb"><span class="bc-link" onclick="goList()">▶ Formulaires</span></div>
+<!-- VUE : DASHBOARD -->
+<div class="view" id="v-dashboard">
+  <div style="padding:18px 22px;flex:1;overflow-y:auto" id="dashboard-wrap"></div>
+</div>
+
 <!-- VUE : LISTE DES RÔLES -->
 <div class="view" id="v-roles">
   <div style="padding:18px 22px;flex:1;overflow-y:auto">
@@ -137,19 +142,6 @@
     <div id="sd-history" style="width:260px;flex-shrink:0"></div>
   </div>
 </div>
-  <!--
-  ════════════════════════════════════════════════════════
-  PATCH index.html — 2 modifications à faire
-  ════════════════════════════════════════════════════════
--->
-
-<!-- ─────────────────────────────────────────────────────
-  MODIFICATION 1 : Sidebar — Remplacer cette ligne :
-    <div class="sb-i">⚡ Services</div>
-  Par :
-───────────────────────────────────────────────────────── -->
-<div class="sb-i" id="sb-services" onclick="goServices()">⚡ Services</div>
-
 <!-- SERVICES : LISTE -->
 <div class="view" id="v-services">
   <div style="padding:18px 22px;flex:1;overflow-y:auto">
@@ -385,6 +377,13 @@
       </div>
     </div>
   </div>
+
+<!-- ADMIN : LICENCES & PAD -->
+<div class="view" id="v-licensing">
+  <div class="licensing-page">
+    <div id="licensing-wrap"></div>
+  </div>
+</div>
 </div>
 
 <!-- CONFIG PANEL -->
@@ -412,8 +411,11 @@
 
 <div id="toasts"></div>
 <!-- PicoTrack JS - ordre de chargement important -->
+
+
 <script src="js/core/constants.js"></script>
 <script src="js/core/data.js"></script>
+<script src="js/core/environments.js"></script>
 <script src="js/core/state.js"></script>
 <script src="js/core/licenses.js"></script>
 <script src="js/core/utils.js"></script>
@@ -427,6 +429,7 @@
 <script src="js/features/roles.js"></script>
 <script src="js/features/users.js"></script>
 <script src="js/features/permissions.js"></script>
+<script src="js/features/licensing.js"></script>
 <script src="js/features/forms-advanced-helpers.js"></script>
 <script src="js/features/services.js"></script>
 <script src="js/features/databases.js"></script>
