@@ -255,3 +255,10 @@ function addOpt(){if(curFieldIdx===null)return;(builderFields[curFieldIdx].valeu
 function removeOpt(i){if(curFieldIdx===null)return;builderFields[curFieldIdx].valeurs.splice(i,1);setCfgTab('G');}
 function addVld(){const sel=document.getElementById('vld-sel');if(!sel||curFieldIdx===null||!sel.value)return;const nom=sel.value;const isAdv=nom==='Validateur avancé';const hasValue=!isAdv&&/(min|max|caractère|fichier|sélection|valeur)/i.test(nom);(builderFields[curFieldIdx].validateurs=builderFields[curFieldIdx].validateurs||[]).push({nom,hasValue,value:'',message:'',typeInput:'number',...(isAdv?{code:'return value.length > 0;'}:{})});setCfgTab('V');toast('i','✅ Validateur ajouté');}
 function addTrf(){const sel=document.getElementById('trf-sel');if(!sel||curFieldIdx===null||!sel.value)return;const nom=sel.value;const isAdv=nom==='Transformateur avancé';const hasParam=!isAdv&&/(préfixe|suffixe|premiers|derniers|sous-chaîne)/i.test(nom);(builderFields[curFieldIdx].transformateurs=builderFields[curFieldIdx].transformateurs||[]).push({nom,...(isAdv?{code:'return value.toUpperCase();'}:{param:hasParam?'':undefined})});setCfgTab('T');toast('i','✅ Transformateur ajouté');}
+document.addEventListener("click", function(e){
+  const tab = e.target.closest(".flow-tab");
+  if(!tab) return;
+
+  document.querySelectorAll(".flow-tab").forEach(t => t.classList.remove("on"));
+  tab.classList.add("on");
+});
