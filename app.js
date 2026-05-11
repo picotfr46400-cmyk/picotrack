@@ -426,16 +426,13 @@ function renderSaisieForm(f){
     if(fld.afficher_legende&&fld.legendeText)html+=`<div style="font-size:11px;color:var(--tl);margin-bottom:6px;font-style:italic">${h(fld.legendeText)}</div>`;
     switch(fld.type){
       case 'text':
-        html+=`<input class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:auto;padding:10px 13px;outline:none;width:100%;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s" placeholder="${h(fld.afficher_placeholder&&fld.placeholder?fld.placeholder:'Saisir un texte...')}" value="${h(saisieValues[fld.id]||'')}" oninput="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;break;
-      case 'textarea':
-        html+=`<textarea class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:82px;resize:vertical;padding:10px 13px;outline:none;width:100%;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s" placeholder="Saisir un texte..." oninput="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">${h(saisieValues[fld.id]||'')}</textarea>`;break;
-      case 'number':
-        const nv=saisieValues[fld.id]!==undefined?saisieValues[fld.id]:0;
-        html+=`<div style="display:flex;align-items:center;gap:10px">
-          <button onclick="var n=document.getElementById('sni_${fld.id}');n.value=Math.round((+n.value-${fld.pas||1})*1000)/1000;saisieChange('${fld.id}',+n.value)" style="width:38px;height:38px;border:1.5px solid var(--bd);border-radius:8px;background:#f8fafc;font-size:20px;cursor:pointer;transition:all .15s" onmouseover="this.style.background='${color}';this.style.color='#fff';this.style.borderColor='${color}'" onmouseout="this.style.background='#f8fafc';this.style.color='inherit';this.style.borderColor='var(--bd)'">−</button>
-          <input id="sni_${fld.id}" type="number" class="ap-input" style="width:110px;text-align:center;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:9px;outline:none;font-family:inherit;font-size:15px;font-weight:700;transition:border-color .15s" value="${nv}" step="${fld.pas||1}" oninput="saisieChange('${fld.id}',+this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">
-          <button onclick="var n=document.getElementById('sni_${fld.id}');n.value=Math.round((+n.value+${fld.pas||1})*1000)/1000;saisieChange('${fld.id}',+n.value)" style="width:38px;height:38px;border:1.5px solid ${color};border-radius:8px;background:${color};font-size:20px;cursor:pointer;color:#fff;font-weight:700;transition:opacity .15s" onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">+</button>
-        </div>`;break;
+        if(fld.duplicable){
+          if(!Array.isArray(saisieValues[fld.id]))saisieValues[fld.id]=Array(Math.max(fld.duplicable_min||1,1)).fill('');
+          html+=renderDupField(fld,color);
+        }else{
+          html+=`<input class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:auto;padding:10px 13px;outline:none;width:100%;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s" placeholder="${h(fld.afficher_placeholder&&fld.placeholder?fld.placeholder:'Saisir un texte...')}" value="${h(saisieValues[fld.id]||'')}" oninput="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;
+        }
+        break;
       case 'checkbox':
         const cbv=saisieValues[fld.id]===true;
         html+=`<label id="cbl_${fld.id}" style="display:inline-flex;align-items:center;gap:10px;cursor:pointer;padding:10px 16px;border:1.5px solid ${cbv?color:'var(--bd)'};border-radius:8px;background:${cbv?color+'18':'#f8fafc'};transition:all .15s;user-select:none"><input type="checkbox" ${cbv?'checked':''} onchange="saisieChange('${fld.id}',this.checked);updateCbLabel('${fld.id}','${color}')" style="width:17px;height:17px;accent-color:${color};cursor:pointer"><span style="font-size:13px;color:var(--tm)">Cocher si applicable</span></label>`;break;
@@ -456,7 +453,8 @@ function renderSaisieForm(f){
       case 'location':html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:10px;padding:16px;display:flex;align-items:center;justify-content:space-between"><span style="color:var(--tl);font-size:13px">📍 ${saisieValues[fld.id]||'Non capturé'}</span><button onclick="saisieChange('${fld.id}','GPS: 45.0473° N, 4.7277° E');this.textContent='✅ Capturé';this.style.background='#10b981';this.style.color='#fff'" style="padding:6px 14px;border-radius:20px;border:1.5px solid ${color};color:${color};background:transparent;cursor:pointer;font-size:12px;font-family:inherit">Capturer</button></div>`;break;
       case 'titre':html+=`<div style="font-size:15px;font-weight:800;border-bottom:2px solid var(--bd);padding-bottom:8px;color:var(--tx)">${h(fld.nom)}</div>`;break;
       case 'separator':html+=`<hr style="border:none;border-top:1.5px solid var(--bd);margin:4px 0">`;break;
-      case 'image':html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl)">🖼 Image</div>`;break;
+      case 'image':html+=fld.imageData?`<img src="${fld.imageData}" style="max-width:100%;max-height:220px;border-radius:8px;object-fit:contain;display:block">`:
+        `<div style="background:#f8fafc;border:1.5px dashed var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:13px">🖼 Aucune image configurée</div>`;break;
       default:html+=`<div class="ap-input" style="color:var(--tl);font-style:italic">${fd.l||'—'}</div>`;
     }
     html+=`</div>`;
@@ -706,14 +704,29 @@ function setCfgTab(t){
     if(['text','textarea','number'].includes(f.type))html+=`<div class="cg" style="margin-top:10px"><div class="cl">Placeholder</div><div class="tr" style="padding:6px 0"><div class="tr-lbl" style="font-size:12px">Afficher un texte de substitution</div><div class="tog ${f.afficher_placeholder?'on':'off'}" onclick="toggleProp('afficher_placeholder',this)"></div></div>${f.afficher_placeholder?`<input class="ci" id="ci-placeholder" value="${h(f.placeholder||'')}" placeholder="Ex : Saisir une valeur..." style="margin-top:5px">`:''}</div>`;
     if(['select','multiselect'].includes(f.type))html+=`<div class="cg" style="margin-top:10px"><div class="cl">Options</div>${(f.valeurs||[]).map((v,i)=>`<div style="display:flex;gap:6px;margin-bottom:5px"><input class="ci" value="${h(v)}" oninput="builderFields[curFieldIdx].valeurs[${i}]=this.value" style="flex:1"><button class="ic-btn" onclick="removeOpt(${i})">✕</button></div>`).join('')}<button class="add-opt" onclick="addOpt()">＋ Ajouter une option</button></div>`;
     if(f.type==='number')html+=`<div class="cg" style="margin-top:10px"><div class="cl">Incrément (pas)</div><input class="ci" type="number" value="${f.pas||1}" min="0.01" step="any" oninput="builderFields[curFieldIdx].pas=+this.value" style="width:100px"></div>`;
-    html+=`<div class="cg" style="margin-top:10px"><div class="cl">Obligatoire</div><div class="tr" style="padding:6px 0"><div class="tr-lbl" style="font-size:12px">Champ requis</div><div class="tog ${f.obligatoire?'on':'off'}" onclick="toggleProp('obligatoire',this)"></div></div></div>`;
-    html+=`<div class="cg" style="margin-top:10px"><div class="cl">Champ duplicable</div>
-      <div class="tr" style="padding:6px 0"><div class="tr-lbl" style="font-size:12px">Permettre l'ajout multiple</div><div class="tog ${f.duplicable?'on':'off'}" onclick="toggleProp('duplicable',this)"></div></div>
-      ${f.duplicable?`<div style="margin-top:8px;display:flex;gap:10px">
-        <div><div style="font-size:11px;color:var(--tl);margin-bottom:3px">Min</div><input class="ci" type="number" value="${f.duplicable_min||1}" min="1" oninput="builderFields[curFieldIdx].duplicable_min=+this.value" style="width:70px"></div>
-        <div><div style="font-size:11px;color:var(--tl);margin-bottom:3px">Max</div><input class="ci" type="number" value="${f.duplicable_max||10}" min="1" oninput="builderFields[curFieldIdx].duplicable_max=+this.value" style="width:70px"></div>
-      </div>`:''}
-    </div>`;
+    if(f.type==='image'){
+      html+=`<div class="cg" style="margin-top:10px"><div class="cl">Image</div>
+        ${f.imageData
+          ?`<img src="${f.imageData}" style="max-width:100%;max-height:120px;border-radius:8px;object-fit:contain;display:block;margin-bottom:8px">`
+          :`<div style="background:#f8fafc;border:1.5px dashed var(--bd);border-radius:8px;height:72px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:13px;margin-bottom:8px">🖼 Aucune image</div>`}
+        <input type="file" id="img-upload-${curFieldIdx}" accept="image/*" style="display:none" onchange="_uploadFieldImage(this)">
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" onclick="document.getElementById('img-upload-${curFieldIdx}').click()">📁 ${f.imageData?'Changer':'Choisir'} une image</button>
+          ${f.imageData?`<button class="btn btn-sm" onclick="builderFields[curFieldIdx].imageData=null;renderFields();setCfgTab('G')">🗑 Supprimer</button>`:''}
+        </div>
+      </div>`;
+    }
+    const isLayout=['image','titre','separator','son','video'].includes(f.type);
+    if(!isLayout)html+=`<div class="cg" style="margin-top:10px"><div class="cl">Obligatoire</div><div class="tr" style="padding:6px 0"><div class="tr-lbl" style="font-size:12px">Champ requis</div><div class="tog ${f.obligatoire?'on':'off'}" onclick="toggleProp('obligatoire',this)"></div></div></div>`;
+    if(['text','textarea'].includes(f.type)){
+      html+=`<div class="cg" style="margin-top:10px"><div class="cl">Champ duplicable</div>
+        <div class="tr" style="padding:6px 0"><div class="tr-lbl" style="font-size:12px">Permettre l'ajout multiple</div><div class="tog ${f.duplicable?'on':'off'}" onclick="toggleProp('duplicable',this)"></div></div>
+        ${f.duplicable?`<div style="margin-top:8px;display:flex;gap:10px">
+          <div><div style="font-size:11px;color:var(--tl);margin-bottom:3px">Min</div><input class="ci" type="number" value="${f.duplicable_min||1}" min="1" oninput="builderFields[curFieldIdx].duplicable_min=+this.value" style="width:70px"></div>
+          <div><div style="font-size:11px;color:var(--tl);margin-bottom:3px">Max</div><input class="ci" type="number" value="${f.duplicable_max||10}" min="1" oninput="builderFields[curFieldIdx].duplicable_max=+this.value" style="width:70px"></div>
+        </div>`:''}
+      </div>`;
+    }
     html+=`<div class="cg" style="margin-top:10px"><div class="cl">Visibilité</div><div class="tr" style="padding:5px 0"><div class="tr-lbl" style="font-size:12px">🖥 Supervision</div><div class="tog ${f.vis_sup!==false?'on':'off'}" onclick="toggleProp('vis_sup',this)"></div></div><div class="tr" style="padding:5px 0"><div class="tr-lbl" style="font-size:12px">📱 App nomade</div><div class="tog ${f.vis_nom!==false?'on':'off'}" onclick="toggleProp('vis_nom',this)"></div></div></div>`;
   }
   if(t==='V'){
@@ -737,6 +750,7 @@ function setCfgTab(t){
     if(avail.length)html+=`<div style="display:flex;gap:6px;margin-top:4px"><select class="ci" id="vld-sel" style="flex:1"><option value="">— Sélectionner —</option>${avail.map(v=>`<option>${h(v)}</option>`).join('')}</select><button class="btn btn-sm bp" onclick="addVld()">＋</button></div>`;
   }
   if(t==='T'){
+    if(!['text','textarea'].includes(f.type)){html+=`<div style="text-align:center;padding:24px;background:var(--bg);border-radius:8px;color:var(--tl);font-size:12px">⚙️ Non applicable pour ce type de champ</div>`;const body=document.getElementById('cfg-body');if(body)body.innerHTML=html;return;}
     if(!(f.transformateurs||[]).length)html+=`<div style="text-align:center;padding:20px;color:var(--tl);font-size:12px;opacity:.6">Aucun transformateur configuré</div>`;
     html+=(f.transformateurs||[]).map((trf,ti)=>{
       const isAdv=trf.nom==='Transformateur avancé';
@@ -820,7 +834,8 @@ function renderApercu(){
       case 'datetime':html+=`<input type="datetime-local" class="ap-input" style="background:#fff;cursor:pointer;outline:none;width:100%" value="${cv||''}" onchange="apChange('${f.id}',this.value)">`;break;
       case 'photo':case 'signature':case 'file':html+=`<div style="border:2px dashed var(--bd);border-radius:8px;padding:14px;text-align:center;color:var(--tl);font-size:13px">Simulation — non disponible en mode test</div>`;break;
       case 'location':html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl)">📍 Carte (simulation)</div>`;break;
-      case 'image':html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:70px;display:flex;align-items:center;justify-content:center;color:var(--tl)">🖼 Image</div>`;break;
+      case 'image':html+=f.imageData?`<img src="${f.imageData}" style="max-width:100%;max-height:200px;border-radius:8px;object-fit:contain;display:block">`:
+        `<div style="background:#f8fafc;border:1.5px dashed var(--bd);border-radius:8px;height:70px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:13px">🖼 Aucune image</div>`;break;
       case 'titre':html+=`<div style="font-size:15px;font-weight:800;border-bottom:2px solid var(--bd);padding-bottom:7px">${h(f.nom)}</div>`;break;
       case 'separator':html+=`<hr style="border:none;border-top:1.5px solid var(--bd)">`;break;
       default:html+=`<div class="ap-input" style="color:var(--tl)">${fd.l||'—'}</div>`;
@@ -1261,6 +1276,17 @@ function _toggleFieldRole(roleId, checked) {
   if(!f.visibleByRoles)f.visibleByRoles=[];
   if(checked){if(!f.visibleByRoles.includes(roleId))f.visibleByRoles.push(roleId);}
   else f.visibleByRoles=f.visibleByRoles.filter(id=>id!==roleId);
+}
+function _uploadFieldImage(input) {
+  const file=input.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    if(curFieldIdx===null)return;
+    builderFields[curFieldIdx].imageData=e.target.result;
+    renderFields();setCfgTab('G');
+    toast('i','🖼 Image chargée');
+  };
+  reader.readAsDataURL(file);
 }
 function applyTransformers(fid, val) {
   const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);if(!f)return val;
