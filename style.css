@@ -922,3 +922,6 @@ body{
   color:#06111F;
   box-shadow:0 10px 22px rgba(0,194,255,.18);
 }
+#v-builder .legacy-builder-tabs{
+  display:none!important;
+}
