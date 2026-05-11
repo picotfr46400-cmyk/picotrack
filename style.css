@@ -861,3 +861,6 @@ body{
   background:#0EA5E9!important;
   color:#fff!important;
 }
+body{
+  outline:10px solid red!important;
+}
