@@ -471,8 +471,14 @@ function renderSaisieForm(f){
   wrap.innerHTML=html;
 }
 function saisieChange(fid,val){
+  const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);
+  const fld=f?(f.fields||[]).find(x=>x.id===fid):null;
+  if(fld&&typeof val==='string'&&(fld.transformateurs||[]).length){
+    const tv=applyTransformers(fid,val);
+    if(tv!==val){val=tv;const inp=document.querySelector(`#sw-${fid} input,#sw-${fid} textarea`);if(inp&&inp.value!==tv)inp.value=tv;}
+  }
   saisieValues[fid]=val;
-  const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);if(!f)return;
+  if(!f)return;
   (f.fields||[]).forEach(fld=>{const w=document.getElementById('sw-'+fld.id);if(!w)return;w.style.display=saisieEvalCond(fld,f.fields)?'block':'none';});
 }
 function saisieChangeMulti(fid,val,checked){
@@ -512,6 +518,31 @@ function submitSaisie(){
   if(errors.length){
     toast('e','⚠️ '+errors.length+' champ(s) obligatoire(s) non rempli(s)');
     errors.forEach(fld=>{const w=document.getElementById('sw-'+fld.id);if(w){w.style.outline='2px solid #ef4444';w.style.borderRadius='8px';w.scrollIntoView({behavior:'smooth',block:'nearest'});setTimeout(()=>w.style.outline='',2800);}});
+    return;
+  }
+  // Validateurs personnalisés
+  const _vldErrors=[];
+  (f.fields||[]).forEach(fld=>{
+    if(!saisieEvalCond(fld,f.fields))return;
+    const val=saisieValues[fld.id];const sv=Array.isArray(val)?val.join(','):String(val||'');
+    (fld.validateurs||[]).forEach(vld=>{
+      let ok=true;const msg=vld.message||'Valeur invalide';
+      try{
+        switch(vld.nom){
+          case 'Nb de caractères minimum':ok=sv.length>=(+vld.value||0);break;
+          case 'Nb de caractères maximum':ok=sv.length<=(+vld.value||999);break;
+          case 'Lettres uniquement':ok=/^[a-zA-ZÀ-ÿ\s]*$/.test(sv);break;
+          case 'Chiffres uniquement':ok=/^\d*$/.test(sv);break;
+          case 'Adresse email':ok=/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sv);break;
+          case 'Expression régulière':try{ok=new RegExp(vld.value||'').test(sv);}catch(e){ok=true;}break;
+          case 'Validateur avancé':if(vld.code){try{const fn=new Function('value',vld.code);ok=!!fn(sv);}catch(e){ok=true;}}break;
+        }
+      }catch(e){ok=true;}
+      if(!ok)_vldErrors.push({fld,msg:`${fld.nom} : ${msg}`});
+    });
+  });
+  if(_vldErrors.length){
+    _vldErrors.forEach(({fld,msg})=>{const w=document.getElementById('sw-'+fld.id);if(w){w.style.outline='2px solid #ef4444';w.style.borderRadius='8px';w.scrollIntoView({behavior:'smooth',block:'nearest'});setTimeout(()=>w.style.outline='',2800);}toast('e','⚠️ '+msg);});
     return;
   }
   // Déclencheur base de données dynamique
@@ -676,18 +707,60 @@ function setCfgTab(t){
     if(['select','multiselect'].includes(f.type))html+=`<div class="cg" style="margin-top:10px"><div class="cl">Options</div>${(f.valeurs||[]).map((v,i)=>`<div style="display:flex;gap:6px;margin-bottom:5px"><input class="ci" value="${h(v)}" oninput="builderFields[curFieldIdx].valeurs[${i}]=this.value" style="flex:1"><button class="ic-btn" onclick="removeOpt(${i})">✕</button></div>`).join('')}<button class="add-opt" onclick="addOpt()">＋ Ajouter une option</button></div>`;
     if(f.type==='number')html+=`<div class="cg" style="margin-top:10px"><div class="cl">Incrément (pas)</div><input class="ci" type="number" value="${f.pas||1}" min="0.01" step="any" oninput="builderFields[curFieldIdx].pas=+this.value" style="width:100px"></div>`;
     html+=`<div class="cg" style="margin-top:10px"><div class="cl">Obligatoire</div><div class="tr" style="padding:6px 0"><div class="tr-lbl" style="font-size:12px">Champ requis</div><div class="tog ${f.obligatoire?'on':'off'}" onclick="toggleProp('obligatoire',this)"></div></div></div>`;
+    html+=`<div class="cg" style="margin-top:10px"><div class="cl">Champ duplicable</div>
+      <div class="tr" style="padding:6px 0"><div class="tr-lbl" style="font-size:12px">Permettre l'ajout multiple</div><div class="tog ${f.duplicable?'on':'off'}" onclick="toggleProp('duplicable',this)"></div></div>
+      ${f.duplicable?`<div style="margin-top:8px;display:flex;gap:10px">
+        <div><div style="font-size:11px;color:var(--tl);margin-bottom:3px">Min</div><input class="ci" type="number" value="${f.duplicable_min||1}" min="1" oninput="builderFields[curFieldIdx].duplicable_min=+this.value" style="width:70px"></div>
+        <div><div style="font-size:11px;color:var(--tl);margin-bottom:3px">Max</div><input class="ci" type="number" value="${f.duplicable_max||10}" min="1" oninput="builderFields[curFieldIdx].duplicable_max=+this.value" style="width:70px"></div>
+      </div>`:''}
+    </div>`;
     html+=`<div class="cg" style="margin-top:10px"><div class="cl">Visibilité</div><div class="tr" style="padding:5px 0"><div class="tr-lbl" style="font-size:12px">🖥 Supervision</div><div class="tog ${f.vis_sup!==false?'on':'off'}" onclick="toggleProp('vis_sup',this)"></div></div><div class="tr" style="padding:5px 0"><div class="tr-lbl" style="font-size:12px">📱 App nomade</div><div class="tog ${f.vis_nom!==false?'on':'off'}" onclick="toggleProp('vis_nom',this)"></div></div></div>`;
   }
   if(t==='V'){
     const avail=VALIDATORS_BY_TYPE[f.type]||[];
-    html+=(f.validateurs||[]).map((vld,vi)=>`<div style="border:1.5px solid var(--bd);border-radius:8px;padding:10px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-size:12px;font-weight:700">${vi+1}. ${vld.nom}</span><button class="ic-btn" onclick="builderFields[curFieldIdx].validateurs.splice(${vi},1);setCfgTab('V')">🗑</button></div>${vld.hasValue?`<div class="cl" style="font-size:11px;margin-bottom:3px">Valeur *</div><input class="ci" type="${vld.typeInput||'text'}" value="${h(vld.value||'')}" oninput="builderFields[curFieldIdx].validateurs[${vi}].value=this.value">`:''}</div>`).join('');
+    if(!(f.validateurs||[]).length)html+=`<div style="text-align:center;padding:20px;color:var(--tl);font-size:12px;opacity:.6">Aucun validateur configuré</div>`;
+    html+=(f.validateurs||[]).map((vld,vi)=>{
+      const isAdv=vld.nom==='Validateur avancé';
+      return `<div style="border:1.5px solid var(--bd);border-radius:8px;padding:10px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:${isAdv||vld.hasValue?'8':'4'}px">
+          <span style="font-size:12px;font-weight:700">${vi+1}. ${vld.nom}</span>
+          <button class="ic-btn" onclick="builderFields[curFieldIdx].validateurs.splice(${vi},1);setCfgTab('V')">🗑</button>
+        </div>
+        ${isAdv
+          ?`<div style="margin-bottom:6px"><div style="font-size:11px;color:var(--tl);margin-bottom:3px">Message d'erreur</div><input class="ci" value="${h(vld.message||'')}" placeholder="Valeur invalide..." oninput="builderFields[curFieldIdx].validateurs[${vi}].message=this.value"></div>
+           <div style="background:#1e293b;border-radius:6px;padding:8px"><div style="font-size:10px;color:#64748b;margin-bottom:4px;font-family:'DM Mono',monospace">// function validate(value) — return true si valide</div><textarea style="width:100%;background:transparent;border:none;outline:none;color:#e2e8f0;font-family:'DM Mono',monospace;font-size:12px;resize:vertical;min-height:72px;box-sizing:border-box" oninput="builderFields[curFieldIdx].validateurs[${vi}].code=this.value" placeholder="return value.length > 0;">${h(vld.code||'return value.length > 0;')}</textarea></div>`
+          :vld.hasValue
+          ?`<div style="display:flex;gap:6px"><input class="ci" type="${vld.typeInput||'text'}" value="${h(vld.value||'')}" placeholder="Valeur..." oninput="builderFields[curFieldIdx].validateurs[${vi}].value=this.value" style="width:90px"><input class="ci" style="flex:1" value="${h(vld.message||'')}" placeholder="Message d'erreur..." oninput="builderFields[curFieldIdx].validateurs[${vi}].message=this.value"></div>`
+          :`<input class="ci" value="${h(vld.message||'')}" placeholder="Message d'erreur (optionnel)..." oninput="builderFields[curFieldIdx].validateurs[${vi}].message=this.value">`}
+      </div>`;
+    }).join('');
     if(avail.length)html+=`<div style="display:flex;gap:6px;margin-top:4px"><select class="ci" id="vld-sel" style="flex:1"><option value="">— Sélectionner —</option>${avail.map(v=>`<option>${h(v)}</option>`).join('')}</select><button class="btn btn-sm bp" onclick="addVld()">＋</button></div>`;
   }
   if(t==='T'){
-    html+=(f.transformateurs||[]).map((trf,ti)=>`<div style="border:1.5px solid var(--bd);border-radius:8px;padding:10px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:12px;font-weight:700">${ti+1}. ${trf.nom}</span><button class="ic-btn" onclick="builderFields[curFieldIdx].transformateurs.splice(${ti},1);setCfgTab('T')">🗑</button></div>${trf.param!==undefined?`<input class="ci" style="margin-top:6px" value="${h(trf.param)}" placeholder="Paramètre..." oninput="builderFields[curFieldIdx].transformateurs[${ti}].param=this.value">`:''}</div>`).join('');
+    if(!(f.transformateurs||[]).length)html+=`<div style="text-align:center;padding:20px;color:var(--tl);font-size:12px;opacity:.6">Aucun transformateur configuré</div>`;
+    html+=(f.transformateurs||[]).map((trf,ti)=>{
+      const isAdv=trf.nom==='Transformateur avancé';
+      const needsParam=/(préfixe|suffixe|premiers|derniers|sous-chaîne)/i.test(trf.nom);
+      return `<div style="border:1.5px solid var(--bd);border-radius:8px;padding:10px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:${isAdv||needsParam?'8':'0'}px">
+          <span style="font-size:12px;font-weight:700">${ti+1}. ${trf.nom}</span>
+          <button class="ic-btn" onclick="builderFields[curFieldIdx].transformateurs.splice(${ti},1);setCfgTab('T')">🗑</button>
+        </div>
+        ${isAdv
+          ?`<div style="background:#1e293b;border-radius:6px;padding:8px"><div style="font-size:10px;color:#64748b;margin-bottom:4px;font-family:'DM Mono',monospace">// function transform(value) — retournez la valeur modifiée</div><textarea style="width:100%;background:transparent;border:none;outline:none;color:#e2e8f0;font-family:'DM Mono',monospace;font-size:12px;resize:vertical;min-height:72px;box-sizing:border-box" oninput="builderFields[curFieldIdx].transformateurs[${ti}].code=this.value" placeholder="return value.toUpperCase();">${h(trf.code||'return value.toUpperCase();')}</textarea></div>`
+          :needsParam
+          ?`<input class="ci" value="${h(trf.param||'')}" placeholder="Paramètre..." oninput="builderFields[curFieldIdx].transformateurs[${ti}].param=this.value">`
+          :''}
+      </div>`;
+    }).join('');
     html+=`<div style="display:flex;gap:6px;margin-top:4px"><select class="ci" id="trf-sel" style="flex:1"><option value="">— Sélectionner —</option>${TRANSFORMERS.map(t=>`<option>${h(t)}</option>`).join('')}</select><button class="btn btn-sm bp" onclick="addTrf()">＋</button></div>`;
   }
   if(t==='A'){
+    html+=`<div class="cg" style="margin-bottom:14px"><div class="cl" style="margin-bottom:8px">Visible par (rôles)</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${ROLES_DATA.map(r=>{const on=(f.visibleByRoles||[]).includes(r.id);return`<label style="display:flex;align-items:center;gap:5px;padding:5px 11px;border:1.5px solid ${on?'var(--p)':'var(--bd)'};border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;background:${on?'var(--pl)':'#fff'};color:${on?'var(--p)':'var(--tm)'}"><input type="checkbox" ${on?'checked':''} style="display:none" onchange="_toggleFieldRole(${r.id},this.checked)">${on?'✓ ':''}${h(r.nom)}</label>`;}).join('')}</div>
+      <div style="font-size:11px;color:var(--tl);margin-top:5px">Vide = visible par tous les rôles</div>
+    </div>
+    <div class="cl" style="margin-bottom:8px">Conditions d'affichage</div>`;
     if((f.conditions||[]).length)html+=`<div style="margin-bottom:8px"><label style="font-size:12px;margin-right:8px"><input type="radio" name="condOp" value="all" ${(f.condOp||'all')==='all'?'checked':''} onchange="builderFields[curFieldIdx].condOp='all'"> Toutes</label><label style="font-size:12px"><input type="radio" name="condOp" value="any" ${f.condOp==='any'?'checked':''} onchange="builderFields[curFieldIdx].condOp='any'"> Au moins une</label></div>`;
     html+=(f.conditions||[]).map((c,ci)=>`<div style="border:1.5px solid var(--bd);border-radius:8px;padding:8px;margin-bottom:6px"><div style="display:flex;gap:6px;align-items:center"><select class="ci" style="flex:1;padding:6px 8px;font-size:12px" onchange="builderFields[curFieldIdx].conditions[${ci}].field=this.value"><option value="">— Champ source —</option>${builderFields.filter((_,idx)=>idx!==curFieldIdx).map(bf=>`<option${c.field===bf.nom?' selected':''}>${h(bf.nom)}</option>`).join('')}</select><select class="ci" style="width:44px;padding:6px 4px;font-size:13px;text-align:center" onchange="builderFields[curFieldIdx].conditions[${ci}].op=this.value"><option${c.op==='='?' selected':''}>=</option><option${c.op==='!='?' selected':''}>≠</option><option${c.op==='contains'?' selected':''}>∋</option><option${c.op==='empty'?' selected':''}>∅</option></select><input class="ci" style="flex:1;padding:6px 8px;font-size:12px" value="${h(c.val||'')}" placeholder="Valeur..." oninput="builderFields[curFieldIdx].conditions[${ci}].val=this.value"><button class="ic-btn" onclick="builderFields[curFieldIdx].conditions.splice(${ci},1);setCfgTab('A')">✕</button></div></div>`).join('');
     html+=`<button class="add-opt" onclick="(builderFields[curFieldIdx].conditions=builderFields[curFieldIdx].conditions||[]).push({field:'',op:'=',val:''});setCfgTab('A')">＋ Ajouter une condition</button>`;
@@ -703,8 +776,8 @@ function toggleProp(prop,el){
 }
 function addOpt(){if(curFieldIdx===null)return;(builderFields[curFieldIdx].valeurs=builderFields[curFieldIdx].valeurs||[]).push('Nouvelle option');setCfgTab('G');}
 function removeOpt(i){if(curFieldIdx===null)return;builderFields[curFieldIdx].valeurs.splice(i,1);setCfgTab('G');}
-function addVld(){const sel=document.getElementById('vld-sel');if(!sel||curFieldIdx===null||!sel.value)return;const nom=sel.value;const hasValue=/(min|max|caractère|fichier|sélection|valeur)/i.test(nom);(builderFields[curFieldIdx].validateurs=builderFields[curFieldIdx].validateurs||[]).push({nom,hasValue,value:'',message:'',typeInput:'number'});setCfgTab('V');toast('i','✅ Validateur ajouté');}
-function addTrf(){const sel=document.getElementById('trf-sel');if(!sel||curFieldIdx===null||!sel.value)return;const nom=sel.value;const hasParam=/(préfixe|suffixe|premiers|derniers|sous-chaîne)/i.test(nom);(builderFields[curFieldIdx].transformateurs=builderFields[curFieldIdx].transformateurs||[]).push({nom,param:hasParam?'':undefined});setCfgTab('T');toast('i','✅ Transformateur ajouté');}
+function addVld(){const sel=document.getElementById('vld-sel');if(!sel||curFieldIdx===null||!sel.value)return;const nom=sel.value;const isAdv=nom==='Validateur avancé';const hasValue=!isAdv&&/(min|max|caractère|fichier|sélection|valeur)/i.test(nom);(builderFields[curFieldIdx].validateurs=builderFields[curFieldIdx].validateurs||[]).push({nom,hasValue,value:'',message:'',typeInput:'number',...(isAdv?{code:'return value.length > 0;'}:{})});setCfgTab('V');toast('i','✅ Validateur ajouté');}
+function addTrf(){const sel=document.getElementById('trf-sel');if(!sel||curFieldIdx===null||!sel.value)return;const nom=sel.value;const isAdv=nom==='Transformateur avancé';const hasParam=!isAdv&&/(préfixe|suffixe|premiers|derniers|sous-chaîne)/i.test(nom);(builderFields[curFieldIdx].transformateurs=builderFields[curFieldIdx].transformateurs||[]).push({nom,...(isAdv?{code:'return value.toUpperCase();'}:{param:hasParam?'':undefined})});setCfgTab('T');toast('i','✅ Transformateur ajouté');}
 
 // ✅ CORRECTION : initColors utilise id="color-row" (pas color-grid)
 function initColors(){
@@ -1181,6 +1254,76 @@ function _toggleFormVis(roleId, labelEl) {
   labelEl.style.borderColor = on ? 'var(--p)' : 'var(--bd)';
   const chk = labelEl.querySelector('div');
   if (chk) { chk.style.background = on ? 'var(--p)' : '#fff'; chk.style.borderColor = on ? 'var(--p)' : 'var(--bd)'; chk.textContent = on ? '✓' : ''; }
+}
+function _toggleFieldRole(roleId, checked) {
+  if(curFieldIdx===null)return;
+  const f=builderFields[curFieldIdx];
+  if(!f.visibleByRoles)f.visibleByRoles=[];
+  if(checked){if(!f.visibleByRoles.includes(roleId))f.visibleByRoles.push(roleId);}
+  else f.visibleByRoles=f.visibleByRoles.filter(id=>id!==roleId);
+}
+function applyTransformers(fid, val) {
+  const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);if(!f)return val;
+  const fld=(f.fields||[]).find(x=>x.id===fid);if(!fld||(fld.transformateurs||[]).length===0)return val;
+  let v=String(val||'');
+  for(const trf of fld.transformateurs){
+    try{
+      switch(trf.nom){
+        case 'Mettre le 1er caractère en majuscule':v=v.charAt(0).toUpperCase()+v.slice(1);break;
+        case 'Tout en majuscule':v=v.toUpperCase();break;
+        case 'Tout en minuscule':v=v.toLowerCase();break;
+        case 'Ajouter un préfixe':v=(trf.param||'')+v;break;
+        case 'Ajouter un suffixe':v=v+(trf.param||'');break;
+        case 'Extraire une sous-chaîne':{const p=(trf.param||'').split(',');v=v.substring(+p[0]||0,p[1]!==undefined?+p[1]:undefined);break;}
+        case 'Ne conserver que les x premiers caractères':v=v.slice(0,+trf.param||0);break;
+        case 'Ne conserver que les x derniers caractères':v=(+trf.param||1)?v.slice(-(+trf.param)):v;break;
+        case 'Retirer les espaces en début/fin':v=v.trim();break;
+        case 'Transformateur avancé':if(trf.code){const fn=new Function('value',trf.code);v=String(fn(v)??v);}break;
+      }
+    }catch(e){}
+  }
+  return v;
+}
+function renderDupField(fld, color) {
+  const vals=Array.isArray(saisieValues[fld.id])?saisieValues[fld.id]:[''];
+  const max=fld.duplicable_max||10;const min=fld.duplicable_min||1;
+  let out='';
+  vals.forEach((v,idx)=>{
+    out+=`<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <input class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 13px;outline:none;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s"
+        placeholder="${h(fld.afficher_placeholder&&fld.placeholder?fld.placeholder:'Saisir un texte...')}"
+        value="${h(v)}"
+        oninput="saisieChangeDup('${fld.id}',${idx},this.value)"
+        onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">
+      ${vals.length>min?`<button onclick="saisieRemoveDup('${fld.id}',${idx})" style="width:32px;height:32px;border:1.5px solid #ef4444;border-radius:8px;background:#fff;color:#ef4444;cursor:pointer;font-size:16px;flex-shrink:0">✕</button>`:''}
+    </div>`;
+  });
+  if(vals.length<max)out+=`<button onclick="saisieAddDup('${fld.id}')" style="width:100%;padding:8px;border:1.5px dashed var(--bd);border-radius:8px;background:transparent;color:${color};font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">＋ Ajouter</button>`;
+  return `<div id="dup-${fld.id}">${out}</div>`;
+}
+function saisieChangeDup(fid, idx, val) {
+  if(!Array.isArray(saisieValues[fid]))saisieValues[fid]=[''];
+  saisieValues[fid][idx]=val;
+  const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);if(!f)return;
+  (f.fields||[]).forEach(fld=>{const w=document.getElementById('sw-'+fld.id);if(!w)return;w.style.display=saisieEvalCond(fld,f.fields)?'block':'none';});
+}
+function saisieAddDup(fid) {
+  if(!Array.isArray(saisieValues[fid]))saisieValues[fid]=[''];
+  const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);if(!f)return;
+  const fld=f.fields.find(x=>x.id===fid);if(!fld)return;
+  if(saisieValues[fid].length>=(fld.duplicable_max||10))return;
+  saisieValues[fid].push('');
+  const wrap=document.getElementById('dup-'+fid);
+  if(wrap)wrap.outerHTML=renderDupField(fld,f.couleur||'#3b82f6');
+}
+function saisieRemoveDup(fid, idx) {
+  if(!Array.isArray(saisieValues[fid]))return;
+  const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);if(!f)return;
+  const fld=f.fields.find(x=>x.id===fid);if(!fld)return;
+  if(saisieValues[fid].length<=(fld.duplicable_min||1))return;
+  saisieValues[fid].splice(idx,1);
+  const wrap=document.getElementById('dup-'+fid);
+  if(wrap)wrap.outerHTML=renderDupField(fld,f.couleur||'#3b82f6');
 }
 function _setDeclDB(i, val) {
   if (!declItems[i].config) declItems[i].config = {};
