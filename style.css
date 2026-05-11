@@ -1,4 +1,4 @@
-:root{--p:#0ea5e9;--pd:#0284c7;--pl:#e0f2fe;--s:#22c55e;--sl:#f0fdf4;--d:#ef4444;--dl:#fef2f2;--w:#f59e0b;--wl:#fffbeb;--v:#8b5cf6;--vl:#f5f3ff;--bd:#e2e8f0;--bg:#f8fafc;--tx:#0f172a;--tm:#64748b;--tl:#94a3b8}
+:root{--p:#00C2FF;--pd:#009DCC;--pl:#E6F8FF;--s:#2EC4B6;--sl:#E9FBF8;--d:#FF6B6B;--dl:#FFF1F1;--w:#f59e0b;--wl:#fffbeb;--v:#1C2541;--vl:#EEF2FF;--bd:#D9E2EC;--bg:#F4F7FB;--tx:#0B132B;--tm:#4B5563;--tl:#6B7280}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);display:flex;height:100vh;overflow:hidden;font-size:13px;color:var(--tx)}
 #sb{width:220px;background:#fff;border-right:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
@@ -275,3 +275,120 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);display:fle
 #v-licensing .access-card table{min-width:760px}
 @media(max-width:1300px){#v-licensing .access-kpis{grid-template-columns:repeat(2,minmax(220px,1fr))}#v-licensing .access-layout{grid-template-columns:1fr}#v-licensing .access-side{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr))}}
 @media(max-width:850px){#v-licensing .access-kpis{grid-template-columns:1fr}#v-licensing .access-rule{grid-template-columns:1fr}#v-licensing .access-side{grid-template-columns:1fr}.licensing-page{padding:16px}}
+/* ══ PICOTRACK NEXUS BRANDING ══ */
+
+#sb{
+  background:#0B132B!important;
+  border-right:none!important;
+}
+
+.sb-logo{
+  border-bottom:1px solid rgba(255,255,255,.08)!important;
+  padding:18px 15px!important;
+}
+
+.sb-li{
+  background:linear-gradient(135deg,#00C2FF,#2EC4B6)!important;
+  color:#0B132B!important;
+}
+
+.sb-lt{
+  color:#fff!important;
+  line-height:1.1!important;
+}
+
+.sb-lt em{
+  color:#00C2FF!important;
+}
+
+.sb-env{
+  background:rgba(0,194,255,.10)!important;
+  border:1px solid rgba(0,194,255,.18)!important;
+}
+
+.sb-env-nm{
+  color:#fff!important;
+}
+
+.sb-env-dot{
+  background:#2EC4B6!important;
+}
+
+.sb-s{
+  color:rgba(255,255,255,.42)!important;
+}
+
+.sb-i{
+  color:rgba(255,255,255,.72)!important;
+  border-left:none!important;
+  border-radius:12px!important;
+  margin:3px 10px!important;
+  padding:9px 12px!important;
+}
+
+.sb-i:hover{
+  background:rgba(0,194,255,.12)!important;
+  color:#fff!important;
+}
+
+.sb-i.on{
+  background:#00C2FF!important;
+  color:#0B132B!important;
+  font-weight:800!important;
+}
+
+.sb-bk{
+  background:rgba(255,255,255,.12)!important;
+  color:#fff!important;
+}
+
+.sb-i.on .sb-bk{
+  background:rgba(11,19,43,.14)!important;
+  color:#0B132B!important;
+}
+
+.sb-bot{
+  border-top:1px solid rgba(255,255,255,.08)!important;
+  color:#fff!important;
+}
+
+.sb-bot:hover{
+  background:rgba(255,255,255,.06)!important;
+}
+
+#topbar{
+  background:#fff!important;
+  box-shadow:0 4px 18px rgba(11,19,43,.06)!important;
+}
+
+.breadcrumb{
+  background:#fff!important;
+}
+
+.btn,
+.ic-btn,
+.dt,
+.fbox,
+.access-card,
+.access-kpi,
+.access-rule,
+.dash-card,
+.dash-quick{
+  border-color:#D9E2EC!important;
+  box-shadow:0 8px 24px rgba(11,19,43,.06)!important;
+}
+
+.bp,
+.pg-btn.on,
+.vld-add-btn,
+.ctab.on{
+  background:#00C2FF!important;
+  border-color:#00C2FF!important;
+  color:#0B132B!important;
+}
+
+.bp:hover{
+  background:#009DCC!important;
+  border-color:#009DCC!important;
+  color:#0B132B!important;
+}
