@@ -342,9 +342,12 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);display:fle
   color:#fff!important;
 }
 
-.sb-i.on .sb-bk{
-  background:rgba(11,19,43,.14)!important;
+.sb-i.on{
+  background:linear-gradient(135deg,#00C2FF,#2EC4B6)!important;
   color:#0B132B!important;
+  font-weight:800!important;
+  box-shadow:0 8px 18px rgba(0,194,255,.22)!important;
+  border-left:none!important;
 }
 
 .sb-bot{
@@ -391,4 +394,20 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);display:fle
   background:#009DCC!important;
   border-color:#009DCC!important;
   color:#0B132B!important;
+}
+/* FINAL NEXUS KPI CARDS */
+.dash-card{
+  background:linear-gradient(180deg,#ffffff,#f8fbff)!important;
+  box-shadow:0 10px 28px rgba(11,19,43,.08)!important;
+  border:1px solid rgba(0,194,255,.10)!important;
+  border-radius:18px!important;
+}
+
+.dash-card:hover{
+  transform:translateY(-2px);
+  box-shadow:0 14px 34px rgba(11,19,43,.12)!important;
+}
+
+.dash-icon{
+  background:linear-gradient(135deg,rgba(0,194,255,.14),rgba(46,196,182,.14))!important;
 }
