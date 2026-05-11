@@ -411,6 +411,16 @@
 </div>
 
 <div id="toasts"></div>
-<script src="app.js"></script>
+<!-- PicoTrack JS - ordre de chargement important -->
+<script src="js/core/constants.js"></script>
+<script src="js/core/data.js"></script>
+<script src="js/core/state.js"></script>
+<script src="js/core/utils.js"></script>
+<script src="js/features/forms.js"></script>
+<script src="js/features/users-roles.js"></script>
+<script src="js/features/services.js"></script>
+<script src="js/features/databases.js"></script>
+<script src="js/features/api.js"></script>
+<script src="js/init.js"></script>
 </body>
 </html>
