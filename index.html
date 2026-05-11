@@ -9,28 +9,35 @@
 </head>
 <body>
 <!-- SIDEBAR -->
-<div class="sb-logo">
-  <div class="sb-li">◆</div>
-  <div class="sb-brand">
-    <div class="sb-lt">Pico<em>Track</em></div>
-    <div class="sb-nexus">NEXUS</div>
-    <div class="sb-tag">Operational Intelligence</div>
+<div id="sb">
+  <div class="sb-logo">
+    <div class="sb-li">◆</div>
+    <div class="sb-brand">
+      <div class="sb-lt">Pico<em>Track</em></div>
+      <div class="sb-nexus">NEXUS</div>
+      <div class="sb-tag">Operational Intelligence</div>
+    </div>
   </div>
-</div>
-  <div class="sb-env"><div class="sb-env-dot"></div><div><div class="sb-env-nm">EDF Blayais</div></div></div>
+
+  <div class="sb-env">
+    <div class="sb-env-dot"></div>
+    <div>
+      <div class="sb-env-nm">EDF Blayais</div>
+    </div>
+  </div>
+
   <div class="sb-s">Administration</div>
- <div class="sb-i" id="sb-dashboard" onclick="goDashboard()">📊 Dashboard</div>
+  <div class="sb-i" id="sb-dashboard" onclick="goDashboard()">📊 Dashboard</div>
   <div class="sb-i" id="sb-users" onclick="goUsers()">👥 Utilisateurs <span class="sb-bk" id="sb-users-cnt">10</span></div>
   <div class="sb-i" id="sb-roles" onclick="goRoles()">🔑 Rôles</div>
-  <div class="sb-i on" id="sb-forms" onclick="goList()">📋 Formulaires</div>
+  <div class="sb-i" id="sb-forms" onclick="goList()">📋 Formulaires</div>
   <div class="sb-i" id="sb-services" onclick="goServices()">⚡ Services</div>
   <div class="sb-i" id="sb-api" onclick="goApiConfig()">🔌 API</div>
+
   <div class="sb-s">Production</div>
-  <div class="sb-i" id="sb-prod-forms" onclick="goProduction()">📋 Formulaires <span class="sb-bk" id="prod-forms-count">4</span></div>
+  <div class="sb-i" id="sb-prod-forms" onclick="goProduction()">📋 Formulaires <span class="sb-bk" id="prod-forms-count">3</span></div>
   <div class="sb-i" id="sb-prod-services" onclick="goProdServices()">⚡ Services</div>
   <div class="sb-i" id="sb-prod-db" onclick="goProDatabase()">🗃 Base de données</div>
-  <div class="sb-bot"><div class="u-av">CP</div><div><div style="font-size:12px;font-weight:700">Picot Clément</div><div style="font-size:11px;color:var(--tl)">Administrateur</div></div></div>
-</div>
 
 <!-- MAIN -->
 <div id="main">
