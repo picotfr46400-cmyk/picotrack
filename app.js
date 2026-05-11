@@ -442,10 +442,13 @@ function renderSaisieForm(f){
         const msv=Array.isArray(saisieValues[fld.id])?saisieValues[fld.id]:[];
         html+=`<div id="ms_${fld.id}" style="display:flex;flex-wrap:wrap;gap:8px;padding:4px 0">${(fld.valeurs||[]).map(v=>{const on=msv.includes(v);return`<label style="display:flex;align-items:center;gap:6px;padding:7px 15px;border:1.5px solid ${on?color:'var(--bd)'};border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;background:${on?color+'18':'#f8fafc'};color:${on?color:'var(--tm)'};transition:all .15s"><input type="checkbox" ${on?'checked':''} onchange="saisieChangeMulti('${fld.id}','${v.replace(/'/g,"\\'")}',this.checked)" style="display:none">${on?'✓ ':''}${h(v)}</label>`;}).join('')}</div>`;break;
       case 'date':
+        if(fld.duplicable){if(!Array.isArray(saisieValues[fld.id]))saisieValues[fld.id]=Array(Math.max(fld.duplicable_min||1,1)).fill('');html+=renderDupField(fld,color);break;}
         html+=`<input type="date" class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:200px;font-family:inherit;font-size:13px;transition:border-color .15s" value="${saisieValues[fld.id]||''}" onchange="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;break;
       case 'heure':
+        if(fld.duplicable){if(!Array.isArray(saisieValues[fld.id]))saisieValues[fld.id]=Array(Math.max(fld.duplicable_min||1,1)).fill('');html+=renderDupField(fld,color);break;}
         html+=`<input type="time" class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:160px;font-family:inherit;font-size:13px;transition:border-color .15s" value="${saisieValues[fld.id]||''}" onchange="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;break;
       case 'datetime':
+        if(fld.duplicable){if(!Array.isArray(saisieValues[fld.id]))saisieValues[fld.id]=Array(Math.max(fld.duplicable_min||1,1)).fill('');html+=renderDupField(fld,color);break;}
         html+=`<input type="datetime-local" class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:100%;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s" value="${saisieValues[fld.id]||''}" onchange="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;break;
       case 'photo':html+=`<div style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc">📷 Capture photo — disponible sur l'app nomade</div>`;break;
       case 'signature':html+=`<div style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc">✍ Signature — disponible sur l'app nomade</div>`;break;
@@ -455,6 +458,7 @@ function renderSaisieForm(f){
       case 'separator':html+=`<hr style="border:none;border-top:1.5px solid var(--bd);margin:4px 0">`;break;
       case 'image':html+=fld.imageData?`<img src="${fld.imageData}" style="max-width:100%;max-height:220px;border-radius:8px;object-fit:contain;display:block">`:
         `<div style="background:#f8fafc;border:1.5px dashed var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:13px">🖼 Aucune image configurée</div>`;break;
+     case 'calcul':{const cr=computeCalcul(fld,saisieValues);saisieValues[fld.id]=cr;html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px"><span id="calcul-result-${fld.id}" style="font-size:17px;font-weight:800;font-family:'DM Mono',monospace;color:var(--tx)">${cr!==''?cr:'—'}</span><span style="font-size:11px;color:var(--tl)">calculé automatiquement</span></div>`;break;}
       default:html+=`<div class="ap-input" style="color:var(--tl);font-style:italic">${fd.l||'—'}</div>`;
     }
     html+=`</div>`;
@@ -478,6 +482,7 @@ function saisieChange(fid,val){
   saisieValues[fid]=val;
   if(!f)return;
   (f.fields||[]).forEach(fld=>{const w=document.getElementById('sw-'+fld.id);if(!w)return;w.style.display=saisieEvalCond(fld,f.fields)?'block':'none';});
+  (f.fields||[]).filter(c=>c.type==='calcul').forEach(c=>{const r=computeCalcul(c,saisieValues);saisieValues[c.id]=r;const el=document.getElementById('calcul-result-'+c.id);if(el)el.textContent=r!==''?String(r):'—';});
 }
 function saisieChangeMulti(fid,val,checked){
   if(!Array.isArray(saisieValues[fid]))saisieValues[fid]=[];
@@ -672,6 +677,7 @@ function openCfg(i){
   const bd=document.getElementById('cfg-bd');if(bd)bd.style.display='block';
   const ic=document.getElementById('cfg-ic');if(ic){ic.textContent=fd.ic;ic.style.background=fd.bg;}
   const title=document.getElementById('cfg-title');if(title)title.textContent=h(f.nom||fd.l);
+  const tTab=document.getElementById('ctab-T');if(tTab){tTab.textContent=f.type==='calcul'?'∑':'T';tTab.title=f.type==='calcul'?'Calcul':'Transformateurs';}
   setCfgTab('G');
 }
 // ✅ CORRECTION : closeCfg cache aussi cfg-bd
@@ -718,7 +724,7 @@ function setCfgTab(t){
     }
     const isLayout=['image','titre','separator','son','video'].includes(f.type);
     if(!isLayout)html+=`<div class="cg" style="margin-top:10px"><div class="cl">Obligatoire</div><div class="tr" style="padding:6px 0"><div class="tr-lbl" style="font-size:12px">Champ requis</div><div class="tog ${f.obligatoire?'on':'off'}" onclick="toggleProp('obligatoire',this)"></div></div></div>`;
-    if(['text','textarea'].includes(f.type)){
+   if(!['image','titre','separator','son','video','calcul','requete'].includes(f.type)){
       html+=`<div class="cg" style="margin-top:10px"><div class="cl">Champ duplicable</div>
         <div class="tr" style="padding:6px 0"><div class="tr-lbl" style="font-size:12px">Permettre l'ajout multiple</div><div class="tog ${f.duplicable?'on':'off'}" onclick="toggleProp('duplicable',this)"></div></div>
         ${f.duplicable?`<div style="margin-top:8px;display:flex;gap:10px">
@@ -749,8 +755,42 @@ function setCfgTab(t){
     }).join('');
     if(avail.length)html+=`<div style="display:flex;gap:6px;margin-top:4px"><select class="ci" id="vld-sel" style="flex:1"><option value="">— Sélectionner —</option>${avail.map(v=>`<option>${h(v)}</option>`).join('')}</select><button class="btn btn-sm bp" onclick="addVld()">＋</button></div>`;
   }
-  if(t==='T'){
-    if(!['text','textarea'].includes(f.type)){html+=`<div style="text-align:center;padding:24px;background:var(--bg);border-radius:8px;color:var(--tl);font-size:12px">⚙️ Non applicable pour ce type de champ</div>`;const body=document.getElementById('cfg-body');if(body)body.innerHTML=html;return;}
+ if(t==='T'){
+    if(f.type==='calcul'){
+      const steps=f.calculSteps||[];
+      const numFields=builderFields.filter((bf,idx)=>idx!==curFieldIdx&&['number','calcul'].includes(bf.type));
+      const fieldOptsFor=sel=>numFields.map(bf=>`<option value="${bf.id}" ${sel===bf.id?'selected':''}>${h(bf.nom)}</option>`).join('');
+      let stepsHtml='';
+      steps.forEach((step,si)=>{
+        stepsHtml+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+          ${si===0
+            ?`<div style="width:50px;text-align:center;font-size:11px;color:var(--tl);flex-shrink:0">début</div>`
+            :`<select class="ci" style="width:50px;text-align:center;font-size:16px;font-weight:800;padding:6px 2px" onchange="_calcSetOp(${si},this.value)">
+              <option value="+" ${step.op==='+'?'selected':''}>+</option>
+              <option value="-" ${step.op==='-'?'selected':''}>−</option>
+              <option value="*" ${step.op==='*'?'selected':''}>×</option>
+              <option value="/" ${step.op==='/'?'selected':''}>÷</option>
+            </select>`}
+          <select class="ci" style="width:95px;flex-shrink:0" onchange="_calcSetType(${si},this.value)">
+            <option value="field" ${step.type==='field'?'selected':''}>Champ</option>
+            <option value="fixed" ${step.type==='fixed'?'selected':''}>Valeur</option>
+          </select>
+          ${step.type==='field'
+            ?`<select class="ci" style="flex:1" onchange="_calcSetField(${si},this.value)"><option value="">— Choisir —</option>${fieldOptsFor(step.fieldId)}</select>`
+            :`<input class="ci" type="number" style="flex:1" value="${h(String(step.value||'0'))}" oninput="_calcSetValue(${si},this.value)">`}
+          ${steps.length>1?`<button class="ic-btn" onclick="_calcRemoveStep(${si})">🗑</button>`:''}
+        </div>`;
+      });
+      html+=`<div class="cg"><div class="cl" style="margin-bottom:6px">Formule de calcul</div>
+        <div class="f-hint" style="margin-bottom:10px">Combinez champs numériques et valeurs fixes. Le résultat est en lecture seule dans le formulaire.</div>
+        ${!steps.length?`<div style="text-align:center;padding:14px;color:var(--tl);font-size:12px;border:1.5px dashed var(--bd);border-radius:8px;margin-bottom:8px">Aucun terme configuré</div>`:''}
+        ${stepsHtml}
+        <button class="btn btn-sm" style="width:100%;margin-top:4px" onclick="_calcAddStep()">＋ Ajouter un terme</button>
+        ${steps.length>=2?`<div style="margin-top:10px;padding:10px;background:var(--bg);border-radius:8px;display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:var(--tl)">Décimales :</span><input class="ci" type="number" value="${f.calculPrecision!==undefined?f.calculPrecision:2}" min="0" max="10" style="width:55px" oninput="builderFields[curFieldIdx].calculPrecision=+this.value"></div>`:''}
+      </div>`;
+      const body=document.getElementById('cfg-body');if(body)body.innerHTML=html;return;
+    }
+    if(!['text','textarea'].includes(f.type)){html+=`<div style="text-align:center;padding:24px;background:var(--bg);border-radius:8px;color:var(--tl);font-size:12px">⚙️ Non applicable pour ce type de champ</div>`;const body=document.getElementById('cfg-body');if(body)body.innerHTML=html;return;}    
     if(!(f.transformateurs||[]).length)html+=`<div style="text-align:center;padding:20px;color:var(--tl);font-size:12px;opacity:.6">Aucun transformateur configuré</div>`;
     html+=(f.transformateurs||[]).map((trf,ti)=>{
       const isAdv=trf.nom==='Transformateur avancé';
@@ -838,6 +878,7 @@ function renderApercu(){
         `<div style="background:#f8fafc;border:1.5px dashed var(--bd);border-radius:8px;height:70px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:13px">🖼 Aucune image</div>`;break;
       case 'titre':html+=`<div style="font-size:15px;font-weight:800;border-bottom:2px solid var(--bd);padding-bottom:7px">${h(f.nom)}</div>`;break;
       case 'separator':html+=`<hr style="border:none;border-top:1.5px solid var(--bd)">`;break;
+      case 'calcul':{const cr=computeCalcul(f,previewValues);html+=`<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px"><span style="font-size:17px;font-weight:800;font-family:'DM Mono',monospace;color:var(--tx)">${cr!==''?cr:'—'}</span><span style="font-size:11px;color:var(--tl)">calculé</span></div>`;break;}
       default:html+=`<div class="ap-input" style="color:var(--tl)">${fd.l||'—'}</div>`;
     }
     html+=`</div>`;
@@ -1288,6 +1329,26 @@ function _uploadFieldImage(input) {
   };
   reader.readAsDataURL(file);
 }
+function computeCalcul(fld, values) {
+  const steps=fld.calculSteps||[];if(!steps.length)return'';
+  const getV=s=>s.type==='fixed'?(+s.value||0):(+values[s.fieldId]||0);
+  let r=getV(steps[0]);
+  for(let i=1;i<steps.length;i++){const v=getV(steps[i]);switch(steps[i].op){case'+':r+=v;break;case'-':r-=v;break;case'*':r*=v;break;case'/':r=v!==0?r/v:0;break;}}
+  const p=fld.calculPrecision!==undefined?fld.calculPrecision:2;
+  return +r.toFixed(p);
+}
+function _calcAddStep(){
+  if(curFieldIdx===null)return;const f=builderFields[curFieldIdx];
+  if(!f.calculSteps)f.calculSteps=[];
+  const isFirst=f.calculSteps.length===0;
+  f.calculSteps.push({type:'fixed',value:'0',...(isFirst?{}:{op:'+'})});
+  setCfgTab('T');
+}
+function _calcRemoveStep(si){if(curFieldIdx===null)return;builderFields[curFieldIdx].calculSteps.splice(si,1);setCfgTab('T');}
+function _calcSetOp(si,op){if(curFieldIdx===null)return;builderFields[curFieldIdx].calculSteps[si].op=op;}
+function _calcSetType(si,type){if(curFieldIdx===null)return;builderFields[curFieldIdx].calculSteps[si].type=type;builderFields[curFieldIdx].calculSteps[si].fieldId='';builderFields[curFieldIdx].calculSteps[si].value='0';setCfgTab('T');}
+function _calcSetField(si,fid){if(curFieldIdx===null)return;builderFields[curFieldIdx].calculSteps[si].fieldId=fid;}
+function _calcSetValue(si,val){if(curFieldIdx===null)return;builderFields[curFieldIdx].calculSteps[si].value=val;}
 function applyTransformers(fid, val) {
   const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);if(!f)return val;
   const fld=(f.fields||[]).find(x=>x.id===fid);if(!fld||(fld.transformateurs||[]).length===0)return val;
@@ -1315,14 +1376,18 @@ function renderDupField(fld, color) {
   const max=fld.duplicable_max||10;const min=fld.duplicable_min||1;
   let out='';
   vals.forEach((v,idx)=>{
-    out+=`<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-      <input class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 13px;outline:none;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s"
-        placeholder="${h(fld.afficher_placeholder&&fld.placeholder?fld.placeholder:'Saisir un texte...')}"
-        value="${h(v)}"
-        oninput="saisieChangeDup('${fld.id}',${idx},this.value)"
-        onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">
-      ${vals.length>min?`<button onclick="saisieRemoveDup('${fld.id}',${idx})" style="width:32px;height:32px;border:1.5px solid #ef4444;border-radius:8px;background:#fff;color:#ef4444;cursor:pointer;font-size:16px;flex-shrink:0">✕</button>`:''}
-    </div>`;
+    let inp='';
+    switch(fld.type){
+      case 'text':inp=`<input class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 13px;outline:none;font-family:inherit;font-size:13px;box-sizing:border-box" placeholder="${h(fld.afficher_placeholder&&fld.placeholder?fld.placeholder:'Saisir...')}" value="${h(v)}" oninput="saisieChangeDup('${fld.id}',${idx},this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;break;
+      case 'textarea':inp=`<textarea class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:72px;resize:vertical;padding:10px 13px;outline:none;font-family:inherit;font-size:13px;box-sizing:border-box" oninput="saisieChangeDup('${fld.id}',${idx},this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">${h(v)}</textarea>`;break;
+      case 'number':inp=`<input type="number" class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 13px;outline:none;font-family:inherit;font-size:13px" value="${+v||0}" step="${fld.pas||1}" oninput="saisieChangeDup('${fld.id}',${idx},+this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;break;
+      case 'select':inp=`<select class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 13px;outline:none;font-family:inherit;font-size:13px;cursor:pointer" onchange="saisieChangeDup('${fld.id}',${idx},this.value)"><option value="">— Sélectionner —</option>${(fld.valeurs||[]).map(opt=>`<option ${v===opt?'selected':''}>${h(opt)}</option>`).join('')}</select>`;break;
+      case 'date':inp=`<input type="date" class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 13px;outline:none;font-family:inherit" value="${h(v)}" onchange="saisieChangeDup('${fld.id}',${idx},this.value)">`;break;
+      case 'heure':inp=`<input type="time" class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 13px;outline:none;font-family:inherit" value="${h(v)}" onchange="saisieChangeDup('${fld.id}',${idx},this.value)">`;break;
+      case 'datetime':inp=`<input type="datetime-local" class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 13px;outline:none;font-family:inherit" value="${h(v)}" onchange="saisieChangeDup('${fld.id}',${idx},this.value)">`;break;
+      default:inp=`<input class="ap-input" style="flex:1;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 13px;outline:none;font-family:inherit;font-size:13px" value="${h(v)}" oninput="saisieChangeDup('${fld.id}',${idx},this.value)">`;
+    }
+    out+=`<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">${inp}${vals.length>min?`<button onclick="saisieRemoveDup('${fld.id}',${idx})" style="width:32px;height:32px;border:1.5px solid #ef4444;border-radius:8px;background:#fff;color:#ef4444;cursor:pointer;font-size:16px;flex-shrink:0">✕</button>`:''}</div>`;
   });
   if(vals.length<max)out+=`<button onclick="saisieAddDup('${fld.id}')" style="width:100%;padding:8px;border:1.5px dashed var(--bd);border-radius:8px;background:transparent;color:${color};font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">＋ Ajouter</button>`;
   return `<div id="dup-${fld.id}">${out}</div>`;
