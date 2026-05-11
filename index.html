@@ -234,28 +234,6 @@
   </div>
 </div>
   <!-- BUILDER VIEW -->
-  <div class="b-tabs">
-  <div class="b-tab on" id="btab-gen" onclick="setBTab('gen')"><span class="tab-dot"></span>Général</div>
-  <div class="b-tab" id="btab-fields" onclick="setBTab('fields')"><span class="tab-dot"></span>Champs <span class="b-tab-cnt" id="fields-cnt" style="display:none">0</span></div>
-  <div class="b-tab" id="btab-layout" onclick="setBTab('layout')"><span class="tab-dot"></span>Mise en page</div>
-  <div class="b-tab" id="btab-apercu" onclick="setBTab('apercu')"><span class="tab-dot"></span>Aperçu</div>
-  <div class="b-tab" id="btab-decl" onclick="setBTab('decl')" style="display:none"><span class="tab-dot"></span>Déclencheurs <span class="b-tab-cnt" id="decl-cnt" style="display:none">0</span></div>
-</div>
-  <div class="flow-builder-head">
-  <div class="flow-builder-kicker">Configuration du flux opérationnel</div>
-  <div class="flow-builder-title" id="flow-title">Flux opérationnel</div>
-  <div class="flow-builder-sub">
-    Supervision terrain · Données collectées · Règles métier · Pilotage opérationnel
-  </div>
-</div>
-
-<div class="flow-tabs">
-  <div class="flow-tab on" onclick="setBTab('gen')">Vue d’ensemble</div>
-  <div class="flow-tab" onclick="setBTab('fields')">Données collectées</div>
-  <div class="flow-tab" onclick="setBTab('layout')">Interface opérateur</div>
-  <div class="flow-tab" onclick="setBTab('apercu')">Vue terrain</div>
-  <div class="flow-tab" onclick="setBTab('decl')">Règles & alertes</div>
-</div>
   <div class="view" id="v-builder">
     <div class="btb">
       <button class="btn btn-sm" onclick="goList()">← Retour</button>
@@ -274,7 +252,29 @@
     Supervision terrain · Données collectées · Règles métier · Pilotage opérationnel
   </div>
 </div>
+<div class="b-tabs legacy-builder-tabs">
+  <div class="b-tab on" id="btab-gen" onclick="setBTab('gen')"><span class="tab-dot"></span>Général</div>
+  <div class="b-tab" id="btab-fields" onclick="setBTab('fields')"><span class="tab-dot"></span>Champs <span class="b-tab-cnt" id="fields-cnt" style="display:none">0</span></div>
+  <div class="b-tab" id="btab-layout" onclick="setBTab('layout')"><span class="tab-dot"></span>Mise en page</div>
+  <div class="b-tab" id="btab-apercu" onclick="setBTab('apercu')"><span class="tab-dot"></span>Aperçu</div>
+  <div class="b-tab" id="btab-decl" onclick="setBTab('decl')" style="display:none"><span class="tab-dot"></span>Déclencheurs <span class="b-tab-cnt" id="decl-cnt" style="display:none">0</span></div>
+</div>
 
+<div class="flow-builder-head">
+  <div class="flow-builder-kicker">Configuration du flux opérationnel</div>
+  <div class="flow-builder-title" id="flow-title">Flux opérationnel</div>
+  <div class="flow-builder-sub">Supervision terrain · Données collectées · Règles métier · Pilotage opérationnel</div>
+</div>
+
+<div class="flow-tabs">
+  <div class="flow-tab on" onclick="setBTab('gen')">Vue d’ensemble</div>
+  <div class="flow-tab" onclick="setBTab('fields')">Données collectées</div>
+  <div class="flow-tab" onclick="setBTab('layout')">Interface opérateur</div>
+  <div class="flow-tab" onclick="setBTab('apercu')">Vue terrain</div>
+  <div class="flow-tab" onclick="setBTab('decl')">Règles & alertes</div>
+</div>
+
+<div class="bwrap">
 <div class="flow-tabs">
   <div class="flow-tab on" onclick="setBTab('gen')">Vue d’ensemble</div>
   <div class="flow-tab" onclick="setBTab('fields')">Données collectées <span class="flow-count" id="fields-cnt-flow">0</span></div>
