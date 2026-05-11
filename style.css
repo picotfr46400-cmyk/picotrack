@@ -724,8 +724,15 @@ body{
   font-size:8px!important;
   margin-top:1px!important;
 }
+.sb-logo{
+  padding:18px;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+}
+
 .sb-logo-img{
-  width:190px;
+  width:210px;
   max-width:100%;
   height:auto;
   display:block;
