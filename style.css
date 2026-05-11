@@ -689,3 +689,38 @@ body{
   .licensing-page{padding:16px}
   .rr-grid,.ig2,.decl-body,.cond-app{grid-template-columns:1fr}
 }
+/* FIX LOGO SIZE */
+.sb-logo{
+  padding:10px 14px!important;
+  gap:9px!important;
+}
+
+.sb-li,
+.nexus-icon{
+  width:34px!important;
+  height:34px!important;
+  min-width:34px!important;
+  min-height:34px!important;
+  border-radius:11px!important;
+}
+
+.sb-li svg,
+.nexus-icon svg{
+  width:22px!important;
+  height:22px!important;
+}
+
+.sb-lt{
+  font-size:17px!important;
+}
+
+.sb-nexus{
+  font-size:8px!important;
+  letter-spacing:2.5px!important;
+  margin-top:2px!important;
+}
+
+.sb-tag{
+  font-size:8px!important;
+  margin-top:1px!important;
+}
