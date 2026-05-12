@@ -18,7 +18,7 @@ function openBuilder(id){
       document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(function(f){return f.actif!==false;}).length;
       toast('s','💾 Formulaire enregistré');
     });
-  }, 50);
+  }, 200);
   return;
   formColor=curForm?curForm.couleur:'#3b82f6';
   formModules=curForm?[...(curForm.type||['general'])]:['general'];
