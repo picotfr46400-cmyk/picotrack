@@ -3,42 +3,28 @@ function openBuilder(id){
   curForm=id?FORMS_DATA.find(f=>f.id===id)||null:null;
   show('v-builder');
   document.getElementById('tb-t').textContent=curForm?'Modifier : '+curForm.nom:'Nouveau formulaire';
-  document.getElementById('breadcrumb').innerHTML=`<span class="bc-link" onclick="goList()">Formulaires</span><span class="bc-sep"> › </span><span class="bc-cur">${curForm?h(curForm.nom):'Nouveau formulaire'}</span>`;
-  document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
+  document.getElementById('breadcrumb').innerHTML='<span class="bc-link" onclick="goList()">Formulaires</span><span class="bc-sep"> › </span><span class="bc-cur">'+(curForm?h(curForm.nom):'Nouveau formulaire')+'</span>';
+  document.querySelectorAll('.sb-i').forEach(function(i){i.classList.remove('on');});
   document.getElementById('sb-forms').classList.add('on');
   setTimeout(function(){
-    if (!window.PicoBuilderApp) {
-      setTimeout(function(){ mountReactBuilder(curForm, function(nom, fields){
-      var data={id:curForm?curForm.id:Date.now(),nom:nom.trim(),desc:curForm?curForm.desc:'',
-        type:curForm?curForm.type:['general'],actif:true,resp:curForm?curForm.resp:0,
-        couleur:curForm?curForm.couleur:'#059669',fields:fields};
-      if(curForm){var i=FORMS_DATA.findIndex(function(f){return f.id===curForm.id;});if(i>-1)FORMS_DATA[i]=data;else FORMS_DATA.push(data);}
-      else FORMS_DATA.push(data);
+    mountReactBuilder(curForm, function(nom, fields){
+      var data={
+        id:curForm?curForm.id:Date.now(), nom:nom.trim(),
+        desc:curForm?curForm.desc:'', type:curForm?curForm.type:['general'],
+        actif:true, resp:curForm?curForm.resp:0,
+        couleur:curForm?curForm.couleur:'#059669', fields:fields
+      };
+      if(curForm){
+        var i=FORMS_DATA.findIndex(function(f){return f.id===curForm.id;});
+        if(i>-1) FORMS_DATA[i]=data; else FORMS_DATA.push(data);
+      } else {
+        FORMS_DATA.push(data);
+      }
       filtered=[...FORMS_DATA];
       document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(function(f){return f.actif!==false;}).length;
       toast('s','💾 Formulaire enregistré');
     });
   }, 200);
-  return;
-  formColor=curForm?curForm.couleur:'#3b82f6';
-  formModules=curForm?[...(curForm.type||['general'])]:['general'];
-  builderFields=curForm&&curForm.fields?[...curForm.fields]:[
-    {type:'text',id:'f1',nom:'Nom complet',obligatoire:true,duplicable:false,duplicable_selection_min_max:false,duplicable_min:1,duplicable_max:10,duplicable_ajout_auto:false,afficher_legende:false,legendeText:'',afficher_placeholder:true,placeholder:'Prénom NOM',afficher_transformation:false,processOnEdit:false,vis_sup:true,vis_nom:true,validateurs:[],transformateurs:[],valeurs:[],conditions:[]},
-    {type:'number',id:'f2',nom:'Quantité',obligatoire:false,duplicable:false,duplicable_selection_min_max:false,duplicable_min:1,duplicable_max:10,duplicable_ajout_auto:false,afficher_legende:false,legendeText:'',afficher_placeholder:false,placeholder:'',afficher_transformation:false,processOnEdit:false,vis_sup:true,vis_nom:true,validateurs:[],transformateurs:[],valeurs:[],conditions:[],precision:0,pas:1,activer_min:false,activer_max:false,min:0,max:100},
-    {type:'select',id:'f3',nom:'Statut',obligatoire:false,duplicable:false,duplicable_selection_min_max:false,duplicable_min:1,duplicable_max:10,duplicable_ajout_auto:false,afficher_legende:false,legendeText:'',afficher_placeholder:false,placeholder:'',afficher_transformation:false,processOnEdit:false,vis_sup:true,vis_nom:true,validateurs:[],transformateurs:[],valeurs:['En cours','Terminé','Annulé'],conditions:[]},
-  ];
-  layoutRows=[];declItems=[];
-  document.getElementById('builder-name').value=curForm?curForm.nom:'';
-  document.getElementById('b-nom').value=curForm?curForm.nom:'';
-  document.getElementById('b-desc').value=curForm?curForm.desc:'';
-  document.getElementById('builder-status').textContent=curForm?'Enregistré ✓':'Nouveau';
-  document.getElementById('btab-decl').style.display=curForm?'':'none';
-  initColors();initModules(formModules);show('v-builder');
-  document.getElementById('tb-t').textContent=curForm?'Modifier : '+curForm.nom:'Nouveau formulaire';
-  document.getElementById('breadcrumb').innerHTML=`<span class="bc-link" onclick="goList()">Formulaires</span><span class="bc-sep"> › </span><span class="bc-cur">${curForm?h(curForm.nom):'Nouveau formulaire'}</span>`;
-  document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
-  document.getElementById('sb-forms').classList.add('on');
-  setBTab('gen');renderFields();
 }
 function saveForm(quit){
   const nom=document.getElementById('b-nom').value||document.getElementById('builder-name').value;
