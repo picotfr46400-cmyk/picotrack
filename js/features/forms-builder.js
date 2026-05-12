@@ -6,6 +6,24 @@ function openBuilder(id){
   document.getElementById('breadcrumb').innerHTML=`<span class="bc-link" onclick="goList()">Formulaires</span><span class="bc-sep"> › </span><span class="bc-cur">${curForm?h(curForm.nom):'Nouveau formulaire'}</span>`;
   document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
   document.getElementById('sb-forms').classList.add('on');
+  setTimeout(function(){
+    mountReactBuilder(curForm, function(nom, fields){
+      var data={id:curForm?curForm.id:Date.now(),nom:nom.trim(),desc:curForm?curForm.desc:'',
+        type:curForm?curForm.type:['general'],actif:true,resp:curForm?curForm.resp:0,
+        couleur:curForm?curForm.couleur:'#059669',fields:fields};
+      if(curForm){var i=FORMS_DATA.findIndex(function(f){return f.id===curForm.id;});if(i>-1)FORMS_DATA[i]=data;else FORMS_DATA.push(data);}
+      else FORMS_DATA.push(data);
+      filtered=[...FORMS_DATA];
+      document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(function(f){return f.actif!==false;}).length;
+      toast('s','💾 Formulaire enregistré');
+    });
+  }, 50);
+  return;
+  show('v-builder');
+  document.getElementById('tb-t').textContent=curForm?'Modifier : '+curForm.nom:'Nouveau formulaire';
+  document.getElementById('breadcrumb').innerHTML=`<span class="bc-link" onclick="goList()">Formulaires</span><span class="bc-sep"> › </span><span class="bc-cur">${curForm?h(curForm.nom):'Nouveau formulaire'}</span>`;
+  document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
+  document.getElementById('sb-forms').classList.add('on');
   mountReactBuilder(curForm, function(nom, fields){
     const data={
       id:curForm?curForm.id:Date.now(), nom:nom.trim(),
