@@ -9,8 +9,12 @@ function mountReactBuilder(formData, onSave) {
     _reactBuilderRoot = null;
   }
   _reactBuilderRoot = ReactDOM.createRoot(container);
+  if (!window.PicoBuilderApp) {
+    console.error('PicoBuilderApp non disponible — Babel pas encore compilé');
+    return;
+  }
   _reactBuilderRoot.render(
-    React.createElement(PicoBuilderApp, {
+    React.createElement(window.PicoBuilderApp, {
       initialFields: formData ? (formData.fields || []).map(f => ({
         id: f.id,
         type: _mapType(f.type),
