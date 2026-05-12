@@ -618,7 +618,7 @@ function AddPop({onAdd}){
         </div>
       )}
      <div style={{fontSize:10,fontWeight:700,color:C.ts,textTransform:"uppercase",letterSpacing:".8px",marginBottom:7}}>Choisir un type</div>
-      {TYPE_CATS.map(cat=>(
+     {TYPE_CATS.map(cat=>(
         <div key={cat.id} style={{marginBottom:8}}>
           <div style={{fontSize:9,fontWeight:800,color:C.ts,textTransform:"uppercase",letterSpacing:".6px",marginBottom:4}}>{cat.label}</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
@@ -634,7 +634,6 @@ function AddPop({onAdd}){
           </div>
         </div>
       ))}
-      </div>
     </div>
   );
 }
