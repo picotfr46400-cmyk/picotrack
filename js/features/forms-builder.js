@@ -7,7 +7,8 @@ function openBuilder(id){
   document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
   document.getElementById('sb-forms').classList.add('on');
   setTimeout(function(){
-    mountReactBuilder(curForm, function(nom, fields){
+    if (!window.PicoBuilderApp) {
+      setTimeout(function(){ mountReactBuilder(curForm, function(nom, fields){
       var data={id:curForm?curForm.id:Date.now(),nom:nom.trim(),desc:curForm?curForm.desc:'',
         type:curForm?curForm.type:['general'],actif:true,resp:curForm?curForm.resp:0,
         couleur:curForm?curForm.couleur:'#059669',fields:fields};
