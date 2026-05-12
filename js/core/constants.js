@@ -30,7 +30,11 @@ const VALIDATORS_BY_TYPE={
   image:[],titre:[],separator:[],son:[],video:[],calcul:[],requete:[],
   table_unique:['Obligatoire'],table_multiple:['Obligatoire'],
 };
-const TRANSFORMERS=['Mettre le 1er caractère en majuscule','Tout en majuscule','Tout en minuscule','Ajouter un préfixe','Ajouter un suffixe','Extraire une sous-chaîne','Ne conserver que les x premiers caractères','Ne conserver que les x derniers caractères','Retirer les espaces en début/fin','Transformateur avancé'];
+const BUILDER_TRFS = [
+  "Mettre le 1er caractère en majuscule","Tout en majuscule","Tout en minuscule",
+  "Ajouter un préfixe","Ajouter un suffixe","Retirer les espaces en début/fin",
+  "Ne conserver que les x premiers caractères","Ne conserver que les x derniers caractères",
+];
 const DECL_ACTIONS=[
   {type:'notif',ic:'📧',label:'Envoyer une notification'},
   {type:'email',ic:'📬',label:'Envoyer un email'},
