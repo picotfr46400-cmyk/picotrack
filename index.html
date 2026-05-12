@@ -237,12 +237,11 @@
   </div>
 </div>
  <!-- BUILDER VIEW -->
-  <div class="view" id="v-builder" style="overflow:hidden">
-    <div id="react-builder-root" style="flex:1;overflow:hidden;display:flex;flex-direction:column"></div>
-  </div>
-    <div class="btb">
-      <button class="btn btn-sm" onclick="goList()">← Retour</button>
-<!-- ADMIN : LICENCES & PAD --> 
+<div class="view" id="v-builder" style="overflow:hidden;display:flex;flex-direction:column">
+  <div id="react-builder-root" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
+</div>
+
+<!-- ADMIN : LICENCES & PAD -->
 <div class="view" id="v-licensing">
   <div class="licensing-page">
     <div id="licensing-wrap"></div>
@@ -789,7 +788,7 @@ function PicoBuilderApp({initialFields, initialName, onSave}){
   };
 
   return (
-    <div style={{height:"100%",background:C.bg,fontFamily:"'DM Sans',-apple-system,sans-serif",fontSize:13,color:C.tx,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+    <div style={{flex:1,minHeight:0,background:C.bg,fontFamily:"'DM Sans',-apple-system,sans-serif",fontSize:13,color:C.tx,display:"flex",flexDirection:"column",overflow:"hidden"}}>
       {/* Topbar */}
       <div style={{height:52,background:"#fff",borderBottom:"1px solid "+C.bd,display:"flex",alignItems:"center",padding:"0 18px",gap:10,boxShadow:"0 1px 3px rgba(0,0,0,.04)",flexShrink:0}}>
         <button onClick={()=>{ if(window.goList) window.goList(); }} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 11px",borderRadius:7,border:"1.5px solid "+C.bd,background:"#fff",color:C.tl,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>← Formulaires</button>
