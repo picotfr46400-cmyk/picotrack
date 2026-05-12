@@ -288,18 +288,43 @@ const C = {
 };
 
 const TYPES = [
-  {id:"text",     icon:"Aa", label:"Texte",        clr:"#3b82f6"},
-  {id:"textarea", icon:"¶",  label:"Texte long",   clr:"#3b82f6"},
-  {id:"number",   icon:"#",  label:"Nombre",       clr:"#8b5cf6"},
-  {id:"checkbox", icon:"✓",  label:"Oui / Non",    clr:"#f59e0b"},
-  {id:"select",   icon:"≡",  label:"Choix unique", clr:"#f59e0b"},
-  {id:"multi",    icon:"⊞", label:"Multi-choix",  clr:"#f59e0b"},
-  {id:"date",     icon:"📅", label:"Date",         clr:"#06b6d4"},
-  {id:"time",     icon:"⏰", label:"Heure",        clr:"#06b6d4"},
-  {id:"photo",    icon:"📷", label:"Photo",        clr:"#10b981"},
-  {id:"location", icon:"📍", label:"Localisation", clr:"#ef4444"},
-  {id:"sign",     icon:"✍", label:"Signature",    clr:"#8b5cf6"},
-  {id:"sep",      icon:"—",  label:"Séparateur",   clr:"#94a3b8"},
+  // Mise en page
+  {id:"titre",        icon:"T",  label:"Titre",           clr:"#6b7280", cat:"layout"},
+  {id:"sep",          icon:"—",  label:"Séparateur",      clr:"#94a3b8", cat:"layout"},
+  {id:"image",        icon:"🖼", label:"Image",           clr:"#6b7280", cat:"layout"},
+  {id:"son",          icon:"🔊", label:"Son",             clr:"#6b7280", cat:"layout"},
+  {id:"video",        icon:"▶",  label:"Vidéo",           clr:"#6b7280", cat:"layout"},
+  {id:"groupe",       icon:"▣",  label:"Groupe",          clr:"#6b7280", cat:"layout"},
+  // Texte
+  {id:"text",         icon:"Aa", label:"Texte",           clr:"#3b82f6", cat:"text"},
+  {id:"textarea",     icon:"¶",  label:"Texte long",      clr:"#3b82f6", cat:"text"},
+  {id:"number",       icon:"#",  label:"Nombre",          clr:"#8b5cf6", cat:"text"},
+  // Listes
+  {id:"checkbox",     icon:"☑",  label:"Case à cocher",   clr:"#f59e0b", cat:"list"},
+  {id:"select",       icon:"≡",  label:"Choix unique",    clr:"#f59e0b", cat:"list"},
+  {id:"multi",        icon:"⊞", label:"Multi-choix",     clr:"#f59e0b", cat:"list"},
+  // Date
+  {id:"date",         icon:"📅", label:"Date",            clr:"#06b6d4", cat:"date"},
+  {id:"time",         icon:"⏰", label:"Heure",           clr:"#06b6d4", cat:"date"},
+  {id:"datetime",     icon:"📆", label:"Date & heure",    clr:"#06b6d4", cat:"date"},
+  // Médias
+  {id:"photo",        icon:"📷", label:"Photo",           clr:"#10b981", cat:"media"},
+  {id:"file",         icon:"📎", label:"Fichier",         clr:"#10b981", cat:"media"},
+  {id:"sign",         icon:"✍", label:"Signature",       clr:"#8b5cf6", cat:"media"},
+  {id:"location",     icon:"📍", label:"Localisation",   clr:"#ef4444", cat:"media"},
+  // Spéciaux
+  {id:"calcul",       icon:"∑",  label:"Calcul",          clr:"#7c3aed", cat:"special"},
+  {id:"requete",      icon:"⛁",  label:"Requête",         clr:"#7c3aed", cat:"special"},
+  {id:"table_unique", icon:"⊟",  label:"Table unique",    clr:"#f97316", cat:"special"},
+  {id:"table_multi",  icon:"⊠",  label:"Table multiple",  clr:"#f97316", cat:"special"},
+];
+const TYPE_CATS = [
+  {id:"layout",  label:"Mise en page"},
+  {id:"text",    label:"Saisie texte"},
+  {id:"list",    label:"Listes"},
+  {id:"date",    label:"Date / Heure"},
+  {id:"media",   label:"Médias"},
+  {id:"special", label:"Spéciaux"},
 ];
 
 const SMART_DETECT = [
@@ -309,12 +334,20 @@ const SMART_DETECT = [
 ];
 function detect(l){ for(const [re,t] of SMART_DETECT) if(re.test(l)) return t; return null; }
 
+const TRANSFORMERS = [
+  "Mettre le 1er caractère en majuscule","Tout en majuscule","Tout en minuscule",
+  "Ajouter un préfixe","Ajouter un suffixe","Retirer les espaces en début/fin",
+  "Ne conserver que les x premiers caractères","Ne conserver que les x derniers caractères",
+];
 function getVlds(t){
   const b=[{n:"Obligatoire",v:false}];
-  if(t==="text") return [...b,{n:"Min caractères",v:true},{n:"Max caractères",v:true},{n:"Email",v:false}];
+  if(["text"].includes(t)) return [...b,{n:"Min caractères",v:true},{n:"Max caractères",v:true},{n:"Lettres uniquement",v:false},{n:"Chiffres uniquement",v:false},{n:"Email",v:false},{n:"Expression régulière",v:true}];
   if(t==="textarea") return [...b,{n:"Min caractères",v:true},{n:"Max caractères",v:true}];
   if(t==="number") return [...b,{n:"Valeur min",v:true},{n:"Valeur max",v:true}];
+  if(["select","multi"].includes(t)) return [...b,{n:"Nb sélections min",v:true},{n:"Nb sélections max",v:true}];
   if(t==="date") return [...b,{n:"Date min",v:true},{n:"Date max",v:true}];
+  if(t==="time") return [...b,{n:"Heure min",v:true},{n:"Heure max",v:true}];
+  if(["photo","file"].includes(t)) return [...b,{n:"Nb fichiers min",v:true},{n:"Nb fichiers max",v:true}];
   return b;
 }
 
@@ -418,11 +451,13 @@ function TypePicker({active,onSel}){
 function Adv({f,upd}){
   const [tab,setTab]=useState("gen");
   const vc=f.vlds?f.vlds.length:0, cc=f.conds?f.conds.length:0;
-  const ts=id=>({padding:"8px 12px",border:"none",borderBottom:"2px solid "+(tab===id?C.em:"transparent"),background:"transparent",color:tab===id?C.em:C.tl,fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit"});
+  const tc=(f.trfs||[]).length;
+  const ts=id=>({padding:"8px 10px",border:"none",borderBottom:"2px solid "+(tab===id?C.em:"transparent"),background:"transparent",color:tab===id?C.em:C.tl,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"});
   return (
     <div style={{marginTop:10,border:"1.5px solid "+C.bd,borderRadius:10,overflow:"hidden"}}>
-      <div style={{display:"flex",borderBottom:"1px solid "+C.bd,background:C.bg,padding:"0 8px",gap:2}}>
+      <div style={{display:"flex",borderBottom:"1px solid "+C.bd,background:C.bg,padding:"0 6px",gap:0,overflowX:"auto"}}>
         <button style={ts("gen")} onClick={()=>setTab("gen")}>Général</button>
+        {["text","textarea"].includes(f.type)&&<button style={ts("trf")} onClick={()=>setTab("trf")}>Transformateurs{tc>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:10,background:"#8b5cf6",color:"#fff",fontSize:9}}>{tc}</span>}</button>}
         <button style={ts("vld")} onClick={()=>setTab("vld")}>Validateurs{vc>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:10,background:C.em,color:"#fff",fontSize:9}}>{vc}</span>}</button>
         <button style={ts("cnd")} onClick={()=>setTab("cnd")}>Conditions{cc>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:10,background:"#f59e0b",color:"#fff",fontSize:9}}>{cc}</span>}</button>
         <button style={ts("dsp")} onClick={()=>setTab("dsp")}>Affichage</button>
@@ -481,6 +516,33 @@ function Adv({f,upd}){
                     onMouseEnter={e=>{e.currentTarget.style.borderColor=C.em;e.currentTarget.style.color=C.em;e.currentTarget.style.background=C.eml;}}
                     onMouseLeave={e=>{e.currentTarget.style.borderColor=C.bd;e.currentTarget.style.color=C.tm;e.currentTarget.style.background="#fff";}}>
                     ＋ {v.n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        {tab==="trf"&&(
+          <div>
+            {(!f.trfs||f.trfs.length===0)&&(<div style={{textAlign:"center",padding:"18px 0",color:C.ts,fontSize:12}}>Aucun transformateur configuré</div>)}
+            {(f.trfs||[]).map((tr,i)=>(
+              <div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"8px 10px",border:"1.5px solid "+C.bd,borderRadius:8,marginBottom:6,background:C.bg}}>
+                <span style={{flex:1,fontSize:12,fontWeight:600}}>{tr.n}</span>
+                {/(préfixe|suffixe|premiers|derniers)/.test(tr.n)&&(
+                  <input value={tr.param||""} placeholder="Paramètre" onChange={e=>{const n=[...(f.trfs||[])];n[i]={...n[i],param:e.target.value};upd(f.id,{trfs:n});}} style={{width:80,border:"1.5px solid "+C.bd,borderRadius:6,padding:"4px 7px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                )}
+                <button onClick={()=>{const n=(f.trfs||[]).filter((_,j)=>j!==i);upd(f.id,{trfs:n});}} style={{width:24,height:24,border:"1px solid #FCA5A5",borderRadius:5,background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            <div style={{marginTop:8}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.ts,marginBottom:6,textTransform:"uppercase",letterSpacing:".5px"}}>Ajouter</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {TRANSFORMERS.map(n=>(
+                  <button key={n} onClick={()=>{const cur=f.trfs||[];upd(f.id,{trfs:[...cur,{n,param:""}]});}}
+                    style={{padding:"4px 10px",borderRadius:20,border:"1.5px solid "+C.bd,background:"#fff",color:C.tm,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor="#8b5cf6";e.currentTarget.style.color="#8b5cf6";e.currentTarget.style.background="#f5f3ff";}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor=C.bd;e.currentTarget.style.color=C.tm;e.currentTarget.style.background="#fff";}}>
+                    ＋ {n}
                   </button>
                 ))}
               </div>
@@ -555,17 +617,23 @@ function AddPop({onAdd}){
           <button onClick={()=>onAdd(sug,q)} style={{marginLeft:"auto",padding:"2px 10px",borderRadius:20,border:"none",background:C.em,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Utiliser →</button>
         </div>
       )}
-      <div style={{fontSize:10,fontWeight:700,color:C.ts,textTransform:"uppercase",letterSpacing:".8px",marginBottom:7}}>Choisir un type</div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:5}}>
-        {TYPES.map(t=>(
-          <button key={t.id} onClick={()=>onAdd(t.id,q)}
-            style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,padding:"7px 3px",border:"1.5px solid #F1F5F9",borderRadius:9,background:"#FAFAFA",cursor:"pointer",fontFamily:"inherit",fontSize:10,fontWeight:700,color:C.tl}}
-            onMouseEnter={e=>{e.currentTarget.style.borderColor=t.clr;e.currentTarget.style.background=t.clr+"12";e.currentTarget.style.color=t.clr;}}
-            onMouseLeave={e=>{e.currentTarget.style.borderColor="#F1F5F9";e.currentTarget.style.background="#FAFAFA";e.currentTarget.style.color=C.tl;}}>
-            <span style={{fontSize:15}}>{t.icon}</span>
-            <span style={{textAlign:"center",lineHeight:1.2}}>{t.label}</span>
-          </button>
-        ))}
+     <div style={{fontSize:10,fontWeight:700,color:C.ts,textTransform:"uppercase",letterSpacing:".8px",marginBottom:7}}>Choisir un type</div>
+      {TYPE_CATS.map(cat=>(
+        <div key={cat.id} style={{marginBottom:8}}>
+          <div style={{fontSize:9,fontWeight:800,color:C.ts,textTransform:"uppercase",letterSpacing:".6px",marginBottom:4}}>{cat.label}</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
+            {TYPES.filter(t=>t.cat===cat.id).map(t=>(
+              <button key={t.id} onClick={()=>onAdd(t.id,q)}
+                style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"6px 2px",border:"1.5px solid #F1F5F9",borderRadius:8,background:"#FAFAFA",cursor:"pointer",fontFamily:"inherit",fontSize:9.5,fontWeight:700,color:C.tl}}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor=t.clr;e.currentTarget.style.background=t.clr+"12";e.currentTarget.style.color=t.clr;}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor="#F1F5F9";e.currentTarget.style.background="#FAFAFA";e.currentTarget.style.color=C.tl;}}>
+                <span style={{fontSize:14}}>{t.icon}</span>
+                <span style={{textAlign:"center",lineHeight:1.2}}>{t.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
       </div>
     </div>
   );
@@ -658,9 +726,14 @@ function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
   );
 }
 function _mapTypeBack(t){
-  const map={text:'text',textarea:'textarea',number:'number',checkbox:'checkbox',
-    select:'select',multi:'multiselect',date:'date',time:'heure',photo:'photo',
-    location:'location',sign:'signature',sep:'separator'};
+  const map={
+    text:'text',textarea:'textarea',number:'number',checkbox:'checkbox',
+    select:'select',multi:'multiselect',date:'date',time:'heure',datetime:'datetime',
+    photo:'photo',file:'file',sign:'signature',location:'location',
+    sep:'separator',titre:'titre',image:'image',son:'son',video:'video',
+    groupe:'groupe',calcul:'calcul',requete:'requete',
+    table_unique:'table_unique',table_multi:'table_multiple',
+  };
   return map[t]||'text';
 }
 // ══ COMPOSANT PRINCIPAL — intégré dans PicoTrack ══
@@ -712,7 +785,7 @@ function PicoBuilderApp({initialFields, initialName, onSave}){
       duplicable_max: 10,
       validateurs: f.vlds||[],
       conditions: f.conds||[],
-      transformateurs: [],
+      transformateurs: (f.trfs||[]).map(tr=>({nom:tr.n, param:tr.param||''})),
     })));
   };
 
