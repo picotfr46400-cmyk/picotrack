@@ -1,0 +1,2 @@
+// ══ INIT ══
+renderTable();
