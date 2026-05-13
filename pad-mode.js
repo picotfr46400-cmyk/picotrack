@@ -24,7 +24,18 @@ function clearPadConfig() {
 // ─── Initialisation au chargement ────────────────────────────
 
 function initPadMode() {
-  if (!isPadMode()) return; // Desktop normal → rien à faire
+  if (!isPadMode()) return;
+
+  // Injecter le CSS mobile
+  if (!document.getElementById('pad-css')) {
+    const link = document.createElement('link');
+    link.id = 'pad-css';
+    link.rel = 'stylesheet';
+    link.href = 'pad.css';
+    document.head.appendChild(link);
+  }
+  // Ajouter classe sur body pour les règles CSS
+  document.body.classList.add('pad-mode');
 
   const cfg = getPadConfig();
 
@@ -32,9 +43,7 @@ function initPadMode() {
   const sb = document.getElementById('sb');
   if (sb) sb.style.display = 'none';
 
-  // Ajuster le main pour plein écran
-  const main = document.getElementById('main');
-  if (main) { main.style.marginLeft = '0'; main.style.width = '100%'; }
+  // Géré par pad.css via body.pad-mode
 
   if (!cfg) {
     // Pas encore configuré → écran de connexion
@@ -244,8 +253,6 @@ function showPadHome() {
 function padGoForms() {
   padSetActive('pnav-forms');
   setPadTitle('Formulaires');
-  const main = document.getElementById('main');
-  if (main) main.style.display = 'block';
   if (typeof goProduction === 'function') goProduction();
   document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
   const pf = document.getElementById('v-prod-forms');
