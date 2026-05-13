@@ -255,7 +255,7 @@ function showPadHome() {
 function padHideAll() {
   document.querySelectorAll('.view').forEach(v => {
     v.classList.remove('on');
-    v.style.display = '';
+    v.style.setProperty('display', 'none', 'important');
   });
 }
 
@@ -267,7 +267,7 @@ function padGoForms() {
   // Forcer : une seule vue visible
   document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
   const pf = document.getElementById('v-prod-forms');
-  if (pf) pf.classList.add('on');
+ if (pf) { pf.style.setProperty('display', 'block', 'important'); pf.classList.add('on'); }
 }
 
 function padGoServices() {
@@ -278,7 +278,7 @@ function padGoServices() {
   // Forcer : une seule vue visible
   document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
   const ps = document.getElementById('v-prod-services');
-  if (ps) ps.classList.add('on');
+  if (ps) { ps.style.setProperty('display', 'block', 'important'); ps.classList.add('on'); }
 }
 
 function padGoProfile() {
@@ -315,6 +315,7 @@ function showPadProfileView() {
     el.className = 'view';
     wrap.appendChild(el);
   }
+  el.style.setProperty('display', 'block', 'important');
   el.classList.add('on');
   el.style.padding = '24px 16px';
   el.style.overflowY = 'auto';
