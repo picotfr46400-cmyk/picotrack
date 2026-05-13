@@ -38,7 +38,7 @@ async function renderUsersList() {
   const isSuper = _isSuperAdmin();
   const badgeUsers = document.getElementById('sb-users-cnt');
 if (badgeUsers) {
-  badgeUsers.textContent = _licenseRows.filter(l => l.role !== 'super_admin').length;
+  badgeUsers.textContent = _licenseRows.filter(x => x.role !== 'super_admin').length;
 }
 
   wrap.innerHTML = `<div class="view-head">
