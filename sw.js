@@ -1,9 +1,6 @@
-// ══ PicoTrack Service Worker — Cache offline ══
+// PicoTrack Service Worker — simple et robuste
 const CACHE = 'picotrack-v2';
-const ASSETS = [
-  './', './index.html', './style.css', './pad.css', './logo-picotrack.png', './manifest.json',
-  './pad-mode.js', './js/core/data.js', './js/core/supabase.js'
-];
+const ASSETS = ['./','./index.html','./style.css','./pad.css','./logo-picotrack.png','./manifest.json'];
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -14,25 +11,11 @@ self.addEventListener('install', e => {
 });
 
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys =>
-    Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-  ).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 
 self.addEventListener('fetch', e => {
-  // Supabase/API et requêtes non GET → réseau uniquement
-  if (e.request.method !== 'GET' || e.request.url.includes('supabase.co') || e.request.url.includes('/rest/v1/')) return;
-
-  e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
-      const copy = res.clone();
-      caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
-      return res;
-    })).catch(() => caches.match('./index.html'))
-  );
+  const url = new URL(e.request.url);
+  if (url.hostname.includes('supabase.co')) return;
+  e.respondWith(fetch(e.request).catch(() => caches.match(e.request).then(r => r || caches.match('./index.html'))));
 });
-
-self.addEventListener('sync', e => {
-  if (e.tag === 'sync-forms') e.waitUntil(syncPending());
-});
-async function syncPending() { console.log('[SW] sync formulaires → Phase 2'); }

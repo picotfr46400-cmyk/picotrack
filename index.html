@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#059669">
+<link rel="manifest" href="manifest.json">
+<title>PicoTrack — Formulaires v3</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="style.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#059669">
+<link rel="manifest" href="manifest.json">
+</head>
+<body>
+<!-- SIDEBAR -->
+<div id="sb">
+  <div class="sb-logo">
+  <img src="logo-picotrack.png" alt="PicoTrack Logo" class="sb-logo-img">
+</div>
+  <div class="sb-s">Administration</div>
+  <div class="sb-i" id="sb-dashboard" onclick="goDashboard()">📊 Dashboard</div>
+  <div class="sb-i" id="sb-users" onclick="goUsers()">👥 Utilisateurs <span class="sb-bk" id="sb-users-cnt">10</span></div>
+  <div class="sb-i" id="sb-roles" onclick="goRoles()">🔑 Rôles</div>
+  <div class="sb-i" id="sb-forms" onclick="goList()">📋 Formulaires</div>
+  <div class="sb-i" id="sb-services" onclick="goServices()">⚡ Services</div>
+  <div class="sb-i" id="sb-api" onclick="goApiConfig()">🔌 API</div>
+
+  <div class="sb-s">Production</div>
+  <div class="sb-i" id="sb-prod-forms" onclick="goProduction()">📋 Formulaires <span class="sb-bk" id="prod-forms-count">3</span></div>
+  <div class="sb-i" id="sb-prod-services" onclick="goProdServices()">⚡ Services</div>
+  <div class="sb-i" id="sb-prod-db" onclick="goProDatabase()">🗃 Base de données</div>
+</div>
+<!-- MAIN -->
+<div id="main">
+  <div id="topbar"><div id="tb-t">Formulaires</div></div>
+  <div class="breadcrumb" id="breadcrumb"><span class="bc-link" onclick="goList()">▶ Formulaires</span></div>
+<!-- VUE : DASHBOARD -->
+<div class="view" id="v-dashboard">
+  <div style="padding:18px 22px;flex:1;overflow-y:auto" id="dashboard-wrap"></div>
+</div>
+
+<!-- VUE : LISTE DES RÔLES -->
+<div class="view" id="v-roles">
+  <div style="padding:18px 22px;flex:1;overflow-y:auto">
+    <div class="toolbar">
+      <button class="btn bp pill" onclick="openRoleEditor(null)">＋ Créer un rôle</button>
+      <div class="sp"></div>
+      <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="renderRolesList(this.value)"></div>
+    </div>
+    <div id="roles-grid" style="margin-top:16px"></div>
+  </div>
+</div>
+
+<!-- VUE : EDITEUR DE RÔLE -->
+<div class="view" id="v-role-editor">
+  <div style="display:flex;flex-direction:column;height:100%">
+    <div class="btb">
+      <button class="btn btn-sm" onclick="goRoles()">← Retour</button>
+      <div class="btb-sep"></div>
+      <input class="btb-nm" id="role-editor-name" placeholder="Nom du rôle...">
+      <div class="sp"></div>
+      <button class="btn btn-sm" onclick="saveRole(false)">Enregistrer</button>
+      <button class="btn bp btn-sm" onclick="saveRole(true)">💾 Enregistrer & quitter</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:22px;background:var(--bg);display:flex;flex-direction:column;gap:16px" id="role-editor-body"></div>
+  </div>
+</div>
+  <!-- VUE : UTILISATEURS -->
+<div class="view" id="v-users"></div>
+  <!-- LIST VIEW -->
+  <div class="view on" id="v-list">
+    <div style="padding:18px 22px;flex:1">
+      <div class="fbox">
+        <div class="fbox-head">
+          <button class="btn bw pill" onclick="toggleFilters()">▼ Filtrer <span id="filter-bdg" class="fbadge" style="display:none">0</span></button>
+          <button class="btn pill" onclick="clearFilters()" style="font-size:12px">Tout afficher</button>
+          <div class="ic-btn" title="Configurer les colonnes">⚙</div>
+        </div>
+        <div id="fbox-grid" class="fbox-grid">
+          <div class="fg"><div class="fl">Nom</div><div class="frow"><select class="fsel"><option>Contient</option><option>Égal à</option><option>Commence par</option></select><input class="finp" id="f-nom" placeholder="Saisir une valeur" oninput="applyFilters()"></div></div>
+          <div class="fg"><div class="fl">Description</div><div class="frow"><select class="fsel"><option>Contient</option><option>Égal à</option></select><input class="finp" id="f-desc" placeholder="Saisir une valeur" oninput="applyFilters()"></div></div>
+          <div class="fg"><div class="fl">Module</div><div class="frow"><select class="fsel" style="min-width:80px"><option>Contient</option><option>Égal à</option></select><select class="finp" id="f-mod" style="appearance:none;cursor:pointer;color:var(--tx)" onchange="applyFilters()">
+            <option value="">Tous les modules</option>
+            <option value="general">Général</option><option value="nomade">Nomade</option>
+            <option value="dlvy_arrivage">Arrivage</option><option value="dlvy_expedition">Expédition</option>
+            <option value="dlvy_liste_colisage">Liste de colisage</option>
+            <option value="service">Services</option><option value="entity">Entités</option>
+          </select></div></div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button class="btn bp pill" onclick="openBuilder(null)">＋ Ajouter</button>
+        <button class="btn pill">📥 Importer</button>
+        <div class="drop-w"><button class="btn pill" onclick="toggleDrop('exp-menu')">📤 Exporter ▾</button><div class="drop-m" id="exp-menu"><div class="drop-i" onclick="exportCSV()">📄 CSV</div><div class="drop-sep"></div><div class="drop-i" onclick="exportExcel()">📊 Excel (.xlsx)</div></div></div>
+        <div class="sp"></div>
+        <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchForms(this.value)"></div>
+        <div class="ic-btn" title="Configuration">⚙</div>
+      </div>
+      <div class="dt">
+        <div class="dth">
+          <div class="dt-th" onclick="sortBy('nom')">Nom</div>
+          <div class="dt-th">Description</div>
+          <div class="dt-th">Modules</div>
+          <div class="dt-th" onclick="sortBy('actif')">Actif</div>
+          <div class="dt-th" onclick="sortBy('resp')">Réponses</div>
+          <div class="dt-th"></div>
+        </div>
+        <div id="table-body"></div>
+        <div class="pagination">
+          <select class="pg-s" onchange="setPageSize(+this.value)"><option>10</option><option>25</option><option>50</option></select>
+          <span style="font-size:11.5px;color:var(--tl)">éléments</span>
+          <div class="pg-info" id="pg-info"></div>
+          <div class="pg-btns" id="pg-btns"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PRODUCTION : LISTE FORMULAIRES -->
+<div class="view" id="v-prod-forms">
+  <div style="padding:18px 22px;flex:1;overflow-y:auto">
+    <!-- Barre de recherche -->
+    <div style="margin-bottom:18px">
+      <div class="sbar" style="max-width:340px">
+        <span style="color:var(--tl)">🔍</span>
+        <input placeholder="Rechercher un formulaire..." oninput="searchProdForms(this.value)" id="prod-search" style="width:280px">
+      </div>
+    </div>
+    <!-- Grille de cartes -->
+    <div id="prod-forms-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px"></div>
+  </div>
+</div>
+<div class="view" id="v-saisie">
+  <div style="flex:1;overflow-y:auto;padding:24px;display:flex;justify-content:center;background:var(--bg)">
+    <div id="saisie-wrap" style="width:100%;max-width:680px"></div>
+  </div>
+</div>
+<div class="view" id="v-submissions">
+  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
+    <div id="sub-wrap" style="max-width:900px;margin:0 auto"></div>
+  </div>
+</div>
+  <div class="view" id="v-submission-detail">
+  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg);display:flex;gap:20px;align-items:flex-start">
+    <div id="sd-main" style="flex:1;min-width:0"></div>
+    <div id="sd-history" style="width:260px;flex-shrink:0"></div>
+  </div>
+</div>
+<!-- SERVICES : LISTE -->
+<div class="view" id="v-services">
+  <div style="padding:18px 22px;flex:1;overflow-y:auto">
+    <div class="toolbar">
+      <button class="btn bp pill" onclick="openServiceBuilder(null)">＋ Nouveau service</button>
+      <div class="sp"></div>
+      <div class="sbar">
+        <span style="color:var(--tl)">🔍</span>
+        <input placeholder="Rechercher un service..." oninput="searchServices(this.value)">
+      </div>
+    </div>
+    <div id="services-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+  </div>
+</div>
+
+<!-- SERVICE BUILDER -->
+<div class="view" id="v-service-builder">
+  <div class="btb">
+    <button class="btn btn-sm" onclick="goServices()">← Retour</button>
+    <div class="btb-sep"></div>
+    <input class="btb-nm" id="sb2-name" placeholder="Nom du service...">
+    <div class="sp"></div>
+    <button class="btn btn-sm" onclick="saveService(false)">Enregistrer</button>
+    <button class="btn bp btn-sm" onclick="saveService(true)">💾 Enregistrer &amp; quitter</button>
+  </div>
+  <div class="b-tabs">
+    <div class="b-tab on" id="svctab-gen"         onclick="setSvcTab('gen')">        <span class="tab-dot"></span>Général</div>
+    <div class="b-tab"    id="svctab-formulaires"  onclick="setSvcTab('formulaires')"><span class="tab-dot"></span>Formulaires</div>
+    <div class="b-tab"    id="svctab-statuses"     onclick="setSvcTab('statuses')">   <span class="tab-dot"></span>Statuts <span class="b-tab-cnt" id="svc-status-cnt" style="display:none">0</span></div>
+    <div class="b-tab"    id="svctab-actions"      onclick="setSvcTab('actions')">    <span class="tab-dot"></span>Actions <span class="b-tab-cnt" id="svc-action-cnt" style="display:none">0</span></div>
+    <div class="b-tab"    id="svctab-flux"         onclick="setSvcTab('flux')">       <span class="tab-dot"></span>Flux</div>
+    <div class="b-tab"    id="svctab-kanban"       onclick="setSvcTab('kanban')">     <span class="tab-dot"></span>Vue Kanban</div>
+  </div>
+  <div style="flex:1;overflow-y:auto;padding:22px" id="svc-area"></div>
+</div>
+
+<!-- SERVICE INSTANCES : LISTE -->
+<div class="view" id="v-service-instances">
+  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
+    <div id="svc-instances-wrap" style="max-width:960px;margin:0 auto"></div>
+  </div>
+</div>
+
+<!-- SERVICE INSTANCE : DETAIL -->
+<div class="view" id="v-service-instance-detail">
+  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg);display:flex;gap:20px;align-items:flex-start">
+    <div id="sid-main" style="flex:1;min-width:0"></div>
+    <div id="sid-history" style="width:280px;flex-shrink:0"></div>
+  </div>
+</div>
+  <!-- PRODUCTION SERVICES : LISTE -->
+<div class="view" id="v-prod-services-list">
+  <div style="padding:18px 22px;flex:1;overflow-y:auto">
+    <div class="toolbar"><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProdServices(this.value)"></div></div>
+    <div id="prod-services-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+  </div>
+</div>
+
+<!-- PRODUCTION SERVICES : KANBAN -->
+<div class="view" id="v-service-kanban">
+  <div style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+    <div id="kanban-group-tabs" style="display:flex;padding:0 22px;background:#fff;border-bottom:1px solid var(--bd);flex-shrink:0;overflow-x:auto"></div>
+    <div id="kanban-board" style="flex:1;overflow-x:auto;overflow-y:auto;padding:20px;display:flex;gap:16px;align-items:flex-start;background:var(--bg)"></div>
+  </div>
+</div>
+  <!-- PROD : LISTE DES BASES -->
+<div class="view" id="v-prod-database">
+  <div style="padding:18px 22px;flex:1;overflow-y:auto">
+    <div class="toolbar"><button class="btn bp pill" onclick="createDatabaseModal()">＋ Créer une base</button><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProDatabase(this.value)"></div></div>
+    <div id="prod-db-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+  </div>
+</div>
+
+<!-- PROD : TABLE D'UNE BASE -->
+<div class="view" id="v-prod-database-table">
+  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
+    <div id="prod-db-table-wrap" style="max-width:100%"></div>
+  </div>
+</div>
+  <!-- API CONFIG -->
+<div class="view" id="v-api-config">
+  <div style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+    <div id="api-tabs" style="display:flex;padding:0 22px;background:#fff;border-bottom:1px solid var(--bd);flex-shrink:0">
+      <div class="b-tab on" id="apitab-keys"      onclick="setApiTab('keys')">     <span class="tab-dot"></span>Clés API</div>
+      <div class="b-tab"    id="apitab-endpoints"  onclick="setApiTab('endpoints')"><span class="tab-dot"></span>Endpoints</div>
+      <div class="b-tab"    id="apitab-webhooks"   onclick="setApiTab('webhooks')"> <span class="tab-dot"></span>Webhooks</div>
+      <div class="b-tab"    id="apitab-logs"       onclick="setApiTab('logs')">     <span class="tab-dot"></span>Logs</div>
+    </div>
+    <div id="api-area" style="flex:1;overflow-y:auto;padding:22px;background:var(--bg)"></div>
+  </div>
+</div>
+ <!-- BUILDER VIEW -->
+<div class="view" id="v-builder" style="overflow:hidden">
+  <div id="react-builder-root" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
+</div>
+
+<!-- ADMIN : LICENCES & PAD -->
+<div class="view" id="v-licensing">
+  <div class="licensing-page">
+    <div id="licensing-wrap"></div>
+  </div>
+</div>
+</div>
+
+<!-- CONFIG PANEL -->
+<div id="cfg-bd" onclick="closeCfg()"></div>
+<div id="cfg-panel">
+  <div class="ctabs">
+    <div class="ctab on" id="ctab-G" onclick="setCfgTab('G')" title="Général">G</div>
+    <div class="ctab" id="ctab-T" onclick="setCfgTab('T')" title="Transformateurs">T</div>
+    <div class="ctab" id="ctab-V" onclick="setCfgTab('V')" title="Validateurs">V</div>
+    <div class="ctab" id="ctab-A" onclick="setCfgTab('A')" title="Affichage">A</div>
+  </div>
+  <div class="ccon">
+    <div class="cfg-hd">
+      <div class="cfg-hd-ic" id="cfg-ic" style="background:#3b82f6">Aa</div>
+      <div class="cfg-hd-t" id="cfg-title">Modifier un champ</div>
+      <div class="cfg-close" onclick="closeCfg()">✕</div>
+    </div>
+    <div class="cfg-body" id="cfg-body"></div>
+    <div class="cfg-ft">
+      <button class="btn btn-sm" onclick="closeCfg()">Annuler</button>
+      <button class="btn bw btn-sm" onclick="saveCfg()">Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+<!-- PicoTrack JS - ordre de chargement important -->
+
+<script type="text/babel">
+// PicoTrack Builder v3 — React via Babel Standalone
+// Pas d'import : React/ReactDOM chargés via CDN dans index.html
+
+const { useState, useRef, useEffect, useCallback } = React;
+
+const C = {
+  em:"#059669", emd:"#047857", eml:"#ECFDF5", em2:"#A7F3D0",
+  bd:"#E2E8F0", bg:"#F8FAFC", tx:"#0F172A", tm:"#334155", tl:"#64748B", ts:"#94A3B8"
+};
+
+const TYPES = [
+  // Mise en page
+  {id:"titre",        icon:"T",  label:"Titre",           clr:"#6b7280", cat:"layout"},
+  {id:"sep",          icon:"—",  label:"Séparateur",      clr:"#94a3b8", cat:"layout"},
+  {id:"image",        icon:"🖼", label:"Image",           clr:"#6b7280", cat:"layout"},
+  {id:"son",          icon:"🔊", label:"Son",             clr:"#6b7280", cat:"layout"},
+  {id:"video",        icon:"▶",  label:"Vidéo",           clr:"#6b7280", cat:"layout"},
+  {id:"groupe",       icon:"▣",  label:"Groupe",          clr:"#6b7280", cat:"layout"},
+  // Texte
+  {id:"text",         icon:"Aa", label:"Texte",           clr:"#3b82f6", cat:"text"},
+  {id:"textarea",     icon:"¶",  label:"Texte long",      clr:"#3b82f6", cat:"text"},
+  {id:"number",       icon:"#",  label:"Nombre",          clr:"#8b5cf6", cat:"text"},
+  // Listes
+  {id:"checkbox",     icon:"☑",  label:"Case à cocher",   clr:"#f59e0b", cat:"list"},
+  {id:"select",       icon:"≡",  label:"Choix unique",    clr:"#f59e0b", cat:"list"},
+  {id:"multi",        icon:"⊞", label:"Multi-choix",     clr:"#f59e0b", cat:"list"},
+  // Date
+  {id:"date",         icon:"📅", label:"Date",            clr:"#06b6d4", cat:"date"},
+  {id:"time",         icon:"⏰", label:"Heure",           clr:"#06b6d4", cat:"date"},
+  {id:"datetime",     icon:"📆", label:"Date & heure",    clr:"#06b6d4", cat:"date"},
+  // Médias
+  {id:"photo",        icon:"📷", label:"Photo",           clr:"#10b981", cat:"media"},
+  {id:"file",         icon:"📎", label:"Fichier",         clr:"#10b981", cat:"media"},
+  {id:"sign",         icon:"✍", label:"Signature",       clr:"#8b5cf6", cat:"media"},
+  {id:"location",     icon:"📍", label:"Localisation",   clr:"#ef4444", cat:"media"},
+  // Spéciaux
+  {id:"calcul",       icon:"∑",  label:"Calcul",          clr:"#7c3aed", cat:"special"},
+  {id:"requete",      icon:"⛁",  label:"Requête",         clr:"#7c3aed", cat:"special"},
+  {id:"table_unique", icon:"⊟",  label:"Table unique",    clr:"#f97316", cat:"special"},
+  {id:"table_multi",  icon:"⊠",  label:"Table multiple",  clr:"#f97316", cat:"special"},
+];
+const TYPE_CATS = [
+  {id:"layout",  label:"Mise en page"},
+  {id:"text",    label:"Saisie texte"},
+  {id:"list",    label:"Listes"},
+  {id:"date",    label:"Date / Heure"},
+  {id:"media",   label:"Médias"},
+  {id:"special", label:"Spéciaux"},
+];
+
+const SMART_DETECT = [
+  [/date|jour/i,"date"],[/heure/i,"time"],[/nombre|quantit|total|^nb/i,"number"],
+  [/photo|image/i,"photo"],[/signature/i,"sign"],[/localisation|gps/i,"location"],
+  [/commentaire|observation/i,"textarea"],[/statut|type|cat/i,"select"],
+];
+function detect(l){ for(const [re,t] of SMART_DETECT) if(re.test(l)) return t; return null; }
+
+const TRANSFORMERS = [
+  "Mettre le 1er caractère en majuscule","Tout en majuscule","Tout en minuscule",
+  "Ajouter un préfixe","Ajouter un suffixe","Retirer les espaces en début/fin",
+  "Ne conserver que les x premiers caractères","Ne conserver que les x derniers caractères",
+];
+function getVlds(t){
+  const b=[{n:"Obligatoire",v:false}];
+  if(["text"].includes(t)) return [...b,{n:"Min caractères",v:true},{n:"Max caractères",v:true},{n:"Lettres uniquement",v:false},{n:"Chiffres uniquement",v:false},{n:"Email",v:false},{n:"Expression régulière",v:true}];
+  if(t==="textarea") return [...b,{n:"Min caractères",v:true},{n:"Max caractères",v:true}];
+  if(t==="number") return [...b,{n:"Valeur min",v:true},{n:"Valeur max",v:true}];
+  if(["select","multi"].includes(t)) return [...b,{n:"Nb sélections min",v:true},{n:"Nb sélections max",v:true}];
+  if(t==="date") return [...b,{n:"Date min",v:true},{n:"Date max",v:true}];
+  if(t==="time") return [...b,{n:"Heure min",v:true},{n:"Heure max",v:true}];
+  if(["photo","file"].includes(t)) return [...b,{n:"Nb fichiers min",v:true},{n:"Nb fichiers max",v:true}];
+  return b;
+}
+
+function Tog({on,cb}){
+  return (
+    <div onClick={cb} style={{width:32,height:18,borderRadius:9,background:on?C.em:C.bd,cursor:"pointer",position:"relative",transition:"background .2s",flexShrink:0}}>
+      <div style={{width:13,height:13,borderRadius:"50%",background:"#fff",position:"absolute",top:2.5,left:on?16:2.5,transition:"left .2s",boxShadow:"0 1px 3px rgba(0,0,0,.2)"}}/>
+    </div>
+  );
+}
+
+function Badge({tid,xs}){
+  const t=TYPES.find(x=>x.id===tid);
+  if(!t) return null;
+  return (
+    <span style={{display:"inline-flex",alignItems:"center",gap:3,padding:xs?"2px 6px":"3px 8px",borderRadius:20,fontSize:xs?10:11,fontWeight:700,background:t.clr+"18",color:t.clr,flexShrink:0,whiteSpace:"nowrap"}}>
+      {t.icon} {t.label}
+    </span>
+  );
+}
+
+function Preview({f}){
+  const s={width:"100%",border:"1.5px solid "+C.bd,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.tl,background:C.bg,fontFamily:"inherit",outline:"none",pointerEvents:"none",boxSizing:"border-box"};
+  if(f.type==="sep") return (<hr style={{border:"none",borderTop:"1.5px solid "+C.bd,margin:"2px 0"}}/>);
+  if(f.type==="text") return (<input style={s} placeholder={f.ph||"Saisir..."} readOnly/>);
+  if(f.type==="textarea") return (<textarea style={{...s,height:60,resize:"none"}} placeholder={f.ph||"Saisir..."} readOnly/>);
+  if(f.type==="number") return (
+    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+      <div style={{width:32,height:32,border:"1.5px solid "+C.bd,borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:C.ts,fontSize:16}}>−</div>
+      <input type="number" style={{...s,width:76,textAlign:"center"}} defaultValue={0} readOnly/>
+      <div style={{width:32,height:32,background:C.em,borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:16}}>+</div>
+    </div>
+  );
+  if(f.type==="checkbox") return (
+    <div style={{display:"inline-flex",alignItems:"center",gap:9,padding:"8px 12px",border:"1.5px solid "+C.bd,borderRadius:8,background:C.bg}}>
+      <input type="checkbox" style={{width:15,height:15,accentColor:C.em}} readOnly/>
+      <span style={{fontSize:13,color:C.tl}}>Cocher si applicable</span>
+    </div>
+  );
+  if(f.type==="select") return (
+    <select style={{...s,appearance:"none",cursor:"default"}}>
+      <option>Sélectionner...</option>
+      {(f.opts||[]).map(o=>(<option key={o}>{o}</option>))}
+    </select>
+  );
+  if(f.type==="multi") return (
+    <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+      {(f.opts&&f.opts.length?f.opts:["Option 1","Option 2"]).map(o=>(<div key={o} style={{padding:"5px 13px",border:"1.5px solid "+C.bd,borderRadius:20,fontSize:12.5,color:C.tl,background:C.bg}}>{o}</div>))}
+    </div>
+  );
+  if(f.type==="date") return (<input type="date" style={{...s,width:180,pointerEvents:"none"}} readOnly/>);
+  if(f.type==="time") return (<input type="time" style={{...s,width:140,pointerEvents:"none"}} readOnly/>);
+  if(f.type==="photo") return (<div style={{border:"2px dashed "+C.bd,borderRadius:10,padding:14,textAlign:"center",color:C.ts,fontSize:13,background:C.bg}}>📷 Photo</div>);
+  if(f.type==="location") return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 13px",border:"1.5px solid "+C.bd,borderRadius:9,background:C.bg}}>
+      <span style={{color:C.ts,fontSize:13}}>📍 Non capturé</span>
+      <span style={{padding:"3px 11px",border:"1.5px solid "+C.em,borderRadius:20,color:C.em,fontSize:12,fontWeight:700}}>Capturer</span>
+    </div>
+  );
+  if(f.type==="sign") return (<div style={{border:"2px dashed "+C.bd,borderRadius:10,height:58,display:"flex",alignItems:"center",justifyContent:"center",color:C.ts,fontSize:13,background:C.bg}}>✍ Signature</div>);
+  return null;
+}
+
+function OptsEd({opts,onChange}){
+  return (
+    <div style={{marginTop:10,padding:10,background:C.bg,borderRadius:8,border:"1px solid "+C.bd}}>
+      <div style={{fontSize:10,fontWeight:700,color:C.ts,textTransform:"uppercase",letterSpacing:".7px",marginBottom:7}}>Options</div>
+      {opts.map((o,i)=>(
+        <div key={i} style={{display:"flex",gap:5,marginBottom:5}}>
+          <input value={o} onChange={e=>{const n=[...opts];n[i]=e.target.value;onChange(n);}}
+            style={{flex:1,border:"1.5px solid "+C.bd,borderRadius:7,padding:"5px 9px",fontSize:12.5,fontFamily:"inherit",outline:"none"}}
+            onFocus={e=>{e.target.style.borderColor=C.em;}} onBlur={e=>{e.target.style.borderColor=C.bd;}}/>
+          <button onClick={()=>onChange(opts.filter((_,j)=>j!==i))}
+            style={{width:26,height:26,border:"1px solid #FCA5A5",borderRadius:6,background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0}}>✕</button>
+        </div>
+      ))}
+      <button onClick={()=>onChange([...opts,"Nouvelle option"])}
+        style={{width:"100%",padding:6,border:"1.5px dashed "+C.em2,borderRadius:7,background:"transparent",color:C.em,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+        ＋ Ajouter
+      </button>
+    </div>
+  );
+}
+
+function TypePicker({active,onSel}){
+  return (
+    <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:10}}>
+      {TYPES.map(t=>{
+        const on=active===t.id;
+        return (
+          <button key={t.id} onClick={e=>{e.stopPropagation();onSel(t.id);}}
+            style={{padding:"3px 9px",borderRadius:20,border:"1.5px solid "+(on?t.clr:C.bd),background:on?t.clr+"15":"#fff",color:on?t.clr:C.tl,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+            {t.icon} {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function Adv({f,upd}){
+  const [tab,setTab]=useState("gen");
+  const vc=f.vlds?f.vlds.length:0, cc=f.conds?f.conds.length:0;
+  const tc=(f.trfs||[]).length;
+  const ts=id=>({padding:"8px 10px",border:"none",borderBottom:"2px solid "+(tab===id?C.em:"transparent"),background:"transparent",color:tab===id?C.em:C.tl,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"});
+  return (
+    <div style={{marginTop:10,border:"1.5px solid "+C.bd,borderRadius:10,overflow:"hidden"}}>
+      <div style={{display:"flex",borderBottom:"1px solid "+C.bd,background:C.bg,padding:"0 6px",gap:0,overflowX:"auto"}}>
+        <button style={ts("gen")} onClick={()=>setTab("gen")}>Général</button>
+        {["text","textarea"].includes(f.type)&&<button style={ts("trf")} onClick={()=>setTab("trf")}>Transformateurs{tc>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:10,background:"#8b5cf6",color:"#fff",fontSize:9}}>{tc}</span>}</button>}
+        <button style={ts("vld")} onClick={()=>setTab("vld")}>Validateurs{vc>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:10,background:C.em,color:"#fff",fontSize:9}}>{vc}</span>}</button>
+        <button style={ts("cnd")} onClick={()=>setTab("cnd")}>Conditions{cc>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:10,background:"#f59e0b",color:"#fff",fontSize:9}}>{cc}</span>}</button>
+        <button style={ts("dsp")} onClick={()=>setTab("dsp")}>Affichage</button>
+      </div>
+      <div style={{padding:14,background:"#fff"}}>
+        {tab==="gen"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {["text","textarea","number"].includes(f.type)&&(
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Placeholder</div>
+                <input value={f.ph||""} onChange={e=>upd(f.id,{ph:e.target.value})} placeholder="Ex : Saisir une valeur..."
+                  style={{width:"100%",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none"}}
+                  onFocus={e=>{e.target.style.borderColor=C.em;}} onBlur={e=>{e.target.style.borderColor=C.bd;}}/>
+              </div>
+            )}
+            <div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:f.showLeg?6:0}}>
+                <div style={{fontSize:11,fontWeight:700,color:C.tm}}>Légende</div>
+                <Tog on={f.showLeg} cb={()=>upd(f.id,{showLeg:!f.showLeg})}/>
+              </div>
+              {f.showLeg&&(
+                <textarea value={f.leg||""} onChange={e=>upd(f.id,{leg:e.target.value})} placeholder="Texte sous le label..."
+                  style={{width:"100%",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none",resize:"none",height:56,boxSizing:"border-box"}}
+                  onFocus={e=>{e.target.style.borderColor=C.em;}} onBlur={e=>{e.target.style.borderColor=C.bd;}}/>
+              )}
+            </div>
+            {!["sep","sign","photo","location"].includes(f.type)&&(
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div>
+                  <div style={{fontSize:11,fontWeight:700,color:C.tm}}>Champ duplicable</div>
+                  <div style={{fontSize:11,color:C.ts,marginTop:1}}>L'opérateur peut ajouter plusieurs valeurs</div>
+                </div>
+                <Tog on={f.dup} cb={()=>upd(f.id,{dup:!f.dup})}/>
+              </div>
+            )}
+          </div>
+        )}
+        {tab==="vld"&&(
+          <div>
+            {(!f.vlds||f.vlds.length===0)&&(<div style={{textAlign:"center",padding:"18px 0",color:C.ts,fontSize:12}}>Aucun validateur configuré</div>)}
+            {(f.vlds||[]).map((v,i)=>(
+              <div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"8px 10px",border:"1.5px solid "+C.bd,borderRadius:8,marginBottom:6,background:C.bg}}>
+                <span style={{width:20,height:20,borderRadius:5,background:C.em,color:"#fff",fontSize:10,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{i+1}</span>
+                <span style={{flex:1,fontSize:12.5,fontWeight:600}}>{v.n}</span>
+                {v.v&&(<input value={v.val||""} placeholder="Valeur" onChange={e=>{const n=[...(f.vlds||[])];n[i]={...n[i],val:e.target.value};upd(f.id,{vlds:n});}} style={{width:70,border:"1.5px solid "+C.bd,borderRadius:6,padding:"4px 7px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>)}
+                <input value={v.msg||""} placeholder="Message d'erreur" onChange={e=>{const n=[...(f.vlds||[])];n[i]={...n[i],msg:e.target.value};upd(f.id,{vlds:n});}} style={{flex:1,border:"1.5px solid "+C.bd,borderRadius:6,padding:"4px 7px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                <button onClick={()=>{const n=(f.vlds||[]).filter((_,j)=>j!==i);upd(f.id,{vlds:n});}} style={{width:24,height:24,border:"1px solid #FCA5A5",borderRadius:5,background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            <div style={{marginTop:8}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.ts,marginBottom:6,textTransform:"uppercase",letterSpacing:".5px"}}>Ajouter</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {getVlds(f.type).map(v=>(
+                  <button key={v.n} onClick={()=>{const n=[...(f.vlds||[]),{...v,val:"",msg:""}];upd(f.id,{vlds:n});}}
+                    style={{padding:"4px 11px",borderRadius:20,border:"1.5px solid "+C.bd,background:"#fff",color:C.tm,fontSize:11.5,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor=C.em;e.currentTarget.style.color=C.em;e.currentTarget.style.background=C.eml;}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor=C.bd;e.currentTarget.style.color=C.tm;e.currentTarget.style.background="#fff";}}>
+                    ＋ {v.n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        {tab==="trf"&&(
+          <div>
+            {(!f.trfs||f.trfs.length===0)&&(<div style={{textAlign:"center",padding:"18px 0",color:C.ts,fontSize:12}}>Aucun transformateur configuré</div>)}
+            {(f.trfs||[]).map((tr,i)=>(
+              <div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"8px 10px",border:"1.5px solid "+C.bd,borderRadius:8,marginBottom:6,background:C.bg}}>
+                <span style={{flex:1,fontSize:12,fontWeight:600}}>{tr.n}</span>
+                {/(préfixe|suffixe|premiers|derniers)/.test(tr.n)&&(
+                  <input value={tr.param||""} placeholder="Paramètre" onChange={e=>{const n=[...(f.trfs||[])];n[i]={...n[i],param:e.target.value};upd(f.id,{trfs:n});}} style={{width:80,border:"1.5px solid "+C.bd,borderRadius:6,padding:"4px 7px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                )}
+                <button onClick={()=>{const n=(f.trfs||[]).filter((_,j)=>j!==i);upd(f.id,{trfs:n});}} style={{width:24,height:24,border:"1px solid #FCA5A5",borderRadius:5,background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            <div style={{marginTop:8}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.ts,marginBottom:6,textTransform:"uppercase",letterSpacing:".5px"}}>Ajouter</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {TRANSFORMERS.map(n=>(
+                  <button key={n} onClick={()=>{const cur=f.trfs||[];upd(f.id,{trfs:[...cur,{n,param:""}]});}}
+                    style={{padding:"4px 10px",borderRadius:20,border:"1.5px solid "+C.bd,background:"#fff",color:C.tm,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor="#8b5cf6";e.currentTarget.style.color="#8b5cf6";e.currentTarget.style.background="#f5f3ff";}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor=C.bd;e.currentTarget.style.color=C.tm;e.currentTarget.style.background="#fff";}}>
+                    ＋ {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        {tab==="cnd"&&(
+          <div>
+            <div style={{padding:"9px 12px",background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:8,fontSize:11.5,color:"#92400E",marginBottom:12}}>⚡ Ce champ s'affiche si <strong>toutes</strong> les conditions sont remplies.</div>
+            {(!f.conds||f.conds.length===0)&&(<div style={{textAlign:"center",padding:"16px 0",color:C.ts,fontSize:12}}>Aucune condition</div>)}
+            {(f.conds||[]).map((c,i)=>(
+              <div key={i} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,padding:"8px 10px",border:"1.5px solid "+C.bd,borderRadius:8,background:C.bg}}>
+                <span style={{fontSize:11,color:C.ts,fontWeight:700,flexShrink:0}}>Si</span>
+                <input value={c.fn||""} placeholder="Champ source" onChange={e=>{const n=[...(f.conds||[])];n[i]={...n[i],fn:e.target.value};upd(f.id,{conds:n});}} style={{flex:1,border:"1.5px solid "+C.bd,borderRadius:6,padding:"5px 8px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                <select value={c.op||"="} onChange={e=>{const n=[...(f.conds||[])];n[i]={...n[i],op:e.target.value};upd(f.id,{conds:n});}} style={{width:52,border:"1.5px solid "+C.bd,borderRadius:6,padding:"5px 2px",fontSize:12,fontFamily:"inherit",outline:"none",background:"#fff"}}>
+                  <option value="=">=</option><option value="!=">≠</option><option value="contains">∋</option><option value="empty">∅</option>
+                </select>
+                <input value={c.val||""} placeholder="Valeur" onChange={e=>{const n=[...(f.conds||[])];n[i]={...n[i],val:e.target.value};upd(f.id,{conds:n});}} style={{flex:1,border:"1.5px solid "+C.bd,borderRadius:6,padding:"5px 8px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                <button onClick={()=>{const n=(f.conds||[]).filter((_,j)=>j!==i);upd(f.id,{conds:n});}} style={{width:24,height:24,border:"1px solid #FCA5A5",borderRadius:5,background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            <button onClick={()=>{const n=[...(f.conds||[]),{fn:"",op:"=",val:""}];upd(f.id,{conds:n});}} style={{width:"100%",padding:7,border:"1.5px dashed "+C.bd,borderRadius:8,background:"transparent",color:C.tl,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginTop:4}}>＋ Ajouter une condition</button>
+          </div>
+        )}
+        {tab==="dsp"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 12px",border:"1.5px solid "+C.bd,borderRadius:8,background:C.bg}}>
+              <div><div style={{fontSize:12.5,fontWeight:700}}>🖥 Supervision</div><div style={{fontSize:11,color:C.ts,marginTop:1}}>Interface web</div></div>
+              <Tog on={f.vSup!==false} cb={()=>upd(f.id,{vSup:!(f.vSup!==false)})}/>
+            </div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 12px",border:"1.5px solid "+C.bd,borderRadius:8,background:C.bg}}>
+              <div><div style={{fontSize:12.5,fontWeight:700}}>📱 App nomade</div><div style={{fontSize:11,color:C.ts,marginTop:1}}>Terminaux terrain</div></div>
+              <Tog on={f.vNom!==false} cb={()=>upd(f.id,{vNom:!(f.vNom!==false)})}/>
+            </div>
+            <div style={{padding:"9px 12px",border:"1px dashed "+C.bd,borderRadius:8,background:"#FAFAFA"}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.ts,marginBottom:6}}>Visible par les rôles</div>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                {["Administrateur","Manager","Opérateur"].map(r=>{
+                  const on=(f.roles||[]).includes(r);
+                  return (
+                    <button key={r} onClick={()=>{const cur=f.roles||[];upd(f.id,{roles:on?cur.filter(x=>x!==r):[...cur,r]});}} style={{padding:"4px 11px",borderRadius:20,border:"1.5px solid "+(on?C.em:C.bd),background:on?C.eml:"#fff",color:on?C.em:C.tm,fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                      {r}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{fontSize:10.5,color:C.ts,marginTop:6}}>Vide = tous les rôles</div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AddPop({onAdd}){
+  const [q,setQ]=useState("");
+  const [sug,setSug]=useState(null);
+  const ref=useRef(null);
+  useEffect(()=>{setTimeout(()=>{if(ref.current)ref.current.focus();},60);},[]);
+  const hi=v=>{setQ(v);setSug(v.trim()?detect(v):null);};
+  return (
+    <div style={{position:"absolute",top:"calc(100% + 8px)",left:"50%",transform:"translateX(-50%)",width:314,background:"#fff",border:"1.5px solid "+C.bd,borderRadius:14,boxShadow:"0 16px 48px rgba(0,0,0,.13)",padding:13,zIndex:1000}}>
+      <input ref={ref} value={q} onChange={e=>hi(e.target.value)} placeholder="Nommer le champ... (optionnel)"
+        style={{width:"100%",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none",boxSizing:"border-box",marginBottom:8}}
+        onFocus={e=>{e.target.style.borderColor=C.em;}} onBlur={e=>{e.target.style.borderColor=C.bd;}}/>
+      {sug&&(
+        <div style={{display:"flex",alignItems:"center",gap:7,padding:"5px 9px",background:C.eml,borderRadius:8,border:"1px solid "+C.em2,marginBottom:9}}>
+          <span>✨</span>
+          <span style={{fontSize:11,color:"#065F46",fontWeight:700}}>Suggestion :</span>
+          <Badge tid={sug} xs/>
+          <button onClick={()=>onAdd(sug,q)} style={{marginLeft:"auto",padding:"2px 10px",borderRadius:20,border:"none",background:C.em,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Utiliser →</button>
+        </div>
+      )}
+     <div style={{fontSize:10,fontWeight:700,color:C.ts,textTransform:"uppercase",letterSpacing:".8px",marginBottom:7}}>Choisir un type</div>
+     {TYPE_CATS.map(cat=>(
+        <div key={cat.id} style={{marginBottom:8}}>
+          <div style={{fontSize:9,fontWeight:800,color:C.ts,textTransform:"uppercase",letterSpacing:".6px",marginBottom:4}}>{cat.label}</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
+            {TYPES.filter(t=>t.cat===cat.id).map(t=>(
+              <button key={t.id} onClick={()=>onAdd(t.id,q)}
+                style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"6px 2px",border:"1.5px solid #F1F5F9",borderRadius:8,background:"#FAFAFA",cursor:"pointer",fontFamily:"inherit",fontSize:9.5,fontWeight:700,color:C.tl}}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor=t.clr;e.currentTarget.style.background=t.clr+"12";e.currentTarget.style.color=t.clr;}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor="#F1F5F9";e.currentTarget.style.background="#FAFAFA";e.currentTarget.style.color=C.tl;}}>
+                <span style={{fontSize:14}}>{t.icon}</span>
+                <span style={{textAlign:"center",lineHeight:1.2}}>{t.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AddLine({afterIndex,onAdd}){
+  const [hov,setHov]=useState(false);
+  const [open,setOpen]=useState(false);
+  const wRef=useRef(null);
+  useEffect(()=>{
+    if(!open)return;
+    const h=e=>{if(wRef.current&&!wRef.current.contains(e.target)){setOpen(false);setHov(false);}};
+    document.addEventListener("mousedown",h);
+    return()=>document.removeEventListener("mousedown",h);
+  },[open]);
+  return (
+    <div ref={wRef} style={{position:"relative",height:26,display:"flex",alignItems:"center",zIndex:open?20:1}} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>{if(!open)setHov(false);}}>
+      {(hov||open)?(
+        <div style={{width:"100%",display:"flex",alignItems:"center",gap:6}}>
+          <div style={{flex:1,height:1.5,background:C.em+"40",borderRadius:1}}/>
+          <button onClick={()=>setOpen(o=>!o)}
+            style={{width:22,height:22,borderRadius:"50%",border:"none",background:C.em,color:"#fff",fontSize:15,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,lineHeight:1}}>+</button>
+          <div style={{flex:1,height:1.5,background:C.em+"40",borderRadius:1}}/>
+        </div>
+      ):(
+        <div style={{width:"100%",height:1,background:"transparent"}}/>
+      )}
+      {open&&(<AddPop onAdd={(type,label)=>{onAdd(afterIndex,type,label);setOpen(false);setHov(false);}}/>)}
+    </div>
+  );
+}
+
+function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
+  const [hov,setHov]=useState(false);
+  const [adv,setAdv]=useState(false);
+  const t=TYPES.find(x=>x.id===f.type);
+  const ac=(f.vlds?f.vlds.length:0)+(f.conds?f.conds.length:0);
+  return (
+    <div
+      draggable={!editing}
+      onDragStart={()=>onDS(f.id)}
+      onDragOver={e=>{e.preventDefault();onDO(f.id);}}
+      onDragLeave={()=>onDO(null)}
+      onDrop={()=>onDrop(f.id)}
+      onMouseEnter={()=>setHov(true)}
+      onMouseLeave={()=>setHov(false)}
+      onClick={()=>{if(!editing)onEdit(f.id);}}
+      style={{background:"#fff",border:"1.5px solid "+(isDO?C.em:editing?"#059669":hov?C.bd+"cc":C.bd),borderRadius:10,padding:"11px 13px",marginBottom:1,cursor:editing?"default":"pointer",transition:"border-color .15s, box-shadow .15s",boxShadow:isDO?"0 0 0 3px "+C.em+"30":editing?"0 0 0 3px "+C.em+"20":"none",position:"relative"}}>
+      {editing?(
+        <div onClick={e=>e.stopPropagation()}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <div style={{width:28,height:28,borderRadius:7,background:t?t.clr+"18":"#f1f5f9",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,flexShrink:0}}>{t?t.icon:"?"}</div>
+            <input value={f.label} onChange={e=>upd(f.id,{label:e.target.value})} placeholder="Nom du champ..."
+              style={{flex:1,border:"none",borderBottom:"2px solid "+C.em,background:"transparent",fontSize:13.5,fontWeight:700,outline:"none",fontFamily:"inherit",color:C.tx,padding:"2px 0"}}/>
+            <div style={{display:"flex",alignItems:"center",gap:5}}>
+              <span style={{fontSize:12,color:C.tl,fontWeight:600}}>Requis</span>
+              <Tog on={f.req} cb={()=>upd(f.id,{req:!f.req})}/>
+            </div>
+            <button onClick={()=>{onEdit(null);setAdv(false);}} style={{width:26,height:26,borderRadius:6,border:"1.5px solid "+C.bd,background:"#fff",cursor:"pointer",fontSize:11,color:C.tl}}>✓</button>
+          </div>
+          {["select","multi"].includes(f.type)&&(<OptsEd opts={f.opts||[]} onChange={opts=>upd(f.id,{opts})}/>)}
+          <TypePicker active={f.type} onSel={type=>upd(f.id,{type,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[]})}/>
+          <Preview f={f}/>
+          <button onClick={()=>setAdv(a=>!a)}
+            style={{marginTop:8,width:"100%",padding:"6px 10px",borderRadius:7,border:"1.5px solid "+C.bd,background:adv?C.eml:"#fff",color:adv?C.em:C.tl,fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:6}}>
+            <span>⚙ Paramètres avancés</span>
+            {ac>0&&<span style={{padding:"1px 6px",borderRadius:10,background:C.em,color:"#fff",fontSize:10}}>{ac}</span>}
+            <span style={{marginLeft:"auto",fontSize:11,display:"inline-block",transform:adv?"rotate(180deg)":"none"}}>▾</span>
+          </button>
+          {adv&&(<div onClick={e=>e.stopPropagation()}><Adv f={f} upd={upd}/></div>)}
+        </div>
+      ):(
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:f.type==="sep"?0:7}}>
+            <span style={{fontSize:13,fontWeight:700,color:C.tx,flex:1}}>
+              {f.label}{f.req&&(<span style={{color:C.em}}> *</span>)}
+              {ac>0&&(<span title={ac+" paramètre(s)"} style={{marginLeft:6,padding:"1px 6px",borderRadius:10,background:C.eml,color:C.em,fontSize:10,fontWeight:800,border:"1px solid "+C.em2}}>⚙ {ac}</span>)}
+            </span>
+            <Badge tid={f.type} xs/>
+            <div style={{display:"flex",gap:3,opacity:hov?1:0,transition:"opacity .15s"}} onClick={e=>e.stopPropagation()}>
+              <button onClick={e=>{e.stopPropagation();onEdit(f.id);}} style={{width:26,height:26,borderRadius:6,border:"1.5px solid "+C.bd,background:"#fff",cursor:"pointer",fontSize:12,color:C.tl}}>✏️</button>
+              <button onClick={e=>{e.stopPropagation();del(f.id);}} style={{width:26,height:26,borderRadius:6,border:"1px solid #FCA5A5",background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0,fontSize:11}}>✕</button>
+            </div>
+          </div>
+          {f.type!=="sep"&&(<Preview f={f}/>)}
+          {f.showLeg&&f.leg&&(<div style={{fontSize:11,color:C.tl,marginTop:5,fontStyle:"italic"}}>{f.leg}</div>)}
+        </div>
+      )}
+    </div>
+  );
+}
+function _mapTypeBack(t){
+  const map={
+    text:'text',textarea:'textarea',number:'number',checkbox:'checkbox',
+    select:'select',multi:'multiselect',date:'date',time:'heure',datetime:'datetime',
+    photo:'photo',file:'file',sign:'signature',location:'location',
+    sep:'separator',titre:'titre',image:'image',son:'son',video:'video',
+    groupe:'groupe',calcul:'calcul',requete:'requete',
+    table_unique:'table_unique',table_multi:'table_multiple',
+  };
+  return map[t]||'text';
+}
+// ══ COMPOSANT PRINCIPAL — intégré dans PicoTrack ══
+function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
+  const [fields,setFields]=useState(initialFields && initialFields.length ? initialFields : []);
+  const [editId,setEditId]=useState(null);
+  const [fname,setFname]=useState(initialName || "Nouveau formulaire");
+  const [editFn,setEditFn]=useState(false);
+  const [showSettings,setShowSettings]=useState(false);
+  const rolesList=(typeof ROLES_DATA!=="undefined" ? ROLES_DATA : []);
+  const [visibleRoles,setVisibleRoles]=useState((initialMeta&&initialMeta.visibleRoles)||[]);
+  const [triggers,setTriggers]=useState((initialMeta&&initialMeta.triggers)||{
+    printLabel:{enabled:false,template:"Etiquette arrivage",printer:"Imprimante étiquettes"},
+    sendMail:{enabled:false,to:"",subject:"Nouvelle saisie - {formName}"},
+    addDbRow:{enabled:false,database:"",mappingMode:"auto"}
+  });
+  const setTrigger=(key,patch)=>setTriggers(prev=>({...prev,[key]:{...(prev[key]||{}),...patch}}));
+  const toggleRole=(rid)=>setVisibleRoles(prev=>prev.includes(rid)?prev.filter(x=>x!==rid):[...prev,rid]);
+  const [saved,setSaved]=useState(false);
+  const [dragId,setDragId]=useState(null);
+  const [dragOvId,setDragOvId]=useState(null);
+  const nid=useRef(Date.now());
+
+  const addF=useCallback((ai,type,label)=>{
+    const t=TYPES.find(x=>x.id===type);
+    const f={id:nid.current++,type,req:false,label:(label&&label.trim())?label.trim():t.label,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[],ph:"",leg:"",showLeg:false,vSup:true,vNom:true,dup:false,vlds:[],conds:[]};
+    setFields(prev=>{const next=[...prev];next.splice(ai+1,0,f);return next;});
+    setEditId(f.id);
+  },[]);
+
+  const updF=useCallback((id,u)=>{setFields(prev=>prev.map(f=>f.id===id?{...f,...u}:f));},[]);
+  const delF=useCallback((id)=>{setFields(prev=>prev.filter(f=>f.id!==id));setEditId(e=>e===id?null:e);},[]);
+
+  const drop=useCallback((tid)=>{
+    if(!dragId||dragId===tid)return;
+    setFields(prev=>{const a=[...prev];const fi=a.findIndex(f=>f.id===dragId);const ti=a.findIndex(f=>f.id===tid);const[item]=a.splice(fi,1);a.splice(ti,0,item);return a;});
+    setDragId(null);setDragOvId(null);
+  },[dragId]);
+
+  const req=fields.filter(f=>f.req).length;
+
+  const handleSave = () => {
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2200);
+    if(onSave) onSave(fname, fields.map(f=>({
+      id: f.id,
+      type: _mapTypeBack(f.type),
+      nom: f.label,
+      obligatoire: f.req,
+      valeurs: f.opts||[],
+      placeholder: f.ph||'',
+      legendeText: f.leg||'',
+      afficher_legende: f.showLeg||false,
+      afficher_placeholder: !!(f.ph),
+      vis_sup: f.vSup!==false,
+      vis_nom: f.vNom!==false,
+      duplicable: f.dup||false,
+      duplicable_min: 1,
+      duplicable_max: 10,
+      validateurs: f.vlds||[],
+      conditions: f.conds||[],
+      transformateurs: (f.trfs||[]).map(tr=>({nom:tr.n, param:tr.param||''})),
+    })),{
+      visibleRoles: visibleRoles,
+      triggers: triggers
+    });
+  };
+
+  return (
+    <div style={{flex:1,minHeight:0,background:C.bg,fontFamily:"'DM Sans',-apple-system,sans-serif",fontSize:13,color:C.tx,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      {/* Topbar */}
+      <div style={{height:52,background:"#fff",borderBottom:"1px solid "+C.bd,display:"flex",alignItems:"center",padding:"0 18px",gap:10,boxShadow:"0 1px 3px rgba(0,0,0,.04)",flexShrink:0}}>
+        <button onClick={()=>{ if(window.goList) window.goList(); }} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 11px",borderRadius:7,border:"1.5px solid "+C.bd,background:"#fff",color:C.tl,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>← Formulaires</button>
+        <div style={{width:1,height:20,background:C.bd}}/>
+        {editFn?(
+          <input value={fname} autoFocus onChange={e=>setFname(e.target.value)} onBlur={()=>setEditFn(false)} onKeyDown={e=>{if(e.key==="Enter")setEditFn(false);}}
+            style={{fontSize:14,fontWeight:800,border:"none",borderBottom:"2px solid "+C.em,background:"transparent",outline:"none",color:C.tx,fontFamily:"inherit",minWidth:200}}/>
+        ):(
+          <div onClick={()=>setEditFn(true)} style={{fontSize:14,fontWeight:800,cursor:"text",display:"flex",alignItems:"center",gap:6}}>
+            {fname}<span style={{color:C.bd,fontSize:12,fontWeight:400}}>✎</span>
+          </div>
+        )}
+        <div style={{flex:1}}/>
+        <span style={{fontSize:12,color:saved?C.em:C.ts,fontWeight:600,transition:"color .3s"}}>{saved?"✓ Enregistré":fields.length+" champs · "+req+" requis"}</span>
+        <button style={{padding:"6px 13px",borderRadius:8,border:"1.5px solid "+C.bd,background:"#fff",color:C.tm,fontSize:12.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>👁 Aperçu</button>
+        <button onClick={handleSave} style={{padding:"6px 16px",borderRadius:8,border:"none",background:C.em,color:"#fff",fontSize:12.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Enregistrer</button>
+      </div>
+      {/* Bandeau info */}
+      <div style={{background:C.eml,borderBottom:"1px solid "+C.em2,padding:"7px 18px",display:"flex",gap:10,fontSize:12,color:"#065F46",alignItems:"center",flexShrink:0}}>
+        <span style={{fontWeight:800,display:"flex",alignItems:"center",gap:5}}>
+          <span style={{width:18,height:18,background:C.em,borderRadius:5,display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:11}}>✦</span>
+          Live Canvas
+        </span>
+        <span style={{color:C.emd,opacity:.85}}>Cliquez un champ pour éditer · Survolez l'espace pour ajouter · <strong>⚙ Paramètres avancés</strong> pour validateurs, conditions, affichage</span>
+      </div>
+      {/* Paramétrage formulaire */}
+      <div style={{background:"#fff",borderBottom:"1px solid "+C.bd,flexShrink:0}}>
+        <button onClick={()=>setShowSettings(!showSettings)} style={{width:"100%",border:"none",background:"#fff",padding:"10px 18px",display:"flex",alignItems:"center",gap:10,cursor:"pointer",fontFamily:"inherit",color:C.tx}}>
+          <span style={{width:22,height:22,borderRadius:7,background:C.eml,color:C.em,display:"inline-flex",alignItems:"center",justifyContent:"center",fontWeight:900}}>⚙</span>
+          <span style={{fontSize:13,fontWeight:800}}>Paramétrage du formulaire</span>
+          <span style={{fontSize:12,color:C.ts}}>nom · rôles visibles · actions automatiques après validation</span>
+          <span style={{marginLeft:"auto",fontSize:11,color:C.ts,transform:showSettings?"rotate(180deg)":"none",display:"inline-block"}}>▾</span>
+        </button>
+        {showSettings&&(
+          <div style={{padding:"0 18px 16px",display:"grid",gridTemplateColumns:"1fr 1fr 1.2fr",gap:12}}>
+            <div style={{border:"1.5px solid "+C.bd,borderRadius:12,padding:12,background:C.bg}}>
+              <div style={{fontSize:12,fontWeight:800,marginBottom:8}}>Identité</div>
+              <label style={{fontSize:11,color:C.tl,fontWeight:700}}>Nom du formulaire</label>
+              <input value={fname} onChange={e=>setFname(e.target.value)} placeholder="Ex : Arrivage CNPE Blaye" style={{marginTop:5,width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"9px 10px",fontFamily:"inherit",fontSize:13}}/>
+            </div>
+            <div style={{border:"1.5px solid "+C.bd,borderRadius:12,padding:12,background:C.bg}}>
+              <div style={{fontSize:12,fontWeight:800,marginBottom:8}}>Visibilité par rôle</div>
+              <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                {rolesList.map(r=>(
+                  <label key={r.id} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,cursor:"pointer"}}>
+                    <input type="checkbox" checked={visibleRoles.includes(r.id)} onChange={()=>toggleRole(r.id)}/>
+                    <span style={{fontWeight:700}}>{r.nom}</span>
+                  </label>
+                ))}
+                {rolesList.length===0&&<span style={{fontSize:12,color:C.ts}}>Aucun rôle configuré.</span>}
+              </div>
+            </div>
+            <div style={{border:"1.5px solid "+C.bd,borderRadius:12,padding:12,background:C.bg}}>
+              <div style={{fontSize:12,fontWeight:800,marginBottom:8}}>Actions après validation</div>
+              <div style={{display:"grid",gap:8}}>
+                <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.printLabel?.enabled} onChange={e=>setTrigger('printLabel',{enabled:e.target.checked})}/> Imprimer une étiquette</label>
+                {triggers.printLabel?.enabled&&<div style={{display:"flex",gap:6}}><input value={triggers.printLabel.template||""} onChange={e=>setTrigger('printLabel',{template:e.target.value})} placeholder="Modèle d'étiquette" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/><input value={triggers.printLabel.printer||""} onChange={e=>setTrigger('printLabel',{printer:e.target.value})} placeholder="Imprimante" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/></div>}
+                <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.sendMail?.enabled} onChange={e=>setTrigger('sendMail',{enabled:e.target.checked})}/> Envoyer un mail</label>
+                {triggers.sendMail?.enabled&&<div style={{display:"flex",gap:6}}><input value={triggers.sendMail.to||""} onChange={e=>setTrigger('sendMail',{to:e.target.value})} placeholder="Destinataire(s)" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/><input value={triggers.sendMail.subject||""} onChange={e=>setTrigger('sendMail',{subject:e.target.value})} placeholder="Objet" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/></div>}
+                <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.addDbRow?.enabled} onChange={e=>setTrigger('addDbRow',{enabled:e.target.checked})}/> Ajouter une ligne dans une base</label>
+                {triggers.addDbRow?.enabled&&<div style={{display:"flex",gap:6}}><input value={triggers.addDbRow.database||""} onChange={e=>setTrigger('addDbRow',{database:e.target.value})} placeholder="Nom de la base" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/><select value={triggers.addDbRow.mappingMode||"auto"} onChange={e=>setTrigger('addDbRow',{mappingMode:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}><option value="auto">Mapping auto</option><option value="manual">Mapping manuel</option></select></div>}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Canvas scrollable */}
+      <div style={{flex:1,overflowY:"auto",padding:"20px 0 60px"}}>
+        <div style={{maxWidth:700,margin:"0 auto",padding:"0 16px"}}>
+          {/* Header formulaire */}
+          <div style={{background:"#fff",border:"1.5px solid "+C.bd,borderRadius:14,padding:"14px 18px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,.05)"}}>
+            <div style={{display:"flex",alignItems:"center",gap:11}}>
+              <div style={{width:4,height:36,borderRadius:3,background:C.em,flexShrink:0}}/>
+              <div style={{flex:1}}>
+                <div style={{fontSize:15,fontWeight:800}}>{fname}</div>
+                <div style={{fontSize:11.5,color:C.ts,marginTop:2}}>{req} obligatoire{req!==1?"s":""} · Live Canvas</div>
+              </div>
+            </div>
+          </div>
+          {/* Champs */}
+          <AddLine afterIndex={-1} onAdd={addF}/>
+          {fields.map((f,idx)=>(
+            <div key={f.id}>
+              <Card f={f} editing={editId===f.id} onEdit={setEditId} upd={updF} del={delF}
+                onDS={id=>{setDragId(id);setEditId(null);}} onDO={setDragOvId} onDrop={drop}
+                isDO={dragOvId===f.id&&dragId!==f.id}/>
+              <AddLine afterIndex={idx} onAdd={addF}/>
+            </div>
+          ))}
+          {fields.length===0&&(
+            <div style={{border:"2px dashed "+C.bd,borderRadius:12,padding:"40px 20px",textAlign:"center",color:C.ts,background:"#fff"}}>
+              <div style={{fontSize:28,marginBottom:8,opacity:.4}}>+</div>
+              <div style={{fontWeight:600,fontSize:14}}>Cliquez sur le + pour ajouter un premier champ</div>
+            </div>
+          )}
+          {fields.length>0&&(<div style={{textAlign:"center",marginTop:12,color:C.ts,fontSize:12}}>{fields.length} champ{fields.length!==1?"s":""} · {req} obligatoire{req!==1?"s":""}</div>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+window.PicoBuilderApp = PicoBuilderApp;
+</script>
+  <script src="js/core/supabase.js"></script>
+<script src="js/core/constants.js"></script>
+<script src="js/core/data.js"></script>
+<script src="js/core/environments.js"></script>
+<script src="js/core/state.js"></script>
+<script src="js/core/licenses.js"></script>
+<script src="js/core/utils.js"></script>
+<script src="js/features/forms-admin.js"></script>
+<script src="js/features/forms-production.js"></script>
+<script src="js/features/forms-saisie.js"></script>
+<script src="js/features/forms-builder.js"></script>
+<script src="js/features/react-builder-mount.js"></script>
+<script src="js/features/forms-preview-layout.js"></script>
+
+<script src="js/features/admin-navigation.js"></script>
+<script src="js/features/roles.js"></script>
+<script src="js/features/users.js"></script>
+<script src="js/features/permissions.js"></script>
+<script src="js/features/licensing.js"></script>
+<script src="js/features/forms-advanced-helpers.js"></script>
+<script src="js/features/services.js"></script>
+<script src="js/features/databases.js"></script>
+<script src="js/features/api.js"></script>
+<script src="pad-mode.js"></script>
+<script src="js/init.js"></script>
+<script>
+if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
+if (typeof initPadMode === 'function') initPadMode();
+</script>
+</body>
+</html>
