@@ -9,8 +9,8 @@ if (typeof isPadMode === 'function' && isPadMode()) {
   else if (typeof afficherTableau === 'function') afficherTableau();
 }
 // Écoute temps réel — nouvelles saisies PAD
-if (typeof realtime !== 'undefined') {
-  realtime.on('submissions', (event, record) => {
+if (typeof onSync !== 'undefined') {
+  onSync('submissions', (event, record) => {
     if (event === 'INSERT' && record) {
       // Ajouter à la liste locale
       SUBMISSIONS_DATA.unshift({
@@ -25,10 +25,14 @@ if (typeof realtime !== 'undefined') {
       const f = FORMS_DATA.find(x => x.id === record.form_id);
       if (f) {
         f.resp = (f.resp || 0) + 1;
-        if (document.getElementById('v-submissions')?.classList.contains('on')) {
-          renderSubmissions(f);
+       if (document.getElementById('v-submissions')?.classList.contains('on')) {
+          if (typeof openSubmissions === 'function') openSubmissions(f.id);
         }
-        toast('i', `📱 Nouvelle saisie PAD — ${f.nom}`);
+        // Ne pas notifier ses propres saisies
+        const isMyDevice = (typeof isPadMode === 'function' && isPadMode()) 
+          ? record.device !== 'pad' 
+          : record.device === 'pad';
+        if (isMyDevice) toast('i', `📱 Nouvelle saisie ${record.device === 'pad' ? 'PAD' : 'Bureau'} — ${f.nom}`);
       }
     }
   });
