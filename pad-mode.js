@@ -5,7 +5,6 @@
 
 function isPadMode() {
   return new URLSearchParams(location.search).get('mode') === 'pad'
-    || !!localStorage.getItem('pt_pad')
     || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 }
 
