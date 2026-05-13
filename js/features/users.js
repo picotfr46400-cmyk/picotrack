@@ -1,3 +1,4 @@
+
 // ══ UTILISATEURS / LICENCES ══
 let _licenseRows = [];
 let _licenseLimits = null;
@@ -8,6 +9,26 @@ function _licenseEnvCode(){
 function _isSuperAdmin(){ return (typeof isSuperAdmin === 'function') && isSuperAdmin(); }
 function _typeLabel(type){ return type === 'supervision' ? 'Supervision' : type === 'pad' ? 'PAD' : type === 'lecture' ? 'Lecture' : type || '—'; }
 function _roleForType(type){ return type === 'supervision' ? 'client_admin' : type === 'pad' ? 'pad_user' : type === 'lecture' ? 'read_only' : 'client_admin'; }
+function _getAvailableRoles() {
+  if (typeof ROLES_DATA !== 'undefined' && Array.isArray(ROLES_DATA)) {
+    return ROLES_DATA.map(r => ({
+      id: r.id || r.nom || r.name || r.role || '',
+      nom: r.nom || r.name || r.role || r.id || ''
+    })).filter(r => r.id);
+  }
+
+  return [
+    { id:'administrateur', nom:'Administrateur' },
+    { id:'manager', nom:'Manager' },
+    { id:'operateur', nom:'Opérateur' }
+  ];
+}
+
+function _getLicenseRoles(l) {
+  if (Array.isArray(l?.roles)) return l.roles;
+  if (l?.role) return [l.role];
+  return [];
+}
 function _countType(type){ return _licenseRows.filter(l => l.active !== false && l.license_type === type && l.role !== 'super_admin').length; }
 function _limitForType(type){
   if (!_licenseLimits) return 0;
@@ -137,7 +158,13 @@ function _renderLicensesTable(list) {
         <td style="padding:11px 16px"><div style="display:flex;align-items:center;gap:9px"><div style="width:32px;height:32px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0">${h(initials)}</div><div><div style="font-size:13px;font-weight:800">${h(l.label || 'Sans nom')}</div><div style="font-size:11px;color:var(--tl);margin-top:2px">${h(l.license_key || '')}</div></div></div></td>
         <td style="padding:11px 16px;font-size:12px;color:var(--tl)">${h(l.email || '—')}</td>
         <td style="padding:11px 16px"><span style="font-size:11px;padding:3px 10px;border-radius:20px;background:var(--pl);color:var(--p);font-weight:700">${h(_typeLabel(l.license_type))}</span></td>
-        <td style="padding:11px 16px"><span style="font-size:11px;padding:3px 10px;border-radius:20px;background:#f3f4f6;color:#374151;font-weight:700">${h(l.role || '—')}</span></td>
+        <td style="padding:11px 16px">
+  ${_getLicenseRoles(l).map(r => `
+    <span style="font-size:11px;padding:3px 8px;border-radius:20px;background:#f3f4f6;color:#374151;font-weight:700;margin-right:4px;display:inline-block;margin-bottom:3px">
+      ${h(r)}
+    </span>
+  `).join('') || '—'}
+</td>
         <td style="padding:11px 16px;text-align:center"><span style="font-size:11px;padding:3px 10px;border-radius:20px;font-weight:700;background:${l.active!==false?'var(--sl)':'var(--dl)'};color:${l.active!==false?'var(--s)':'var(--d)'}">${l.active!==false?'Actif':'Inactif'}</span></td>
         <td style="padding:11px 16px;font-size:12px;color:var(--tl)">${l.last_seen ? new Date(l.last_seen).toLocaleString('fr-FR') : '—'}</td>
         <td style="padding:11px 16px;text-align:center;white-space:nowrap"><button onclick="openLicenseModal(${l.id})" title="Modifier" style="border:none;background:none;cursor:pointer;font-size:14px;color:var(--tl);opacity:.65">✏️</button><button onclick="toggleLicenseActive(${l.id})" title="Activer/Désactiver" style="border:none;background:none;cursor:pointer;font-size:14px;color:${l.active!==false?'var(--d)':'var(--s)'};opacity:.8">${l.active!==false?'⛔':'✅'}</button></td>
@@ -167,15 +194,25 @@ function openLicenseModal(licenseId) {
 </div>
 
 <div>
-  <div class="fl2">Rôle attribué</div>
-  <select id="lm-role" class="fi">
-    <option value="client_admin" ${l?.role==='client_admin'?'selected':''}>Admin environnement</option>
-    <option value="manager" ${l?.role==='manager'?'selected':''}>Manager</option>
-    <option value="operator" ${l?.role==='operator'?'selected':''}>Opérateur</option>
-    <option value="read_only" ${l?.role==='read_only'?'selected':''}>Lecture seule</option>
-    <option value="pad_user" ${l?.role==='pad_user'?'selected':''}>PAD terrain</option>
-    ${_isSuperAdmin() ? `<option value="super_admin" ${l?.role==='super_admin'?'selected':''}>Super Admin PicoTrack</option>` : ''}
-  </select>
+  <div class="fl2">Rôles attribués</div>
+  <div id="lm-roles" style="
+    border:1.5px solid var(--bd);
+    border-radius:12px;
+    padding:10px;
+    max-height:150px;
+    overflow:auto;
+    background:#fff;
+  ">
+    ${_getAvailableRoles().map(r => {
+      const checked = _getLicenseRoles(l).includes(r.id) ? 'checked' : '';
+      return `
+        <label style="display:flex;align-items:center;gap:8px;margin:7px 0;font-size:13px;font-weight:700;color:var(--t)">
+          <input type="checkbox" class="lm-role-check" value="${h(r.id)}" ${checked}>
+          ${h(r.nom)}
+        </label>
+      `;
+    }).join('')}
+  </div>
 </div>
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid var(--bd)"><div style="font-size:13px;font-weight:600">Actif</div><div class="tog ${l?.active!==false?'on':'off'}" id="lm-active" onclick="this.classList.toggle('on');this.classList.toggle('off')"></div></div>
     </div>
@@ -191,7 +228,8 @@ async function saveLicense(licenseId, btn) {
   const email = document.getElementById('lm-email').value.trim();
   const pass = document.getElementById('lm-pass').value;
   const type = document.getElementById('lm-type').value;
-const role = document.getElementById('lm-role').value;
+const roles = Array.from(document.querySelectorAll('.lm-role-check:checked')).map(x => x.value);
+const role = roles[0] || _roleForType(type);
 const active = document.getElementById('lm-active').classList.contains('on');
   if (!label) { toast('e','Nom / libellé requis'); return; }
   if ((type === 'supervision' || type === 'lecture') && !email) { toast('e','Identifiant requis pour une licence PC'); return; }
@@ -199,7 +237,7 @@ const active = document.getElementById('lm-active').classList.contains('on');
   if (!licenseId && !_canAddType(type)) { toast('e',`Création impossible : quota ${_typeLabel(type)} atteint.`); return; }
   btn.disabled = true; btn.textContent = 'Enregistrement...';
   try {
-    const data = { label, email, license_type:type, active, role:role, scope:'environment' };
+    const data = { label, email, license_type:type, active, role:role, roles:roles, scope:'environment' };
     if (pass) data.password_hash = type === 'pad' ? pass : await hashPassword(pass);
     if (licenseId) await DB.updateLicense(licenseId, data);
     else {
