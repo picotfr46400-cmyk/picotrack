@@ -36,6 +36,10 @@ async function renderUsersList() {
   const supMax=_limitForType('supervision'), padMax=_limitForType('pad'), lecMax=_limitForType('lecture');
   const totalFree=Math.max(0,supMax-supUsed)+Math.max(0,padMax-padUsed)+Math.max(0,lecMax-lecUsed);
   const isSuper = _isSuperAdmin();
+  const badgeUsers = document.getElementById('sb-users-cnt');
+if (badgeUsers) {
+  badgeUsers.textContent = _licenseRows.filter(l => l.role !== 'super_admin').length;
+}
 
   wrap.innerHTML = `<div class="view-head">
     <h2>Utilisateurs</h2>
