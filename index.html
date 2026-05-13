@@ -15,6 +15,9 @@
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="style.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#059669">
+<link rel="manifest" href="manifest.json">
 </head>
 <body>
 <!-- SIDEBAR -->
@@ -933,6 +936,13 @@ window.PicoBuilderApp = PicoBuilderApp;
 <script src="js/features/services.js"></script>
 <script src="js/features/databases.js"></script>
 <script src="js/features/api.js"></script>
+<script src="js/features/pad-mode.js"></script>
 <script src="js/init.js"></script>
+<script>
+if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
+window.addEventListener('DOMContentLoaded', function() {
+  if (typeof initPadMode === 'function') initPadMode();
+});
+</script>
 </body>
 </html>
