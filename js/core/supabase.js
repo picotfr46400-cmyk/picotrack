@@ -90,6 +90,44 @@ function instanceToDb(inst, device='desktop'){
   return { service_id:inst.serviceId, ref:inst.reference, form_data:{ submissionId:inst.submissionId, createdBy:inst.createdBy, createdAt:inst.createdAt, assignedTo:inst.assignedTo }, status_id:inst.currentStatusId, priority:inst.priority||'normal', events:inst.events||[], device };
 }
 
+
+
+// ══ Gestion licences / quotas ══
+function getCurrentEnvironmentCodeForLicenses(){
+  try {
+    const pc = JSON.parse(localStorage.getItem('pt_pc_session') || 'null');
+    if (pc && pc.environment_code) return pc.environment_code;
+  } catch(e) {}
+  try {
+    const pad = JSON.parse(localStorage.getItem('pt_pad') || 'null');
+    if (pad && pad.code) return pad.code;
+  } catch(e) {}
+  return 'DEMO';
+}
+
+async function hashPassword(text){
+  const msg = new TextEncoder().encode(text || '');
+  const buf = await crypto.subtle.digest('SHA-256', msg);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+DB.getLicenseLimits = async function(environmentCode){
+  const rows = await sbFetch(`environment_license_limits?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&limit=1`);
+  return rows && rows.length ? rows[0] : {environment_code:environmentCode, supervision_limit:0, pad_limit:0, lecture_limit:0};
+};
+
+DB.getLicenses = async function(environmentCode){
+  return sbFetch(`licenses?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&order=created_at.desc`);
+};
+
+DB.createLicense = async function(data){
+  return sbFetch('licenses', { method:'POST', body:JSON.stringify(data) });
+};
+
+DB.updateLicense = async function(id, data){
+  return sbFetch(`licenses?id=eq.${id}`, { method:'PATCH', body:JSON.stringify(data) });
+};
+
 let _lastSubSyncAt = new Date().toISOString();
 let _lastInstSyncAt = new Date().toISOString();
 const _syncListeners = {};
