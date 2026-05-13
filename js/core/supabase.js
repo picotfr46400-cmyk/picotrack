@@ -96,13 +96,29 @@ function instanceToDb(inst, device='desktop'){
 function getCurrentEnvironmentCodeForLicenses(){
   try {
     const pc = JSON.parse(localStorage.getItem('pt_pc_session') || 'null');
-    if (pc && pc.environment_code) return pc.environment_code;
+    if (pc && pc.scope === 'all_environments') {
+      return localStorage.getItem('pt_admin_env') || 'DEMO';
+    }
+    if (pc && pc.environment_code && pc.environment_code !== '*') return pc.environment_code;
   } catch(e) {}
   try {
     const pad = JSON.parse(localStorage.getItem('pt_pad') || 'null');
     if (pad && pad.code) return pad.code;
   } catch(e) {}
   return 'DEMO';
+}
+
+function setAdminEnvironmentCode(code){
+  localStorage.setItem('pt_admin_env', (code || 'DEMO').toUpperCase().trim());
+}
+
+function getCurrentPcUser(){
+  try { return JSON.parse(localStorage.getItem('pt_pc_session') || 'null'); } catch(e) { return null; }
+}
+
+function isSuperAdmin(){
+  const u = getCurrentPcUser();
+  return !!(u && u.role === 'super_admin' && u.scope === 'all_environments');
 }
 
 async function hashPassword(text){
@@ -114,6 +130,21 @@ async function hashPassword(text){
 DB.getLicenseLimits = async function(environmentCode){
   const rows = await sbFetch(`environment_license_limits?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&limit=1`);
   return rows && rows.length ? rows[0] : {environment_code:environmentCode, supervision_limit:0, pad_limit:0, lecture_limit:0};
+};
+
+DB.upsertLicenseLimits = async function(environmentCode, limits){
+  const payload = {
+    environment_code: environmentCode,
+    supervision_limit: Number(limits.supervision_limit || 0),
+    pad_limit: Number(limits.pad_limit || 0),
+    lecture_limit: Number(limits.lecture_limit || 0),
+    updated_at: new Date().toISOString()
+  };
+  return sbFetch('environment_license_limits?on_conflict=environment_code', {
+    method:'POST',
+    headers:{'Prefer':'resolution=merge-duplicates,return=representation'},
+    body:JSON.stringify(payload)
+  });
 };
 
 DB.getLicenses = async function(environmentCode){

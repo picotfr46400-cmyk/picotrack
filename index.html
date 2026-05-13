@@ -942,7 +942,7 @@ window.PicoBuilderApp = PicoBuilderApp;
 <script src="js/init.js"></script>
 <script>
 if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
-if (typeof initPadMode === 'function') initPadMode();
+if (typeof isPadMode === 'function' && isPadMode() && typeof initPadMode === 'function') initPadMode();
 </script>
 </body>
 </html>
