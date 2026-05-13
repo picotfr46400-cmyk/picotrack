@@ -77,59 +77,46 @@ function showPadConnectionScreen() {
       width:100%;max-width:400px;border:1px solid #334155;
       box-shadow:0 30px 80px rgba(0,0,0,.6)
     ">
-      <!-- Logo -->
       <div style="text-align:center;margin-bottom:28px">
         <img src="logo-picotrack.png" style="height:36px" onerror="this.style.display='none'">
         <div style="font-size:22px;font-weight:900;color:#f1f5f9;margin-top:8px">PicoTrack</div>
         <div style="font-size:12px;color:#64748b;margin-top:4px">Connexion terminal terrain</div>
       </div>
 
-      <!-- Méthode 1 : Code environnement -->
-      <div style="margin-bottom:20px">
-  <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
-    Identifiant
-  </label>
-  <input id="pad-login-id" placeholder="ex: pad1" style="
-    width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
-    border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
-    font-family:inherit;outline:none
-  " oninput="padCodeChanged(document.getElementById('pad-env-code').value)">
-</div>
-
-<div style="margin-bottom:20px">
-  <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
-    Mot de passe
-  </label>
-  <input id="pad-login-pass" type="password" placeholder="Mot de passe" style="
-    width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
-    border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
-    font-family:inherit;outline:none
-  " oninput="padCodeChanged(document.getElementById('pad-env-code').value)">
-</div>
+      <div style="margin-bottom:18px">
+        <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
+          Code environnement
+        </label>
+        <input id="pad-env-code" placeholder="ex: DEMO" style="
           width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
           border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
           font-family:inherit;outline:none
         " oninput="padCodeChanged(this.value)">
-                <div id="pad-env-name" style="font-size:12px;color:#059669;margin-top:6px;min-height:18px"></div>
-      </div>
-      <!-- OU séparateur -->
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
-        <div style="flex:1;height:1px;background:#334155"></div>
-        <span style="font-size:11px;color:#475569">ou</span>
-        <div style="flex:1;height:1px;background:#334155"></div>
+        <div id="pad-env-name" style="font-size:12px;color:#059669;margin-top:6px;min-height:18px"></div>
       </div>
 
-      <!-- Méthode 2 : Scanner QR -->
-      <button onclick="startQRScan()" style="
-        width:100%;padding:13px;border-radius:10px;border:1.5px dashed #334155;
-        background:transparent;color:#94a3b8;font-size:13px;font-weight:600;
-        cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;
-        font-family:inherit;margin-bottom:20px
-      ">
-        📷 Scanner un QR code d'environnement
-      </button>
+      <div style="margin-bottom:18px">
+        <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
+          Identifiant
+        </label>
+        <input id="pad-login-id" placeholder="ex: PAD1" style="
+          width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
+          border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
+          font-family:inherit;outline:none
+        " oninput="padCodeChanged(document.getElementById('pad-env-code').value)">
+      </div>
 
-      <!-- Bouton connexion -->
+      <div style="margin-bottom:20px">
+        <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
+          Mot de passe
+        </label>
+        <input id="pad-login-pass" type="password" placeholder="Mot de passe" style="
+          width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
+          border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
+          font-family:inherit;outline:none
+        " oninput="padCodeChanged(document.getElementById('pad-env-code').value)">
+      </div>
+
       <button id="pad-connect-btn" onclick="connectPad()" style="
         width:100%;padding:14px;border-radius:10px;border:none;
         background:#059669;color:#fff;font-size:14px;font-weight:700;
@@ -140,14 +127,12 @@ function showPadConnectionScreen() {
 
       <div id="pad-error" style="color:#ef4444;font-size:12px;text-align:center;margin-top:12px;min-height:16px"></div>
 
-      <!-- Info version -->
       <div style="text-align:center;margin-top:24px;font-size:10px;color:#475569">
         PicoTrack · Terminal Nomade
       </div>
     </div>
   </div>`);
 }
-
 // ─── Logique de connexion ──────────────────────────────────────
 
 // Mapping codes → environnements (en prod : viendra de l'API)
