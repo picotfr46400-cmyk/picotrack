@@ -253,6 +253,8 @@ function showPadHome() {
 function padGoForms() {
   padSetActive('pnav-forms');
   setPadTitle('Formulaires');
+  const pv = document.getElementById('pad-profile-view');
+  if (pv) pv.style.display = 'none';
   if (typeof goProduction === 'function') goProduction();
   document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
   const pf = document.getElementById('v-prod-forms');
@@ -262,12 +264,15 @@ function padGoForms() {
 function padGoServices() {
   padSetActive('pnav-services');
   setPadTitle('Services');
+  const pv = document.getElementById('pad-profile-view');
+  if (pv) pv.style.display = 'none';
   if (typeof goProdServices === 'function') goProdServices();
 }
 
 function padGoProfile() {
   padSetActive('pnav-profile');
   setPadTitle('Terminal');
+  document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
   showPadProfileView();
 }
 
