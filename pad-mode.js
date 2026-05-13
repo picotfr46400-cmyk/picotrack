@@ -50,6 +50,7 @@ function initPadMode() {
 // ─── Écran de connexion PAD ───────────────────────────────────
 
 function showPadConnectionScreen() {
+  if (document.getElementById('pad-overlay')) return;
   document.body.insertAdjacentHTML('beforeend', `
   <div id="pad-overlay" style="
     position:fixed;inset:0;background:#0f172a;
@@ -150,7 +151,7 @@ function connectPad() {
     return;
   }
   savePadConfig(env);
-  document.getElementById('pad-overlay').remove();
+ document.querySelectorAll('#pad-overlay').forEach(el => el.remove());
   applyPadEnvironment(env);
   showPadHome();
 }
