@@ -1,16 +1,53 @@
 // ══ INIT ══
-if (typeof migrateDataToSupabase === 'function') migrateDataToSupabase();
 
-if (typeof isPadMode === 'function' && isPadMode()) {
-  initPadMode();
-} else {
-  if (typeof renderTable === 'function') renderTable();
-  else if (typeof goList === 'function') goList();
-  else if (typeof afficherTableau === 'function') afficherTableau();
+async function startPicoTrackApp() {
+  if (typeof migrateDataToSupabase === 'function') await migrateDataToSupabase();
+
+  if (typeof isPadMode === 'function' && isPadMode()) {
+    initPadMode();
+  } else {
+    const isLogged = await checkPcLogin();
+    if (!isLogged) return;
+
+    if (typeof renderTable === 'function') renderTable();
+    else if (typeof goList === 'function') goList();
+    else if (typeof afficherTableau === 'function') afficherTableau();
+
+    injectLogoutButton();
+  }
+
+  initPicoTrackSync();
 }
 
-// Synchro polling — formulaires
-if (typeof onSync !== 'undefined') {
+function injectLogoutButton() {
+  if (document.getElementById('pt-logout-btn')) return;
+
+  const sidebar = document.querySelector('#sb') || document.querySelector('.sidebar');
+
+  if (!sidebar) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'pt-logout-btn';
+  btn.innerHTML = '🚪 Déconnexion';
+  btn.style.cssText = `
+    margin:16px;
+    width:calc(100% - 32px);
+    padding:12px;
+    border:0;
+    border-radius:12px;
+    background:#ef4444;
+    color:white;
+    font-weight:900;
+    cursor:pointer;
+  `;
+  btn.onclick = logoutPc;
+
+  sidebar.appendChild(btn);
+}
+
+function initPicoTrackSync() {
+  if (typeof onSync === 'undefined') return;
+
   onSync('submissions', (event, record) => {
     if (event !== 'INSERT' || !record) return;
 
@@ -28,13 +65,14 @@ if (typeof onSync !== 'undefined') {
     const f = FORMS_DATA.find(x => x.id == record.form_id);
     if (f) {
       f.resp = SUBMISSIONS_DATA.filter(s => s.formId == f.id).length;
-      if (document.getElementById('v-submissions')?.classList.contains('on') && typeof openSubmissions === 'function') openSubmissions(f.id);
+      if (document.getElementById('v-submissions')?.classList.contains('on') && typeof openSubmissions === 'function') {
+        openSubmissions(f.id);
+      }
       const otherDevice = (typeof isPadMode === 'function' && isPadMode()) ? record.device !== 'pad' : record.device === 'pad';
       if (otherDevice && typeof toast === 'function') toast('i', `📥 Nouvelle saisie — ${f.nom}`);
     }
   });
 
-  // Synchro polling — demandes de services + changements de statut
   onSync('service_instances', (event, record) => {
     if (!record) return;
 
@@ -47,13 +85,11 @@ if (typeof onSync !== 'undefined') {
     if (isNew) {
       SERVICE_INSTANCES_DATA.unshift(inst);
     } else {
-      // Mise à jour locale : statut, historique, priorité, affectation, etc.
       SERVICE_INSTANCES_DATA[idx] = { ...SERVICE_INSTANCES_DATA[idx], ...inst };
     }
 
     const svc = SERVICES_DATA.find(s => String(s.id) === String(inst.serviceId));
 
-    // Rafraîchir toutes les vues services possibles
     if (curService && String(curService.id) === String(inst.serviceId)) {
       if (document.getElementById('v-service-instances')?.classList.contains('on') && typeof renderServiceInstances === 'function') {
         renderServiceInstances(curService);
@@ -62,6 +98,7 @@ if (typeof onSync !== 'undefined') {
         renderKanbanBoard(curService, curKanbanGroupId);
       }
     }
+
     if (document.getElementById('v-services')?.classList.contains('on') && typeof renderServices === 'function') renderServices();
     if (document.getElementById('v-prod-services-list')?.classList.contains('on') && typeof renderProdServices === 'function') renderProdServices();
 
@@ -71,3 +108,5 @@ if (typeof onSync !== 'undefined') {
     }
   });
 }
+
+startPicoTrackApp();
