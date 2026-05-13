@@ -96,7 +96,16 @@ function showPadConnectionScreen() {
         " oninput="padCodeChanged(this.value)">
         <div id="pad-env-name" style="font-size:12px;color:#059669;margin-top:6px;min-height:18px"></div>
       </div>
-
+<div style="margin-bottom:20px">
+  <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
+    Clé licence
+  </label>
+  <input id="pad-license-key" placeholder="ex: PAD-DEMO-001" style="
+    width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
+    border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
+    font-family:inherit;outline:none
+  " oninput="padCodeChanged(document.getElementById('pad-env-code').value)">
+</div>
       <!-- OU séparateur -->
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
         <div style="flex:1;height:1px;background:#334155"></div>
@@ -158,17 +167,59 @@ function padCodeChanged(val) {
   }
 }
 
-function connectPad() {
+async function connectPad() {
   const code = document.getElementById('pad-env-code').value.toUpperCase().trim();
+  const licenseKey = document.getElementById('pad-license-key').value.toUpperCase().trim();
   const env = ENV_CODES[code];
+  const errorEl = document.getElementById('pad-error');
+
   if (!env) {
-    document.getElementById('pad-error').textContent = 'Code environnement invalide';
+    errorEl.textContent = 'Code environnement invalide';
     return;
   }
-  savePadConfig(env);
- document.querySelectorAll('#pad-overlay').forEach(el => el.remove());
-  applyPadEnvironment(env);
-  showPadHome();
+
+  if (!licenseKey) {
+    errorEl.textContent = 'Clé licence obligatoire';
+    return;
+  }
+
+  try {
+    const rows = await sbFetch(
+      `licenses?environment_code=eq.${encodeURIComponent(code)}&license_key=eq.${encodeURIComponent(licenseKey)}&license_type=eq.nomade&active=eq.true&select=*`
+    );
+
+    if (!rows || !rows.length) {
+      errorEl.textContent = 'Licence invalide ou désactivée';
+      return;
+    }
+
+    await sbFetch(
+      `licenses?id=eq.${rows[0].id}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          last_seen: new Date().toISOString(),
+          device_name: navigator.userAgent.slice(0, 120)
+        })
+      }
+    );
+
+    savePadConfig({
+      ...env,
+      code,
+      licenseKey,
+      licenseId: rows[0].id,
+      licenseLabel: rows[0].label || ''
+    });
+
+    document.querySelectorAll('#pad-overlay').forEach(el => el.remove());
+    applyPadEnvironment(env);
+    showPadHome();
+
+  } catch (e) {
+    console.warn('[PAD] Licence error:', e);
+    errorEl.textContent = 'Erreur de vérification licence';
+  }
 }
 
 function applyPadEnvironment(cfg) {
