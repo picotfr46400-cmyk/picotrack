@@ -1,5 +1,4 @@
-
-// ══ UTILISATEURS / LICENCES ══
+// ══ UTILISATEURS / LICENCES — UI PRO ══
 let _licenseRows = [];
 let _licenseLimits = null;
 
@@ -9,6 +8,8 @@ function _licenseEnvCode(){
 function _isSuperAdmin(){ return (typeof isSuperAdmin === 'function') && isSuperAdmin(); }
 function _typeLabel(type){ return type === 'supervision' ? 'Supervision' : type === 'pad' ? 'PAD' : type === 'lecture' ? 'Lecture' : type || '—'; }
 function _roleForType(type){ return type === 'supervision' ? 'client_admin' : type === 'pad' ? 'pad_user' : type === 'lecture' ? 'read_only' : 'client_admin'; }
+function _safeH(v){ return (typeof h === 'function') ? h(v) : String(v ?? '').replace(/[&<>"]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[s])); }
+
 function _getAvailableRoles() {
   if (typeof ROLES_DATA !== 'undefined' && Array.isArray(ROLES_DATA)) {
     return ROLES_DATA.map(r => ({
@@ -16,7 +17,6 @@ function _getAvailableRoles() {
       nom: r.nom || r.name || r.role || r.id || ''
     })).filter(r => r.id);
   }
-
   return [
     { id:'administrateur', nom:'Administrateur' },
     { id:'manager', nom:'Manager' },
@@ -25,8 +25,15 @@ function _getAvailableRoles() {
 }
 
 function _getLicenseRoles(l) {
-  if (Array.isArray(l?.roles)) return l.roles;
-  if (l?.role) return [l.role];
+  if (!l) return [];
+  if (Array.isArray(l.roles)) return l.roles.filter(Boolean);
+  if (typeof l.roles === 'string') {
+    try {
+      const parsed = JSON.parse(l.roles);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+    } catch(e) {}
+  }
+  if (l.role) return [l.role];
   return [];
 }
 function _countType(type){ return _licenseRows.filter(l => l.active !== false && l.license_type === type && l.role !== 'super_admin').length; }
@@ -38,12 +45,13 @@ function _limitForType(type){
   return 0;
 }
 function _canAddType(type){ return _countType(type) < _limitForType(type); }
+function _capPercent(used, max){ return max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0; }
 
 async function renderUsersList() {
   const wrap = document.getElementById('v-users');
   if (!wrap) return;
   const envCode = _licenseEnvCode();
-  wrap.innerHTML = `<div style="padding:28px;color:var(--tl)">Chargement des licences...</div>`;
+  wrap.innerHTML = `<div class="pt-loading">Chargement des licences...</div>`;
   try {
     if (typeof DB !== 'undefined') {
       [_licenseLimits, _licenseRows] = await Promise.all([DB.getLicenseLimits(envCode), DB.getLicenses(envCode)]);
@@ -53,63 +61,78 @@ async function renderUsersList() {
     _licenseLimits = {environment_code:envCode, supervision_limit:0, pad_limit:0, lecture_limit:0};
     _licenseRows = [];
   }
+
   const supUsed=_countType('supervision'), padUsed=_countType('pad'), lecUsed=_countType('lecture');
   const supMax=_limitForType('supervision'), padMax=_limitForType('pad'), lecMax=_limitForType('lecture');
-  const totalFree=Math.max(0,supMax-supUsed)+Math.max(0,padMax-padUsed)+Math.max(0,lecMax-lecUsed);
+  const usedTotal = supUsed + padUsed + lecUsed;
+  const maxTotal = supMax + padMax + lecMax;
+  const totalFree = Math.max(0,supMax-supUsed)+Math.max(0,padMax-padUsed)+Math.max(0,lecMax-lecUsed);
   const isSuper = _isSuperAdmin();
+
   const badgeUsers = document.getElementById('sb-users-cnt');
-if (badgeUsers) {
-  badgeUsers.textContent = _licenseRows.filter(x => x.role !== 'super_admin').length;
-}
+  if (badgeUsers) badgeUsers.textContent = _licenseRows.filter(x => x.role !== 'super_admin').length;
 
-  wrap.innerHTML = `<div class="view-head">
-    <h2>Utilisateurs</h2>
-    <div class="crumb">▶ Administration / Utilisateurs</div>
-  </div>
-  <div class="page-pad">
-    ${isSuper ? _renderSuperAdminQuotaPanel(envCode, supMax, padMax, lecMax) : ''}
+  wrap.innerHTML = `
+  <div class="pt-users-page">
+    ${isSuper ? _renderSuperAdminQuotaPanel(envCode, supUsed, supMax, padUsed, padMax, lecUsed, lecMax, usedTotal, maxTotal) : ''}
 
-    <div style="background:#fff;border:1.5px solid var(--bd);border-radius:12px;padding:16px 18px;margin-bottom:18px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
-      <div>
-        <div style="font-size:15px;font-weight:900;margin-bottom:8px">Licences / comptes — ${h(envCode)}</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <span style="background:#e0f2fe;color:#0284c7;border-radius:999px;padding:5px 10px;font-weight:800">Supervision : ${supUsed} / ${supMax}</span>
-          <span style="background:#dcfce7;color:#059669;border-radius:999px;padding:5px 10px;font-weight:800">PAD : ${padUsed} / ${padMax}</span>
-          <span style="background:#f3e8ff;color:#7c3aed;border-radius:999px;padding:5px 10px;font-weight:800">Lecture : ${lecUsed} / ${lecMax}</span>
+    <section class="pt-card pt-list-card">
+      <div class="pt-card-head">
+        <div>
+          <h3>Licences / comptes — ${_safeH(envCode)}</h3>
+          <div class="pt-chips">
+            <span class="pt-chip blue">Supervision : ${supUsed} / ${supMax}</span>
+            <span class="pt-chip green">PAD : ${padUsed} / ${padMax}</span>
+            <span class="pt-chip violet">Lecture : ${lecUsed} / ${lecMax}</span>
+          </div>
+          <p>Tu peux créer une licence seulement si une place est disponible dans son type.</p>
         </div>
-        <div style="font-size:12px;color:var(--tl);margin-top:8px">Tu peux créer une licence seulement si une place est disponible dans son type.</div>
+        <span class="pt-cap ${totalFree>0?'ok':'ko'}">${totalFree>0?totalFree+' disponible(s)':'Capacité atteinte'}</span>
       </div>
-      <span style="font-size:11px;font-weight:900;color:${totalFree>0?'var(--s)':'#f97316'};background:${totalFree>0?'var(--sl)':'#f9731620'};border-radius:999px;padding:6px 10px">${totalFree>0?totalFree+' disponible(s)':'Capacité atteinte'}</span>
-    </div>
 
-    <div class="toolbar">
-      <button class="btn bp pill" onclick="openLicenseModal(null)" ${totalFree<=0?'disabled style="opacity:.45;cursor:not-allowed" title="Aucune licence disponible"':''}>＋ Ajouter une licence</button>
-      <div class="sp"></div>
-      <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="_filterLicenses(this.value)"></div>
-    </div>
-    <div id="users-table-wrap" style="margin-top:16px">${_renderLicensesTable(_licenseRows)}</div>
+      <div class="pt-table-toolbar">
+        <button class="pt-primary-btn" onclick="openLicenseModal(null)" ${totalFree<=0?'disabled title="Aucune licence disponible"':''}>＋ Ajouter une licence</button>
+        <div class="pt-search"><span>🔍</span><input placeholder="Rechercher..." oninput="_filterLicenses(this.value)"></div>
+      </div>
+
+      <div id="users-table-wrap">${_renderLicensesTable(_licenseRows)}</div>
+      <div class="pt-list-footer">
+        <span>Affichage de ${_licenseRows.length ? 1 : 0} à ${_licenseRows.length} sur ${_licenseRows.length} licence(s)</span>
+        <div class="pt-pager"><button disabled>‹</button><b>1</b><button disabled>›</button><select><option>10 / page</option></select></div>
+      </div>
+    </section>
   </div>`;
 }
 
-function _renderSuperAdminQuotaPanel(envCode, supMax, padMax, lecMax){
-  return `<div style="background:linear-gradient(135deg,#0f172a,#123047);color:#fff;border-radius:16px;padding:18px;margin-bottom:18px;box-shadow:0 14px 35px rgba(15,23,42,.18)">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
-      <div>
-        <div style="font-size:15px;font-weight:900">Administration PicoTrack — quotas licences</div>
-        <div style="font-size:12px;color:#cbd5e1;margin-top:4px">Compte gérant : tu choisis l'environnement puis tu ouvres/fermes les droits.</div>
+function _renderSuperAdminQuotaPanel(envCode, supUsed, supMax, padUsed, padMax, lecUsed, lecMax, usedTotal, maxTotal){
+  const pct = _capPercent(usedTotal, maxTotal);
+  return `<section class="pt-quota-card">
+    <div class="pt-quota-main">
+      <div class="pt-quota-title">
+        <h3>Gestion des licences — ${_safeH(envCode)}</h3>
+        <p>Gérez les quotas de licences par type pour cet environnement.</p>
       </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <label style="font-size:12px;color:#cbd5e1;font-weight:800">Environnement</label>
-        <input id="admin-env-code" value="${h(envCode)}" style="width:150px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.09);color:#fff;border-radius:10px;padding:9px 11px;font-weight:800;text-transform:uppercase" onkeydown="if(event.key==='Enter')changeAdminEnv()">
-        <button onclick="changeAdminEnv()" style="border:0;border-radius:10px;padding:10px 14px;background:#06b6d4;color:#fff;font-weight:900;cursor:pointer">Charger</button>
+      <div class="pt-quota-grid">
+        ${_quotaBox('🖥️','Supervision max',supUsed,supMax,'blue','quota-supervision')}
+        ${_quotaBox('📱','PAD max',padUsed,padMax,'green','quota-pad')}
+        ${_quotaBox('📖','Lecture max',lecUsed,lecMax,'violet','quota-lecture')}
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:10px;margin-top:16px;align-items:end">
-      <div><div style="font-size:11px;color:#cbd5e1;font-weight:800;margin-bottom:5px">Supervision max</div><input id="quota-supervision" type="number" min="0" value="${supMax}" style="width:100%;box-sizing:border-box;border:0;border-radius:10px;padding:11px;font-weight:900"></div>
-      <div><div style="font-size:11px;color:#cbd5e1;font-weight:800;margin-bottom:5px">PAD max</div><input id="quota-pad" type="number" min="0" value="${padMax}" style="width:100%;box-sizing:border-box;border:0;border-radius:10px;padding:11px;font-weight:900"></div>
-      <div><div style="font-size:11px;color:#cbd5e1;font-weight:800;margin-bottom:5px">Lecture max</div><input id="quota-lecture" type="number" min="0" value="${lecMax}" style="width:100%;box-sizing:border-box;border:0;border-radius:10px;padding:11px;font-weight:900"></div>
-      <button onclick="saveLicenseQuotas()" style="border:0;border-radius:12px;padding:12px 14px;background:linear-gradient(135deg,#22c55e,#14b8a6);color:#fff;font-weight:900;cursor:pointer">Enregistrer quotas</button>
+    <div class="pt-shield">✓</div>
+    <div class="pt-quota-side">
+      <div class="pt-env-line"><label>Environnement</label><input id="admin-env-code" value="${_safeH(envCode)}" onkeydown="if(event.key==='Enter')changeAdminEnv()"><button onclick="changeAdminEnv()">Charger</button></div>
+      <div class="pt-capacity-title">Capacité utilisée</div>
+      <div class="pt-donut" style="--pct:${pct}"><span>${pct}%</span></div>
+      <div class="pt-used-line">${usedTotal} / ${maxTotal} licences utilisées</div>
+      <button class="pt-save-quotas" onclick="saveLicenseQuotas()">Enregistrer les quotas</button>
     </div>
+  </section>`;
+}
+
+function _quotaBox(icon, title, used, max, tone, inputId){
+  return `<div class="pt-quota-box ${tone}">
+    <div class="pt-qicon">${icon}</div>
+    <div><div class="pt-qtitle">${title}</div><div class="pt-qnums"><input id="${inputId}" type="number" min="0" value="${max}"><span>/ ${max}</span></div><small>${used} utilisée(s)</small></div>
   </div>`;
 }
 
@@ -138,106 +161,76 @@ async function saveLicenseQuotas(){
 
 function _filterLicenses(q) {
   const lower = (q || '').toLowerCase();
-  const filtered = _licenseRows.filter(l => String(l.label || '').toLowerCase().includes(lower) || String(l.email || '').toLowerCase().includes(lower) || String(l.license_key || '').toLowerCase().includes(lower) || String(l.license_type || '').toLowerCase().includes(lower));
+  const filtered = _licenseRows.filter(l =>
+    String(l.label || '').toLowerCase().includes(lower) ||
+    String(l.email || '').toLowerCase().includes(lower) ||
+    String(l.license_key || '').toLowerCase().includes(lower) ||
+    String(l.license_type || '').toLowerCase().includes(lower) ||
+    _getLicenseRoles(l).join(' ').toLowerCase().includes(lower)
+  );
   const w = document.getElementById('users-table-wrap');
   if (w) w.innerHTML = _renderLicensesTable(filtered);
 }
 
 function _renderLicensesTable(list) {
-  if (!list.length) return `<div style="text-align:center;padding:60px;color:var(--tl)">Aucune licence créée pour cet environnement.</div>`;
-  return `<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);overflow:hidden"><table style="width:100%;border-collapse:collapse"><thead style="background:var(--bg)"><tr>
-    <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Licence</th>
-    <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Identifiant</th>
-    <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Type</th>
-    <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Rôle</th>
-    <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:center;border-bottom:1.5px solid var(--bd)">Statut</th>
-    <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Dernière connexion</th>
-    <th style="border-bottom:1.5px solid var(--bd);width:110px"></th></tr></thead><tbody>${list.map(l=>{
-      const initials = String(l.label || l.email || l.license_key || 'LC').substring(0,2).toUpperCase();
-      return `<tr style="border-bottom:1px solid var(--bg)" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
-        <td style="padding:11px 16px"><div style="display:flex;align-items:center;gap:9px"><div style="width:32px;height:32px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0">${h(initials)}</div><div><div style="font-size:13px;font-weight:800">${h(l.label || 'Sans nom')}</div><div style="font-size:11px;color:var(--tl);margin-top:2px">${h(l.license_key || '')}</div></div></div></td>
-        <td style="padding:11px 16px;font-size:12px;color:var(--tl)">${h(l.email || '—')}</td>
-        <td style="padding:11px 16px"><span style="font-size:11px;padding:3px 10px;border-radius:20px;background:var(--pl);color:var(--p);font-weight:700">${h(_typeLabel(l.license_type))}</span></td>
-        <td style="padding:11px 16px">
-  ${_getLicenseRoles(l).map(r => `
-    <span style="font-size:11px;padding:3px 8px;border-radius:20px;background:#f3f4f6;color:#374151;font-weight:700;margin-right:4px;display:inline-block;margin-bottom:3px">
-      ${h(r)}
-    </span>
-  `).join('') || '—'}
-</td>
-        <td style="padding:11px 16px;text-align:center"><span style="font-size:11px;padding:3px 10px;border-radius:20px;font-weight:700;background:${l.active!==false?'var(--sl)':'var(--dl)'};color:${l.active!==false?'var(--s)':'var(--d)'}">${l.active!==false?'Actif':'Inactif'}</span></td>
-        <td style="padding:11px 16px;font-size:12px;color:var(--tl)">${l.last_seen ? new Date(l.last_seen).toLocaleString('fr-FR') : '—'}</td>
-        <td style="padding:11px 16px;text-align:center;white-space:nowrap"><button onclick="openLicenseModal(${l.id})" title="Modifier" style="border:none;background:none;cursor:pointer;font-size:14px;color:var(--tl);opacity:.65">✏️</button><button onclick="toggleLicenseActive(${l.id})" title="Activer/Désactiver" style="border:none;background:none;cursor:pointer;font-size:14px;color:${l.active!==false?'var(--d)':'var(--s)'};opacity:.8">${l.active!==false?'⛔':'✅'}</button></td>
-      </tr>`;
-    }).join('')}</tbody></table></div>`;
+  if (!list.length) return `<div class="pt-empty">Aucune licence créée pour cet environnement.</div>`;
+  return `<div class="pt-table-shell"><table class="pt-table"><thead><tr>
+    <th>Licence</th><th>Identifiant</th><th>Type</th><th>Rôles</th><th>Statut</th><th>Dernière connexion</th><th>Actions</th>
+  </tr></thead><tbody>${list.map(l=>{
+    const initials = String(l.label || l.email || l.license_key || 'LC').slice(0,2).toUpperCase();
+    const typeTone = l.license_type === 'pad' ? 'green' : l.license_type === 'lecture' ? 'violet' : 'blue';
+    return `<tr>
+      <td><div class="pt-license-cell"><div class="pt-avatar">${_safeH(initials)}</div><div><strong>${_safeH(l.label || 'Sans nom')}</strong><small>${_safeH(l.license_key || '')}</small></div></div></td>
+      <td>${_safeH(l.email || '—')}</td>
+      <td><span class="pt-chip ${typeTone}">${_safeH(_typeLabel(l.license_type))}</span></td>
+      <td>${_getLicenseRoles(l).map(r => `<span class="pt-role-chip">${_safeH(r)}</span>`).join('') || '—'}</td>
+      <td><span class="pt-status ${l.active!==false?'on':'off'}"><i></i>${l.active!==false?'Actif':'Inactif'}</span></td>
+      <td>${l.last_seen ? new Date(l.last_seen).toLocaleString('fr-FR') : '—'}</td>
+      <td><div class="pt-actions"><button onclick="openLicenseModal(${l.id})" title="Modifier">✎</button><button class="danger" onclick="toggleLicenseActive(${l.id})" title="Activer/Désactiver">${l.active!==false?'🗑':'✓'}</button></div></td>
+    </tr>`;
+  }).join('')}</tbody></table></div>`;
 }
 
 function openLicenseModal(licenseId) {
   const l = licenseId ? _licenseRows.find(x => x.id === licenseId) : null;
   const envCode = _licenseEnvCode();
   const modal = document.createElement('div');
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999';
-  modal.innerHTML = `<div style="background:#fff;border-radius:14px;width:480px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
-    <div style="padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between"><div style="font-size:14px;font-weight:800">${l?'Modifier':'Ajouter'} une licence</div><button onclick="this.closest('div[style*=fixed]').remove()" style="border:none;background:none;font-size:22px;cursor:pointer;color:var(--tl)">×</button></div>
-    <div style="padding:18px 20px;display:flex;flex-direction:column;gap:12px">
-      <div><div class="fl2">Environnement</div><input class="fi" value="${h(envCode)}" disabled></div>
-      <div><div class="fl2">Nom / Libellé <span class="req">*</span></div><input id="lm-label" class="fi" value="${h(l?.label || '')}" placeholder="Ex: Tablette réception 01 ou Jean Dupont"></div>
-      <div><div class="fl2">Identifiant / email</div><input id="lm-email" class="fi" value="${h(l?.email || '')}" placeholder="Ex: jean ou jean@client.fr"></div>
+  modal.className = 'pt-modal-backdrop';
+  modal.innerHTML = `<div class="pt-modal">
+    <div class="pt-modal-head"><div>${l?'Modifier':'Ajouter'} une licence</div><button onclick="this.closest('.pt-modal-backdrop').remove()">×</button></div>
+    <div class="pt-modal-body">
+      <div><div class="fl2">Environnement</div><input class="fi" value="${_safeH(envCode)}" disabled></div>
+      <div><div class="fl2">Nom / Libellé <span class="req">*</span></div><input id="lm-label" class="fi" value="${_safeH(l?.label || '')}" placeholder="Ex: Tablette réception 01 ou Jean Dupont"></div>
+      <div><div class="fl2">Identifiant / email</div><input id="lm-email" class="fi" value="${_safeH(l?.email || '')}" placeholder="Ex: jean ou jean@client.fr"></div>
       <div><div class="fl2">Mot de passe ${l?'(laisser vide pour ne pas changer)':'*'}</div><input id="lm-pass" class="fi" type="password" placeholder="Mot de passe"></div>
-      <div>
-  <div class="fl2">Type de licence</div>
-  <select id="lm-type" class="fi" ${l?'disabled':''}>
-    <option value="supervision" ${l?.license_type==='supervision'?'selected':''}>Supervision PC</option>
-    <option value="pad" ${l?.license_type==='pad'?'selected':''}>PAD terrain</option>
-    <option value="lecture" ${l?.license_type==='lecture'?'selected':''}>Lecture seule</option>
-  </select>
-</div>
-
-<div>
-  <div class="fl2">Rôles attribués</div>
-  <div id="lm-roles" style="
-    border:1.5px solid var(--bd);
-    border-radius:12px;
-    padding:10px;
-    max-height:150px;
-    overflow:auto;
-    background:#fff;
-  ">
-    ${_getAvailableRoles().map(r => {
-      const checked = _getLicenseRoles(l).includes(r.id) ? 'checked' : '';
-      return `
-        <label style="display:flex;align-items:center;gap:8px;margin:7px 0;font-size:13px;font-weight:700;color:var(--t)">
-          <input type="checkbox" class="lm-role-check" value="${h(r.id)}" ${checked}>
-          ${h(r.nom)}
-        </label>
-      `;
-    }).join('')}
-  </div>
-</div>
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid var(--bd)"><div style="font-size:13px;font-weight:600">Actif</div><div class="tog ${l?.active!==false?'on':'off'}" id="lm-active" onclick="this.classList.toggle('on');this.classList.toggle('off')"></div></div>
+      <div><div class="fl2">Type de licence</div><select id="lm-type" class="fi" ${l?'disabled':''}><option value="supervision" ${l?.license_type==='supervision'?'selected':''}>Supervision PC</option><option value="pad" ${l?.license_type==='pad'?'selected':''}>PAD terrain</option><option value="lecture" ${l?.license_type==='lecture'?'selected':''}>Lecture seule</option></select></div>
+      <div><div class="fl2">Rôles attribués</div><div id="lm-roles" class="pt-role-select">
+        ${_getAvailableRoles().map(r => `<label><input type="checkbox" class="lm-role-check" value="${_safeH(r.id)}" ${_getLicenseRoles(l).includes(r.id) ? 'checked' : ''}><span>${_safeH(r.nom)}</span></label>`).join('')}
+      </div></div>
+      <div class="pt-active-line"><div>Actif</div><div class="tog ${l?.active!==false?'on':'off'}" id="lm-active" onclick="this.classList.toggle('on');this.classList.toggle('off')"></div></div>
     </div>
-    <div style="padding:12px 20px;border-top:1px solid var(--bd);display:flex;gap:8px;justify-content:flex-end"><button class="btn" onclick="this.closest('div[style*=fixed]').remove()">Annuler</button><button class="btn bp" onclick="saveLicense(${licenseId||'null'},this)">Enregistrer</button></div>
+    <div class="pt-modal-foot"><button class="btn" onclick="this.closest('.pt-modal-backdrop').remove()">Annuler</button><button class="btn bp" onclick="saveLicense(${licenseId||'null'},this)">Enregistrer</button></div>
   </div>`;
   document.body.appendChild(modal);
 }
 
 async function saveLicense(licenseId, btn) {
-  const modal = btn.closest('div[style*=fixed]');
+  const modal = btn.closest('.pt-modal-backdrop');
   const envCode = _licenseEnvCode();
   const label = document.getElementById('lm-label').value.trim();
   const email = document.getElementById('lm-email').value.trim();
   const pass = document.getElementById('lm-pass').value;
   const type = document.getElementById('lm-type').value;
-const roles = Array.from(document.querySelectorAll('.lm-role-check:checked')).map(x => x.value);
-const role = roles[0] || _roleForType(type);
-const active = document.getElementById('lm-active').classList.contains('on');
+  const roles = Array.from(document.querySelectorAll('.lm-role-check:checked')).map(x => x.value);
+  const role = roles[0] || _roleForType(type);
+  const active = document.getElementById('lm-active').classList.contains('on');
   if (!label) { toast('e','Nom / libellé requis'); return; }
   if ((type === 'supervision' || type === 'lecture') && !email) { toast('e','Identifiant requis pour une licence PC'); return; }
   if (!licenseId && !pass) { toast('e','Mot de passe requis'); return; }
   if (!licenseId && !_canAddType(type)) { toast('e',`Création impossible : quota ${_typeLabel(type)} atteint.`); return; }
   btn.disabled = true; btn.textContent = 'Enregistrement...';
   try {
-    const data = { label, email, license_type:type, active, role:role, roles:roles, scope:'environment' };
+    const data = { label, email, license_type:type, active, role, roles, scope:'environment' };
     if (pass) data.password_hash = type === 'pad' ? pass : await hashPassword(pass);
     if (licenseId) await DB.updateLicense(licenseId, data);
     else {
