@@ -277,7 +277,7 @@ function padGoServices() {
   if (typeof goProdServices === 'function') goProdServices();
   // Forcer : une seule vue visible
   document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
-  const ps = document.getElementById('v-prod-services');
+const ps = document.getElementById('v-prod-services-list');
   if (ps) { ps.style.setProperty('display', 'block', 'important'); ps.classList.add('on'); }
 }
 
