@@ -323,3 +323,5 @@ function showPadProfileView() {
       </button>
     </div>`;
 }
+// Auto-init
+initPadMode();
