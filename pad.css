@@ -43,7 +43,6 @@ body.pad-mode #main {
 
 /* ─── Vue production formulaires ─────────────── */
 body.pad-mode #v-prod-forms {
-  display: block !important;
   padding: 16px 12px !important;
   overflow-y: auto;
   height: calc(100vh - 56px - 60px);
@@ -102,7 +101,6 @@ body.pad-mode #prod-forms-grid div[style*="Saisir"] {
 
 /* ─── Vue saisie formulaire ───────────────────── */
 body.pad-mode #v-saisie {
-  display: block;
   overflow-y: auto;
   height: calc(100vh - 56px - 60px);
   padding: 16px 12px !important;
@@ -162,7 +160,6 @@ body.pad-mode #saisie-wrap button[style*="background"] {
 
 /* ─── Vue services production ─────────────────── */
 body.pad-mode #v-prod-services {
-  display: block;
   overflow-y: auto;
   height: calc(100vh - 56px - 60px);
   padding: 16px 12px !important;
