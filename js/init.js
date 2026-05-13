@@ -1,4 +1,6 @@
 // ══ INIT ══
+if (typeof migrateDataToSupabase === 'function') migrateDataToSupabase();
+
 if (typeof isPadMode === 'function' && isPadMode()) {
   initPadMode();
 } else {
