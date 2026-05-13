@@ -27,7 +27,12 @@ let _padInitDone = false;
 function initPadMode() {
   if (!isPadMode() || _padInitDone) return;
   _padInitDone = true;
-
+// Patch show() pour compatibilité PAD
+  const _origShow = window.show;
+  window.show = function(id) {
+    document.querySelectorAll('.view').forEach(v => v.style.removeProperty('display'));
+    if (_origShow) _origShow(id);
+  };
   // Injecter le CSS mobile
   if (!document.getElementById('pad-css')) {
     const link = document.createElement('link');
@@ -255,7 +260,7 @@ function showPadHome() {
 function padHideAll() {
   document.querySelectorAll('.view').forEach(v => {
     v.classList.remove('on');
-    v.style.setProperty('display', 'none', 'important');
+    v.style.removeProperty('display');
   });
 }
 
@@ -267,7 +272,7 @@ function padGoForms() {
   // Forcer : une seule vue visible
   document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
   const pf = document.getElementById('v-prod-forms');
- if (pf) { pf.style.setProperty('display', 'block', 'important'); pf.classList.add('on'); }
+ if (pf) { pf.style.removeProperty('display'); pf.classList.add('on'); }
 }
 
 function padGoServices() {
@@ -278,7 +283,7 @@ function padGoServices() {
   // Forcer : une seule vue visible
   document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
 const ps = document.getElementById('v-prod-services-list');
-  if (ps) { ps.style.setProperty('display', 'block', 'important'); ps.classList.add('on'); }
+  if (ps) { ps.style.removeProperty('display'); ps.classList.add('on'); }
 }
 
 function padGoProfile() {
@@ -315,7 +320,7 @@ function showPadProfileView() {
     el.className = 'view';
     wrap.appendChild(el);
   }
-  el.style.setProperty('display', 'block', 'important');
+  el.style.removeProperty('display');
   el.classList.add('on');
   el.style.padding = '24px 16px';
   el.style.overflowY = 'auto';
