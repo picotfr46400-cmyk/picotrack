@@ -185,7 +185,7 @@ async function connectPad() {
 
   try {
     const rows = await sbFetch(
-      `licenses?environment_code=eq.${encodeURIComponent(code)}&email=eq.${encodeURIComponent(identifiant)}&password_hash=eq.${encodeURIComponent(pass)}&license_type=eq.nomade&active=eq.true&select=*`
+      `licenses?environment_code=eq.${encodeURIComponent(code)}&email=eq.${encodeURIComponent(identifiant)}&password_hash=eq.${encodeURIComponent(pass)}&license_type=in.(nomade,pad,PAD)&active=eq.true&select=*`
     );
 
     if (!rows || !rows.length) {
