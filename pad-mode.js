@@ -264,6 +264,8 @@ function padGoForms() {
   setPadTitle('Formulaires');
   padHideAll();
   if (typeof goProduction === 'function') goProduction();
+  // Forcer : une seule vue visible
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
   const pf = document.getElementById('v-prod-forms');
   if (pf) pf.classList.add('on');
 }
@@ -273,6 +275,8 @@ function padGoServices() {
   setPadTitle('Services');
   padHideAll();
   if (typeof goProdServices === 'function') goProdServices();
+  // Forcer : une seule vue visible
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
   const ps = document.getElementById('v-prod-services');
   if (ps) ps.classList.add('on');
 }
