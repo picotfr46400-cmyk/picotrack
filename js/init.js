@@ -2,5 +2,7 @@
 if (typeof isPadMode === 'function' && isPadMode()) {
   initPadMode();
 } else {
-  afficherTableau();
+  if (typeof renderTable === 'function') renderTable();
+  else if (typeof goList === 'function') goList();
+  else if (typeof afficherTableau === 'function') afficherTableau();
 }
