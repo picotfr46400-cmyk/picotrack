@@ -940,9 +940,7 @@ window.PicoBuilderApp = PicoBuilderApp;
 <script src="js/init.js"></script>
 <script>
 if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
-window.addEventListener('DOMContentLoaded', function() {
-  if (typeof initPadMode === 'function') initPadMode();
-});
+if (typeof initPadMode === 'function') initPadMode();
 </script>
 </body>
 </html>
