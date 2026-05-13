@@ -236,7 +236,7 @@ function showPadHome() {
     main.style.paddingBottom = '70px';
   }
 
-  padGoForms();
+  setTimeout(() => { padGoForms(); }, 150);
 }
 
 // ─── Navigation PAD ───────────────────────────────────────────
@@ -244,7 +244,12 @@ function showPadHome() {
 function padGoForms() {
   padSetActive('pnav-forms');
   setPadTitle('Formulaires');
+  const main = document.getElementById('main');
+  if (main) main.style.display = 'block';
   if (typeof goProduction === 'function') goProduction();
+  document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
+  const pf = document.getElementById('v-prod-forms');
+  if (pf) { pf.style.display = 'block'; pf.classList.add('on'); }
 }
 
 function padGoServices() {
