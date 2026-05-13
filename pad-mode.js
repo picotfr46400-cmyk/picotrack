@@ -86,28 +86,32 @@ function showPadConnectionScreen() {
 
       <!-- Méthode 1 : Code environnement -->
       <div style="margin-bottom:20px">
-        <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
-          Code environnement
-        </label>
-        <input id="pad-env-code" placeholder="ex: EDF-BLAYAIS" style="
+  <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
+    Identifiant
+  </label>
+  <input id="pad-login-id" placeholder="ex: pad1" style="
+    width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
+    border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
+    font-family:inherit;outline:none
+  " oninput="padCodeChanged(document.getElementById('pad-env-code').value)">
+</div>
+
+<div style="margin-bottom:20px">
+  <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
+    Mot de passe
+  </label>
+  <input id="pad-login-pass" type="password" placeholder="Mot de passe" style="
+    width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
+    border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
+    font-family:inherit;outline:none
+  " oninput="padCodeChanged(document.getElementById('pad-env-code').value)">
+</div>
           width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
           border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
           font-family:inherit;outline:none
         " oninput="padCodeChanged(this.value)">
                 <div id="pad-env-name" style="font-size:12px;color:#059669;margin-top:6px;min-height:18px"></div>
       </div>
-
-      <div style="margin-bottom:20px">
-        <label style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;display:block;margin-bottom:8px">
-          Clé licence PAD
-        </label>
-        <input id="pad-license-key" placeholder="ex: PAD-DEMO-001" style="
-          width:100%;box-sizing:border-box;background:#0f172a;border:1.5px solid #334155;
-          border-radius:10px;padding:12px 14px;color:#f1f5f9;font-size:14px;
-          font-family:inherit;outline:none
-        " oninput="padCodeChanged(document.getElementById('pad-env-code').value)">
-      </div>
-
       <!-- OU séparateur -->
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
         <div style="flex:1;height:1px;background:#334155"></div>
@@ -154,7 +158,8 @@ const ENV_CODES = {
 
 function padCodeChanged(val) {
   const code = val.toUpperCase().trim();
-  const license = (document.getElementById('pad-license-key')?.value || '').toUpperCase().trim();
+  const identifiant = (document.getElementById('pad-login-id')?.value || '').trim();
+  const pass = (document.getElementById('pad-login-pass')?.value || '').trim();
   const env = ENV_CODES[code];
   const nameEl = document.getElementById('pad-env-name');
   const btn = document.getElementById('pad-connect-btn');
@@ -167,7 +172,7 @@ function padCodeChanged(val) {
     nameEl.style.color = code.length > 2 ? '#ef4444' : '#059669';
   }
 
-  if (env && license.length >= 3) {
+  if (env && identifiant.length >= 1 && pass.length >= 1) {
     btn.style.opacity = '1';
     btn.style.pointerEvents = 'auto';
   } else {
@@ -178,7 +183,8 @@ function padCodeChanged(val) {
 
 async function connectPad() {
   const code = document.getElementById('pad-env-code').value.toUpperCase().trim();
-  const licenseKey = document.getElementById('pad-license-key').value.toUpperCase().trim();
+  const identifiant = document.getElementById('pad-login-id').value.trim();
+  const pass = document.getElementById('pad-login-pass').value.trim();
   const env = ENV_CODES[code];
   const errorEl = document.getElementById('pad-error');
 
@@ -187,18 +193,18 @@ async function connectPad() {
     return;
   }
 
-  if (!licenseKey) {
-    errorEl.textContent = 'Clé licence obligatoire';
+  if (!identifiant || !pass) {
+    errorEl.textContent = 'Identifiant et mot de passe obligatoires';
     return;
   }
 
   try {
     const rows = await sbFetch(
-      `licenses?environment_code=eq.${encodeURIComponent(code)}&license_key=eq.${encodeURIComponent(licenseKey)}&license_type=eq.nomade&active=eq.true&select=*`
+      `licenses?environment_code=eq.${encodeURIComponent(code)}&email=eq.${encodeURIComponent(identifiant)}&password_hash=eq.${encodeURIComponent(pass)}&license_type=eq.nomade&active=eq.true&select=*`
     );
 
     if (!rows || !rows.length) {
-      errorEl.textContent = 'Licence PAD invalide ou désactivée';
+      errorEl.textContent = 'Identifiants PAD invalides ou licence inactive';
       return;
     }
 
@@ -216,8 +222,9 @@ async function connectPad() {
     savePadConfig({
       ...env,
       code,
-      licenseKey,
+      login: identifiant,
       licenseId: rows[0].id,
+      licenseKey: rows[0].license_key,
       licenseLabel: rows[0].label || ''
     });
 
@@ -226,8 +233,8 @@ async function connectPad() {
     showPadHome();
 
   } catch (e) {
-    console.warn('[PAD] Licence error:', e);
-    errorEl.textContent = 'Erreur vérification licence';
+    console.warn('[PAD] Login error:', e);
+    errorEl.textContent = 'Erreur vérification connexion';
   }
 }
 
