@@ -250,13 +250,20 @@ function showPadHome() {
 
 // ─── Navigation PAD ───────────────────────────────────────────
 
+function padHideAll() {
+  document.querySelectorAll('.view').forEach(v => {
+    v.classList.remove('on');
+    v.style.display = 'none';
+  });
+  const pv = document.getElementById('pad-profile-view');
+  if (pv) pv.style.display = 'none';
+}
+
 function padGoForms() {
   padSetActive('pnav-forms');
   setPadTitle('Formulaires');
-  const pv = document.getElementById('pad-profile-view');
-  if (pv) pv.style.display = 'none';
+  padHideAll();
   if (typeof goProduction === 'function') goProduction();
-  document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
   const pf = document.getElementById('v-prod-forms');
   if (pf) { pf.style.display = 'block'; pf.classList.add('on'); }
 }
@@ -264,15 +271,16 @@ function padGoForms() {
 function padGoServices() {
   padSetActive('pnav-services');
   setPadTitle('Services');
-  const pv = document.getElementById('pad-profile-view');
-  if (pv) pv.style.display = 'none';
+  padHideAll();
   if (typeof goProdServices === 'function') goProdServices();
+  const ps = document.getElementById('v-prod-services');
+  if (ps) { ps.style.display = 'block'; ps.classList.add('on'); }
 }
 
 function padGoProfile() {
   padSetActive('pnav-profile');
   setPadTitle('Terminal');
-  document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
+  padHideAll();
   showPadProfileView();
 }
 
