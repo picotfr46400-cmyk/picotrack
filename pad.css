@@ -222,3 +222,6 @@ body.pad-mode ::-webkit-scrollbar {
 }
 body.pad-mode ::-webkit-scrollbar-track { background: transparent; }
 body.pad-mode ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+/* Contrôle des vues PAD — priorité absolue */
+body.pad-mode .view { display: none !important; }
+body.pad-mode .view.on { display: block !important; }
