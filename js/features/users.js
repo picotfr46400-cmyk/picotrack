@@ -128,6 +128,7 @@ function _renderLicensesTable(list) {
     <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Licence</th>
     <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Identifiant</th>
     <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Type</th>
+    <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Rôle</th>
     <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:center;border-bottom:1.5px solid var(--bd)">Statut</th>
     <th style="padding:11px 16px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Dernière connexion</th>
     <th style="border-bottom:1.5px solid var(--bd);width:110px"></th></tr></thead><tbody>${list.map(l=>{
@@ -136,6 +137,7 @@ function _renderLicensesTable(list) {
         <td style="padding:11px 16px"><div style="display:flex;align-items:center;gap:9px"><div style="width:32px;height:32px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0">${h(initials)}</div><div><div style="font-size:13px;font-weight:800">${h(l.label || 'Sans nom')}</div><div style="font-size:11px;color:var(--tl);margin-top:2px">${h(l.license_key || '')}</div></div></div></td>
         <td style="padding:11px 16px;font-size:12px;color:var(--tl)">${h(l.email || '—')}</td>
         <td style="padding:11px 16px"><span style="font-size:11px;padding:3px 10px;border-radius:20px;background:var(--pl);color:var(--p);font-weight:700">${h(_typeLabel(l.license_type))}</span></td>
+        <td style="padding:11px 16px"><span style="font-size:11px;padding:3px 10px;border-radius:20px;background:#f3f4f6;color:#374151;font-weight:700">${h(l.role || '—')}</span></td>
         <td style="padding:11px 16px;text-align:center"><span style="font-size:11px;padding:3px 10px;border-radius:20px;font-weight:700;background:${l.active!==false?'var(--sl)':'var(--dl)'};color:${l.active!==false?'var(--s)':'var(--d)'}">${l.active!==false?'Actif':'Inactif'}</span></td>
         <td style="padding:11px 16px;font-size:12px;color:var(--tl)">${l.last_seen ? new Date(l.last_seen).toLocaleString('fr-FR') : '—'}</td>
         <td style="padding:11px 16px;text-align:center;white-space:nowrap"><button onclick="openLicenseModal(${l.id})" title="Modifier" style="border:none;background:none;cursor:pointer;font-size:14px;color:var(--tl);opacity:.65">✏️</button><button onclick="toggleLicenseActive(${l.id})" title="Activer/Désactiver" style="border:none;background:none;cursor:pointer;font-size:14px;color:${l.active!==false?'var(--d)':'var(--s)'};opacity:.8">${l.active!==false?'⛔':'✅'}</button></td>
@@ -155,7 +157,26 @@ function openLicenseModal(licenseId) {
       <div><div class="fl2">Nom / Libellé <span class="req">*</span></div><input id="lm-label" class="fi" value="${h(l?.label || '')}" placeholder="Ex: Tablette réception 01 ou Jean Dupont"></div>
       <div><div class="fl2">Identifiant / email</div><input id="lm-email" class="fi" value="${h(l?.email || '')}" placeholder="Ex: jean ou jean@client.fr"></div>
       <div><div class="fl2">Mot de passe ${l?'(laisser vide pour ne pas changer)':'*'}</div><input id="lm-pass" class="fi" type="password" placeholder="Mot de passe"></div>
-      <div><div class="fl2">Type de licence</div><select id="lm-type" class="fi" ${l?'disabled':''}><option value="supervision" ${l?.license_type==='supervision'?'selected':''}>Supervision PC</option><option value="pad" ${l?.license_type==='pad'?'selected':''}>PAD terrain</option><option value="lecture" ${l?.license_type==='lecture'?'selected':''}>Lecture seule</option></select></div>
+      <div>
+  <div class="fl2">Type de licence</div>
+  <select id="lm-type" class="fi" ${l?'disabled':''}>
+    <option value="supervision" ${l?.license_type==='supervision'?'selected':''}>Supervision PC</option>
+    <option value="pad" ${l?.license_type==='pad'?'selected':''}>PAD terrain</option>
+    <option value="lecture" ${l?.license_type==='lecture'?'selected':''}>Lecture seule</option>
+  </select>
+</div>
+
+<div>
+  <div class="fl2">Rôle attribué</div>
+  <select id="lm-role" class="fi">
+    <option value="client_admin" ${l?.role==='client_admin'?'selected':''}>Admin environnement</option>
+    <option value="manager" ${l?.role==='manager'?'selected':''}>Manager</option>
+    <option value="operator" ${l?.role==='operator'?'selected':''}>Opérateur</option>
+    <option value="read_only" ${l?.role==='read_only'?'selected':''}>Lecture seule</option>
+    <option value="pad_user" ${l?.role==='pad_user'?'selected':''}>PAD terrain</option>
+    ${_isSuperAdmin() ? `<option value="super_admin" ${l?.role==='super_admin'?'selected':''}>Super Admin PicoTrack</option>` : ''}
+  </select>
+</div>
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid var(--bd)"><div style="font-size:13px;font-weight:600">Actif</div><div class="tog ${l?.active!==false?'on':'off'}" id="lm-active" onclick="this.classList.toggle('on');this.classList.toggle('off')"></div></div>
     </div>
     <div style="padding:12px 20px;border-top:1px solid var(--bd);display:flex;gap:8px;justify-content:flex-end"><button class="btn" onclick="this.closest('div[style*=fixed]').remove()">Annuler</button><button class="btn bp" onclick="saveLicense(${licenseId||'null'},this)">Enregistrer</button></div>
@@ -170,14 +191,15 @@ async function saveLicense(licenseId, btn) {
   const email = document.getElementById('lm-email').value.trim();
   const pass = document.getElementById('lm-pass').value;
   const type = document.getElementById('lm-type').value;
-  const active = document.getElementById('lm-active').classList.contains('on');
+const role = document.getElementById('lm-role').value;
+const active = document.getElementById('lm-active').classList.contains('on');
   if (!label) { toast('e','Nom / libellé requis'); return; }
   if ((type === 'supervision' || type === 'lecture') && !email) { toast('e','Identifiant requis pour une licence PC'); return; }
   if (!licenseId && !pass) { toast('e','Mot de passe requis'); return; }
   if (!licenseId && !_canAddType(type)) { toast('e',`Création impossible : quota ${_typeLabel(type)} atteint.`); return; }
   btn.disabled = true; btn.textContent = 'Enregistrement...';
   try {
-    const data = { label, email, license_type:type, active, role:_roleForType(type), scope:'environment' };
+    const data = { label, email, license_type:type, active, role:role, scope:'environment' };
     if (pass) data.password_hash = type === 'pad' ? pass : await hashPassword(pass);
     if (licenseId) await DB.updateLicense(licenseId, data);
     else {
