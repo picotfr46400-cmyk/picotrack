@@ -23,8 +23,10 @@ function clearPadConfig() {
 
 // ─── Initialisation au chargement ────────────────────────────
 
+let _padInitDone = false;
 function initPadMode() {
-  if (!isPadMode()) return;
+  if (!isPadMode() || _padInitDone) return;
+  _padInitDone = true;
 
   // Injecter le CSS mobile
   if (!document.getElementById('pad-css')) {
@@ -245,7 +247,7 @@ function showPadHome() {
     main.style.paddingBottom = '70px';
   }
 
-  setTimeout(() => { padGoForms(); }, 150);
+    padGoForms();
 }
 
 // ─── Navigation PAD ───────────────────────────────────────────
@@ -348,5 +350,3 @@ function showPadProfileView() {
       </button>
     </div>`;
 }
-// Auto-init
-initPadMode();
