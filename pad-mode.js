@@ -255,10 +255,8 @@ function showPadHome() {
 function padHideAll() {
   document.querySelectorAll('.view').forEach(v => {
     v.classList.remove('on');
-    v.style.display = 'none';
+    v.style.display = '';
   });
-  const pv = document.getElementById('pad-profile-view');
-  if (pv) pv.style.display = 'none';
 }
 
 function padGoForms() {
@@ -267,7 +265,7 @@ function padGoForms() {
   padHideAll();
   if (typeof goProduction === 'function') goProduction();
   const pf = document.getElementById('v-prod-forms');
-  if (pf) { pf.style.display = 'block'; pf.classList.add('on'); }
+  if (pf) pf.classList.add('on');
 }
 
 function padGoServices() {
@@ -276,7 +274,7 @@ function padGoServices() {
   padHideAll();
   if (typeof goProdServices === 'function') goProdServices();
   const ps = document.getElementById('v-prod-services');
-  if (ps) { ps.style.display = 'block'; ps.classList.add('on'); }
+  if (ps) ps.classList.add('on');
 }
 
 function padGoProfile() {
@@ -313,7 +311,7 @@ function showPadProfileView() {
     el.className = 'view';
     wrap.appendChild(el);
   }
-  el.style.display = 'block';
+  el.classList.add('on');
   el.style.padding = '24px 16px';
   el.style.overflowY = 'auto';
   el.style.height = 'calc(100vh - 56px - 70px)';
