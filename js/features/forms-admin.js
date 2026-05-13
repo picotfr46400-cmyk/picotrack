@@ -55,15 +55,27 @@ function sortBy(col){
   filtered.sort((a,b)=>{const av=a[col]??'',bv=b[col]??'';return(av<bv?-1:av>bv?1:0)*sortDir;});
   renderTable();
 }
-function toggleActive(id){
-  const f=FORMS_DATA.find(x=>x.id===id);if(!f)return;f.actif=!f.actif;applyFilters();
-  document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(f=>f.actif!==false).length;
+async function toggleActive(id){
+  const f=FORMS_DATA.find(x=>String(x.id)===String(id));
+  if(!f)return;
+  f.actif=!f.actif;
+  applyFilters();
+  if(document.getElementById('prod-forms-count')) document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(f=>f.actif!==false).length;
+  if(document.getElementById('v-prod-forms')?.classList.contains('on') && typeof renderProdForms==='function') renderProdForms(FORMS_DATA);
   toast('i',`${f.actif?'✅ Activé':'⚫ Désactivé'} : ${f.nom}`);
+  if(typeof DB!=='undefined'){
+    try{ await DB.updateForm(f.id,{actif:f.actif}); }
+    catch(e){ console.warn('[DB] toggle formulaire:',e); toast('e','Erreur sauvegarde Supabase'); }
+  }
 }
-function deleteForm(id){
+async function deleteForm(id){
   if(!confirm('Supprimer ce formulaire ?'))return;
-  const i=FORMS_DATA.findIndex(f=>f.id===id);if(i>-1)FORMS_DATA.splice(i,1);
-  filtered=filtered.filter(f=>f.id!==id);renderTable();toast('s','🗑 Formulaire supprimé');
+  const i=FORMS_DATA.findIndex(f=>String(f.id)===String(id));if(i>-1)FORMS_DATA.splice(i,1);
+  filtered=filtered.filter(f=>String(f.id)!==String(id));renderTable();toast('s','🗑 Formulaire supprimé');
+  if(typeof DB!=='undefined'){
+    try{ await DB.deleteForm(id); }
+    catch(e){ console.warn('[DB] delete formulaire:',e); toast('e','Erreur suppression Supabase'); }
+  }
 }
 
 // ══ FILTRES ══

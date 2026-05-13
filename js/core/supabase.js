@@ -48,7 +48,30 @@ const DB = {
 };
 
 function mapFormFromDb(r){
-  return { id:r.id, nom:r.nom, desc:r.description||'', couleur:r.couleur||'#3b82f6', actif:r.actif!==false, modules:r.modules||[], fields:r.fields||[], resp:0 };
+  const modules = r.modules || [];
+  return {
+    id:r.id,
+    nom:r.nom,
+    desc:r.description||'',
+    couleur:r.couleur||'#3b82f6',
+    actif:r.actif!==false,
+    type:modules,
+    modules:modules,
+    fields:r.fields||[],
+    resp:0,
+    visibleRoles:r.visible_roles||[],
+    triggers:r.triggers||{}
+  };
+}
+function formToDb(f){
+  return {
+    nom:f.nom,
+    description:f.desc||'',
+    couleur:f.couleur||'#3b82f6',
+    actif:f.actif!==false,
+    modules:f.type||f.modules||[],
+    fields:f.fields||[]
+  };
 }
 function mapServiceFromDb(r){
   return { id:r.id, nom:r.nom, desc:r.description||'', couleur:r.couleur||'#3b82f6', actif:r.actif!==false, formId:r.form_id||r.formId||null, idPattern:r.id_pattern||'SVC-{YYYY}-{0000}', statuses:r.statuses||[], actions:r.actions||[], flux:r.flux||[], cardConfig:r.card_config||{}, kanbanGroups:r.kanban_groups||[] };
@@ -175,7 +198,9 @@ async function syncAllFromSupabase(){
 
 function refreshCurrentViewAfterSync(){
   try{
-    if(document.getElementById('v-prod-forms')?.classList.contains('on') && typeof renderProdForms==='function') renderProdForms();
+    if(typeof filtered!=='undefined') filtered=[...FORMS_DATA];
+    if(document.getElementById('v-list')?.classList.contains('on') && typeof renderTable==='function') renderTable();
+    if(document.getElementById('v-prod-forms')?.classList.contains('on') && typeof renderProdForms==='function') renderProdForms(FORMS_DATA);
     if(document.getElementById('v-prod-services-list')?.classList.contains('on') && typeof renderProdServices==='function') renderProdServices();
     if(document.getElementById('v-services')?.classList.contains('on') && typeof renderServices==='function') renderServices();
     if(document.getElementById('v-submissions')?.classList.contains('on') && typeof curSubFormId!=='undefined' && curSubFormId && typeof openSubmissions==='function') openSubmissions(curSubFormId);
@@ -189,7 +214,7 @@ async function migrateDataToSupabase(){
     if(!existing.length){
       console.log('[DB] Migration des données demo...');
       for(const f of (typeof FORMS_DATA!=='undefined'?FORMS_DATA:[])){
-        await DB.createForm({ nom:f.nom, description:f.desc||'', couleur:f.couleur||'#3b82f6', actif:f.actif!==false, modules:f.modules||[], fields:f.fields||[] });
+        await DB.createForm({ nom:f.nom, description:f.desc||'', couleur:f.couleur||'#3b82f6', actif:f.actif!==false, modules:f.type||f.modules||[], fields:f.fields||[] });
       }
       for(const s of (typeof SERVICES_DATA!=='undefined'?SERVICES_DATA:[])){
         await DB.createService(serviceToDb(s));

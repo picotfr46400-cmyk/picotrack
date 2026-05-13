@@ -7,7 +7,7 @@ function openBuilder(id){
   document.querySelectorAll('.sb-i').forEach(function(i){i.classList.remove('on');});
   document.getElementById('sb-forms').classList.add('on');
   setTimeout(function(){
-    mountReactBuilder(curForm, function(nom, fields, meta){
+    mountReactBuilder(curForm, async function(nom, fields, meta){
       var data={
         id:curForm?curForm.id:Date.now(), nom:nom.trim(),
         desc:curForm?curForm.desc:'', type:curForm?curForm.type:['general'],
@@ -15,30 +15,49 @@ function openBuilder(id){
         couleur:curForm?curForm.couleur:'#059669', fields:fields,
         visibleRoles:(meta&&meta.visibleRoles)||[], triggers:(meta&&meta.triggers)||{}
       };
-      if(curForm){
-        var i=FORMS_DATA.findIndex(function(f){return f.id===curForm.id;});
-        if(i>-1) FORMS_DATA[i]=data; else FORMS_DATA.push(data);
-      } else {
-        FORMS_DATA.push(data);
-      }
+      try{
+        if(typeof DB!=='undefined' && typeof formToDb==='function'){
+          if(curForm){
+            await DB.updateForm(curForm.id, formToDb(data));
+          }else{
+            var created = await DB.createForm(formToDb(data));
+            var row = Array.isArray(created) ? created[0] : created;
+            if(row && row.id) data = mapFormFromDb(row);
+          }
+        }
+      }catch(e){ console.warn('[DB] save formulaire:',e); toast('e','Erreur sauvegarde Supabase'); }
+      var i=FORMS_DATA.findIndex(function(f){return String(f.id)===String(data.id);});
+      if(i>-1) FORMS_DATA[i]=data; else FORMS_DATA.push(data);
+      curForm=data;
       filtered=[...FORMS_DATA];
-      document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(function(f){return f.actif!==false;}).length;
+      if(document.getElementById('prod-forms-count')) document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(function(f){return f.actif!==false;}).length;
+      if(typeof renderTable==='function') renderTable();
       toast('s','💾 Formulaire enregistré');
     });
   }, 200);
 }
-function saveForm(quit){
+async function saveForm(quit){
   const nom=document.getElementById('b-nom').value||document.getElementById('builder-name').value;
   if(!nom.trim()){toast('e','⚠️ Le nom du formulaire est obligatoire');return;}
-  const data={id:curForm?curForm.id:Date.now(),nom:nom.trim(),desc:document.getElementById('b-desc').value||'',
+  let data={id:curForm?curForm.id:Date.now(),nom:nom.trim(),desc:document.getElementById('b-desc').value||'',
     type:[...document.querySelectorAll('#mod-grid .mod-c.on')].map(el=>{const m=MODULES_DEF.find(x=>el.innerHTML.includes(x.value));return m?m.value:'general'}),
-    actif:true,resp:curForm?curForm.resp:0,couleur:formColor,fields:[...builderFields]};
-  if(curForm){const i=FORMS_DATA.findIndex(f=>f.id===curForm.id);if(i>-1)FORMS_DATA[i]=data;else FORMS_DATA.push(data);}
-  else FORMS_DATA.push(data);
+    actif:curForm?curForm.actif!==false:true,resp:curForm?curForm.resp:0,couleur:formColor,fields:[...builderFields]};
+  try{
+    if(typeof DB!=='undefined' && typeof formToDb==='function'){
+      if(curForm){ await DB.updateForm(curForm.id, formToDb(data)); }
+      else{
+        const created=await DB.createForm(formToDb(data));
+        const row=Array.isArray(created)?created[0]:created;
+        if(row&&row.id) data=mapFormFromDb(row);
+      }
+    }
+  }catch(e){ console.warn('[DB] save formulaire:',e); toast('e','Erreur sauvegarde Supabase'); }
+  const i=FORMS_DATA.findIndex(f=>String(f.id)===String(data.id));if(i>-1)FORMS_DATA[i]=data;else FORMS_DATA.push(data);
+  curForm=data;
   document.getElementById('builder-status').textContent='Enregistré ✓';
   document.getElementById('btab-decl').style.display='';
   filtered=[...FORMS_DATA];
-  document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(f=>f.actif!==false).length;
+  if(document.getElementById('prod-forms-count')) document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(f=>f.actif!==false).length;
   toast('s','💾 Formulaire enregistré');if(quit)setTimeout(()=>goList(),400);
 }
 
