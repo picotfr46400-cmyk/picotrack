@@ -92,7 +92,7 @@ const makeMailto = (m) => {
   const cc = (m.cc || []).join(',');
   const subject = encodeURIComponent(m.subject || '');
   const body = encodeURIComponent((m.body || '') + '\n\nPDF de la saisie à joindre manuellement.');
-  return `mailto:${to}?cc=${cc}&subject=${subject}&body=${body}`;
+  return `mailto:${to}?cc=${encodeURIComponent(cc)}&subject=${subject}&body=${body}`;
 };
   wrap.innerHTML=`
     <div class="v4-page-head">
