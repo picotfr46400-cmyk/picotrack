@@ -134,6 +134,89 @@ function saisieEvalCond(fld,allFields){
   });
   return op==='all'?results.every(Boolean):results.some(Boolean);
 }
+function _ptResolveFieldValue(form, values, fieldId) {
+  if (!fieldId) return '';
+  const v = values[fieldId];
+  if (Array.isArray(v)) return v.join(', ');
+  return v !== undefined && v !== null ? String(v) : '';
+}
+
+function _ptApplyMailVariables(text, form, submission) {
+  let out = String(text || '');
+  out = out.replaceAll('{formName}', form.nom || '');
+  out = out.replaceAll('{nom_formulaire}', form.nom || '');
+  out = out.replaceAll('{date_saisie}', submission.dateLabel || '');
+  out = out.replaceAll('{utilisateur}', submission.utilisateur || '');
+
+  (form.fields || []).forEach(fld => {
+    const val = _ptResolveFieldValue(form, submission.values || {}, fld.id);
+    out = out.replaceAll('{champ:' + fld.id + '}', val);
+    out = out.replaceAll('{champ:' + (fld.field_key || '') + '}', val);
+    out = out.replaceAll('{champ:' + (fld.nom || '') + '}', val);
+  });
+
+  return out;
+}
+
+function _ptMailConditionOk(form, values, cfg) {
+  const op = cfg.conditionOperator || 'always';
+  if (op === 'always') return true;
+
+  const fieldId = cfg.conditionField || '';
+  const val = _ptResolveFieldValue(form, values, fieldId).toLowerCase();
+  const expected = String(cfg.conditionValue || '').toLowerCase();
+
+  if (op === 'equals') return val === expected;
+  if (op === 'not_equals') return val !== expected;
+  if (op === 'contains') return val.includes(expected);
+  if (op === 'not_empty') return val.trim() !== '';
+
+  return true;
+}
+
+function _ptPrepareMailTrigger(form, submission) {
+  const cfg = form.triggers && form.triggers.sendMail ? form.triggers.sendMail : null;
+  if (!cfg || !cfg.enabled) return;
+
+  if ((cfg.event || 'create') !== 'create') return;
+
+  if (!_ptMailConditionOk(form, submission.values || {}, cfg)) {
+    console.log('[PicoTrack Mail] Condition non remplie, mail non préparé');
+    return;
+  }
+
+  const fixedTo = String(cfg.to || '')
+    .split(/[;,]/)
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  const dynamicTo = _ptResolveFieldValue(form, submission.values || {}, cfg.toField)
+    .split(/[;,]/)
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  const to = [...fixedTo, ...dynamicTo];
+
+  const mail = {
+    id: 'mail_' + Date.now(),
+    formId: form.id,
+    submissionId: submission.id,
+    to: to,
+    cc: String(cfg.cc || '').split(/[;,]/).map(x => x.trim()).filter(Boolean),
+    subject: _ptApplyMailVariables(cfg.subject || '', form, submission),
+    body: _ptApplyMailVariables(cfg.body || '', form, submission),
+    attachPdf: cfg.attachPdf !== false,
+    status: 'prepared',
+    createdAt: new Date().toISOString()
+  };
+
+  const outbox = JSON.parse(localStorage.getItem('pt_mail_outbox') || '[]');
+  outbox.push(mail);
+  localStorage.setItem('pt_mail_outbox', JSON.stringify(outbox));
+
+  console.log('[PicoTrack Mail] Mail préparé :', mail);
+  toast('i', '📧 Mail préparé : ' + (to.length ? to.join(', ') : 'aucun destinataire'));
+}
 function resetSaisie(){saisieValues={};const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);if(f)renderSaisieForm(f);toast('i','↺ Formulaire réinitialisé');}
 function submitSaisie(){
   const f=FORMS_DATA.find(x=>x.id===curSaisieFormId);if(!f)return;
@@ -223,6 +306,7 @@ function submitSaisie(){
   }
 
  f.resp = SUBMISSIONS_DATA.filter(s => String(s.formId) === String(f.id)).length + 1;
+  _ptPrepareMailTrigger(f, newSub);
   document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(x=>x.actif!==false).length;
   const btn=document.getElementById('btn-submit-saisie');
   if(btn){btn.textContent='✅ Enregistré !';btn.style.background='#10b981';btn.style.pointerEvents='none';}
