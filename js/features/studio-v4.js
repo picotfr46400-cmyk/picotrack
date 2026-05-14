@@ -89,10 +89,21 @@ function goAutomations(){
   const outbox = JSON.parse(localStorage.getItem('pt_mail_outbox') || '[]').reverse();
 const makeMailto = (m) => {
   const to = (m.to || []).join(',');
-  const cc = (m.cc || []).join(',');
-  const subject = encodeURIComponent(m.subject || '');
-  const body = encodeURIComponent((m.body || '') + '\n\nPDF de la saisie à joindre manuellement.');
-  return `mailto:${to}?cc=${encodeURIComponent(cc)}&subject=${subject}&body=${body}`;
+  const params = [];
+
+  if ((m.cc || []).length) {
+    params.push('cc=' + encodeURIComponent((m.cc || []).join(',')));
+  }
+
+  if (m.subject) {
+    params.push('subject=' + encodeURIComponent(m.subject));
+  }
+
+  params.push(
+    'body=' + encodeURIComponent((m.body || '') + '\n\nPDF de la saisie à joindre manuellement.')
+  );
+
+  return 'mailto:' + encodeURIComponent(to) + '?' + params.join('&');
 };
   wrap.innerHTML=`
     <div class="v4-page-head">
