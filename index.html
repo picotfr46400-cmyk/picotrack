@@ -822,6 +822,8 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
     conditionValue:"",
     to:"",
     toField:"",
+toFields:[],
+ccFields:[],
     cc:"",
     subject:"Nouvelle saisie - {formName}",
     body:"Bonjour,\n\nUne nouvelle saisie a été réalisée.\n\nCordialement,\nPicoTrack",
@@ -851,6 +853,45 @@ const mailVariableButtons = (
         {f.label}
       </button>
     ))}
+  </div>
+);
+  const toggleMailField = (target, fieldId) => {
+  const cur = triggers.sendMail || {};
+  const arr = Array.isArray(cur[target]) ? cur[target] : [];
+  const next = arr.includes(fieldId)
+    ? arr.filter(x => x !== fieldId)
+    : [...arr, fieldId];
+
+  setTrigger("sendMail", { [target]: next });
+};
+
+const mailFieldChips = (target) => (
+  <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:6}}>
+    {mailFields.map(f=>{
+      const cur = triggers.sendMail || {};
+      const arr = Array.isArray(cur[target]) ? cur[target] : [];
+      const on = arr.includes(f.id);
+      return (
+        <button
+          key={f.id}
+          type="button"
+          onClick={()=>toggleMailField(target,f.id)}
+          style={{
+            padding:"5px 10px",
+            borderRadius:999,
+            border:"1.5px solid "+(on?C.em:C.bd),
+            background:on?C.eml:"#fff",
+            color:on?C.em:C.tm,
+            fontSize:11,
+            fontWeight:800,
+            cursor:"pointer",
+            fontFamily:"inherit"
+          }}
+        >
+          {on ? "✓ " : "+ "}{f.label}
+        </button>
+      );
+    })}
   </div>
 );
   const toggleRole=(rid)=>setVisibleRoles(prev=>prev.includes(rid)?prev.filter(x=>x!==rid):[...prev,rid]);
@@ -995,13 +1036,27 @@ const mailVariableButtons = (
       </div>
     )}
 
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-      <input value={triggers.sendMail.to||""} onChange={e=>setTrigger('sendMail',{to:e.target.value})} placeholder="Destinataires fixes séparés par ;" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
-      <select value={triggers.sendMail.toField||""} onChange={e=>setTrigger('sendMail',{toField:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
-        <option value="">Destinataire depuis un champ</option>
-        {mailFieldOptions}
-      </select>
-    </div>
+    <div style={{display:"grid",gap:8}}>
+  <div>
+    <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Destinataires fixes</div>
+    <input value={triggers.sendMail.to||""} onChange={e=>setTrigger('sendMail',{to:e.target.value})} placeholder="Emails séparés par ;" style={{width:"100%",boxSizing:"border-box",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+  </div>
+
+  <div>
+    <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Destinataires depuis les champs du formulaire</div>
+    {mailFieldChips("toFields")}
+  </div>
+
+  <div>
+    <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>CC fixes</div>
+    <input value={triggers.sendMail.cc||""} onChange={e=>setTrigger('sendMail',{cc:e.target.value})} placeholder="CC séparés par ;" style={{width:"100%",boxSizing:"border-box",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+  </div>
+
+  <div>
+    <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>CC depuis les champs</div>
+    {mailFieldChips("ccFields")}
+  </div>
+</div>
 
     <input value={triggers.sendMail.cc||""} onChange={e=>setTrigger('sendMail',{cc:e.target.value})} placeholder="CC séparés par ;" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
     <input value={triggers.sendMail.subject||""} onChange={e=>setTrigger('sendMail',{subject:e.target.value})} placeholder="Objet du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
