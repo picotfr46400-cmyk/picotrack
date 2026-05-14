@@ -190,10 +190,15 @@ function _ptPrepareMailTrigger(form, submission) {
     .map(x => x.trim())
     .filter(Boolean);
 
-  const dynamicTo = _ptResolveFieldValue(form, submission.values || {}, cfg.toField)
+  const dynamicTo = [
+  ...(cfg.toField ? [cfg.toField] : []),
+  ...(Array.isArray(cfg.toFields) ? cfg.toFields : [])
+].flatMap(fieldId =>
+  _ptResolveFieldValue(form, submission.values || {}, fieldId)
     .split(/[;,]/)
     .map(x => x.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+);
 
   const to = [...fixedTo, ...dynamicTo];
 
@@ -202,7 +207,15 @@ function _ptPrepareMailTrigger(form, submission) {
     formId: form.id,
     submissionId: submission.id,
     to: to,
-    cc: String(cfg.cc || '').split(/[;,]/).map(x => x.trim()).filter(Boolean),
+    cc: [
+  ...String(cfg.cc || '').split(/[;,]/).map(x => x.trim()).filter(Boolean),
+  ...(Array.isArray(cfg.ccFields) ? cfg.ccFields : []).flatMap(fieldId =>
+    _ptResolveFieldValue(form, submission.values || {}, fieldId)
+      .split(/[;,]/)
+      .map(x => x.trim())
+      .filter(Boolean)
+  )
+],
     subject: _ptApplyMailVariables(cfg.subject || '', form, submission),
     body: _ptApplyMailVariables(cfg.body || '', form, submission),
     attachPdf: cfg.attachPdf !== false,
