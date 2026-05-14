@@ -114,7 +114,21 @@ function goAutomations(){
       ${outbox.length ? `
         <div class="v4-workflow-list">
           ${outbox.map(m=>`
-            <button onclick="console.log('Mail préparé', ${String(JSON.stringify(m)).replace(/"/g,'&quot;')})">
+            <button onclick="
+(function(){
+  const to = (${String('JSON.stringify(m.to || [])')}).join(',');
+  const cc = (${String('JSON.stringify(m.cc || [])')}).join(',');
+  const subject = encodeURIComponent(${String('JSON.stringify(m.subject || "")')});
+  const body = encodeURIComponent(${String('JSON.stringify(m.body || "")')});
+  window.open(
+    'mailto:' + to +
+    '?cc=' + cc +
+    '&subject=' + subject +
+    '&body=' + body,
+    '_blank'
+  );
+})()
+">, ${String(JSON.stringify(m)).replace(/"/g,'&quot;')})">
               <b>✉️ ${h(m.subject || 'Sans objet')}</b>
               <small>
                 À : ${h((m.to || []).join(', ') || 'Aucun destinataire')}<br>
