@@ -835,6 +835,24 @@ const mailFields = fields.filter(f => !["sep","titre","image","groupe"].includes
 const mailFieldOptions = mailFields.map(f => (
   <option key={f.id} value={f.id}>{f.label}</option>
 ));
+  const insertMailVar = (target, value) => {
+  const cur = triggers.sendMail || {};
+  const old = cur[target] || "";
+  setTrigger("sendMail", { [target]: old + value });
+};
+
+const mailVariableButtons = (
+  <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:6}}>
+    <button type="button" onClick={()=>insertMailVar("subject","{formName}")} style={{padding:"4px 9px",border:"1px solid "+C.bd,borderRadius:20,background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Formulaire</button>
+    <button type="button" onClick={()=>insertMailVar("body","{date_saisie}")} style={{padding:"4px 9px",border:"1px solid "+C.bd,borderRadius:20,background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Date saisie</button>
+    <button type="button" onClick={()=>insertMailVar("body","{utilisateur}")} style={{padding:"4px 9px",border:"1px solid "+C.bd,borderRadius:20,background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Utilisateur</button>
+    {mailFields.map(f=>(
+      <button key={f.id} type="button" onClick={()=>insertMailVar("body","{champ:"+(f.key || slugKey(f.label))+"}")} style={{padding:"4px 9px",border:"1px solid "+C.em2,borderRadius:20,background:C.eml,color:C.em,fontSize:11,fontWeight:800,cursor:"pointer"}}>
+        {f.label}
+      </button>
+    ))}
+  </div>
+);
   const toggleRole=(rid)=>setVisibleRoles(prev=>prev.includes(rid)?prev.filter(x=>x!==rid):[...prev,rid]);
   const [saved,setSaved]=useState(false);
   const [dragId,setDragId]=useState(null);
@@ -987,7 +1005,16 @@ const mailFieldOptions = mailFields.map(f => (
 
     <input value={triggers.sendMail.cc||""} onChange={e=>setTrigger('sendMail',{cc:e.target.value})} placeholder="CC séparés par ;" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
     <input value={triggers.sendMail.subject||""} onChange={e=>setTrigger('sendMail',{subject:e.target.value})} placeholder="Objet du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
-    <textarea value={triggers.sendMail.body||""} onChange={e=>setTrigger('sendMail',{body:e.target.value})} placeholder="Message du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12,minHeight:74,fontFamily:"inherit",resize:"vertical"}}/>
+    <div>
+  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+    <span style={{fontSize:11,fontWeight:800,color:C.tl}}>Message du mail</span>
+    <span style={{fontSize:10,color:C.ts}}>Cliquez sur une variable pour l’insérer</span>
+  </div>
+
+  <textarea value={triggers.sendMail.body||""} onChange={e=>setTrigger('sendMail',{body:e.target.value})} placeholder="Message du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12,minHeight:74,fontFamily:"inherit",resize:"vertical",width:"100%",boxSizing:"border-box"}}/>
+
+  {mailVariableButtons}
+</div>
 
     <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}>
       <input type="checkbox" checked={triggers.sendMail.attachPdf!==false} onChange={e=>setTrigger('sendMail',{attachPdf:e.target.checked})}/>
