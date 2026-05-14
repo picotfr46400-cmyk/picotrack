@@ -87,12 +87,11 @@ async function renderUsersList() {
           </div>
           <p>Tu peux créer une licence seulement si une place est disponible dans son type.</p>
         </div>
-        <span class="pt-cap ${totalFree>0?'ok':'ko'}">${totalFree>0?totalFree+' disponible(s)':'Capacité atteinte'}</span>
-      </div>
-
-      <div class="pt-table-toolbar">
-        <button class="pt-primary-btn" onclick="openLicenseModal(null)" ${totalFree<=0?'disabled title="Aucune licence disponible"':''}>＋ Ajouter une licence</button>
-        <div class="pt-search"><span>🔍</span><input placeholder="Rechercher..." oninput="_filterLicenses(this.value)"></div>
+        <div class="pt-head-actions">
+          <span class="pt-cap ${totalFree>0?'ok':'ko'}">${totalFree>0?totalFree+' disponible(s)':'Capacité atteinte'}</span>
+          <button class="pt-primary-btn" onclick="openLicenseModal(null)" ${totalFree<=0?'disabled title="Aucune licence disponible"':''}>＋ Ajouter une licence</button>
+          <div class="pt-search"><span>🔍</span><input placeholder="Rechercher..." oninput="_filterLicenses(this.value)"></div>
+        </div>
       </div>
 
       <div id="users-table-wrap">${_renderLicensesTable(_licenseRows)}</div>
