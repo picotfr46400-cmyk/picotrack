@@ -813,11 +813,28 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
   const rolesList=(typeof ROLES_DATA!=="undefined" ? ROLES_DATA : []);
   const [visibleRoles,setVisibleRoles]=useState((initialMeta&&initialMeta.visibleRoles)||[]);
   const [triggers,setTriggers]=useState((initialMeta&&initialMeta.triggers)||{
-    printLabel:{enabled:false,template:"Etiquette arrivage",printer:"Imprimante étiquettes"},
-    sendMail:{enabled:false,to:"",subject:"Nouvelle saisie - {formName}"},
-    addDbRow:{enabled:false,database:"",mappingMode:"auto"}
-  });
-  const setTrigger=(key,patch)=>setTriggers(prev=>({...prev,[key]:{...(prev[key]||{}),...patch}}));
+  printLabel:{enabled:false,template:"Etiquette arrivage",printer:"Imprimante étiquettes"},
+  sendMail:{
+    enabled:false,
+    event:"create",
+    conditionField:"",
+    conditionOperator:"always",
+    conditionValue:"",
+    to:"",
+    toField:"",
+    cc:"",
+    subject:"Nouvelle saisie - {formName}",
+    body:"Bonjour,\n\nUne nouvelle saisie a été réalisée.\n\nCordialement,\nPicoTrack",
+    attachPdf:true
+  },
+  addDbRow:{enabled:false,database:"",mappingMode:"auto"}
+});
+const setTrigger=(key,patch)=>setTriggers(prev=>({...prev,[key]:{...(prev[key]||{}),...patch}}));
+
+const mailFields = fields.filter(f => !["sep","titre","image","groupe"].includes(f.type));
+const mailFieldOptions = mailFields.map(f => (
+  <option key={f.id} value={f.id}>{f.label}</option>
+));
   const toggleRole=(rid)=>setVisibleRoles(prev=>prev.includes(rid)?prev.filter(x=>x!==rid):[...prev,rid]);
   const [saved,setSaved]=useState(false);
   const [dragId,setDragId]=useState(null);
@@ -934,7 +951,50 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.printLabel?.enabled} onChange={e=>setTrigger('printLabel',{enabled:e.target.checked})}/> Imprimer une étiquette</label>
                 {triggers.printLabel?.enabled&&<div style={{display:"flex",gap:6}}><input value={triggers.printLabel.template||""} onChange={e=>setTrigger('printLabel',{template:e.target.value})} placeholder="Modèle d'étiquette" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/><input value={triggers.printLabel.printer||""} onChange={e=>setTrigger('printLabel',{printer:e.target.value})} placeholder="Imprimante" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/></div>}
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.sendMail?.enabled} onChange={e=>setTrigger('sendMail',{enabled:e.target.checked})}/> Envoyer un mail</label>
-                {triggers.sendMail?.enabled&&<div style={{display:"flex",gap:6}}><input value={triggers.sendMail.to||""} onChange={e=>setTrigger('sendMail',{to:e.target.value})} placeholder="Destinataire(s)" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/><input value={triggers.sendMail.subject||""} onChange={e=>setTrigger('sendMail',{subject:e.target.value})} placeholder="Objet" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/></div>}
+                {triggers.sendMail?.enabled&&(
+  <div style={{display:"grid",gap:8,background:"#fff",border:"1px solid "+C.bd,borderRadius:10,padding:10}}>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+      <select value={triggers.sendMail.event||"create"} onChange={e=>setTrigger('sendMail',{event:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
+        <option value="create">À la création</option>
+        <option value="update">À la modification</option>
+      </select>
+      <select value={triggers.sendMail.conditionOperator||"always"} onChange={e=>setTrigger('sendMail',{conditionOperator:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
+        <option value="always">Toujours envoyer</option>
+        <option value="equals">Si champ = valeur</option>
+        <option value="not_equals">Si champ ≠ valeur</option>
+        <option value="contains">Si champ contient</option>
+        <option value="not_empty">Si champ non vide</option>
+      </select>
+    </div>
+
+    {triggers.sendMail.conditionOperator!=="always"&&(
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+        <select value={triggers.sendMail.conditionField||""} onChange={e=>setTrigger('sendMail',{conditionField:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
+          <option value="">Champ condition</option>
+          {mailFieldOptions}
+        </select>
+        <input value={triggers.sendMail.conditionValue||""} onChange={e=>setTrigger('sendMail',{conditionValue:e.target.value})} placeholder="Valeur attendue" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+      </div>
+    )}
+
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+      <input value={triggers.sendMail.to||""} onChange={e=>setTrigger('sendMail',{to:e.target.value})} placeholder="Destinataire(s) fixe(s)" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+      <select value={triggers.sendMail.toField||""} onChange={e=>setTrigger('sendMail',{toField:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
+        <option value="">Destinataire depuis un champ</option>
+        {mailFieldOptions}
+      </select>
+    </div>
+
+    <input value={triggers.sendMail.cc||""} onChange={e=>setTrigger('sendMail',{cc:e.target.value})} placeholder="CC optionnel" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+    <input value={triggers.sendMail.subject||""} onChange={e=>setTrigger('sendMail',{subject:e.target.value})} placeholder="Objet du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+    <textarea value={triggers.sendMail.body||""} onChange={e=>setTrigger('sendMail',{body:e.target.value})} placeholder="Message du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12,minHeight:74,fontFamily:"inherit",resize:"vertical"}}/>
+
+    <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}>
+      <input type="checkbox" checked={triggers.sendMail.attachPdf!==false} onChange={e=>setTrigger('sendMail',{attachPdf:e.target.checked})}/>
+      Joindre le PDF de la saisie
+    </label>
+  </div>
+)}
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.addDbRow?.enabled} onChange={e=>setTrigger('addDbRow',{enabled:e.target.checked})}/> Ajouter une ligne dans une base</label>
                 {triggers.addDbRow?.enabled&&<div style={{display:"flex",gap:6}}><input value={triggers.addDbRow.database||""} onChange={e=>setTrigger('addDbRow',{database:e.target.value})} placeholder="Nom de la base" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/><select value={triggers.addDbRow.mappingMode||"auto"} onChange={e=>setTrigger('addDbRow',{mappingMode:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}><option value="auto">Mapping auto</option><option value="manual">Mapping manuel</option></select></div>}
               </div>
