@@ -767,21 +767,161 @@ function executeAction(instId, actionId) {
   if(isKanban)renderKanbanBoard(svc,curKanbanGroupId);else renderInstanceDetail(inst,svc);
 }
 // ── Navigation production services ──
+
+// ── Navigation production services ──
+let _prodServicesViewMode = 'cards';
+let _prodServicesQuery = '';
+let _prodServicesPriority = 'all';
+
 function goProdServices(){
   document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
-  document.getElementById('sb-prod-services').classList.add('on');
+  document.getElementById('sb-prod-services')?.classList.add('on');
   show('v-prod-services-list');
-  document.getElementById('tb-t').textContent='Services';
-  document.getElementById('breadcrumb').innerHTML='<span style="color:var(--tl)">▶ Production / Services</span>';
+  document.getElementById('tb-t').textContent='Centre d’exécution';
+  document.getElementById('breadcrumb').innerHTML='<span style="color:var(--tl)">▶ Production / Centre d’exécution</span>';
+  const view=document.getElementById('v-prod-services-list');
+  if(view){
+    view.innerHTML=`<div class="exec-center-page">
+      <div class="exec-center-head">
+        <div>
+          <h1>Centre d’exécution</h1>
+          <p>Pilotage et suivi de tous vos services opérationnels.</p>
+        </div>
+        <div class="exec-user-box">
+          <span class="exec-bell">🔔<i>3</i></span>
+          <span class="exec-avatar">AD</span>
+          <div><b>Admin</b><small>Administrateur</small></div>
+        </div>
+      </div>
+      <div id="exec-kpi-row" class="exec-kpi-row"></div>
+      <div class="exec-toolbar-v2">
+        <div class="exec-search-v2"><span>🔎</span><input id="exec-service-search" placeholder="Rechercher un service..." oninput="searchProdServices(this.value)"></div>
+        <button class="exec-filter-btn">▾ Filtres</button>
+        <select class="exec-select" onchange="_prodServicesPriority=this.value;renderProdServices()"><option value="all">Priorité</option><option value="urgent">Urgent</option><option value="normal">Normal</option></select>
+        <select class="exec-select"><option>Responsable</option><option>Admin</option><option>Opérateur</option></select>
+        <button class="exec-filter-btn">Plus de filtres</button>
+        <div class="exec-spacer"></div>
+        <div class="exec-view-switch">
+          <button id="exec-view-cards" onclick="setProdServicesView('cards')">▦ Cartes</button>
+          <button id="exec-view-list" onclick="setProdServicesView('list')">☰ Liste</button>
+          <button id="exec-view-kpi" onclick="setProdServicesView('kpi')">▧ KPI</button>
+        </div>
+        <button class="exec-new-folder" onclick="openQuickNewDossier()">＋ Nouveau dossier</button>
+      </div>
+      <div id="prod-services-grid"></div>
+      <div class="exec-bottom-grid">
+        <section class="exec-panel"><div class="exec-panel-head"><h3>À traiter maintenant</h3><span id="exec-urgent-count">0 urgent</span></div><div id="exec-urgent-list"></div></section>
+        <section class="exec-panel"><div class="exec-panel-head"><h3>Activité récente</h3><a>Voir tout</a></div><div id="exec-activity-list"></div></section>
+      </div>
+    </div>`;
+  }
   renderProdServices();
 }
-function renderProdServices(list){
-  list=(list||SERVICES_DATA).filter(s=>s.actif!==false);
-  const grid=document.getElementById('prod-services-grid');
-  if(!list.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;opacity:.3">⚡</div>Aucun service actif.</div>`;return;}
-  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div onclick="openServiceKanban(${svc.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="padding:5px 14px;border-radius:20px;background:${c};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div></div></div></div>`;}).join('');
+
+function setProdServicesView(mode){
+  _prodServicesViewMode=mode;
+  renderProdServices();
 }
-function searchProdServices(q){renderProdServices(SERVICES_DATA.filter(s=>s.nom.toLowerCase().includes(q.toLowerCase())));}
+
+function _svcServiceStats(svc){
+  const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);
+  const terminalIds=(svc.statuses||[]).filter(s=>s.type==='terminal').map(s=>s.id);
+  const active=all.filter(i=>!terminalIds.includes(i.currentStatusId));
+  const closed=all.length-active.length;
+  const urgent=active.filter(i=>(Date.now()-_svcParseDateMs(i.createdAt))>24*3600*1000).length;
+  const waiting=active.filter(i=>String((svc.statuses||[]).find(s=>s.id===i.currentStatusId)?.nom||'').toLowerCase().includes('attente')).length;
+  const sla=all.length?Math.max(40,Math.min(99,Math.round(((all.length-urgent)/all.length)*100))):100;
+  const last=all.slice().sort((a,b)=>_svcParseDateMs(b.createdAt)-_svcParseDateMs(a.createdAt))[0];
+  return {all,active,closed,urgent,waiting,sla,last};
+}
+function _svcAllExecStats(){
+  const services=SERVICES_DATA.filter(s=>s.actif!==false);
+  const all=SERVICE_INSTANCES_DATA;
+  let active=0, urgent=0, waiting=0, closed=0;
+  services.forEach(s=>{const st=_svcServiceStats(s);active+=st.active.length;urgent+=st.urgent;waiting+=st.waiting;closed+=st.closed;});
+  const sla=all.length?Math.max(40,Math.min(99,Math.round(((all.length-urgent)/all.length)*100))):100;
+  return {services,all,active,urgent,waiting,closed,sla};
+}
+function _svcLastActivityLabel(svc){
+  const st=_svcServiceStats(svc);
+  return st.last ? _svcElapsedLabel(st.last.createdAt) : 'Aucune activité';
+}
+function _svcResponsibleStack(svc){
+  const people=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id).map(i=>i.assignedTo).filter(Boolean);
+  const unique=[...new Set(people)].slice(0,3);
+  if(!unique.length) unique.push('Admin');
+  return `<div class="exec-avatars">${unique.map(p=>`<span title="${h(p)}">${h(_svcInitials(p))}</span>`).join('')}${people.length>unique.length?`<em>+${people.length-unique.length}</em>`:''}</div>`;
+}
+function renderExecKpis(){
+  const row=document.getElementById('exec-kpi-row'); if(!row) return;
+  const st=_svcAllExecStats();
+  const k=[
+    ['📁', st.services.length, 'Services actifs', '+2 ce mois', '#3b82f6'],
+    ['⏱️', st.active, 'Dossiers actifs', '+8 aujourd’hui', '#f97316'],
+    ['⚠️', st.urgent, 'Dossiers urgents', st.urgent?'Action requise':'RAS', '#ef4444'],
+    ['✅', st.sla+'%', 'SLA respecté', 'Objectif : 90%', '#10b981'],
+    ['🕒', '18h', 'Temps moyen', '-2h vs hier', '#6366f1']
+  ];
+  row.innerHTML=k.map(x=>`<div class="exec-kpi-card"><div class="exec-kpi-icon" style="background:${_svcLight(x[4],.12)};color:${x[4]}">${x[0]}</div><div><b>${h(x[1])}</b><span>${h(x[2])}</span><small style="color:${x[4]}">${h(x[3])}</small></div></div>`).join('');
+}
+function renderProdServices(list){
+  renderExecKpis();
+  list=(list||SERVICES_DATA).filter(s=>s.actif!==false);
+  const q=String(_prodServicesQuery||'').trim().toLowerCase();
+  if(q) list=list.filter(s=>`${s.nom} ${s.desc||''}`.toLowerCase().includes(q));
+  if(_prodServicesPriority==='urgent') list=list.filter(s=>_svcServiceStats(s).urgent>0);
+  if(_prodServicesPriority==='normal') list=list.filter(s=>_svcServiceStats(s).urgent===0);
+  const grid=document.getElementById('prod-services-grid');
+  if(!grid) return;
+  ['exec-view-cards','exec-view-list','exec-view-kpi'].forEach(id=>document.getElementById(id)?.classList.remove('on'));
+  document.getElementById('exec-view-'+_prodServicesViewMode)?.classList.add('on');
+  if(!list.length){grid.className='exec-empty-wrap';grid.innerHTML=`<div class="exec-empty">⚡<b>Aucun service actif</b><span>Ajustez vos filtres ou créez un service.</span></div>`;renderExecUrgentAndActivity();return;}
+  if(_prodServicesViewMode==='list'){
+    grid.className='exec-service-list';
+    grid.innerHTML=`<table><thead><tr><th>Service</th><th>Dossiers actifs</th><th>Urgents</th><th>SLA</th><th>Dernière activité</th><th></th></tr></thead><tbody>${list.map(svc=>{const st=_svcServiceStats(svc);const c=svc.couleur||'#3b82f6';return `<tr onclick="openServiceKanban(${JSON.stringify(svc.id)})"><td><span class="exec-service-dot" style="background:${c}"></span><b>${h(svc.nom)}</b><small>${h(svc.desc||'Service opérationnel')}</small></td><td>${st.active.length}</td><td><span class="exec-pill ${st.urgent?'danger':'ok'}">${st.urgent} urgent</span></td><td>${st.sla}%</td><td>${h(_svcLastActivityLabel(svc))}</td><td>Ouvrir →</td></tr>`;}).join('')}</tbody></table>`;
+  } else if(_prodServicesViewMode==='kpi'){
+    grid.className='exec-service-kpi-grid';
+    grid.innerHTML=list.map(svc=>{const st=_svcServiceStats(svc);const c=svc.couleur||'#3b82f6';return `<div class="exec-service-kpi" onclick="openServiceKanban(${JSON.stringify(svc.id)})"><div class="exec-service-kpi-top"><b>${h(svc.nom)}</b><span style="background:${_svcLight(c,.13)};color:${c}">${st.sla}% SLA</span></div><div class="exec-big-number">${st.active.length}</div><small>dossiers actifs</small><div class="exec-mini-bars"><i style="width:${Math.min(100,st.sla)}%;background:${c}"></i></div><div class="exec-kpi-split"><span>${st.closed} clôturés</span><span>${st.urgent} urgents</span></div></div>`;}).join('');
+  } else {
+    grid.className='exec-service-grid-v2';
+    grid.innerHTML=list.map(svc=>{const st=_svcServiceStats(svc);const c=svc.couleur||'#3b82f6';const progress=Math.max(8,Math.min(100,st.sla));return`<article class="exec-service-card" onclick="openServiceKanban(${JSON.stringify(svc.id)})" style="--svc:${c}">
+      <div class="exec-card-top"><div class="exec-card-icon" style="background:${_svcLight(c,.12)};color:${c}">⚡</div><div><h3>${h(svc.nom)}</h3>${svc.desc?`<p>${h(svc.desc)}</p>`:''}</div><span class="exec-urgent ${st.urgent?'bad':'good'}">${st.urgent} urgent${st.urgent>1?'s':''}</span><button onclick="event.stopPropagation();openServiceBuilder(${JSON.stringify(svc.id)})">⋮</button></div>
+      <div class="exec-card-metrics"><div><b>${st.active.length}</b><span>dossiers actifs</span></div><div class="exec-sla-ring" style="--p:${progress};--c:${c}"><b>${st.sla}%</b><span>SLA</span></div></div>
+      <div class="exec-progress"><i style="width:${progress}%;background:${c}"></i></div>
+      <div class="exec-card-row"><span>Dernière activité</span><b>${h(_svcLastActivityLabel(svc))}</b></div>
+      <div class="exec-card-row"><span>Responsables</span>${_svcResponsibleStack(svc)}</div>
+      <button class="exec-open-btn">Ouvrir le service →</button>
+    </article>`;}).join('');
+  }
+  renderExecUrgentAndActivity();
+}
+function renderExecUrgentAndActivity(){
+  const urgentWrap=document.getElementById('exec-urgent-list');
+  const activityWrap=document.getElementById('exec-activity-list');
+  const urgentCnt=document.getElementById('exec-urgent-count');
+  if(!urgentWrap||!activityWrap) return;
+  const rows=[];
+  SERVICES_DATA.filter(s=>s.actif!==false).forEach(svc=>{
+    const terminalIds=(svc.statuses||[]).filter(s=>s.type==='terminal').map(s=>s.id);
+    SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&!terminalIds.includes(i.currentStatusId)).forEach(i=>{
+      const age=Date.now()-_svcParseDateMs(i.createdAt);
+      rows.push({svc,inst:i,age,urgent:age>24*3600*1000});
+    });
+  });
+  const urgentRows=rows.sort((a,b)=>b.age-a.age).slice(0,5);
+  if(urgentCnt) urgentCnt.textContent=urgentRows.filter(x=>x.urgent).length+' urgent';
+  urgentWrap.innerHTML=urgentRows.length?`<table class="exec-urgent-table"><thead><tr><th>ID dossier</th><th>Service</th><th>Priorité</th><th>Créé il y a</th><th>Assigné à</th><th></th></tr></thead><tbody>${urgentRows.map(r=>`<tr onclick="openInstanceDetail(${JSON.stringify(r.inst.id)})"><td>${h(r.inst.reference)}</td><td>${h(r.svc.nom)}</td><td><span class="exec-priority ${r.urgent?'high':'mid'}">${r.urgent?'Haute':'Moyenne'}</span></td><td>${h(_svcElapsedLabel(r.inst.createdAt).replace('il y a ',''))}</td><td><span class="exec-mini-avatar">${h(_svcInitials(r.inst.assignedTo||'Admin'))}</span>${h(r.inst.assignedTo||'Admin')}</td><td>›</td></tr>`).join('')}</tbody></table>`:`<div class="exec-panel-empty">Aucun dossier à traiter.</div>`;
+  const events=[];
+  SERVICE_INSTANCES_DATA.forEach(inst=>{const svc=SERVICES_DATA.find(s=>s.id===inst.serviceId);(inst.events||[]).forEach(ev=>events.push({inst,svc,ev,ms:_svcParseDateMs(ev.at)}));});
+  events.sort((a,b)=>b.ms-a.ms);
+  activityWrap.innerHTML=(events.slice(0,5).map(e=>`<div class="exec-activity"><span>${e.ev.type==='created'?'🟣':e.ev.type==='status_changed'?'✅':'💬'}</span><div><b>${h(e.inst.reference)} ${e.ev.type==='created'?'a été créé':e.ev.type==='status_changed'?'a changé de statut':'a reçu une activité'}</b><small>${h(e.svc?.nom||'Service')} · ${h(_svcElapsedLabel(e.ev.at))}</small></div></div>`).join(''))||`<div class="exec-panel-empty">Aucune activité récente.</div>`;
+}
+function searchProdServices(q){_prodServicesQuery=q||'';renderProdServices();}
+function openQuickNewDossier(){
+  const svc=SERVICES_DATA.find(s=>s.actif!==false);
+  if(!svc){toast('e','Aucun service actif');return;}
+  openCreateInstance(svc.id);
+}
 function openServiceKanban(svcId){
   const svc=SERVICES_DATA.find(s=>s.id===svcId);if(!svc)return;curService=svc;
   const groups=(svc.kanbanGroups||[]).filter(g=>g.visible).sort((a,b)=>a.order-b.order);
