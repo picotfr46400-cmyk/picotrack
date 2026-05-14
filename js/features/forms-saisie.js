@@ -222,7 +222,7 @@ function submitSaisie(){
     SUBMISSIONS_DATA.push(newSub);
   }
 
-  f.resp = (f.resp || 0) + 1;
+ f.resp = SUBMISSIONS_DATA.filter(s => String(s.formId) === String(f.id)).length + 1;
   document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(x=>x.actif!==false).length;
   const btn=document.getElementById('btn-submit-saisie');
   if(btn){btn.textContent='✅ Enregistré !';btn.style.background='#10b981';btn.style.pointerEvents='none';}
