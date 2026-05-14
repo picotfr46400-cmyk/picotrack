@@ -74,7 +74,7 @@ function goWorkflows(){
     <div class="v4-page-head"><div><div class="v4-eyebrow">Workflow Builder</div><h1>Workflows opérationnels</h1><p>Un workflow transforme une saisie terrain en processus suivi : statuts, actions, responsabilités et historique.</p></div><button class="btn bp pill" onclick="openServiceBuilder(null)">＋ Nouveau workflow</button></div>
     <div class="v4-flow-demo"><div>Déclencheur<br><b>Formulaire soumis</b></div><span>→</span><div>Condition<br><b>Règle métier</b></div><span>→</span><div>Action<br><b>Statut / Mail / BDD</b></div></div>
     <div class="v4-panel"><div class="v4-panel-head"><h2>Workflows existants</h2><span>${services.length} workflow(s)</span></div>
-      <div class="v4-workflow-list">${services.length?services.map(s=>`<button onclick="openServiceBuilder(${s.id})"><b>🔀 ${h(s.nom)}</b><small>${h(s.desc||'Workflow configurable')} · ${(s.statuses||[]).length} statuts · ${(s.actions||[]).length} actions</small></button>`).join(''):'<div class="v4-empty">Aucun workflow créé pour le moment.</div>'}</div>
+      <div class="v4-workflow-list">${services.length?services.map(s=>`<button onclick="openServiceBuilder(${JSON.stringify(s.id)})"><b>🔀 ${h(s.nom)}</b><small>${h(s.desc||'Workflow configurable')} · ${(s.statuses||[]).length} statuts · ${(s.actions||[]).length} actions</small></button>`).join(''):'<div class="v4-empty">Aucun workflow créé pour le moment.</div>'}</div>
     </div>`;
 }
 
