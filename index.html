@@ -321,7 +321,7 @@
 <!-- PicoTrack JS - ordre de chargement important -->
 
 <script type="text/babel">
-// PicoTrack Builder v3 — React via Babel Standalone
+// PicoTrack Builder v6.1 — React via Babel Standalone
 // Pas d'import : React/ReactDOM chargés via CDN dans index.html
 
 const { useState, useRef, useEffect, useCallback } = React;
@@ -377,6 +377,12 @@ const SMART_DETECT = [
   [/commentaire|observation/i,"textarea"],[/statut|type|cat/i,"select"],
 ];
 function detect(l){ for(const [re,t] of SMART_DETECT) if(re.test(l)) return t; return null; }
+function slugKey(v){
+  return String(v||'champ')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase().replace(/[^a-z0-9]+/g,'_')
+    .replace(/^_+|_+$/g,'') || 'champ';
+}
 
 const TRANSFORMERS = [
   "Mettre le 1er caractère en majuscule","Tout en majuscule","Tout en minuscule",
@@ -509,6 +515,23 @@ function Adv({f,upd}){
       <div style={{padding:14,background:"#fff"}}>
         {tab==="gen"&&(
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Nom technique</div>
+                <input value={f.key||slugKey(f.label)} onChange={e=>upd(f.id,{key:e.target.value})} placeholder="ex : numero_bl"
+                  style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none"}}/>
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Section</div>
+                <input value={f.section||""} onChange={e=>upd(f.id,{section:e.target.value})} placeholder="ex : Réception"
+                  style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none"}}/>
+              </div>
+            </div>
+            {!["sep","titre","image","photo","sign","location","file"].includes(f.type)&&(<div>
+              <div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Valeur par défaut</div>
+              <input value={f.def||""} onChange={e=>upd(f.id,{def:e.target.value})} placeholder="Pré-remplissage côté PAD"
+                style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none"}}/>
+            </div>)}
             {["text","textarea","number"].includes(f.type)&&(
               <div>
                 <div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Placeholder</div>
@@ -624,11 +647,12 @@ function Adv({f,upd}){
             <div style={{padding:"9px 12px",border:"1px dashed "+C.bd,borderRadius:8,background:"#FAFAFA"}}>
               <div style={{fontSize:11,fontWeight:700,color:C.ts,marginBottom:6}}>Visible par les rôles</div>
               <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                {["Administrateur","Manager","Opérateur"].map(r=>{
-                  const on=(f.roles||[]).includes(r);
+                {(rolesList.length?rolesList:[{id:"administrateur",nom:"Administrateur"},{id:"manager",nom:"Manager"},{id:"operateur",nom:"Opérateur"}]).map(r=>{
+                  const rid=r.id||r.nom;
+                  const on=(f.roles||[]).includes(rid);
                   return (
-                    <button key={r} onClick={()=>{const cur=f.roles||[];upd(f.id,{roles:on?cur.filter(x=>x!==r):[...cur,r]});}} style={{padding:"4px 11px",borderRadius:20,border:"1.5px solid "+(on?C.em:C.bd),background:on?C.eml:"#fff",color:on?C.em:C.tm,fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
-                      {r}
+                    <button key={rid} onClick={()=>{const cur=f.roles||[];upd(f.id,{roles:on?cur.filter(x=>x!==rid):[...cur,rid]});}} style={{padding:"4px 11px",borderRadius:20,border:"1.5px solid "+(on?C.em:C.bd),background:on?C.eml:"#fff",color:on?C.em:C.tm,fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                      {r.nom||rid}
                     </button>
                   );
                 })}
@@ -817,6 +841,7 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
   },[dragId]);
 
   const req=fields.filter(f=>f.req).length;
+  const selectedField=fields.find(f=>f.id===editId)||null;
 
   const handleSave = () => {
     setSaved(true);
@@ -833,6 +858,10 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
       afficher_placeholder: !!(f.ph),
       vis_sup: f.vSup!==false,
       vis_nom: f.vNom!==false,
+      field_key: f.key || slugKey(f.label),
+      section: f.section || '',
+      defaultValue: f.def || '',
+      roles: f.roles || [],
       duplicable: f.dup||false,
       duplicable_min: 1,
       duplicable_max: 10,
@@ -868,9 +897,9 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
       <div style={{background:C.eml,borderBottom:"1px solid "+C.em2,padding:"7px 18px",display:"flex",gap:10,fontSize:12,color:"#065F46",alignItems:"center",flexShrink:0}}>
         <span style={{fontWeight:800,display:"flex",alignItems:"center",gap:5}}>
           <span style={{width:18,height:18,background:C.em,borderRadius:5,display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:11}}>✦</span>
-          Live Canvas
+          Form Builder Pro
         </span>
-        <span style={{color:C.emd,opacity:.85}}>Cliquez un champ pour éditer · Survolez l'espace pour ajouter · <strong>⚙ Paramètres avancés</strong> pour validateurs, conditions, affichage</span>
+        <span style={{color:C.emd,opacity:.85}}>Bibliothèque de blocs · Canvas central · Inspecteur champ · Sauvegarde Supabase PC ↔ PAD</span>
       </div>
       {/* Paramétrage formulaire */}
       <div style={{background:"#fff",borderBottom:"1px solid "+C.bd,flexShrink:0}}>
@@ -913,39 +942,76 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
           </div>
         )}
       </div>
-      {/* Canvas scrollable */}
-      <div style={{flex:1,overflowY:"auto",padding:"20px 0 60px"}}>
-        <div style={{maxWidth:700,margin:"0 auto",padding:"0 16px"}}>
-          {/* Header formulaire */}
-          <div style={{background:"#fff",border:"1.5px solid "+C.bd,borderRadius:14,padding:"14px 18px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,.05)"}}>
-            <div style={{display:"flex",alignItems:"center",gap:11}}>
-              <div style={{width:4,height:36,borderRadius:3,background:C.em,flexShrink:0}}/>
-              <div style={{flex:1}}>
-                <div style={{fontSize:15,fontWeight:800}}>{fname}</div>
-                <div style={{fontSize:11.5,color:C.ts,marginTop:2}}>{req} obligatoire{req!==1?"s":""} · Live Canvas</div>
+      {/* Builder Pro : bibliothèque | canvas | inspecteur */}
+      <div style={{flex:1,minHeight:0,display:"grid",gridTemplateColumns:"240px minmax(420px,1fr) 300px",overflow:"hidden",background:C.bg}}>
+        <aside style={{borderRight:"1px solid "+C.bd,background:"#fff",padding:14,overflowY:"auto"}}>
+          <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Bibliothèque de blocs</div>
+          {TYPE_CATS.map(cat=>(
+            <div key={cat.id} style={{marginBottom:14}}>
+              <div style={{fontSize:10,fontWeight:900,color:C.tl,textTransform:"uppercase",letterSpacing:.7,margin:"0 0 7px"}}>{cat.label}</div>
+              <div style={{display:"grid",gap:6}}>
+                {TYPES.filter(t=>t.cat===cat.id).map(t=>(
+                  <button key={t.id} onClick={()=>addF(fields.length-1,t.id,"")}
+                    style={{display:"flex",alignItems:"center",gap:8,padding:"8px 9px",border:"1.5px solid "+C.bd,borderRadius:10,background:"#fff",cursor:"pointer",fontFamily:"inherit",color:C.tm,fontWeight:800,fontSize:12,textAlign:"left"}}>
+                    <span style={{width:24,height:24,borderRadius:8,background:t.clr+"18",color:t.clr,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:12,flexShrink:0}}>{t.icon}</span>
+                    <span>{t.label}</span>
+                  </button>
+                ))}
               </div>
             </div>
-          </div>
-          {/* Champs */}
-          <AddLine afterIndex={-1} onAdd={addF}/>
-          {fields.map((f,idx)=>(
-            <div key={f.id}>
-              <Card f={f} editing={editId===f.id} onEdit={setEditId} upd={updF} del={delF}
-                onDS={id=>{setDragId(id);setEditId(null);}} onDO={setDragOvId} onDrop={drop}
-                isDO={dragOvId===f.id&&dragId!==f.id}/>
-              <AddLine afterIndex={idx} onAdd={addF}/>
-            </div>
           ))}
-          {fields.length===0&&(
-            <div style={{border:"2px dashed "+C.bd,borderRadius:12,padding:"40px 20px",textAlign:"center",color:C.ts,background:"#fff"}}>
-              <div style={{fontSize:28,marginBottom:8,opacity:.4}}>+</div>
-              <div style={{fontWeight:600,fontSize:14}}>Cliquez sur le + pour ajouter un premier champ</div>
+        </aside>
+        <div style={{overflowY:"auto",padding:"20px 0 60px"}}>
+          <div style={{maxWidth:700,margin:"0 auto",padding:"0 16px"}}>
+            {/* Header formulaire */}
+            <div style={{background:"#fff",border:"1.5px solid "+C.bd,borderRadius:14,padding:"14px 18px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,.05)"}}>
+              <div style={{display:"flex",alignItems:"center",gap:11}}>
+                <div style={{width:4,height:36,borderRadius:3,background:C.em,flexShrink:0}}/>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:15,fontWeight:800}}>{fname}</div>
+                  <div style={{fontSize:11.5,color:C.ts,marginTop:2}}>{req} obligatoire{req!==1?"s":""} · Déployable PC ↔ PAD</div>
+                </div>
+              </div>
             </div>
-          )}
-          {fields.length>0&&(<div style={{textAlign:"center",marginTop:12,color:C.ts,fontSize:12}}>{fields.length} champ{fields.length!==1?"s":""} · {req} obligatoire{req!==1?"s":""}</div>)}
+            {/* Champs */}
+            <AddLine afterIndex={-1} onAdd={addF}/>
+            {fields.map((f,idx)=>(
+              <div key={f.id}>
+                <Card f={f} editing={editId===f.id} onEdit={setEditId} upd={updF} del={delF}
+                  onDS={id=>{setDragId(id);setEditId(null);}} onDO={setDragOvId} onDrop={drop}
+                  isDO={dragOvId===f.id&&dragId!==f.id}/>
+                <AddLine afterIndex={idx} onAdd={addF}/>
+              </div>
+            ))}
+            {fields.length===0&&(
+              <div style={{border:"2px dashed "+C.bd,borderRadius:12,padding:"40px 20px",textAlign:"center",color:C.ts,background:"#fff"}}>
+                <div style={{fontSize:28,marginBottom:8,opacity:.4}}>+</div>
+                <div style={{fontWeight:600,fontSize:14}}>Ajoutez un premier bloc depuis la bibliothèque ou avec le +</div>
+              </div>
+            )}
+            {fields.length>0&&(<div style={{textAlign:"center",marginTop:12,color:C.ts,fontSize:12}}>{fields.length} champ{fields.length!==1?"s":""} · {req} obligatoire{req!==1?"s":""}</div>)}
+          </div>
         </div>
-      </div>
-    </div>
+        <aside style={{borderLeft:"1px solid "+C.bd,background:"#fff",padding:14,overflowY:"auto"}}>
+          <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Inspecteur</div>
+          {selectedField?(
+            <div style={{display:"grid",gap:10}}>
+              <div style={{padding:12,border:"1.5px solid "+C.bd,borderRadius:12,background:C.bg}}>
+                <div style={{fontSize:12,fontWeight:900,marginBottom:6}}>{selectedField.label}</div>
+                <Badge tid={selectedField.type} xs/>
+              </div>
+              <label style={{fontSize:11,fontWeight:800,color:C.tl}}>Nom technique</label>
+              <input value={selectedField.key||slugKey(selectedField.label)} onChange={e=>updF(selectedField.id,{key:e.target.value})} style={{border:"1.5px solid "+C.bd,borderRadius:9,padding:"9px 10px",fontFamily:"inherit",fontSize:12}}/>
+              <label style={{fontSize:11,fontWeight:800,color:C.tl}}>Section</label>
+              <input value={selectedField.section||""} onChange={e=>updF(selectedField.id,{section:e.target.value})} placeholder="Réception, Contrôle..." style={{border:"1.5px solid "+C.bd,borderRadius:9,padding:"9px 10px",fontFamily:"inherit",fontSize:12}}/>
+              <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:12,fontWeight:800,color:C.tm}}>Obligatoire <Tog on={selectedField.req} cb={()=>updF(selectedField.id,{req:!selectedField.req})}/></label>
+              <div style={{padding:10,border:"1px dashed "+C.bd,borderRadius:10,color:C.ts,fontSize:11.5,lineHeight:1.4}}>Les paramètres complets restent disponibles en cliquant directement sur le champ dans le canvas.</div>
+            </div>
+          ):(
+            <div style={{padding:18,border:"1.5px dashed "+C.bd,borderRadius:12,textAlign:"center",color:C.ts,fontSize:12}}>Sélectionnez un champ pour modifier ses paramètres.</div>
+          )}
+        </aside>
+      </div>    </div>
   );
 }
 window.PicoBuilderApp = PicoBuilderApp;

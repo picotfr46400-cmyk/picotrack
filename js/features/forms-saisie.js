@@ -2,6 +2,7 @@
 function openFormSaisie(id){
   const f=FORMS_DATA.find(x=>x.id===id);if(!f)return;
   curSaisieFormId=id;saisieValues={};
+  (f.fields||[]).forEach(function(fld){ if(fld.defaultValue!==undefined && fld.defaultValue!=='' && fld.defaultValue!==null) saisieValues[fld.id]=fld.defaultValue; });
   document.getElementById('breadcrumb').innerHTML=`
     <span class="bc-link" onclick="goProduction()">▶ Production / Formulaires</span>
     <span style="color:var(--tl);margin:0 4px">/</span>
@@ -13,7 +14,7 @@ function openFormSaisie(id){
 function renderSaisieForm(f){
   const wrap=document.getElementById('saisie-wrap');
   const color=f.couleur||'#3b82f6';
-  const fields=f.fields||[];
+  const fields=(f.fields||[]).filter(function(fld){ return (typeof _ptCanSeeByRoles==='function') ? _ptCanSeeByRoles(fld.roles||[]) : true; });
   if(!fields.length){
     wrap.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--tl)"><div style="font-size:36px;margin-bottom:12px">📋</div><div style="font-size:14px">Ce formulaire ne contient aucun champ.</div><button class="btn btn-sm" style="margin-top:16px" onclick="goProduction()">← Retour</button></div>`;
     return;

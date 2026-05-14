@@ -210,7 +210,9 @@ async function connectPad() {
       login: identifiant,
       licenseId: rows[0].id,
       licenseKey: rows[0].license_key,
-      licenseLabel: rows[0].label || ''
+      licenseLabel: rows[0].label || '',
+      role: rows[0].role || '',
+      roles: Array.isArray(rows[0].roles) ? rows[0].roles : (rows[0].role ? [rows[0].role] : [])
     });
 
     document.querySelectorAll('#pad-overlay').forEach(el => el.remove());

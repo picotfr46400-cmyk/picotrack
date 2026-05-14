@@ -1,6 +1,33 @@
 // ══ PRODUCTION : LISTE ══
+
+function _ptGetCurrentRoles(){
+  try{
+    const pad = JSON.parse(localStorage.getItem('pt_pad') || 'null');
+    if(pad){
+      const rs = Array.isArray(pad.roles) ? pad.roles : [];
+      if(pad.role && !rs.includes(pad.role)) rs.push(pad.role);
+      return rs.map(x=>String(x).toLowerCase());
+    }
+  }catch(e){}
+  try{
+    const pc = JSON.parse(localStorage.getItem('pt_pc_session') || 'null');
+    if(pc){
+      const rs = Array.isArray(pc.roles) ? pc.roles : [];
+      if(pc.role && !rs.includes(pc.role)) rs.push(pc.role);
+      if(pc.role === 'super_admin') rs.push('super_admin','administrateur');
+      return rs.map(x=>String(x).toLowerCase());
+    }
+  }catch(e){}
+  return [];
+}
+function _ptCanSeeByRoles(requiredRoles){
+  if(!requiredRoles || !requiredRoles.length) return true;
+  const have = _ptGetCurrentRoles();
+  if(!have.length) return true;
+  return requiredRoles.map(x=>String(x).toLowerCase()).some(r=>have.includes(r));
+}
 function renderProdForms(list){
-  const actifs=list.filter(f=>f.actif!==false);
+  const actifs=list.filter(f=>f.actif!==false && _ptCanSeeByRoles(f.visibleRoles||f.visible_roles||[]));
   const grid=document.getElementById('prod-forms-grid');
   if(!actifs.length){
     grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px 0;color:var(--tl);font-size:14px"><div style="font-size:32px;margin-bottom:12px;opacity:.3">📋</div>Aucun formulaire actif disponible</div>`;

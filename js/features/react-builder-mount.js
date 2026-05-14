@@ -35,7 +35,11 @@ function mountReactBuilder(formData, onSave) {
       vNom: f.vis_nom !== false,
       dup: f.duplicable || false,
       vlds: f.validateurs || [],
-      conds: f.conditions || [],
+      conds: (f.conditions || []).map(function(c){return {fn:c.fn||c.field||'', op:c.op||'=', val:c.val||''};}),
+      key: f.field_key || f.key || '',
+      section: f.section || '',
+      def: f.defaultValue !== undefined ? f.defaultValue : (f.default_value || ''),
+      roles: f.roles || [],
     };
   }) : [];
 
