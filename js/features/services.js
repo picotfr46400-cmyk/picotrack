@@ -495,6 +495,76 @@ function generateRef(svc) {
     .replace('{0000}', n);
 }
 
+
+// Création automatique d'une instance Service depuis une saisie formulaire classique.
+// Objectif : un formulaire collecte, le service suit le traitement métier.
+async function ptCreateServiceInstancesFromSubmission(form, submission) {
+  try {
+    if (!form || !submission || typeof SERVICES_DATA === 'undefined') return;
+
+    const linkedServices = (SERVICES_DATA || []).filter(svc =>
+      svc &&
+      svc.actif !== false &&
+      String(svc.formId) === String(form.id) &&
+      Array.isArray(svc.statuses) &&
+      svc.statuses.length
+    );
+
+    if (!linkedServices.length) return;
+
+    const device = (typeof isPadMode === 'function' && isPadMode()) ? 'pad' : 'desktop';
+    const userLabel = submission.utilisateur || (device === 'pad' ? '📱 PAD Terrain' : 'Picot Clément');
+    const now = new Date().toLocaleString('fr-FR');
+
+    for (const svc of linkedServices) {
+      // Anti-doublon : une seule instance par service + submission
+      const alreadyExists = (SERVICE_INSTANCES_DATA || []).some(inst =>
+        String(inst.serviceId) === String(svc.id) &&
+        String(inst.submissionId) === String(submission.id)
+      );
+      if (alreadyExists) continue;
+
+      const initialStatus = svc.statuses.find(s => s.type === 'initial') || svc.statuses[0];
+      const newInst = {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        serviceId: svc.id,
+        reference: generateRef(svc),
+        submissionId: submission.id,
+        currentStatusId: initialStatus ? initialStatus.id : null,
+        assignedTo: null,
+        priority: 'normal',
+        createdBy: userLabel,
+        createdAt: now,
+        events: [{
+          id: Date.now(),
+          type: 'created_from_form',
+          actor: userLabel,
+          at: now,
+          payload: { formId: form.id, submissionId: submission.id }
+        }]
+      };
+
+      try {
+        if (typeof DB !== 'undefined' && DB.createInstance && typeof instanceToDb === 'function') {
+          const rows = await DB.createInstance(instanceToDb(newInst, device));
+          const row = Array.isArray(rows) ? rows[0] : rows;
+          if (row && row.id) newInst.id = row.id;
+        }
+      } catch (e) {
+        console.warn('[DB] Instance service non sauvegardée:', e.message);
+      }
+
+      if (!SERVICE_INSTANCES_DATA.some(x => String(x.id) === String(newInst.id))) {
+        SERVICE_INSTANCES_DATA.push(newInst);
+      }
+
+      console.log('[Services] Instance créée depuis formulaire:', svc.nom, newInst.reference);
+    }
+  } catch (e) {
+    console.warn('[Services] Création instance depuis saisie impossible:', e.message);
+  }
+}
+
 function openServiceInstances(id) {
   const svc = SERVICES_DATA.find(s => s.id === id); if (!svc) return;
   curService = svc;
