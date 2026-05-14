@@ -79,16 +79,56 @@ function goWorkflows(){
 }
 
 function goAutomations(){
-  ptSetNav('sb-automations'); show('v-automations'); ptSetTitle('Automatisations','Studio / Automatisations');
-  const wrap=document.getElementById('automations-wrap'); if(!wrap) return;
+  ptSetNav('sb-automations');
+  show('v-automations');
+  ptSetTitle('Automatisations','Studio / Automatisations');
+
+  const wrap=document.getElementById('automations-wrap');
+  if(!wrap) return;
+
+  const outbox = JSON.parse(localStorage.getItem('pt_mail_outbox') || '[]').reverse();
+
   wrap.innerHTML=`
-    <div class="v4-page-head"><div><div class="v4-eyebrow">Action Engine</div><h1>Automatisations</h1><p>Préparez les actions qui pourront être déclenchées par les formulaires et workflows.</p></div><button class="btn bp pill" onclick="toast('i','Module automatisations prêt pour la V5')">＋ Nouvelle automatisation</button></div>
-    <div class="v4-auto-grid">
-      ${ptStudioCard('✉️','Email automatique','Envoyer un message selon un formulaire, un statut ou une condition métier.','Disponible','goAutomations()','Configurer')}
+    <div class="v4-page-head">
+      <div>
+        <div class="v4-eyebrow">Action Engine</div>
+        <h1>Automatisations</h1>
+        <p>Suivez les actions préparées après validation des formulaires : mails, PDF, impressions et API.</p>
+      </div>
+      <button class="btn bp pill" onclick="localStorage.removeItem('pt_mail_outbox');goAutomations()">Vider la boîte mail</button>
+    </div>
+
+    <div class="v4-auto-grid" style="margin-bottom:18px">
+      ${ptStudioCard('✉️','Email automatique','Envoyer un message selon un formulaire, un statut ou une condition métier.','Actif','goAutomations()','Voir')}
       ${ptStudioCard('🏷','Étiquette / Impression','Préparer l’impression d’une étiquette ou d’un document terrain.','Disponible','goAutomations()','Configurer')}
       ${ptStudioCard('🧾','PDF / Rapport','Générer un document à partir des données saisies.','Prévu','goAutomations()','Préparer')}
       ${ptStudioCard('🔌','API / Webhook','Pousser les données vers SAP, Shizen, KeepTracking ou une API externe.','Prévu','goApiConfig()','API')}
-    </div>`;
+    </div>
+
+    <div class="v4-panel">
+      <div class="v4-panel-head">
+        <h2>Boîte d’envoi mail</h2>
+        <span>${outbox.length} mail(s)</span>
+      </div>
+
+      ${outbox.length ? `
+        <div class="v4-workflow-list">
+          ${outbox.map(m=>`
+            <button onclick="console.log('Mail préparé', ${String(JSON.stringify(m)).replace(/"/g,'&quot;')})">
+              <b>✉️ ${h(m.subject || 'Sans objet')}</b>
+              <small>
+                À : ${h((m.to || []).join(', ') || 'Aucun destinataire')}<br>
+                CC : ${h((m.cc || []).join(', ') || '—')}<br>
+                Statut : ${h(m.status || 'prepared')} · PDF : ${m.attachPdf ? 'Oui' : 'Non'} · ${m.createdAt ? new Date(m.createdAt).toLocaleString('fr-FR') : ''}
+              </small>
+            </button>
+          `).join('')}
+        </div>
+      ` : `
+        <div class="v4-empty">Aucun mail préparé pour le moment.</div>
+      `}
+    </div>
+  `;
 }
 
 function goStudioDatabase(){
