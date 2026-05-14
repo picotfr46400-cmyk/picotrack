@@ -43,6 +43,7 @@ function initPadMode() {
   }
   // Ajouter classe sur body pour les règles CSS
   document.body.classList.add('pad-mode');
+  padInstallPremiumRender();
 
   const cfg = getPadConfig();
 
@@ -269,19 +270,19 @@ function showPadHome() {
         flex:1;padding:12px 8px;border:none;background:transparent;
         color:#059669;font-size:10px;font-weight:700;cursor:pointer;
         display:flex;flex-direction:column;align-items:center;gap:3px;font-family:inherit
-      "><span style="font-size:20px">📋</span>Formulaires</button>
+      "><span style="font-size:20px">🏠</span>Accueil</button>
 
       <button onclick="padGoServices()" id="pnav-services" style="
         flex:1;padding:12px 8px;border:none;background:transparent;
         color:#94a3b8;font-size:10px;font-weight:700;cursor:pointer;
         display:flex;flex-direction:column;align-items:center;gap:3px;font-family:inherit
-      "><span style="font-size:20px">⚡</span>Services</button>
+      "><span style="font-size:20px">⚡</span>Missions</button>
 
       <button onclick="padGoProfile()" id="pnav-profile" style="
         flex:1;padding:12px 8px;border:none;background:transparent;
         color:#94a3b8;font-size:10px;font-weight:700;cursor:pointer;
         display:flex;flex-direction:column;align-items:center;gap:3px;font-family:inherit
-      "><span style="font-size:20px">👤</span>Terminal</button>
+      "><span style="font-size:20px">👤</span>Profil</button>
     </div>`);
   }
 
@@ -316,6 +317,174 @@ function showPadHome() {
     padGoForms();
 }
 
+
+
+// ─── PAD Premium Home renderer ───────────────────────────────
+function padInstallPremiumRender(){
+  if(window.__padPremiumRenderInstalled) return;
+  window.__padPremiumRenderInstalled = true;
+  window.__desktopRenderProdForms = window.renderProdForms;
+  window.renderProdForms = function(list){
+    if(document.body.classList.contains('pad-mode')) return renderPadPremiumHome(list || []);
+    if(typeof window.__desktopRenderProdForms === 'function') return window.__desktopRenderProdForms(list || []);
+  };
+}
+
+function padFormIcon(name){
+  const n = String(name || '').toLowerCase();
+  if(n.includes('arriv') || n.includes('réception') || n.includes('reception')) return '📦';
+  if(n.includes('sécurité') || n.includes('securite') || n.includes('check')) return '🛡️';
+  if(n.includes('intervention') || n.includes('rapport')) return '📝';
+  if(n.includes('poste') || n.includes('agent')) return '👤';
+  return '⚡';
+}
+function padInitials(name){
+  return String(name||'PT').trim().split(/\s+/).slice(0,2).map(x=>x[0]||'').join('').toUpperCase() || 'PT';
+}
+function padLastSubmission(formId){
+  try{
+    const arr = (window.SUBMISSIONS_DATA || []).filter(s=>String(s.formId)===String(formId));
+    if(!arr.length) return null;
+    return arr.sort((a,b)=>String(b.date||b.created_at||'').localeCompare(String(a.date||a.created_at||'')))[0];
+  }catch(e){return null;}
+}
+function padAgoFromDate(d){
+  if(!d) return '—';
+  const t = new Date(d).getTime();
+  if(!isFinite(t)) return '—';
+  const m = Math.max(1, Math.round((Date.now()-t)/60000));
+  if(m < 60) return 'il y a '+m+' min';
+  const h = Math.round(m/60); if(h < 24) return 'il y a '+h+' h';
+  const j = Math.round(h/24); return 'il y a '+j+' j';
+}
+
+function renderPadPremiumHome(list){
+  const cfg = getPadConfig() || {};
+  const forms = (list || []).filter(f=>f && f.actif!==false && (typeof _ptCanSeeByRoles !== 'function' || _ptCanSeeByRoles(f.visibleRoles||f.visible_roles||[])));
+  const view = document.getElementById('v-prod-forms');
+  if(!view) return;
+  const totalSubs = (window.SUBMISSIONS_DATA || []).length;
+  const todayKey = new Date().toISOString().slice(0,10);
+  const todaySubs = (window.SUBMISSIONS_DATA || []).filter(s=>String(s.date||s.created_at||'').slice(0,10)===todayKey).length;
+  const frequent = forms.slice().sort((a,b)=>((window.SUBMISSIONS_DATA||[]).filter(s=>s.formId===b.id).length)-((window.SUBMISSIONS_DATA||[]).filter(s=>s.formId===a.id).length)).slice(0,4);
+  const urgent = forms.slice(0,2);
+  const recents = (window.SUBMISSIONS_DATA || []).slice().reverse().slice(0,4);
+  const hour = new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+  const userName = cfg.licenseLabel || cfg.login || 'terrain';
+
+  view.innerHTML = `
+    <div class="pad-home-premium">
+      <section class="pad-hero">
+        <div>
+          <div class="pad-time">${hour}</div>
+          <h1>Bonjour ${h(userName)} 👋</h1>
+          <p>Prêt pour une journée efficace ?</p>
+        </div>
+        <div class="pad-sync-card">
+          <span class="pad-sync-pulse"></span>
+          <div><b>Synchro</b><small>À jour</small></div>
+        </div>
+      </section>
+
+      <section class="pad-kpi-grid">
+        <div class="pad-kpi"><span>📋</span><b>${forms.length}</b><small>Missions disponibles</small></div>
+        <div class="pad-kpi warn"><span>⚠️</span><b>${Math.min(2, forms.length)}</b><small>Urgentes à traiter</small></div>
+        <div class="pad-kpi ok"><span>✅</span><b>${todaySubs}</b><small>Terminées aujourd'hui</small></div>
+        <div class="pad-kpi purple"><span>⏱️</span><b>${totalSubs}</b><small>Saisies totales</small></div>
+      </section>
+
+      <button class="pad-primary-action" onclick="padOpenFirstForm()">
+        <span class="pad-plus">＋</span>
+        <div><b>Nouvelle saisie</b><small>Créer une mission ou remplir un formulaire</small></div>
+        <span class="pad-arrow">›</span>
+      </button>
+
+      <section class="pad-quick-actions">
+        <button onclick="startQRScan()"><span>▣</span><b>Scanner</b><small>QR / Code-barres</small></button>
+        <button onclick="padOpenFirstForm()"><span>📷</span><b>Photo</b><small>Contrôle terrain</small></button>
+        <button onclick="padOpenFirstForm()"><span>🎙️</span><b>Saisie vocale</b><small>Note rapide</small></button>
+        <button onclick="padGoServices()"><span>⚡</span><b>Services</b><small>Processus actifs</small></button>
+      </section>
+
+      <div class="pad-search-wrap">
+        <span>🔎</span><input id="prod-search" placeholder="Rechercher une mission..." oninput="searchProdForms(this.value)" />
+      </div>
+
+      ${urgent.length ? `
+      <section class="pad-section">
+        <div class="pad-section-title"><h2>À traiter maintenant</h2><span>${urgent.length} urgente${urgent.length>1?'s':''}</span></div>
+        <div class="pad-urgent-grid">
+          ${urgent.map(f=>padUrgentCard(f)).join('')}
+        </div>
+      </section>` : ''}
+
+      <section class="pad-section">
+        <div class="pad-section-title"><h2>Missions fréquentes</h2><button onclick="document.getElementById('pad-all-forms')?.scrollIntoView({behavior:'smooth'})">Voir toutes</button></div>
+        <div class="pad-mission-grid">
+          ${(frequent.length?frequent:forms).map(f=>padMissionCard(f)).join('')}
+        </div>
+      </section>
+
+      <section class="pad-section" id="pad-all-forms">
+        <div class="pad-section-title"><h2>Toutes les missions</h2><span>${forms.length}</span></div>
+        <div class="pad-list-grid">
+          ${forms.map(f=>padCompactFormRow(f)).join('') || `<div class="pad-empty">Aucun formulaire actif disponible</div>`}
+        </div>
+      </section>
+
+      <section class="pad-section">
+        <div class="pad-section-title"><h2>Activité récente</h2></div>
+        <div class="pad-activity-list">
+          ${recents.length ? recents.map(s=>padRecentRow(s)).join('') : '<div class="pad-empty">Aucune activité récente</div>'}
+        </div>
+      </section>
+    </div>`;
+}
+
+function padOpenFirstForm(){
+  const forms = (window.FORMS_DATA || []).filter(f=>f.actif!==false && (typeof _ptCanSeeByRoles !== 'function' || _ptCanSeeByRoles(f.visibleRoles||f.visible_roles||[])));
+  if(forms[0] && typeof openFormSaisie === 'function') openFormSaisie(forms[0].id);
+}
+function padStartForm(id){
+  if(typeof openFormSaisie === 'function') openFormSaisie(id);
+}
+function padUrgentCard(f){
+  const color = f.couleur || '#ef4444';
+  const cnt = (window.SUBMISSIONS_DATA || []).filter(s=>s.formId===f.id).length;
+  return `<article class="pad-urgent-card" onclick="padStartForm(${JSON.stringify(f.id)})">
+    <div class="pad-urgent-ico" style="background:${color}">${padFormIcon(f.nom)}</div>
+    <div class="pad-urgent-body"><span>URGENT</span><h3>${h(f.nom)}</h3><p>${h(f.desc || 'Action terrain à réaliser')}</p><small>⏰ Échéance : aujourd'hui</small></div>
+    <button onclick="event.stopPropagation();padStartForm(${JSON.stringify(f.id)})">Commencer</button>
+  </article>`;
+}
+function padMissionCard(f){
+  const color = f.couleur || '#3b82f6';
+  const cnt = (window.SUBMISSIONS_DATA || []).filter(s=>s.formId===f.id).length;
+  const last = padLastSubmission(f.id);
+  return `<article class="pad-mission-card" onclick="padStartForm(${JSON.stringify(f.id)})" style="--c:${color}">
+    <div class="pad-mission-top"><div class="pad-mission-ico">${padFormIcon(f.nom)}</div><span>☆</span></div>
+    <h3>${h(f.nom)}</h3>
+    <p>${cnt} saisie${cnt>1?'s':''}</p>
+    <small>Dernière : ${last ? padAgoFromDate(last.date||last.created_at) : 'aucune'}</small>
+    <button onclick="event.stopPropagation();padStartForm(${JSON.stringify(f.id)})">Commencer</button>
+  </article>`;
+}
+function padCompactFormRow(f){
+  const color = f.couleur || '#3b82f6';
+  const cnt = (window.SUBMISSIONS_DATA || []).filter(s=>s.formId===f.id).length;
+  return `<button class="pad-form-row" onclick="padStartForm(${JSON.stringify(f.id)})" style="--c:${color}">
+    <span>${padInitials(f.nom)}</span><div><b>${h(f.nom)}</b><small>${cnt} réponse${cnt>1?'s':''}</small></div><em>›</em>
+  </button>`;
+}
+function padRecentRow(s){
+  const f = (window.FORMS_DATA || []).find(x=>String(x.id)===String(s.formId));
+  return `<button class="pad-recent-row" onclick="${f ? `openSubmission(${JSON.stringify(s.id)})` : ''}">
+    <span style="background:${(f&&f.couleur)||'#3b82f6'}22;color:${(f&&f.couleur)||'#3b82f6'}">${padFormIcon(f&&f.nom)}</span>
+    <div><b>${h((f&&f.nom)||'Saisie')}</b><small>#${h(String(s.id||'—'))}</small></div>
+    <strong>Terminé</strong><em>›</em>
+  </button>`;
+}
+
 // ─── Navigation PAD ───────────────────────────────────────────
 
 function padHideAll() {
@@ -327,7 +496,7 @@ function padHideAll() {
 
 function padGoForms() {
   padSetActive('pnav-forms');
-  setPadTitle('Formulaires');
+  setPadTitle('Accueil terrain');
   padHideAll();
   if (typeof goProduction === 'function') goProduction();
   // Forcer : une seule vue visible
