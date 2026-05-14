@@ -116,10 +116,12 @@ function goAutomations(){
           ${outbox.map(m=>`
             <button onclick="
 (function(){
-  const to = (${String('JSON.stringify(m.to || [])')}).join(',');
-  const cc = (${String('JSON.stringify(m.cc || [])')}).join(',');
-  const subject = encodeURIComponent(${String('JSON.stringify(m.subject || "")')});
-  const body = encodeURIComponent(${String('JSON.stringify(m.body || "")')});
+  <button onclick="
+(function(){
+  const to = ${(JSON.stringify(m.to || []))}.join(',');
+  const cc = ${(JSON.stringify(m.cc || []))}.join(',');
+  const subject = encodeURIComponent(${JSON.stringify(m.subject || '')});
+  const body = encodeURIComponent((${JSON.stringify(m.body || '')}) + '\n\nPDF de la saisie à joindre manuellement.');
   window.open(
     'mailto:' + to +
     '?cc=' + cc +
@@ -128,7 +130,7 @@ function goAutomations(){
     '_blank'
   );
 })()
-">, ${String(JSON.stringify(m)).replace(/"/g,'&quot;')})">
+">
               <b>✉️ ${h(m.subject || 'Sans objet')}</b>
               <small>
                 À : ${h((m.to || []).join(', ') || 'Aucun destinataire')}<br>
