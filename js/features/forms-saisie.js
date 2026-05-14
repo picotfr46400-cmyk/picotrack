@@ -219,19 +219,37 @@ function _ptRunDbRowTrigger(form, submission) {
     });
   }
 
-  targetDb.rows = targetDb.rows || [];
-  targetDb.rows.push({
-    id: Date.now(),
-    date: new Date().toISOString(),
-    dateLabel: new Date().toLocaleString('fr-FR'),
-    source: 'form:' + (form.nom || ''),
-    formId: form.id,
-    submissionId: submission.id,
-    values
-  });
+  const rowPayload = {
+  id: Date.now(),
+  date: new Date().toISOString(),
+  dateLabel: new Date().toLocaleString('fr-FR'),
+  source: 'form:' + (form.nom || ''),
+  formId: form.id,
+  submissionId: submission.id,
+  values
+};
 
-  console.log('[PicoTrack DB] Ligne ajoutée :', targetDb.nom, values);
-  toast('s','🗃 Ligne ajoutée dans ' + targetDb.nom);
+targetDb.rows = targetDb.rows || [];
+targetDb.rows.push(rowPayload);
+
+if (typeof sbFetch === 'function') {
+  sbFetch('database_rows', {
+    method: 'POST',
+    body: JSON.stringify({
+      database_id: String(targetDb.id),
+      environment_code: (typeof _licenseEnvCode === 'function') ? _licenseEnvCode() : 'DEMO',
+      source: rowPayload.source,
+      form_id: String(form.id),
+      submission_id: String(submission.id),
+      values: values
+    })
+  })
+    .then(() => console.log('[PicoTrack DB] Ligne Supabase ajoutée'))
+    .catch(e => console.warn('[PicoTrack DB] Erreur Supabase database_rows:', e));
+}
+
+console.log('[PicoTrack DB] Ligne ajoutée :', targetDb.nom, values);
+toast('s','🗃 Ligne ajoutée dans ' + targetDb.nom);
 }
 function _ptPrepareMailTrigger(form, submission) {
   const cfg = form.triggers && form.triggers.sendMail ? form.triggers.sendMail : null;
