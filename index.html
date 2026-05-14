@@ -1004,7 +1004,15 @@ const mailFieldChips = (target) => (
                 {rolesList.length===0&&<span style={{fontSize:12,color:C.ts}}>Aucun rôle configuré.</span>}
               </div>
             </div>
-            <div style={{border:"1.5px solid "+C.bd,borderRadius:12,padding:12,background:C.bg}}>
+           <div style={{
+  border:"1.5px solid "+C.bd,
+  borderRadius:12,
+  padding:12,
+  background:C.bg,
+  maxHeight:"520px",
+  overflowY:"scroll",
+  overflowX:"hidden"
+}}>
               <div style={{fontSize:12,fontWeight:800,marginBottom:8}}>Actions après validation</div>
               <div style={{display:"grid",gap:8}}>
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.printLabel?.enabled} onChange={e=>setTrigger('printLabel',{enabled:e.target.checked})}/> Imprimer une étiquette</label>
@@ -1018,10 +1026,9 @@ const mailFieldChips = (target) => (
   border:"1px solid "+C.bd,
   borderRadius:10,
   padding:10,
-  maxHeight:"520px",
- overflowY:"scroll",
-  overflowX:"hidden",
-  scrollbarWidth:"thin"
+  maxHeight:"none",
+overflowY:"visible",
+overflowX:"visible"
 }}>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
       <select value={triggers.sendMail.event||"create"} onChange={e=>setTrigger('sendMail',{event:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
