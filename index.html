@@ -829,7 +829,12 @@ ccFields:[],
     body:"Bonjour,\n\nUne nouvelle saisie a été réalisée.\n\nCordialement,\nPicoTrack",
     attachPdf:true
   },
-  addDbRow:{enabled:false,database:"",mappingMode:"auto"}
+  addDbRow:{
+  enabled:false,
+  targetDbId:"",
+  mappingMode:"auto",
+  mappings:[]
+}
 });
 const setTrigger=(key,patch)=>setTriggers(prev=>({...prev,[key]:{...(prev[key]||{}),...patch}}));
 
@@ -893,6 +898,37 @@ const mailFieldChips = (target) => (
       );
     })}
   </div>
+);
+  const dbList = (typeof DATABASES_DATA !== "undefined" ? DATABASES_DATA : []);
+
+const selectedDb = dbList.find(db => String(db.id) === String(triggers.addDbRow?.targetDbId));
+
+const setDbMapping = (colId, fieldId) => {
+  const cur = triggers.addDbRow || {};
+  const mappings = Array.isArray(cur.mappings) ? cur.mappings : [];
+  const next = mappings.filter(m => String(m.colId) !== String(colId));
+
+  if (fieldId) {
+    next.push({ colId, fieldId });
+  }
+
+  setTrigger("addDbRow", { mappings: next });
+};
+
+const getMappedField = (colId) => {
+  const cur = triggers.addDbRow || {};
+  const mappings = Array.isArray(cur.mappings) ? cur.mappings : [];
+  const found = mappings.find(m => String(m.colId) === String(colId));
+  return found ? found.fieldId : "";
+};
+
+const dbFieldOptions = (
+  <>
+    <option value="">— Aucun champ —</option>
+    {mailFields.map(f => (
+      <option key={f.id} value={f.id}>{f.label}</option>
+    ))}
+  </>
 );
   const toggleRole=(rid)=>setVisibleRoles(prev=>prev.includes(rid)?prev.filter(x=>x!==rid):[...prev,rid]);
   const [saved,setSaved]=useState(false);
@@ -1096,7 +1132,70 @@ overflowX:"visible"
   </div>
 )}
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.addDbRow?.enabled} onChange={e=>setTrigger('addDbRow',{enabled:e.target.checked})}/> Ajouter une ligne dans une base</label>
-                {triggers.addDbRow?.enabled&&<div style={{display:"flex",gap:6}}><input value={triggers.addDbRow.database||""} onChange={e=>setTrigger('addDbRow',{database:e.target.value})} placeholder="Nom de la base" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/><select value={triggers.addDbRow.mappingMode||"auto"} onChange={e=>setTrigger('addDbRow',{mappingMode:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}><option value="auto">Mapping auto</option><option value="manual">Mapping manuel</option></select></div>}
+                {triggers.addDbRow?.enabled&&(
+  <div style={{display:"grid",gap:10,background:"#fff",border:"1px solid "+C.bd,borderRadius:10,padding:10}}>
+    <div>
+      <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Base cible</div>
+      <select
+        value={triggers.addDbRow.targetDbId||""}
+        onChange={e=>setTrigger('addDbRow',{targetDbId:e.target.value,mappings:[]})}
+        style={{width:"100%",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}
+      >
+        <option value="">— Sélectionner une base —</option>
+        {dbList.map(db=>(
+          <option key={db.id} value={db.id}>{db.nom}</option>
+        ))}
+      </select>
+    </div>
+
+    <div>
+      <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Mode de mapping</div>
+      <select
+        value={triggers.addDbRow.mappingMode||"auto"}
+        onChange={e=>setTrigger('addDbRow',{mappingMode:e.target.value})}
+        style={{width:"100%",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}
+      >
+        <option value="auto">Mapping auto — noms identiques</option>
+        <option value="manual">Mapping manuel — champ par colonne</option>
+      </select>
+    </div>
+
+    {selectedDb&&triggers.addDbRow.mappingMode==="manual"&&(
+      <div style={{display:"grid",gap:8}}>
+        <div style={{fontSize:11,fontWeight:900,color:C.tl,textTransform:"uppercase",letterSpacing:".5px"}}>
+          Mapping manuel
+        </div>
+
+        {(selectedDb.columns||[]).map(col=>(
+          <div key={col.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,alignItems:"center"}}>
+            <div style={{fontSize:12,fontWeight:800,color:C.tm,background:C.bg,border:"1px solid "+C.bd,borderRadius:7,padding:"7px 8px"}}>
+              Colonne : {col.nom}
+            </div>
+            <select
+              value={getMappedField(col.id)}
+              onChange={e=>setDbMapping(col.id,e.target.value)}
+              style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}
+            >
+              {dbFieldOptions}
+            </select>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {selectedDb&&triggers.addDbRow.mappingMode==="auto"&&(
+      <div style={{fontSize:11.5,color:C.tl,lineHeight:1.4,background:C.bg,border:"1px dashed "+C.bd,borderRadius:8,padding:9}}>
+        Mapping auto : PicoTrack remplira les colonnes dont le nom correspond à un champ du formulaire.
+      </div>
+    )}
+
+    {!selectedDb&&(
+      <div style={{fontSize:11.5,color:C.ts,lineHeight:1.4}}>
+        Crée d’abord une base dans Database Studio si aucune base n’apparaît.
+      </div>
+    )}
+  </div>
+)}
               </div>
             </div>
           </div>
