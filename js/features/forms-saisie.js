@@ -189,16 +189,40 @@ function submitSaisie(){
       DB_DATA[f.id].push({id:Date.now(),date:new Date().toISOString(),dateLabel:new Date().toLocaleString('fr-FR'),user:'Picot Clément',values:{...saisieValues}});
     }
   }
- const newSub = {id:Date.now(),formId:f.id,formNom:f.nom,date:new Date().toISOString(),dateLabel:new Date().toLocaleString('fr-FR'),utilisateur:'Picot Clément',values:{...saisieValues}};
-  SUBMISSIONS_DATA.push(newSub);
-  f.resp=(f.resp||0)+1;
-  // Sauvegarder dans Supabase
+  const device = (typeof isPadMode === 'function' && isPadMode()) ? 'pad' : 'desktop';
+  const userLabel = device === 'pad' ? '📱 PAD Terrain' : 'Picot Clément';
+
+  let newSub = {
+    id: Date.now(),
+    formId: f.id,
+    formNom: f.nom,
+    date: new Date().toISOString(),
+    dateLabel: new Date().toLocaleString('fr-FR'),
+    utilisateur: userLabel,
+    values: { ...saisieValues }
+  };
+
   if (typeof DB !== 'undefined') {
-    const device = (typeof isPadMode === 'function' && isPadMode()) ? 'pad' : 'desktop';
-    DB.createSubmission(f.id, {...saisieValues}, device)
-      .then(() => console.log('[DB] Saisie enregistrée'))
-      .catch(e => console.warn('[DB] Erreur saisie:', e));
+    DB.createSubmission(f.id, { ...saisieValues }, device)
+      .then(row => {
+        const saved = Array.isArray(row) ? row[0] : row;
+        if (saved && saved.id) newSub.id = saved.id;
+        if (!SUBMISSIONS_DATA.some(s => String(s.id) === String(newSub.id))) {
+          SUBMISSIONS_DATA.push(newSub);
+        }
+        console.log('[DB] Saisie enregistrée');
+      })
+      .catch(e => {
+        console.warn('[DB] Erreur saisie:', e);
+        if (!SUBMISSIONS_DATA.some(s => String(s.id) === String(newSub.id))) {
+          SUBMISSIONS_DATA.push(newSub);
+        }
+      });
+  } else {
+    SUBMISSIONS_DATA.push(newSub);
   }
+
+  f.resp = (f.resp || 0) + 1;
   document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(x=>x.actif!==false).length;
   const btn=document.getElementById('btn-submit-saisie');
   if(btn){btn.textContent='✅ Enregistré !';btn.style.background='#10b981';btn.style.pointerEvents='none';}
