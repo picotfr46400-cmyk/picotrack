@@ -41,7 +41,7 @@ function goDashboard(){
       <div class="v4-panel"><div class="v4-panel-head"><h2>Modules critiques</h2><span>Studio</span></div>
         <div class="v4-mini-list">
           <button onclick="goList()"><b>📋 Form Builder</b><small>Créer des formulaires terrain intelligents</small></button>
-          <button onclick="goWorkflows()"><b>🔀 Workflow Builder</b><small>Transformer les saisies en processus suivis</small></button>
+          <button onclick="goWorkflows()"><b>🔀 Service Builder</b><small>Transformer les saisies en processus suivis</small></button>
           <button onclick="goAutomations()"><b>⚙️ Automatisations</b><small>Email, PDF, étiquette, API, base de données</small></button>
           <button onclick="goStudioDatabase()"><b>🗃 Database</b><small>Structurer les données métier</small></button>
         </div>
@@ -60,7 +60,7 @@ function goStudio(){
     <div class="v4-page-head"><div><div class="v4-eyebrow">Build Center</div><h1>PicoTrack Studio</h1><p>Le cœur de la plateforme : créez les formulaires, workflows, automatisations et bases métier.</p></div><button class="btn bp pill" onclick="goList()">＋ Nouveau formulaire</button></div>
     <div class="v4-module-grid">
       ${ptStudioCard('📋','Form Builder','Construire les écrans terrain : champs, photos, signatures, scan, rôles visibles et actions après validation.','Configuration','goList()','Ouvrir')}
-      ${ptStudioCard('🔀','Workflow Builder','Relier un formulaire à un processus : statuts, actions, flux, prise en charge et suivi opérationnel.','Processus','goWorkflows()','Configurer')}
+      ${ptStudioCard('🔀','Service Builder','Créer des processus métier lancés depuis Exécution : étapes formulaires, statuts, boutons et suivi opérationnel.','Processus','goWorkflows()','Configurer')}
       ${ptStudioCard('⚙️','Automatisations','Déclencher des emails, PDF, impressions, API POST, exports ou écritures dans une base métier.','Actions','goAutomations()','Préparer')}
       ${ptStudioCard('🗃','Database','Créer des bases métier pour structurer les réceptions, stocks, contrôles, litiges ou interventions.','Données','goStudioDatabase()','Structurer')}
     </div>`;
@@ -71,8 +71,8 @@ function goWorkflows(){
   const wrap=document.getElementById('workflows-wrap'); if(!wrap) return;
   const services=(typeof SERVICES_DATA!=='undefined')?SERVICES_DATA:[];
   wrap.innerHTML=`
-    <div class="v4-page-head"><div><div class="v4-eyebrow">Workflow Builder</div><h1>Workflows opérationnels</h1><p>Un workflow transforme une saisie terrain en processus suivi : statuts, actions, responsabilités et historique.</p></div><button class="btn bp pill" onclick="openServiceBuilder(null)">＋ Nouveau workflow</button></div>
-    <div class="v4-flow-demo"><div>Déclencheur<br><b>Formulaire soumis</b></div><span>→</span><div>Condition<br><b>Règle métier</b></div><span>→</span><div>Action<br><b>Statut / Mail / BDD</b></div></div>
+    <div class="v4-page-head"><div><div class="v4-eyebrow">Service Builder</div><h1>Services opérationnels</h1><p>Un service se lance manuellement depuis Exécution : il utilise un formulaire comme étape, puis affiche les boutons, statuts et historique.</p></div><button class="btn bp pill" onclick="openServiceBuilder(null)">＋ Nouveau workflow</button></div>
+    <div class="v4-flow-demo"><div>Lancement<br><b>Depuis Exécution</b></div><span>→</span><div>Étape<br><b>Formulaire lié</b></div><span>→</span><div>Boutons<br><b>Statut / Mail / BDD</b></div></div>
     <div class="v4-panel"><div class="v4-panel-head"><h2>Workflows existants</h2><span>${services.length} workflow(s)</span></div>
       <div class="v4-workflow-list">${services.length?services.map(s=>`<button onclick="openServiceBuilder(${s.id})"><b>🔀 ${h(s.nom)}</b><small>${h(s.desc||'Workflow configurable')} · ${(s.statuses||[]).length} statuts · ${(s.actions||[]).length} actions</small></button>`).join(''):'<div class="v4-empty">Aucun workflow créé pour le moment.</div>'}</div>
     </div>`;

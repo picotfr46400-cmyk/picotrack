@@ -40,7 +40,7 @@ let svcBuilderKanbanGroups = [];
 // ══ NAVIGATION ══
 function goServices() {
   document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
-  document.getElementById('sb-services').classList.add('on');
+  (document.getElementById('sb-workflows')||{}).classList && document.getElementById('sb-workflows').classList.add('on');
   show('v-services');
   document.getElementById('tb-t').textContent = 'Services';
   document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Services</span>';
@@ -123,7 +123,7 @@ function openServiceBuilder(id) {
   document.getElementById('tb-t').textContent = curService ? 'Modifier : ' + curService.nom : 'Nouveau service';
   document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span class="bc-sep"> › </span><span class="bc-cur">${curService ? h(curService.nom) : 'Nouveau service'}</span>`;
   document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
-  document.getElementById('sb-services').classList.add('on');
+  (document.getElementById('sb-workflows')||{}).classList && document.getElementById('sb-workflows').classList.add('on');
   show('v-service-builder');
   setSvcTab('gen');
 }
@@ -495,76 +495,6 @@ function generateRef(svc) {
     .replace('{0000}', n);
 }
 
-
-// Création automatique d'une instance Service depuis une saisie formulaire classique.
-// Objectif : un formulaire collecte, le service suit le traitement métier.
-async function ptCreateServiceInstancesFromSubmission(form, submission) {
-  try {
-    if (!form || !submission || typeof SERVICES_DATA === 'undefined') return;
-
-    const linkedServices = (SERVICES_DATA || []).filter(svc =>
-      svc &&
-      svc.actif !== false &&
-      String(svc.formId) === String(form.id) &&
-      Array.isArray(svc.statuses) &&
-      svc.statuses.length
-    );
-
-    if (!linkedServices.length) return;
-
-    const device = (typeof isPadMode === 'function' && isPadMode()) ? 'pad' : 'desktop';
-    const userLabel = submission.utilisateur || (device === 'pad' ? '📱 PAD Terrain' : 'Picot Clément');
-    const now = new Date().toLocaleString('fr-FR');
-
-    for (const svc of linkedServices) {
-      // Anti-doublon : une seule instance par service + submission
-      const alreadyExists = (SERVICE_INSTANCES_DATA || []).some(inst =>
-        String(inst.serviceId) === String(svc.id) &&
-        String(inst.submissionId) === String(submission.id)
-      );
-      if (alreadyExists) continue;
-
-      const initialStatus = svc.statuses.find(s => s.type === 'initial') || svc.statuses[0];
-      const newInst = {
-        id: Date.now() + Math.floor(Math.random() * 1000),
-        serviceId: svc.id,
-        reference: generateRef(svc),
-        submissionId: submission.id,
-        currentStatusId: initialStatus ? initialStatus.id : null,
-        assignedTo: null,
-        priority: 'normal',
-        createdBy: userLabel,
-        createdAt: now,
-        events: [{
-          id: Date.now(),
-          type: 'created_from_form',
-          actor: userLabel,
-          at: now,
-          payload: { formId: form.id, submissionId: submission.id }
-        }]
-      };
-
-      try {
-        if (typeof DB !== 'undefined' && DB.createInstance && typeof instanceToDb === 'function') {
-          const rows = await DB.createInstance(instanceToDb(newInst, device));
-          const row = Array.isArray(rows) ? rows[0] : rows;
-          if (row && row.id) newInst.id = row.id;
-        }
-      } catch (e) {
-        console.warn('[DB] Instance service non sauvegardée:', e.message);
-      }
-
-      if (!SERVICE_INSTANCES_DATA.some(x => String(x.id) === String(newInst.id))) {
-        SERVICE_INSTANCES_DATA.push(newInst);
-      }
-
-      console.log('[Services] Instance créée depuis formulaire:', svc.nom, newInst.reference);
-    }
-  } catch (e) {
-    console.warn('[Services] Création instance depuis saisie impossible:', e.message);
-  }
-}
-
 function openServiceInstances(id) {
   const svc = SERVICES_DATA.find(s => s.id === id); if (!svc) return;
   curService = svc;
@@ -841,15 +771,16 @@ function goProdServices(){
   document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
   document.getElementById('sb-prod-services').classList.add('on');
   show('v-prod-services-list');
-  document.getElementById('tb-t').textContent='Services';
-  document.getElementById('breadcrumb').innerHTML='<span style="color:var(--tl)">▶ Production / Services</span>';
+  document.getElementById('tb-t').textContent='Exécution';
+  document.getElementById('breadcrumb').innerHTML='<span style="color:var(--tl)">▶ Production / Exécution</span>';
   renderProdServices();
 }
 function renderProdServices(list){
   list=(list||SERVICES_DATA).filter(s=>s.actif!==false);
   const grid=document.getElementById('prod-services-grid');
-  if(!list.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;opacity:.3">⚡</div>Aucun service actif.</div>`;return;}
-  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div onclick="openServiceKanban(${svc.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="padding:5px 14px;border-radius:20px;background:${c};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div></div></div></div>`;}).join('');
+  if(!grid)return;
+  if(!list.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;opacity:.3">⚡</div>Aucun service actif.<br><small>Créez d'abord un service dans Studio / Workflows.</small></div>`;return;}
+  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="display:flex;gap:6px"><button onclick="openCreateInstance(${svc.id})" style="padding:6px 13px;border-radius:20px;background:${c};color:#fff;border:none;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit">＋ Lancer</button><button onclick="openServiceKanban(${svc.id})" style="padding:6px 13px;border-radius:20px;background:#fff;color:${c};border:1.5px solid ${c};font-size:12px;font-weight:800;cursor:pointer;font-family:inherit">Suivre →</button></div></div></div></div>`;}).join('');
 }
 function searchProdServices(q){renderProdServices(SERVICES_DATA.filter(s=>s.nom.toLowerCase().includes(q.toLowerCase())));}
 function openServiceKanban(svcId){

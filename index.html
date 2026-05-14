@@ -39,7 +39,7 @@
   <div class="sb-s">Studio</div>
   <div class="sb-i" id="sb-studio" onclick="goStudio()"><span class="sb-ico">🧩</span> Studio Hub</div>
   <div class="sb-i" id="sb-forms" onclick="goList()"><span class="sb-ico">📋</span> Form Builder</div>
-  <div class="sb-i" id="sb-workflows" onclick="goWorkflows()"><span class="sb-ico">🔀</span> Workflows</div>
+  <div class="sb-i" id="sb-workflows" onclick="goWorkflows()"><span class="sb-ico">🔀</span> Services</div>
   <div class="sb-i" id="sb-automations" onclick="goAutomations()"><span class="sb-ico">⚙️</span> Automatisations</div>
   <div class="sb-i" id="sb-database" onclick="goStudioDatabase()"><span class="sb-ico">🗃</span> Database</div>
 
@@ -243,7 +243,7 @@
   <!-- PRODUCTION SERVICES : LISTE -->
 <div class="view" id="v-prod-services-list">
   <div style="padding:18px 22px;flex:1;overflow-y:auto">
-    <div class="toolbar"><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProdServices(this.value)"></div></div>
+    <div class="toolbar"><div style="font-size:13px;color:var(--tl)">Lancez un service ici. Une simple saisie formulaire ne crée pas de demande.</div><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProdServices(this.value)"></div></div>
     <div id="prod-services-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
   </div>
 </div>

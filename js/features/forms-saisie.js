@@ -697,11 +697,6 @@ function submitSaisie(){
     _ptPrepareMailTrigger(f, submission);
     _ptRunDbRowTrigger(f, submission);
 
-    // Création automatique d'une demande Service/Workflow liée au formulaire soumis
-    if (typeof ptCreateServiceInstancesFromSubmission === 'function') {
-      ptCreateServiceInstancesFromSubmission(f, submission);
-    }
-
     if(btn){
       btn.textContent = '✅ Enregistré !';
       btn.style.background = '#10b981';
