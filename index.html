@@ -1011,7 +1011,18 @@ const mailFieldChips = (target) => (
                 {triggers.printLabel?.enabled&&<div style={{display:"flex",gap:6}}><input value={triggers.printLabel.template||""} onChange={e=>setTrigger('printLabel',{template:e.target.value})} placeholder="Modèle d'étiquette" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/><input value={triggers.printLabel.printer||""} onChange={e=>setTrigger('printLabel',{printer:e.target.value})} placeholder="Imprimante" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/></div>}
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.sendMail?.enabled} onChange={e=>setTrigger('sendMail',{enabled:e.target.checked})}/> Envoyer un mail</label>
                 {triggers.sendMail?.enabled&&(
-  <div style={{display:"grid",gap:8,background:"#fff",border:"1px solid "+C.bd,borderRadius:10,padding:10}}>
+<div style={{
+  display:"grid",
+  gap:8,
+  background:"#fff",
+  border:"1px solid "+C.bd,
+  borderRadius:10,
+  padding:10,
+  maxHeight:"520px",
+ overflowY:"scroll",
+  overflowX:"hidden",
+  scrollbarWidth:"thin"
+}}>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
       <select value={triggers.sendMail.event||"create"} onChange={e=>setTrigger('sendMail',{event:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
         <option value="create">À la création</option>
