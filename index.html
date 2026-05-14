@@ -25,18 +25,33 @@
   <div class="sb-logo">
   <img src="logo-picotrack.png" alt="PicoTrack Logo" class="sb-logo-img">
 </div>
+  <div class="sb-env">
+    <span class="sb-env-dot"></span>
+    <div>
+      <div class="sb-env-nm">Environnement actif</div>
+      <div class="sb-env-sub">PicoTrack Nexus</div>
+    </div>
+  </div>
+
+  <div class="sb-s">Cockpit</div>
+  <div class="sb-i" id="sb-dashboard" onclick="goDashboard()"><span class="sb-ico">📊</span> Dashboard</div>
+
+  <div class="sb-s">Studio</div>
+  <div class="sb-i" id="sb-studio" onclick="goStudio()"><span class="sb-ico">🧩</span> Studio Hub</div>
+  <div class="sb-i" id="sb-forms" onclick="goList()"><span class="sb-ico">📋</span> Form Builder</div>
+  <div class="sb-i" id="sb-workflows" onclick="goWorkflows()"><span class="sb-ico">🔀</span> Workflows</div>
+  <div class="sb-i" id="sb-automations" onclick="goAutomations()"><span class="sb-ico">⚙️</span> Automatisations</div>
+  <div class="sb-i" id="sb-database" onclick="goStudioDatabase()"><span class="sb-ico">🗃</span> Database</div>
+
   <div class="sb-s">Administration</div>
-  <div class="sb-i" id="sb-dashboard" onclick="goDashboard()">📊 Dashboard</div>
-  <div class="sb-i" id="sb-users" onclick="goUsers()">👥 Utilisateurs <span class="sb-bk" id="sb-users-cnt">0</span></div>
-  <div class="sb-i" id="sb-roles" onclick="goRoles()">🔑 Rôles</div>
-  <div class="sb-i" id="sb-forms" onclick="goList()">📋 Formulaires</div>
-  <div class="sb-i" id="sb-services" onclick="goServices()">⚡ Services</div>
-  <div class="sb-i" id="sb-api" onclick="goApiConfig()">🔌 API</div>
+  <div class="sb-i" id="sb-users" onclick="goUsers()"><span class="sb-ico">👥</span> Utilisateurs <span class="sb-bk" id="sb-users-cnt">0</span></div>
+  <div class="sb-i" id="sb-roles" onclick="goRoles()"><span class="sb-ico">🔑</span> Rôles & Permissions</div>
+  <div class="sb-i" id="sb-api" onclick="goApiConfig()"><span class="sb-ico">🔌</span> API & Intégrations</div>
 
   <div class="sb-s">Production</div>
-  <div class="sb-i" id="sb-prod-forms" onclick="goProduction()">📋 Formulaires <span class="sb-bk" id="prod-forms-count">3</span></div>
-  <div class="sb-i" id="sb-prod-services" onclick="goProdServices()">⚡ Services</div>
-  <div class="sb-i" id="sb-prod-db" onclick="goProDatabase()">🗃 Base de données</div>
+  <div class="sb-i" id="sb-prod-forms" onclick="goProduction()"><span class="sb-ico">📱</span> PAD Terrain <span class="sb-bk" id="prod-forms-count">3</span></div>
+  <div class="sb-i" id="sb-prod-services" onclick="goProdServices()"><span class="sb-ico">⚡</span> Exécution</div>
+  <div class="sb-i" id="sb-prod-db" onclick="goProDatabase()"><span class="sb-ico">📚</span> Données</div>
 </div>
 <!-- MAIN -->
 <div id="main">
@@ -45,6 +60,27 @@
 <!-- VUE : DASHBOARD -->
 <div class="view" id="v-dashboard">
   <div style="padding:18px 22px;flex:1;overflow-y:auto" id="dashboard-wrap"></div>
+</div>
+
+
+<!-- VUE : STUDIO HUB -->
+<div class="view" id="v-studio">
+  <div class="studio-page" id="studio-wrap"></div>
+</div>
+
+<!-- VUE : WORKFLOWS V4 -->
+<div class="view" id="v-workflows">
+  <div class="studio-page" id="workflows-wrap"></div>
+</div>
+
+<!-- VUE : AUTOMATISATIONS V4 -->
+<div class="view" id="v-automations">
+  <div class="studio-page" id="automations-wrap"></div>
+</div>
+
+<!-- VUE : DATABASE STUDIO V4 -->
+<div class="view" id="v-database-studio">
+  <div class="studio-page" id="database-studio-wrap"></div>
 </div>
 
 <!-- VUE : LISTE DES RÔLES -->
@@ -937,6 +973,7 @@ window.PicoBuilderApp = PicoBuilderApp;
 <script src="js/features/services.js"></script>
 <script src="js/features/databases.js"></script>
 <script src="js/features/api.js"></script>
+<script src="js/features/studio-v4.js"></script>
 <script src="pad-mode.js"></script>
 <script src="js/features/pc-login.js"></script>
 <script src="js/init.js"></script>
