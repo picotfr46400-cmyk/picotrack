@@ -36,7 +36,6 @@ let svcBuilderColor = '#3b82f6', svcBuilderFormId = null;
 let curInstanceId = null, curKanbanGroupId = null;
 let svcBuilderCardConfig = {couleur:'#3b82f6', titleFieldId:null, subtitle1FieldId:null, subtitle2FieldId:null};
 let svcBuilderKanbanGroups = [];
-function jsArg(v){ return JSON.stringify(String(v)); }
 
 // ══ NAVIGATION ══
 function goServices() {
@@ -53,7 +52,6 @@ function goServices() {
 function renderServices(list) {
   list = list || SERVICES_DATA;
   const grid = document.getElementById('services-grid');
-  if (!grid) return;
   if (!list.length) {
     grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)">
       <div style="font-size:32px;margin-bottom:12px;opacity:.3">⚡</div>Aucun service créé</div>`;
@@ -64,7 +62,7 @@ function renderServices(list) {
     const all = SERVICE_INSTANCES_DATA.filter(i => i.serviceId === svc.id);
     const pending = all.filter(i => !isTerminalStatus(svc, i.currentStatusId)).length;
     const color = svc.couleur || '#3b82f6';
-    return `<div onclick="openServiceBuilder(${jsArg(svc.id)})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;display:flex;flex-direction:column;cursor:pointer">
+    return `<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;display:flex;flex-direction:column">
       <div style="height:5px;background:${color}"></div>
       <div style="padding:16px;flex:1">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
@@ -73,7 +71,7 @@ function renderServices(list) {
             <div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>
             ${svc.desc ? `<div style="font-size:11px;color:var(--tl);margin-top:1px">${h(svc.desc)}</div>` : ''}
           </div>
-          <button class="ic-btn" onclick="event.stopPropagation();openServiceBuilder(${jsArg(svc.id)})" title="Configurer">✏️</button>
+          <button class="ic-btn" onclick="event.stopPropagation();openServiceBuilder(${svc.id})" title="Configurer">✏️</button>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
           <span style="font-size:11px;padding:3px 9px;border-radius:20px;background:#f1f5f9;color:var(--tm)">${svc.statuses.length} statuts</span>
@@ -88,7 +86,7 @@ function renderServices(list) {
             <span style="font-size:11px;color:var(--tl)"> en cours</span>
             <span style="font-size:11px;color:var(--tl);margin-left:6px">/ ${all.length} total</span>
           </div>
-          <button onclick="event.stopPropagation();openServiceInstances(${jsArg(svc.id)})" style="padding:6px 16px;border-radius:20px;background:${color};color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Voir →</button>
+          <button onclick="openServiceInstances(${svc.id})" style="padding:6px 16px;border-radius:20px;background:${color};color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Voir →</button>
         </div>
       </div>
     </div>`;
@@ -138,12 +136,7 @@ function setSvcTab(t) {
     const tab = document.getElementById('svctab-' + x);
     if (tab) tab.classList.toggle('on', x === t);
   });
-  try { renderSvcTab(); }
-  catch(e) {
-    console.error('[Services] Erreur affichage onglet', t, e);
-    const area = document.getElementById('svc-area');
-    if (area) area.innerHTML = '<div class="b-sec"><div class="b-sec-t">Erreur affichage</div><div class="f-hint">'+(e.message||e)+'</div></div>';
-  }
+  renderSvcTab();
 }
 
 function renderSvcTab() {
@@ -291,61 +284,40 @@ function renderSvcStatuses(area) {
   const cnt = document.getElementById('svc-status-cnt');
   if (cnt) { cnt.textContent = svcBuilderStatuses.length; cnt.style.display = svcBuilderStatuses.length ? '' : 'none'; }
   area.innerHTML = `
-    <div class="svc-clean-head">
-      <div>
-        <div class="b-sec-t" style="margin:0">Statuts du processus</div>
-        <div class="f-hint">Vue simplifiée : les détails restent disponibles en ouvrant une carte.</div>
+    <div class="b-sec">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="b-sec-t" style="margin:0">Statuts</div>
+        <button class="btn bp btn-sm pill" onclick="addSvcStatus()">＋ Ajouter</button>
       </div>
-      <button class="btn bp btn-sm pill" onclick="addSvcStatus()">＋ Ajouter un statut</button>
-    </div>
-    ${!svcBuilderStatuses.length
-      ? `<div class="svc-empty"><div>◎</div>Ajoutez au moins 1 statut Initial et 1 statut Terminal.</div>`
-      : `<div class="svc-status-grid">
-        ${svcBuilderStatuses.map((s, i) => `
-          <details class="svc-status-card" ${i===0?'open':''}>
-            <summary>
-              <div class="svc-card-main">
-                <span class="svc-dot" style="background:${s.couleur}"></span>
-                <div>
-                  <strong>${h(s.nom || 'Sans nom')}</strong>
-                  <small>${s.type==='initial'?'Départ':s.type==='terminal'?'Fin':'Étape'} · ${Number(s.position||0)}%</small>
-                </div>
-              </div>
-              <div class="svc-card-right">
-                <span class="svc-pill ${s.type}">${s.type==='initial'?'Initial':s.type==='terminal'?'Terminal':'Normal'}</span>
-                <span class="svc-edit-label">Modifier</span>
-              </div>
-            </summary>
-            <div class="svc-card-edit">
-              <label>Nom du statut</label>
-              <input class="ci" value="${h(s.nom)}" placeholder="Nom du statut" oninput="svcBuilderStatuses[${i}].nom=this.value;this.closest('details').querySelector('summary strong').textContent=this.value||'Sans nom'">
-              <div class="svc-edit-row">
-                <div>
-                  <label>Type</label>
-                  <select class="ci" onchange="svcBuilderStatuses[${i}].type=this.value;renderSvcTab()">
-                    <option value="initial"  ${s.type==='initial' ?'selected':''}>Initial</option>
-                    <option value="normal"   ${s.type==='normal'  ?'selected':''}>Normal</option>
-                    <option value="terminal" ${s.type==='terminal'?'selected':''}>Terminal</option>
-                  </select>
-                </div>
-                <div>
-                  <label>Avancement</label>
-                  <input type="number" class="ci" value="${s.position}" min="0" max="100" oninput="svcBuilderStatuses[${i}].position=+this.value">
-                </div>
-              </div>
-              <label>Couleur</label>
-              <div class="svc-color-row">
-                ${COLORS.map(c => `<button type="button" class="svc-color" style="background:${c};${s.couleur===c?'box-shadow:0 0 0 3px #fff,0 0 0 5px '+c:''}" onclick="svcBuilderStatuses[${i}].couleur='${c}';renderSvcTab()"></button>`).join('')}
-              </div>
-              <label>Visible par</label>
-              <div class="svc-vis-row">${renderVisibilitySelector(s.visibleBy||[], `_toggleStatusVis.bind(null,${i})`)}</div>
-              <div class="svc-card-footer">
-                <button class="ic-btn" onclick="svcBuilderStatuses.splice(${i},1);renderSvcTab()">🗑 Supprimer</button>
-              </div>
+      ${!svcBuilderStatuses.length
+        ? `<div style="text-align:center;padding:32px;color:var(--tl);border:2px dashed var(--bd);border-radius:10px">
+             <div style="font-size:24px;margin-bottom:8px;opacity:.3">◎</div>
+             Ajoutez au moins 1 statut Initial et 1 statut Terminal.
+           </div>`
+        : svcBuilderStatuses.map((s, i) => `
+          <div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;gap:10px;align-items:center">
+            <div style="width:10px;height:10px;border-radius:50%;background:${s.couleur};flex-shrink:0"></div>
+            <input class="ci" style="flex:1" value="${h(s.nom)}" placeholder="Nom du statut" oninput="svcBuilderStatuses[${i}].nom=this.value">
+            <select class="ci" style="width:130px" onchange="svcBuilderStatuses[${i}].type=this.value">
+              <option value="initial"  ${s.type==='initial' ?'selected':''}>Initial</option>
+              <option value="normal"   ${s.type==='normal'  ?'selected':''}>Normal</option>
+              <option value="terminal" ${s.type==='terminal'?'selected':''}>Terminal</option>
+            </select>
+            <input type="number" class="ci" style="width:65px;text-align:center" value="${s.position}" min="0" max="100" title="Position %" oninput="svcBuilderStatuses[${i}].position=+this.value">
+            <div style="display:flex;gap:4px">
+              ${COLORS.slice(0,6).map(c => `<div style="width:18px;height:18px;border-radius:4px;background:${c};cursor:pointer;
+                border:2px solid ${s.couleur===c?'#fff':'transparent'};box-shadow:${s.couleur===c?'0 0 0 2px '+c:'none'};flex-shrink:0"
+                onclick="svcBuilderStatuses[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}
             </div>
-          </details>`).join('')}
-      </div>`}
-    <div class="f-hint" style="margin-top:12px">💡 Le statut Initial est utilisé à la création d'une exécution.</div>`;
+            <button class="ic-btn" onclick="svcBuilderStatuses.splice(${i},1);renderSvcTab()">🗑</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0 2px;flex-wrap:wrap">
+            <span style="font-size:11px;font-weight:700;color:var(--tl);flex-shrink:0">Visible par :</span>
+            ${renderVisibilitySelector(s.visibleBy||[], `_toggleStatusVis.bind(null,${i})`)}
+          </div>
+        </div>`).join('')}
+    </div>
+   <div class="f-hint">💡 "Initial" = statut à la création.</div>`;
 }
 
 function addSvcStatus() {
@@ -360,62 +332,43 @@ function addSvcStatus() {
 function renderSvcActions(area) {
   const cnt = document.getElementById('svc-action-cnt');
   if (cnt) { cnt.textContent = svcBuilderActions.length; cnt.style.display = svcBuilderActions.length ? '' : 'none'; }
-  const ET = [{v:'change_status',l:'Changer le statut'},{v:'fill_form',l:'Remplir un formulaire'},{v:'assign',l:'Affecter'},{v:'send_email',l:'Envoyer un email'},{v:'comment',l:'Commenter'},{v:'edit_form',l:'Modifier le formulaire'},{v:'update_db_row', l:'Modifier une ligne BDD'}];
+  const ET = [{v:'change_status',l:'Changer le statut'},{v:'fill_form',l:'Remplir un formulaire'},{v:'assign',l:'Affecter'},{v:'send_email',l:'Envoyer un email'},{v:'comment',l:'Commenter'},{v:'edit_form',l:'Modifier le formulaire'},{v:'update_db_row', l:'Modifier une ligne (base de données)'}];
   const sOpts = svcBuilderStatuses.map(s=>`<option value="${s.id}">${h(s.nom)}</option>`).join('');
   const fOpts = FORMS_DATA.filter(f=>f.actif!==false).map(f=>`<option value="${f.id}">${h(f.nom)}</option>`).join('');
-  area.innerHTML = `
-    <div class="svc-clean-head">
-      <div>
-        <div class="b-sec-t" style="margin:0">Boutons terrain</div>
-        <div class="f-hint">Les opérateurs verront ces boutons dans Exécution. Les effets sont masqués par défaut.</div>
-      </div>
-      <button class="btn bp btn-sm pill" onclick="addSvcAction()">＋ Ajouter un bouton</button>
+  area.innerHTML = `<div class="b-sec">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="b-sec-t" style="margin:0">Boutons d'action</div>
+      <button class="btn bp btn-sm pill" onclick="addSvcAction()">＋ Ajouter</button>
     </div>
     ${!svcBuilderActions.length
-      ? `<div class="svc-empty"><div>◉</div>Aucun bouton pour le moment.</div>`
-      : `<div class="svc-action-grid">
-        ${svcBuilderActions.map((a,i)=>{
-          const effects=a.effects||[{type:a.type||'change_status',config:a.config||{}}];
-          const effectLabel = effects.length + ' effet' + (effects.length>1?'s':'');
-          return `<details class="svc-action-card" ${i===0?'open':''}>
-            <summary>
-              <div class="svc-card-main">
-                <span class="svc-action-dot" style="background:${a.couleur||'#0ea5e9'}"></span>
-                <div>
-                  <strong>${h(a.nom || 'Bouton sans nom')}</strong>
-                  <small>${effectLabel}</small>
-                </div>
-              </div>
-              <div class="svc-card-right">
-                <span class="svc-pill action">Action</span>
-                <span class="svc-edit-label">Modifier</span>
-              </div>
-            </summary>
-            <div class="svc-card-edit">
-              <label>Libellé du bouton</label>
-              <input class="ci" value="${h(a.nom)}" oninput="svcBuilderActions[${i}].nom=this.value;this.closest('details').querySelector('summary strong').textContent=this.value||'Bouton sans nom'">
-              <label>Couleur</label>
-              <div class="svc-color-row">${COLORS.map(c=>`<button type="button" class="svc-color" style="background:${c};${a.couleur===c?'box-shadow:0 0 0 3px #fff,0 0 0 5px '+c:''}" onclick="svcBuilderActions[${i}].couleur='${c}';renderSvcTab()"></button>`).join('')}</div>
-              <label>Visible par</label>
-              <div class="svc-vis-row">${renderVisibilitySelector(a.visibleBy||[], `_toggleActionVis.bind(null,${i})`)}</div>
-              <div class="svc-effects-title">Effets exécutés dans l’ordre</div>
-              ${effects.map((ef,ei)=>`<div class="svc-effect-line">
-                <span>${ei+1}</span>
-                <div>
-                  <select class="ci" onchange="updateEffect(${i},${ei},'type',this.value)">${ET.map(t=>`<option value="${t.v}" ${ef.type===t.v?'selected':''}>${t.l}</option>`).join('')}</select>
-                  ${ef.type==='change_status'?`<select class="ci" onchange="updateEffect(${i},${ei},'targetStatusId',this.value)"><option value="">— Statut cible —</option>${sOpts}</select>`:''}
-                  ${ef.type==='fill_form'?`<select class="ci" onchange="updateEffect(${i},${ei},'formId',+this.value)"><option value="">— Formulaire —</option>${fOpts}</select>`:''}
-                  ${ef.type==='update_db_row'? renderDbEffectHtml(i,ei,ef) :''}
-                </div>
-                <button class="ic-btn" onclick="removeEffect(${i},${ei})">✕</button>
-              </div>`).join('')}
-              <button class="svc-add-effect" onclick="addEffect(${i})">＋ Ajouter un effet</button>
-              <div class="svc-card-footer"><button class="ic-btn" onclick="svcBuilderActions.splice(${i},1);renderSvcTab()">🗑 Supprimer le bouton</button></div>
+      ?`<div style="text-align:center;padding:32px;color:var(--tl);border:2px dashed var(--bd);border-radius:10px"><div style="font-size:24px;opacity:.3">◉</div>Aucun bouton.</div>`
+      :svcBuilderActions.map((a,i)=>{
+        const effects=a.effects||[{type:a.type||'change_status',config:a.config||{}}];
+        return `<div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:10px">
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
+            <input class="ci" style="flex:1" value="${h(a.nom)}" oninput="svcBuilderActions[${i}].nom=this.value">
+            <div style="display:flex;gap:4px">${COLORS.slice(0,6).map(c=>`<div style="width:18px;height:18px;border-radius:4px;background:${c};cursor:pointer;border:2px solid ${a.couleur===c?'#fff':'transparent'};box-shadow:${a.couleur===c?'0 0 0 2px '+c:'none'}" onclick="svcBuilderActions[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}</div>
+            <button class="ic-btn" onclick="svcBuilderActions.splice(${i},1);renderSvcTab()">🗑</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0 8px;flex-wrap:wrap">
+            <span style="font-size:11px;font-weight:700;color:var(--tl);flex-shrink:0">Visible par :</span>
+            ${renderVisibilitySelector(a.visibleBy||[], `_toggleActionVis.bind(null,${i})`)}
+          </div>
+          <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">Effets séquentiels</div>
+          ${effects.map((ef,ei)=>`<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;background:var(--bg);border-radius:8px;padding:8px 10px">
+            <span style="font-size:11px;font-weight:800;color:var(--tl);min-width:16px;margin-top:6px">${ei+1}</span>
+            <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+              <select class="ci" onchange="updateEffect(${i},${ei},'type',this.value)">${ET.map(t=>`<option value="${t.v}" ${ef.type===t.v?'selected':''}>${t.l}</option>`).join('')}</select>
+              ${ef.type==='change_status'?`<select class="ci" onchange="updateEffect(${i},${ei},'targetStatusId',this.value)"><option value="">— Statut cible —</option>${sOpts}</select>`:''}
+              ${ef.type==='fill_form'?`<select class="ci" onchange="updateEffect(${i},${ei},'formId',+this.value)"><option value="">— Formulaire —</option>${fOpts}</select>`:''}
+${ef.type==='update_db_row'? renderDbEffectHtml(i,ei,ef) :''}
             </div>
-          </details>`;}).join('')}
-      </div>`}`;
+            <button class="ic-btn" onclick="removeEffect(${i},${ei})">✕</button>
+          </div>`).join('')}
+          <button style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--bd);background:transparent;color:var(--tm);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit" onclick="addEffect(${i})">＋ Ajouter un effet</button>
+        </div>`;}).join('')}
+  </div>`;
 }
-
 function updateEffect(ai,ei,key,val){if(!svcBuilderActions[ai].effects)svcBuilderActions[ai].effects=[];const ef=svcBuilderActions[ai].effects[ei];if(!ef)return;if(key==='type'){ef.type=val;ef.config={};renderSvcTab();}else if(key==='targetStatusId')ef.config={targetStatusId:val};else if(key==='formId'){
     const fid = String(val).startsWith('sdb_') ? val : +val;
     if(ef.type==='update_db_row'){ef.config={formId:fid,matchCriteria:[],updates:[]};renderSvcTab();}
@@ -545,7 +498,7 @@ function generateRef(svc) {
 }
 
 function openServiceInstances(id) {
-  const svc = SERVICES_DATA.find(s => String(s.id) === String(id)); if (!svc) return;
+  const svc = SERVICES_DATA.find(s => s.id === id); if (!svc) return;
   curService = svc;
   document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(svc.nom)}</span>`;
   document.getElementById('tb-t').textContent = svc.nom;
@@ -561,7 +514,7 @@ function renderServiceInstances(svc) {
       <div style="font-size:17px;font-weight:800">${h(svc.nom)}</div>
       <div style="font-size:12px;color:var(--tl);margin-top:2px">${instances.length} demande${instances.length>1?'s':''}</div>
     </div>
-    <button class="btn bp" onclick="openCreateInstance(${jsArg(svc.id)})" style="background:${color};border-color:${color}">＋ Nouvelle demande</button>
+    <button class="btn bp" onclick="openCreateInstance(${svc.id})" style="background:${color};border-color:${color}">＋ Nouvelle demande</button>
   </div>`;
   if (!instances.length) {
     html += `<div style="text-align:center;padding:60px;color:var(--tl);background:#fff;border-radius:12px;border:1.5px dashed var(--bd)">
@@ -570,7 +523,7 @@ function renderServiceInstances(svc) {
     html += instances.map(inst => {
       const status = svc.statuses.find(s => s.id === inst.currentStatusId);
       const title  = getInstanceTitle(svc, inst);
-      return `<div onclick="openInstanceDetail(${jsArg(inst.id)})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px 18px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:14px;transition:all .15s"
+      return `<div onclick="openInstanceDetail(${inst.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px 18px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:14px;transition:all .15s"
         onmouseover="this.style.borderColor='${color}';this.style.boxShadow='0 2px 10px rgba(0,0,0,.08)'"
         onmouseout="this.style.borderColor='var(--bd)';this.style.boxShadow='none'">
         <div style="font-size:11.5px;font-weight:800;font-family:'DM Mono',monospace;color:var(--tl);min-width:130px">${h(inst.reference)}</div>
@@ -595,11 +548,11 @@ function getInstanceTitle(svc, inst) {
 }
 
 function openCreateInstance(svcId) {
-  const svc = SERVICES_DATA.find(s => String(s.id) === String(svcId)); if (!svc) return;
+  const svc = SERVICES_DATA.find(s => s.id === svcId); if (!svc) return;
   const f = FORMS_DATA.find(x => x.id === svc.formId);
   if (!f) { toast('e','⚠️ Formulaire introuvable — configurez le service'); return; }
   curService = svc; curSaisieFormId = f.id; saisieValues = {};
-  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="openServiceInstances(${jsArg(svc.id)})">▶ ${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">Nouvelle demande</span>`;
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="openServiceInstances(${svc.id})">▶ ${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">Nouvelle demande</span>`;
   document.getElementById('tb-t').textContent = svc.nom;
   renderSaisieForm(f);
   // patch le bouton submit
@@ -663,10 +616,10 @@ async function submitServiceInstance(f, svc) {
 }
 // ── Détail d'une demande ──
 function openInstanceDetail(id) {
-  const inst = SERVICE_INSTANCES_DATA.find(x => String(x.id) === String(id)); if (!inst) return;
+  const inst = SERVICE_INSTANCES_DATA.find(x => x.id === id); if (!inst) return;
   const svc  = SERVICES_DATA.find(s => s.id === inst.serviceId); if (!svc) return;
   curService = svc; curInstanceId = id;
-  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span style="color:var(--tl);margin:0 4px">/</span><span class="bc-link" onclick="openServiceInstances(${jsArg(svc.id)})">${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(inst.reference)}</span>`;
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span style="color:var(--tl);margin:0 4px">/</span><span class="bc-link" onclick="openServiceInstances(${svc.id})">${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(inst.reference)}</span>`;
   document.getElementById('tb-t').textContent = inst.reference;
   renderInstanceDetail(inst, svc);
   show('v-service-instance-detail');
@@ -712,7 +665,7 @@ function renderInstanceDetail(inst, svc) {
     main += `<div style="margin-bottom:18px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">Actions disponibles</div>
       <div style="display:flex;flex-wrap:wrap;gap:8px">`;
     availableActions.forEach(a => {
-      main += `<button onclick="executeAction(${jsArg(inst.id)},${jsArg(a.id)})"
+      main += `<button onclick="executeAction(${inst.id},'${a.id}')"
         style="padding:8px 20px;border-radius:8px;border:none;background:${a.couleur};color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s"
         onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">${h(a.nom)}</button>`;
     });
@@ -726,7 +679,7 @@ function renderInstanceDetail(inst, svc) {
     <textarea id="comment-input-${inst.id}" style="width:100%;border:1.5px solid var(--bd);border-radius:8px;padding:10px;font-family:'Plus Jakarta Sans',sans-serif;font-size:13px;resize:none;height:72px;outline:none;box-sizing:border-box;transition:border-color .15s" placeholder="Votre commentaire..."
       onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'"></textarea>
     <div style="display:flex;justify-content:flex-end;margin-top:8px">
-      <button onclick="addComment(${jsArg(inst.id)})" style="padding:7px 18px;border-radius:8px;border:none;background:${color};color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit">Envoyer</button>
+      <button onclick="addComment(${inst.id})" style="padding:7px 18px;border-radius:8px;border:none;background:${color};color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit">Envoyer</button>
     </div>
   </div></div>`;
 
@@ -758,9 +711,9 @@ const LABELS = {created:'Demande créée', status_changed:'Statut modifié', com
 
 // ── Exécuter une action ──
 function executeAction(instId, actionId) {
-  const inst=SERVICE_INSTANCES_DATA.find(x=>String(x.id)===String(instId));if(!inst)return;
-  const svc=SERVICES_DATA.find(s=>String(s.id)===String(inst.serviceId));if(!svc)return;
-  const action=svc.actions.find(a=>String(a.id)===String(actionId));if(!action)return;
+  const inst=SERVICE_INSTANCES_DATA.find(x=>x.id===instId);if(!inst)return;
+  const svc=SERVICES_DATA.find(s=>s.id===inst.serviceId);if(!svc)return;
+  const action=svc.actions.find(a=>a.id===actionId);if(!action)return;
   const effects=action.effects||(action.type?[{type:action.type,config:action.config||{}}]:[]);
   const now=new Date().toLocaleString('fr-FR');
   if(effects.some(ef=>ef.type==='comment')){const inp=document.getElementById('comment-input-'+instId);if(!inp||!inp.value.trim()){toast('e','⚠️ Ce bouton requiert un commentaire');inp&&inp.focus();return;}}
@@ -828,7 +781,7 @@ function renderProdServices(list){
   list=(list||SERVICES_DATA).filter(s=>s.actif!==false);
   const grid=document.getElementById('prod-services-grid');
   if(!list.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;opacity:.3">⚡</div>Aucun service actif.</div>`;return;}
-  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div onclick="openServiceKanban(${jsArg(svc.id)})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="padding:5px 14px;border-radius:20px;background:${c};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div></div></div></div>`;}).join('');
+  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div onclick="openServiceKanban(${svc.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="padding:5px 14px;border-radius:20px;background:${c};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div></div></div></div>`;}).join('');
 }
 function searchProdServices(q){renderProdServices(SERVICES_DATA.filter(s=>s.nom.toLowerCase().includes(q.toLowerCase())));}
 function openServiceKanban(svcId){
@@ -844,7 +797,7 @@ function openServiceKanban(svcId){
 function renderKanbanTabs(svc){
   const groups=(svc.kanbanGroups||[]).filter(g=>g.visible).sort((a,b)=>a.order-b.order);
   const el=document.getElementById('kanban-group-tabs');if(!groups.length){el.innerHTML='';return;}
-  el.innerHTML=groups.map(g=>{const cnt=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&g.statusIds.includes(i.currentStatusId)).length;const on=g.id===curKanbanGroupId;return`<div onclick="curKanbanGroupId=${jsArg(g.id)};renderKanbanTabs(curService);renderKanbanBoard(curService,${jsArg(g.id)})" style="padding:12px 20px;font-size:13px;font-weight:700;cursor:pointer;border-bottom:3px solid ${on?'var(--p)':'transparent'};color:${on?'var(--p)':'var(--tl)'};white-space:nowrap;display:flex;align-items:center;gap:7px">${h(g.nom)}<span style="font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;background:${on?'var(--pl)':'#f1f5f9'};color:${on?'var(--p)':'var(--tl)'}">${cnt}</span></div>`;}).join('');
+  el.innerHTML=groups.map(g=>{const cnt=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&g.statusIds.includes(i.currentStatusId)).length;const on=g.id===curKanbanGroupId;return`<div onclick="curKanbanGroupId='${g.id}';renderKanbanTabs(curService);renderKanbanBoard(curService,'${g.id}')" style="padding:12px 20px;font-size:13px;font-weight:700;cursor:pointer;border-bottom:3px solid ${on?'var(--p)':'transparent'};color:${on?'var(--p)':'var(--tl)'};white-space:nowrap;display:flex;align-items:center;gap:7px">${h(g.nom)}<span style="font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;background:${on?'var(--pl)':'#f1f5f9'};color:${on?'var(--p)':'var(--tl)'}">${cnt}</span></div>`;}).join('');
 }
 function renderKanbanBoard(svc,groupId){
   const board=document.getElementById('kanban-board');if(!board)return;
@@ -858,7 +811,7 @@ function renderKanbanBoard(svc,groupId){
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px 14px;background:#fff;border-radius:10px;border:1.5px solid var(--bd);border-left:4px solid ${status.couleur}">
         <span style="font-size:13px;font-weight:800">${h(status.nom)}</span>
         <span style="font-size:11px;font-weight:800;padding:1px 8px;border-radius:20px;background:${status.couleur}20;color:${status.couleur};margin-left:auto">${instances.length}</span>
-        <button onclick="openCreateInstance(${jsArg(svc.id)})" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--bd);background:#fff;cursor:pointer;font-size:14px;color:var(--tl)" title="Nouvelle demande">＋</button>
+        <button onclick="openCreateInstance(${svc.id})" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--bd);background:#fff;cursor:pointer;font-size:14px;color:var(--tl)" title="Nouvelle demande">＋</button>
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;min-height:60px">
         ${instances.length?instances.map(inst=>buildKanbanCardHtml(inst,svc,status)).join(''):`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:12px">Aucune demande</div>`}
@@ -871,7 +824,7 @@ function buildKanbanCardHtml(inst,svc,status){
   const gv=fid=>{if(!fid||!sub)return null;const v=sub.values[fid];return Array.isArray(v)?v.join(', '):(v||null);};
   const tV=gv(cc.titleFieldId)||inst.reference;const s1=gv(cc.subtitle1FieldId);const s2=gv(cc.subtitle2FieldId);
   const acts=svc.actions.filter(a=>svc.flux.find(fl=>fl.statusId===status.id&&fl.actionId===a.id&&fl.enabled));
-  return`<div onclick="openInstanceDetail(${jsArg(inst.id)})" style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}'" onmouseout="this.style.borderColor='var(--bd)'">
+  return`<div onclick="openInstanceDetail(${inst.id})" style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}'" onmouseout="this.style.borderColor='var(--bd)'">
     <div style="height:3px;background:${c}"></div>
     <div style="padding:11px 13px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
@@ -881,7 +834,7 @@ function buildKanbanCardHtml(inst,svc,status){
       <div style="font-size:13px;font-weight:800;margin-bottom:3px">${h(tV)}</div>
       ${s1?`<div style="font-size:11.5px;color:var(--tl)">${h(s1)}</div>`:''}
       ${s2?`<div style="font-size:11.5px;color:var(--tl)">${h(s2)}</div>`:''}
-      ${acts.length?`<div onclick="event.stopPropagation()" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bg)">${acts.map(a=>`<button onclick="event.stopPropagation();executeAction(${jsArg(inst.id)},${jsArg(a.id)})" style="padding:4px 10px;border-radius:6px;border:none;background:${a.couleur};color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">${h(a.nom)}</button>`).join('')}</div>`:''}
+      ${acts.length?`<div onclick="event.stopPropagation()" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bg)">${acts.map(a=>`<button onclick="event.stopPropagation();executeAction(${inst.id},'${a.id}')" style="padding:4px 10px;border-radius:6px;border:none;background:${a.couleur};color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">${h(a.nom)}</button>`).join('')}</div>`:''}
     </div>
   </div>`;
 }
