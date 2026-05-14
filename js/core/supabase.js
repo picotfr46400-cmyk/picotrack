@@ -25,6 +25,14 @@ async function sbFetch(path, options = {}) {
   return text ? JSON.parse(text) : [];
 }
 
+
+function _ptIsResetArtifactServiceSupabase(s){
+  const nom = String((s && (s.nom || s.name)) || '').trim().toLowerCase();
+  const desc = String((s && (s.description || s.desc)) || '').toLowerCase();
+  return nom === 'nouvelle mission' || desc.includes('mission builder') || desc.includes('process builder');
+}
+function _ptFilterResetServices(rows){ return (rows || []).filter(r => !_ptIsResetArtifactServiceSupabase(r)); }
+
 const DB = {
   async getForms() { return sbFetch('forms?select=*&order=created_at.asc'); },
   async createForm(data) { return sbFetch('forms', { method:'POST', body:JSON.stringify(data) }); },
@@ -226,7 +234,7 @@ async function _pollCatalog(){
       }
     });
 
-    services.forEach(r=>{
+    _ptFilterResetServices(services).forEach(r=>{
       const h=_hash(r), key=String(r.id), old=_serviceHashes.get(key);
       if(old!==h){
         _serviceHashes.set(key,h);
@@ -263,7 +271,7 @@ async function syncAllFromSupabase(){
     }
     if(services.length){
       SERVICES_DATA.length = 0;
-      services.forEach(r=>SERVICES_DATA.push(mapServiceFromDb(r)));
+      _ptFilterResetServices(services).forEach(r=>SERVICES_DATA.push(mapServiceFromDb(r)));
     }
     SUBMISSIONS_DATA.length = 0;
     submissions.forEach(r=>SUBMISSIONS_DATA.push(mapSubmissionFromDb(r)));
@@ -273,7 +281,7 @@ async function syncAllFromSupabase(){
 
     // Références pour détecter ensuite les modifications pendant le polling
     _formHashes.clear(); forms.forEach(r=>_formHashes.set(String(r.id), _hash(r)));
-    _serviceHashes.clear(); services.forEach(r=>_serviceHashes.set(String(r.id), _hash(r)));
+    _serviceHashes.clear(); _ptFilterResetServices(services).forEach(r=>_serviceHashes.set(String(r.id), _hash(r)));
     _instanceHashes.clear(); instances.forEach(r=>_instanceHashes.set(String(r.id), _hash(r)));
 
     console.log('[DB] Données chargées depuis Supabase ✅', {forms:FORMS_DATA.length, services:SERVICES_DATA.length, submissions:SUBMISSIONS_DATA.length, instances:SERVICE_INSTANCES_DATA.length});

@@ -37,11 +37,20 @@ let curInstanceId = null, curKanbanGroupId = null;
 let svcBuilderCardConfig = {couleur:'#3b82f6', titleFieldId:null, subtitle1FieldId:null, subtitle2FieldId:null};
 let svcBuilderKanbanGroups = [];
 
+function _ptIsResetArtifactService(s){
+  const nom = String((s && s.nom) || '').trim().toLowerCase();
+  const desc = String((s && s.desc) || '').toLowerCase();
+  return nom === 'nouvelle mission' || desc.includes('mission builder') || desc.includes('process builder');
+}
+function _ptVisibleServices(list){
+  return (list || []).filter(s => !_ptIsResetArtifactService(s));
+}
+
+
 // ══ NAVIGATION ══
 function goServices() {
   document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
-  const _sbSvc = document.getElementById('sb-services') || document.getElementById('sb-workflows');
-  if (_sbSvc) _sbSvc.classList.add('on');
+  document.getElementById('sb-services').classList.add('on');
   show('v-services');
   document.getElementById('tb-t').textContent = 'Services';
   document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Services</span>';
@@ -50,7 +59,7 @@ function goServices() {
 
 // ══ LISTE SERVICES ══
 function renderServices(list) {
-  list = list || SERVICES_DATA;
+  list = _ptVisibleServices(list || SERVICES_DATA);
   const grid = document.getElementById('services-grid');
   if (!list.length) {
     grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)">
@@ -99,12 +108,12 @@ function isTerminalStatus(svc, statusId) {
 }
 
 function searchServices(q) {
-  renderServices(SERVICES_DATA.filter(s => s.nom.toLowerCase().includes(q.toLowerCase())));
+  renderServices(_ptVisibleServices(SERVICES_DATA).filter(s => s.nom.toLowerCase().includes(q.toLowerCase())));
 }
 
 // ══ SERVICE BUILDER ══
 function openServiceBuilder(id) {
-  curService = id ? SERVICES_DATA.find(s => String(s.id) === String(id)) : null;
+  curService = id ? SERVICES_DATA.find(s => s.id === id) : null;
   if (curService) {
     svcBuilderStatuses = JSON.parse(JSON.stringify(curService.statuses));
     svcBuilderActions  = JSON.parse(JSON.stringify(curService.actions));
@@ -124,8 +133,7 @@ function openServiceBuilder(id) {
   document.getElementById('tb-t').textContent = curService ? 'Modifier : ' + curService.nom : 'Nouveau service';
   document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span class="bc-sep"> › </span><span class="bc-cur">${curService ? h(curService.nom) : 'Nouveau service'}</span>`;
   document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
-  const _sbSvc = document.getElementById('sb-services') || document.getElementById('sb-workflows');
-  if (_sbSvc) _sbSvc.classList.add('on');
+  document.getElementById('sb-services').classList.add('on');
   show('v-service-builder');
   setSvcTab('gen');
 }
@@ -778,12 +786,12 @@ function goProdServices(){
   renderProdServices();
 }
 function renderProdServices(list){
-  list=(list||SERVICES_DATA).filter(s=>s.actif!==false);
+  list=_ptVisibleServices(list||SERVICES_DATA).filter(s=>s.actif!==false);
   const grid=document.getElementById('prod-services-grid');
   if(!list.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;opacity:.3">⚡</div>Aucun service actif.</div>`;return;}
   grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div onclick="openServiceKanban(${svc.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="padding:5px 14px;border-radius:20px;background:${c};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div></div></div></div>`;}).join('');
 }
-function searchProdServices(q){renderProdServices(SERVICES_DATA.filter(s=>s.nom.toLowerCase().includes(q.toLowerCase())));}
+function searchProdServices(q){renderProdServices(_ptVisibleServices(SERVICES_DATA).filter(s=>s.nom.toLowerCase().includes(q.toLowerCase())));}
 function openServiceKanban(svcId){
   const svc=SERVICES_DATA.find(s=>s.id===svcId);if(!svc)return;curService=svc;
   const groups=(svc.kanbanGroups||[]).filter(g=>g.visible).sort((a,b)=>a.order-b.order);
