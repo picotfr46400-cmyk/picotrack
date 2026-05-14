@@ -1,3 +1,33 @@
+async function loadStandaloneDatabasesFromSupabase() {
+  if (typeof sbFetch !== 'function') return;
+
+  try {
+    const dbs = await sbFetch('databases?select=*');
+    const rows = await sbFetch('database_rows?select=*');
+
+    const loaded = (dbs || []).map(db => ({
+      id: db.id,
+      nom: db.nom,
+      couleur: db.couleur || '#3b82f6',
+      columns: Array.isArray(db.columns) ? db.columns : [],
+      rows: (rows || [])
+        .filter(r => String(r.database_id) === String(db.id))
+        .map(r => ({
+          id: r.id,
+          date: r.created_at,
+          dateLabel: r.created_at ? new Date(r.created_at).toLocaleString('fr-FR') : '',
+          source: r.source || 'supabase',
+          formId: r.form_id,
+          submissionId: r.submission_id,
+          values: r.values || {}
+        }))
+    }));
+
+    DATABASES_DATA = loaded;
+  } catch (e) {
+    console.warn('[DB] Erreur chargement databases Supabase:', e);
+  }
+}
 // ══ BASES AUTONOMES ══
 function createDatabaseModal(editId) {
   const db = editId ? DATABASES_DATA.find(x=>x.id===editId) : null;
@@ -45,25 +75,60 @@ function _refreshDBCols() {
     </div>`).join('');
 }
 
-function saveStandaloneDB(editId) {
+async function saveStandaloneDB(editId) {
   const modal = document.getElementById('db-create-modal');
   const nom = document.getElementById('db-modal-nom').value.trim();
+
   if (!nom) { toast('e','⚠ Nom requis'); return; }
-  const cols = (modal._cols||[]).filter(c=>c.nom.trim());
+
+  const cols = (modal._cols || []).filter(c => c.nom.trim());
   if (!cols.length) { toast('e','⚠ Au moins une colonne requise'); return; }
+
   const couleur = document.querySelector('#db-modal-colors .c-swatch.on')?.style?.background || '#3b82f6';
-  if (editId) {
-    const db = DATABASES_DATA.find(x=>x.id===editId);
-    if (db) { db.nom=nom; db.couleur=couleur; db.columns=cols; }
-    modal.remove(); toast('s','✅ Base modifiée'); renderStandaloneDBTable(DATABASES_DATA.find(x=>x.id===editId));
-  } else {
-    DATABASES_DATA.push({id:Date.now(),nom,couleur,columns:cols,rows:[]});
-    modal.remove(); toast('s','✅ Base créée'); renderProDatabase();
+  const id = editId ? String(editId) : String(Date.now());
+
+  const dbPayload = {
+    id,
+    environment_code: 'DEMO',
+    nom,
+    couleur,
+    type: 'manual',
+    columns: cols,
+    updated_at: new Date().toISOString()
+  };
+
+  try {
+    if (typeof sbFetch === 'function') {
+      await sbFetch('databases', {
+        method: 'POST',
+        body: JSON.stringify(dbPayload)
+      });
+    }
+
+    const existing = DATABASES_DATA.find(x => String(x.id) === String(id));
+
+    if (existing) {
+      existing.nom = nom;
+      existing.couleur = couleur;
+      existing.columns = cols;
+    } else {
+      DATABASES_DATA.push({ id, nom, couleur, columns: cols, rows: [] });
+    }
+
+    modal.remove();
+    toast('s', editId ? '✅ Base modifiée' : '✅ Base créée');
+
+    await loadStandaloneDatabasesFromSupabase();
+    renderProDatabase();
+
+  } catch (e) {
+    console.warn('[DB] Erreur sauvegarde database Supabase:', e);
+    toast('e','Erreur sauvegarde base Supabase');
   }
 }
 
 function openStandaloneDB(dbId) {
-  const db = DATABASES_DATA.find(x=>x.id===dbId); if (!db) return;
+  const db = DATABASES_DATA.find(x => String(x.id) === String(dbId)); if (!db) return;
   document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goProDatabase()">▶ Base de données</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(db.nom)}</span>`;
   document.getElementById('tb-t').textContent = db.nom;
   show('v-prod-database-table');
@@ -214,13 +279,15 @@ function saveManualRow(dbId) {
   renderStandaloneDBTable(db);
 }
 // ══ PRODUCTION : BASE DE DONNÉES DYNAMIQUE ══
-function goProDatabase() {
+async function goProDatabase() {
   document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
   document.getElementById('sb-prod-db').classList.add('on');
   show('v-prod-database');
   document.getElementById('tb-t').textContent = 'Base de données';
   document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Production / Base de données</span>';
- renderProDatabase();
+
+  await loadStandaloneDatabasesFromSupabase();
+  renderProDatabase();
 }
 function renderProDatabase(filterQ) {
   const q = (filterQ||'').toLowerCase();
