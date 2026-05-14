@@ -173,7 +173,66 @@ function _ptMailConditionOk(form, values, cfg) {
 
   return true;
 }
+function _ptNormalizeKey(v) {
+  return String(v || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g,'_')
+    .replace(/^_+|_+$/g,'');
+}
 
+function _ptRunDbRowTrigger(form, submission) {
+  const cfg = form.triggers && form.triggers.addDbRow ? form.triggers.addDbRow : null;
+  if (!cfg || !cfg.enabled) return;
+
+  const targetDb = (typeof DATABASES_DATA !== 'undefined')
+    ? DATABASES_DATA.find(db => String(db.id) === String(cfg.targetDbId))
+    : null;
+
+  if (!targetDb) {
+    console.warn('[PicoTrack DB] Base cible introuvable', cfg.targetDbId);
+    toast('w','Base cible introuvable');
+    return;
+  }
+
+  const values = {};
+  const fields = form.fields || [];
+  const formValues = submission.values || {};
+
+  if ((cfg.mappingMode || 'auto') === 'manual') {
+    (cfg.mappings || []).forEach(m => {
+      if (!m.colId || !m.fieldId) return;
+      values[m.colId] = formValues[m.fieldId] !== undefined ? formValues[m.fieldId] : '';
+    });
+  } else {
+    (targetDb.columns || []).forEach(col => {
+      const colKey = _ptNormalizeKey(col.nom || col.name || col.id);
+      const match = fields.find(f =>
+        _ptNormalizeKey(f.nom) === colKey ||
+        _ptNormalizeKey(f.field_key) === colKey ||
+        _ptNormalizeKey(f.id) === colKey
+      );
+
+      if (match) {
+        values[col.id] = formValues[match.id] !== undefined ? formValues[match.id] : '';
+      }
+    });
+  }
+
+  targetDb.rows = targetDb.rows || [];
+  targetDb.rows.push({
+    id: Date.now(),
+    date: new Date().toISOString(),
+    dateLabel: new Date().toLocaleString('fr-FR'),
+    source: 'form:' + (form.nom || ''),
+    formId: form.id,
+    submissionId: submission.id,
+    values
+  });
+
+  console.log('[PicoTrack DB] Ligne ajoutée :', targetDb.nom, values);
+  toast('s','🗃 Ligne ajoutée dans ' + targetDb.nom);
+}
 function _ptPrepareMailTrigger(form, submission) {
   const cfg = form.triggers && form.triggers.sendMail ? form.triggers.sendMail : null;
   if (!cfg || !cfg.enabled) return;
@@ -320,6 +379,7 @@ function submitSaisie(){
 
  f.resp = SUBMISSIONS_DATA.filter(s => String(s.formId) === String(f.id)).length + 1;
   _ptPrepareMailTrigger(f, newSub);
+  _ptRunDbRowTrigger(f, newSub);
   document.getElementById('prod-forms-count').textContent=FORMS_DATA.filter(x=>x.actif!==false).length;
   const btn=document.getElementById('btn-submit-saisie');
   if(btn){btn.textContent='✅ Enregistré !';btn.style.background='#10b981';btn.style.pointerEvents='none';}
