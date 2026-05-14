@@ -64,7 +64,7 @@ function renderServices(list) {
     const all = SERVICE_INSTANCES_DATA.filter(i => i.serviceId === svc.id);
     const pending = all.filter(i => !isTerminalStatus(svc, i.currentStatusId)).length;
     const color = svc.couleur || '#3b82f6';
-    return `<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;display:flex;flex-direction:column">
+    return `<div onclick="openServiceBuilder(${jsArg(svc.id)})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;display:flex;flex-direction:column;cursor:pointer">
       <div style="height:5px;background:${color}"></div>
       <div style="padding:16px;flex:1">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
@@ -88,7 +88,7 @@ function renderServices(list) {
             <span style="font-size:11px;color:var(--tl)"> en cours</span>
             <span style="font-size:11px;color:var(--tl);margin-left:6px">/ ${all.length} total</span>
           </div>
-          <button onclick="openServiceInstances(${jsArg(svc.id)})" style="padding:6px 16px;border-radius:20px;background:${color};color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Voir →</button>
+          <button onclick="event.stopPropagation();openServiceInstances(${jsArg(svc.id)})" style="padding:6px 16px;border-radius:20px;background:${color};color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Voir →</button>
         </div>
       </div>
     </div>`;
@@ -138,7 +138,12 @@ function setSvcTab(t) {
     const tab = document.getElementById('svctab-' + x);
     if (tab) tab.classList.toggle('on', x === t);
   });
-  renderSvcTab();
+  try { renderSvcTab(); }
+  catch(e) {
+    console.error('[Services] Erreur affichage onglet', t, e);
+    const area = document.getElementById('svc-area');
+    if (area) area.innerHTML = '<div class="b-sec"><div class="b-sec-t">Erreur affichage</div><div class="f-hint">'+(e.message||e)+'</div></div>';
+  }
 }
 
 function renderSvcTab() {
