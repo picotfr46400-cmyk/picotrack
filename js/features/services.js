@@ -792,47 +792,149 @@ function openServiceKanban(svcId){
   document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
   document.getElementById('sb-prod-services').classList.add('on');
 }
+
+function _svcParseDateMs(v){
+  if(!v) return 0;
+  if(typeof v === 'number') return v;
+  let t = Date.parse(v);
+  if(!isNaN(t)) return t;
+  const m = String(v).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if(m){
+    return new Date(+m[3], +m[2]-1, +m[1], +(m[4]||0), +(m[5]||0), +(m[6]||0)).getTime();
+  }
+  return 0;
+}
+function _svcElapsedLabel(v){
+  const t=_svcParseDateMs(v); if(!t) return 'date inconnue';
+  const diff=Math.max(0, Date.now()-t);
+  const min=Math.floor(diff/60000), h2=Math.floor(min/60), d=Math.floor(h2/24);
+  if(min<1) return 'à l’instant';
+  if(min<60) return `il y a ${min} min`;
+  if(h2<24) return `il y a ${h2}h`;
+  return `il y a ${d}j`;
+}
+function _svcLight(hex, alpha){
+  hex = String(hex||'#3b82f6').replace('#','');
+  if(hex.length===3) hex=hex.split('').map(x=>x+x).join('');
+  const r=parseInt(hex.slice(0,2),16)||59, g=parseInt(hex.slice(2,4),16)||130, b=parseInt(hex.slice(4,6),16)||246;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+function _svcInitials(name){
+  return String(name||'AD').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase() || 'AD';
+}
+function _svcProgressForStatus(svc,status){
+  if(typeof status?.progress === 'number') return status.progress;
+  const st=(svc.statuses||[]); const i=st.findIndex(x=>x.id===status?.id);
+  return st.length>1 ? Math.round((i/(st.length-1))*100) : 0;
+}
+function _svcInstTitleParts(svc, inst){
+  const cc=svc.cardConfig||{}; const sub=SUBMISSIONS_DATA.find(s=>s.id===inst.submissionId);
+  const gv=fid=>{ if(!fid||!sub) return null; const v=sub.values[fid]; return Array.isArray(v)?v.join(', '):(v||null); };
+  const title=gv(cc.titleFieldId)||getInstanceTitle(svc,inst)||inst.reference;
+  const s1=gv(cc.subtitle1FieldId); const s2=gv(cc.subtitle2FieldId);
+  return {title,s1,s2,sub};
+}
+function _svcStatusCounts(svc){
+  const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);
+  const terminalIds=(svc.statuses||[]).filter(s=>s.type==='terminal').map(s=>s.id);
+  const closed=all.filter(i=>terminalIds.includes(i.currentStatusId)).length;
+  const waiting=all.filter(i=>String((svc.statuses||[]).find(s=>s.id===i.currentStatusId)?.nom||'').toLowerCase().includes('attente')).length;
+  const late=all.filter(i=>!terminalIds.includes(i.currentStatusId) && (Date.now()-_svcParseDateMs(i.createdAt)) > 24*3600*1000).length;
+  return {all, active:all.length-closed, waiting, closed, late};
+}
 function renderKanbanTabs(svc){
+  const el=document.getElementById('kanban-group-tabs'); if(!el) return;
+  const c=svc.couleur||'#3b82f6';
+  el.style.cssText='display:flex;align-items:center;gap:10px;padding:14px 18px;background:#fff;border-bottom:1px solid var(--bd);flex-shrink:0;overflow-x:auto';
   const groups=(svc.kanbanGroups||[]).filter(g=>g.visible).sort((a,b)=>a.order-b.order);
-  const el=document.getElementById('kanban-group-tabs');if(!groups.length){el.innerHTML='';return;}
-  el.innerHTML=groups.map(g=>{const cnt=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&g.statusIds.includes(i.currentStatusId)).length;const on=g.id===curKanbanGroupId;return`<div onclick="curKanbanGroupId='${g.id}';renderKanbanTabs(curService);renderKanbanBoard(curService,'${g.id}')" style="padding:12px 20px;font-size:13px;font-weight:700;cursor:pointer;border-bottom:3px solid ${on?'var(--p)':'transparent'};color:${on?'var(--p)':'var(--tl)'};white-space:nowrap;display:flex;align-items:center;gap:7px">${h(g.nom)}<span style="font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;background:${on?'var(--pl)':'#f1f5f9'};color:${on?'var(--p)':'var(--tl)'}">${cnt}</span></div>`;}).join('');
+  const tabs=groups.map(g=>{const cnt=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&g.statusIds.includes(i.currentStatusId)).length;const on=g.id===curKanbanGroupId;return `<button onclick="curKanbanGroupId='${g.id}';renderKanbanTabs(curService);renderKanbanBoard(curService,'${g.id}')" class="pt-exec-tab ${on?'on':''}">${h(g.nom)} <span>${cnt}</span></button>`;}).join('');
+  el.innerHTML=`
+    <button class="pt-exec-filter">▾ Filtres</button>
+    <div class="pt-exec-search"><span>🔎</span><input placeholder="Rechercher un dossier..." value="${h(window._svcKanbanSearch||'')}" oninput="window._svcKanbanSearch=this.value;renderKanbanBoard(curService,curKanbanGroupId)"></div>
+    <div class="pt-exec-tabs">${tabs}</div>
+    <button class="pt-exec-view on">▦</button>
+    <button class="pt-exec-view">☰</button>
+    <button class="pt-exec-new" onclick="openCreateInstance(${JSON.stringify(svc.id)})">＋ Nouveau</button>
+  `;
 }
 function renderKanbanBoard(svc,groupId){
-  const board=document.getElementById('kanban-board');if(!board)return;
+  const board=document.getElementById('kanban-board'); if(!board) return;
+  board.style.cssText='flex:1;overflow:auto;background:#f6f9fc;padding:18px';
   const groups=(svc.kanbanGroups||[]).filter(g=>g.visible).sort((a,b)=>a.order-b.order);
   const statusIds=groups.length?(groups.find(g=>g.id===groupId)?.statusIds||[]):svc.statuses.map(s=>s.id);
   const cols=svc.statuses.filter(s=>statusIds.includes(s.id));
-  if(!cols.length){board.innerHTML=`<div style="color:var(--tl);padding:40px">Aucun statut dans ce groupe.</div>`;return;}
-  board.innerHTML=cols.map(status=>{
-    const instances=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&i.currentStatusId===status.id);
-    return`<div style="min-width:280px;max-width:320px;flex-shrink:0">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px 14px;background:#fff;border-radius:10px;border:1.5px solid var(--bd);border-left:4px solid ${status.couleur}">
-        <span style="font-size:13px;font-weight:800">${h(status.nom)}</span>
-        <span style="font-size:11px;font-weight:800;padding:1px 8px;border-radius:20px;background:${status.couleur}20;color:${status.couleur};margin-left:auto">${instances.length}</span>
-        <button onclick="openCreateInstance(${svc.id})" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--bd);background:#fff;cursor:pointer;font-size:14px;color:var(--tl)" title="Nouvelle demande">＋</button>
-      </div>
-      <div style="display:flex;flex-direction:column;gap:8px;min-height:60px">
-        ${instances.length?instances.map(inst=>buildKanbanCardHtml(inst,svc,status)).join(''):`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:12px">Aucune demande</div>`}
-      </div>
+  const counts=_svcStatusCounts(svc); const c=svc.couleur||'#3b82f6';
+  const selected=SERVICE_INSTANCES_DATA.find(x=>x.id===curInstanceId && x.serviceId===svc.id) || counts.all[0];
+  if(selected) curInstanceId=selected.id;
+  const kpis=[
+    ['📁', counts.active, 'Dossiers actifs', '+ aujourd’hui', '#3b82f6'],
+    ['⏱️', counts.waiting, 'En attente', 'SLA > 24h', '#f97316'],
+    ['⚠️', counts.late, 'En retard', counts.late?'Action requise':'RAS', '#ef4444'],
+    ['✅', counts.all.length?Math.round((counts.closed/counts.all.length)*100)+'%':'0%', 'Taux de clôture', 'Ce mois', '#10b981'],
+    ['🕒', '18h', 'Temps moyen', '-2h vs hier', '#6366f1']
+  ];
+  const search=String(window._svcKanbanSearch||'').trim().toLowerCase();
+  board.innerHTML=`
+    <div class="pt-exec-shell">
+      <section class="pt-exec-main">
+        <div class="pt-exec-kpis">${kpis.map(k=>`<div class="pt-kpi"><div class="pt-kpi-ico" style="background:${_svcLight(k[4],.12)};color:${k[4]}">${k[0]}</div><div><b>${h(k[1])}</b><span>${h(k[2])}</span><small style="color:${k[4]}">${h(k[3])}</small></div></div>`).join('')}</div>
+        <div class="pt-board">
+          ${cols.map(status=>{
+            let instances=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&i.currentStatusId===status.id);
+            if(search){ instances=instances.filter(i=>{const p=_svcInstTitleParts(svc,i);return `${i.reference} ${p.title} ${p.s1||''} ${p.s2||''}`.toLowerCase().includes(search);}); }
+            const avg= status.type==='terminal' ? '18h' : (status.type==='initial'?'2h':'6h');
+            return `<div class="pt-col" style="--col:${status.couleur}">
+              <div class="pt-col-head"><div><b>${h(status.nom)}</b><span>Temps moyen : ${avg}</span></div><em>${instances.length}</em><button onclick="openCreateInstance(${JSON.stringify(svc.id)})">＋</button><button>⋮</button></div>
+              <div class="pt-col-list">${instances.length?instances.map(inst=>buildKanbanCardHtml(inst,svc,status)).join(''):`<div class="pt-empty">Aucune demande</div>`}</div>
+              <button class="pt-add-folder" onclick="openCreateInstance(${JSON.stringify(svc.id)})">＋ Ajouter un dossier</button>
+            </div>`;
+          }).join('')}
+        </div>
+      </section>
+      <aside class="pt-drawer">${selected?renderKanbanDrawerHtml(selected,svc):`<div class="pt-drawer-empty">Sélectionnez un dossier</div>`}</aside>
     </div>`;
-  }).join('');
 }
 function buildKanbanCardHtml(inst,svc,status){
-  const cc=svc.cardConfig||{};const sub=SUBMISSIONS_DATA.find(s=>s.id===inst.submissionId);const c=cc.couleur||svc.couleur||'#3b82f6';
-  const gv=fid=>{if(!fid||!sub)return null;const v=sub.values[fid];return Array.isArray(v)?v.join(', '):(v||null);};
-  const tV=gv(cc.titleFieldId)||inst.reference;const s1=gv(cc.subtitle1FieldId);const s2=gv(cc.subtitle2FieldId);
+  const {title,s1,s2}= _svcInstTitleParts(svc,inst);
   const acts=svc.actions.filter(a=>svc.flux.find(fl=>fl.statusId===status.id&&fl.actionId===a.id&&fl.enabled));
-  return`<div onclick="openInstanceDetail(${inst.id})" style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}'" onmouseout="this.style.borderColor='var(--bd)'">
-    <div style="height:3px;background:${c}"></div>
-    <div style="padding:11px 13px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
-        <span style="font-size:10.5px;font-family:'DM Mono',monospace;color:var(--tl)">${h(inst.reference)}</span>
-        ${inst.assignedTo?`<span style="font-size:10px;padding:1px 7px;border-radius:20px;background:var(--pl);color:var(--p)">👤 ${h(inst.assignedTo)}</span>`:''}
-      </div>
-      <div style="font-size:13px;font-weight:800;margin-bottom:3px">${h(tV)}</div>
-      ${s1?`<div style="font-size:11.5px;color:var(--tl)">${h(s1)}</div>`:''}
-      ${s2?`<div style="font-size:11.5px;color:var(--tl)">${h(s2)}</div>`:''}
-      ${acts.length?`<div onclick="event.stopPropagation()" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bg)">${acts.map(a=>`<button onclick="event.stopPropagation();executeAction(${inst.id},'${a.id}')" style="padding:4px 10px;border-radius:6px;border:none;background:${a.couleur};color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">${h(a.nom)}</button>`).join('')}</div>`:''}
+  const first=acts[0]; const rest=acts.slice(1);
+  const priority=inst.priority==='high'||inst.priority==='haute'?'Haute':(inst.priority==='low'?'Basse':'Normale');
+  const progress=_svcProgressForStatus(svc,status);
+  const selected=curInstanceId==inst.id;
+  return `<div class="pt-card ${selected?'selected':''}" onclick="openKanbanDrawer(${JSON.stringify(inst.id)})">
+    <div class="pt-card-top"><span>${h(inst.reference)}</span><label style="background:${_svcLight(status.couleur,.12)};color:${status.couleur}">${h(status.nom)}</label></div>
+    <h4>${h(title)}</h4>
+    ${s1||s2?`<p>${s1?`▣ ${h(s1)}`:''}${s1&&s2?' · ':''}${s2?`⌖ ${h(s2)}`:''}</p>`:''}
+    <p>◷ Créé ${h(_svcElapsedLabel(inst.createdAt))}</p>
+    ${progress>0&&progress<100?`<div class="pt-progress"><i style="width:${progress}%"></i><span>${progress}%</span></div>`:''}
+    <div class="pt-card-tags"><span class="prio ${priority==='Haute'?'high':''}">⚑ ${priority}</span>${inst.assignedTo?`<span class="user">${h(_svcInitials(inst.assignedTo))}</span><small>${h(inst.assignedTo)}</small>`:''}</div>
+    <div class="pt-card-actions" onclick="event.stopPropagation()">
+      ${first?`<button class="primary" onclick="executeAction(${JSON.stringify(inst.id)},'${first.id}')">▶ ${h(first.nom)}</button>`:`<button onclick="openKanbanDrawer(${JSON.stringify(inst.id)})">Voir détail</button>`}
+      <button onclick="openKanbanDrawer(${JSON.stringify(inst.id)})">💬</button><button>⋮</button>
+      ${rest.length?`<div class="pt-more-actions">${rest.map(a=>`<button onclick="executeAction(${JSON.stringify(inst.id)},'${a.id}')" style="--a:${a.couleur}">${h(a.nom)}</button>`).join('')}</div>`:''}
     </div>
   </div>`;
+}
+function openKanbanDrawer(id){
+  curInstanceId=id;
+  if(curService) renderKanbanBoard(curService,curKanbanGroupId);
+}
+function closeKanbanDrawer(){curInstanceId=null;if(curService)renderKanbanBoard(curService,curKanbanGroupId);}
+function renderKanbanDrawerHtml(inst,svc){
+  const status=svc.statuses.find(s=>s.id===inst.currentStatusId)||{};
+  const {title,s1,s2,sub}= _svcInstTitleParts(svc,inst);
+  const f=FORMS_DATA.find(x=>x.id===svc.formId);
+  const acts=svc.actions.filter(a=>svc.flux.find(fl=>fl.statusId===inst.currentStatusId&&fl.actionId===a.id&&fl.enabled));
+  const fields=(f&&sub?(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)).slice(0,8):[]);
+  const rows=fields.map(fld=>{const v=sub.values[fld.id]; const val=Array.isArray(v)?v.join(', '):(v||'—'); return `<div><span>${h(fld.nom)}</span><b>${h(val)}</b></div>`;}).join('');
+  const events=[...(inst.events||[])].reverse().slice(0,6);
+  return `<div class="pt-drawer-head"><div><span>${h(inst.reference)}</span><label style="background:${_svcLight(status.couleur,.14)};color:${status.couleur}">${h(status.nom||'')}</label></div><button onclick="closeKanbanDrawer()">×</button></div>
+    <h2>${h(title)}</h2>
+    <p class="pt-drawer-sub">${s1?`${h(s1)}`:''}${s1&&s2?' · ':''}${s2?`${h(s2)}`:''}</p>
+    <div class="pt-drawer-meta"><div>◷ Créé ${h(_svcElapsedLabel(inst.createdAt))}<br><small>${h(inst.createdAt||'')}</small></div><div><span class="avatar">${h(_svcInitials(inst.assignedTo||'Admin'))}</span>${h(inst.assignedTo||'Non assigné')}</div></div>
+    <div class="pt-drawer-tabs"><b>Détails</b><span>Historique</span><span>Commentaires</span><span>Pièces jointes</span></div>
+    <div class="pt-info"><h3>Informations générales</h3>${rows||'<p>Aucune donnée formulaire.</p>'}</div>
+    <div class="pt-info"><h3>Description</h3><p>${h(svc.desc||'Suivi opérationnel du dossier.')}</p></div>
+    <div class="pt-quick"><h3>Actions rapides</h3>${acts.map((a,i)=>`<button class="${i===0?'main':''}" onclick="executeAction(${JSON.stringify(inst.id)},'${a.id}')" style="--c:${a.couleur}">${i===0?'▶':'↳'} ${h(a.nom)}</button>`).join('')||'<p>Aucune action disponible.</p>'}<button onclick="openInstanceDetail(${JSON.stringify(inst.id)})">Ouvrir la fiche complète</button></div>
+    <div class="pt-mini-history"><h3>Derniers événements</h3>${events.map(ev=>`<div><b>${h(ev.type)}</b><span>${h(ev.actor||'')} · ${h(ev.at||'')}</span></div>`).join('')}</div>`;
 }
