@@ -87,7 +87,13 @@ function goAutomations(){
   if(!wrap) return;
 
   const outbox = JSON.parse(localStorage.getItem('pt_mail_outbox') || '[]').reverse();
-
+const makeMailto = (m) => {
+  const to = (m.to || []).join(',');
+  const cc = (m.cc || []).join(',');
+  const subject = encodeURIComponent(m.subject || '');
+  const body = encodeURIComponent((m.body || '') + '\n\nPDF de la saisie à joindre manuellement.');
+  return `mailto:${to}?cc=${cc}&subject=${subject}&body=${body}`;
+};
   wrap.innerHTML=`
     <div class="v4-page-head">
       <div>
@@ -114,30 +120,17 @@ function goAutomations(){
       ${outbox.length ? `
         <div class="v4-workflow-list">
           ${outbox.map(m=>`
-            <button onclick="
-(function(){
-  <button onclick="
-(function(){
-  const to = ${(JSON.stringify(m.to || []))}.join(',');
-  const cc = ${(JSON.stringify(m.cc || []))}.join(',');
-  const subject = encodeURIComponent(${JSON.stringify(m.subject || '')});
-  const body = encodeURIComponent((${JSON.stringify(m.body || '')}) + '\n\nPDF de la saisie à joindre manuellement.');
-  window.open(
-    'mailto:' + to +
-    '?cc=' + cc +
-    '&subject=' + subject +
-    '&body=' + body,
-    '_blank'
-  );
-})()
-">
-              <b>✉️ ${h(m.subject || 'Sans objet')}</b>
-              <small>
-                À : ${h((m.to || []).join(', ') || 'Aucun destinataire')}<br>
-                CC : ${h((m.cc || []).join(', ') || '—')}<br>
-                Statut : ${h(m.status || 'prepared')} · PDF : ${m.attachPdf ? 'Oui' : 'Non'} · ${m.createdAt ? new Date(m.createdAt).toLocaleString('fr-FR') : ''}
-              </small>
-            </button>
+            <div style="border:1px solid var(--bd);background:#fff;border-radius:16px;padding:14px;text-align:left">
+  <b>✉️ ${h(m.subject || 'Sans objet')}</b>
+  <small style="display:block;margin-top:6px;color:var(--tl);line-height:1.45">
+    À : ${h((m.to || []).join(', ') || 'Aucun destinataire')}<br>
+    CC : ${h((m.cc || []).join(', ') || '—')}<br>
+    Statut : ${h(m.status || 'prepared')} · PDF : ${m.attachPdf ? 'Oui' : 'Non'} · ${m.createdAt ? new Date(m.createdAt).toLocaleString('fr-FR') : ''}
+  </small>
+  <a href="${makeMailto(m)}" target="_blank" class="btn bp pill" style="margin-top:12px;text-decoration:none;display:inline-flex">
+    Envoyer
+  </a>
+</div>
           `).join('')}
         </div>
       ` : `
