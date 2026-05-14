@@ -40,7 +40,8 @@ let svcBuilderKanbanGroups = [];
 // ══ NAVIGATION ══
 function goServices() {
   document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
-  (document.getElementById('sb-workflows')||{}).classList && document.getElementById('sb-workflows').classList.add('on');
+  const _sbSvc = document.getElementById('sb-services') || document.getElementById('sb-workflows');
+  if (_sbSvc) _sbSvc.classList.add('on');
   show('v-services');
   document.getElementById('tb-t').textContent = 'Services';
   document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Services</span>';
@@ -103,7 +104,7 @@ function searchServices(q) {
 
 // ══ SERVICE BUILDER ══
 function openServiceBuilder(id) {
-  curService = id ? SERVICES_DATA.find(s => s.id === id) : null;
+  curService = id ? SERVICES_DATA.find(s => String(s.id) === String(id)) : null;
   if (curService) {
     svcBuilderStatuses = JSON.parse(JSON.stringify(curService.statuses));
     svcBuilderActions  = JSON.parse(JSON.stringify(curService.actions));
@@ -123,7 +124,8 @@ function openServiceBuilder(id) {
   document.getElementById('tb-t').textContent = curService ? 'Modifier : ' + curService.nom : 'Nouveau service';
   document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span class="bc-sep"> › </span><span class="bc-cur">${curService ? h(curService.nom) : 'Nouveau service'}</span>`;
   document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
-  (document.getElementById('sb-workflows')||{}).classList && document.getElementById('sb-workflows').classList.add('on');
+  const _sbSvc = document.getElementById('sb-services') || document.getElementById('sb-workflows');
+  if (_sbSvc) _sbSvc.classList.add('on');
   show('v-service-builder');
   setSvcTab('gen');
 }
@@ -282,40 +284,61 @@ function renderSvcStatuses(area) {
   const cnt = document.getElementById('svc-status-cnt');
   if (cnt) { cnt.textContent = svcBuilderStatuses.length; cnt.style.display = svcBuilderStatuses.length ? '' : 'none'; }
   area.innerHTML = `
-    <div class="b-sec">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-        <div class="b-sec-t" style="margin:0">Statuts</div>
-        <button class="btn bp btn-sm pill" onclick="addSvcStatus()">＋ Ajouter</button>
+    <div class="svc-clean-head">
+      <div>
+        <div class="b-sec-t" style="margin:0">Statuts du processus</div>
+        <div class="f-hint">Vue simplifiée : les détails restent disponibles en ouvrant une carte.</div>
       </div>
-      ${!svcBuilderStatuses.length
-        ? `<div style="text-align:center;padding:32px;color:var(--tl);border:2px dashed var(--bd);border-radius:10px">
-             <div style="font-size:24px;margin-bottom:8px;opacity:.3">◎</div>
-             Ajoutez au moins 1 statut Initial et 1 statut Terminal.
-           </div>`
-        : svcBuilderStatuses.map((s, i) => `
-          <div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;gap:10px;align-items:center">
-            <div style="width:10px;height:10px;border-radius:50%;background:${s.couleur};flex-shrink:0"></div>
-            <input class="ci" style="flex:1" value="${h(s.nom)}" placeholder="Nom du statut" oninput="svcBuilderStatuses[${i}].nom=this.value">
-            <select class="ci" style="width:130px" onchange="svcBuilderStatuses[${i}].type=this.value">
-              <option value="initial"  ${s.type==='initial' ?'selected':''}>Initial</option>
-              <option value="normal"   ${s.type==='normal'  ?'selected':''}>Normal</option>
-              <option value="terminal" ${s.type==='terminal'?'selected':''}>Terminal</option>
-            </select>
-            <input type="number" class="ci" style="width:65px;text-align:center" value="${s.position}" min="0" max="100" title="Position %" oninput="svcBuilderStatuses[${i}].position=+this.value">
-            <div style="display:flex;gap:4px">
-              ${COLORS.slice(0,6).map(c => `<div style="width:18px;height:18px;border-radius:4px;background:${c};cursor:pointer;
-                border:2px solid ${s.couleur===c?'#fff':'transparent'};box-shadow:${s.couleur===c?'0 0 0 2px '+c:'none'};flex-shrink:0"
-                onclick="svcBuilderStatuses[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}
-            </div>
-            <button class="ic-btn" onclick="svcBuilderStatuses.splice(${i},1);renderSvcTab()">🗑</button>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;padding:4px 0 2px;flex-wrap:wrap">
-            <span style="font-size:11px;font-weight:700;color:var(--tl);flex-shrink:0">Visible par :</span>
-            ${renderVisibilitySelector(s.visibleBy||[], `_toggleStatusVis.bind(null,${i})`)}
-          </div>
-        </div>`).join('')}
+      <button class="btn bp btn-sm pill" onclick="addSvcStatus()">＋ Ajouter un statut</button>
     </div>
-   <div class="f-hint">💡 "Initial" = statut à la création.</div>`;
+    ${!svcBuilderStatuses.length
+      ? `<div class="svc-empty"><div>◎</div>Ajoutez au moins 1 statut Initial et 1 statut Terminal.</div>`
+      : `<div class="svc-status-grid">
+        ${svcBuilderStatuses.map((s, i) => `
+          <details class="svc-status-card" ${i===0?'open':''}>
+            <summary>
+              <div class="svc-card-main">
+                <span class="svc-dot" style="background:${s.couleur}"></span>
+                <div>
+                  <strong>${h(s.nom || 'Sans nom')}</strong>
+                  <small>${s.type==='initial'?'Départ':s.type==='terminal'?'Fin':'Étape'} · ${Number(s.position||0)}%</small>
+                </div>
+              </div>
+              <div class="svc-card-right">
+                <span class="svc-pill ${s.type}">${s.type==='initial'?'Initial':s.type==='terminal'?'Terminal':'Normal'}</span>
+                <span class="svc-edit-label">Modifier</span>
+              </div>
+            </summary>
+            <div class="svc-card-edit">
+              <label>Nom du statut</label>
+              <input class="ci" value="${h(s.nom)}" placeholder="Nom du statut" oninput="svcBuilderStatuses[${i}].nom=this.value;this.closest('details').querySelector('summary strong').textContent=this.value||'Sans nom'">
+              <div class="svc-edit-row">
+                <div>
+                  <label>Type</label>
+                  <select class="ci" onchange="svcBuilderStatuses[${i}].type=this.value;renderSvcTab()">
+                    <option value="initial"  ${s.type==='initial' ?'selected':''}>Initial</option>
+                    <option value="normal"   ${s.type==='normal'  ?'selected':''}>Normal</option>
+                    <option value="terminal" ${s.type==='terminal'?'selected':''}>Terminal</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Avancement</label>
+                  <input type="number" class="ci" value="${s.position}" min="0" max="100" oninput="svcBuilderStatuses[${i}].position=+this.value">
+                </div>
+              </div>
+              <label>Couleur</label>
+              <div class="svc-color-row">
+                ${COLORS.map(c => `<button type="button" class="svc-color" style="background:${c};${s.couleur===c?'box-shadow:0 0 0 3px #fff,0 0 0 5px '+c:''}" onclick="svcBuilderStatuses[${i}].couleur='${c}';renderSvcTab()"></button>`).join('')}
+              </div>
+              <label>Visible par</label>
+              <div class="svc-vis-row">${renderVisibilitySelector(s.visibleBy||[], `_toggleStatusVis.bind(null,${i})`)}</div>
+              <div class="svc-card-footer">
+                <button class="ic-btn" onclick="svcBuilderStatuses.splice(${i},1);renderSvcTab()">🗑 Supprimer</button>
+              </div>
+            </div>
+          </details>`).join('')}
+      </div>`}
+    <div class="f-hint" style="margin-top:12px">💡 Le statut Initial est utilisé à la création d'une exécution.</div>`;
 }
 
 function addSvcStatus() {
@@ -330,43 +353,62 @@ function addSvcStatus() {
 function renderSvcActions(area) {
   const cnt = document.getElementById('svc-action-cnt');
   if (cnt) { cnt.textContent = svcBuilderActions.length; cnt.style.display = svcBuilderActions.length ? '' : 'none'; }
-  const ET = [{v:'change_status',l:'Changer le statut'},{v:'fill_form',l:'Remplir un formulaire'},{v:'assign',l:'Affecter'},{v:'send_email',l:'Envoyer un email'},{v:'comment',l:'Commenter'},{v:'edit_form',l:'Modifier le formulaire'},{v:'update_db_row', l:'Modifier une ligne (base de données)'}];
+  const ET = [{v:'change_status',l:'Changer le statut'},{v:'fill_form',l:'Remplir un formulaire'},{v:'assign',l:'Affecter'},{v:'send_email',l:'Envoyer un email'},{v:'comment',l:'Commenter'},{v:'edit_form',l:'Modifier le formulaire'},{v:'update_db_row', l:'Modifier une ligne BDD'}];
   const sOpts = svcBuilderStatuses.map(s=>`<option value="${s.id}">${h(s.nom)}</option>`).join('');
   const fOpts = FORMS_DATA.filter(f=>f.actif!==false).map(f=>`<option value="${f.id}">${h(f.nom)}</option>`).join('');
-  area.innerHTML = `<div class="b-sec">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-      <div class="b-sec-t" style="margin:0">Boutons d'action</div>
-      <button class="btn bp btn-sm pill" onclick="addSvcAction()">＋ Ajouter</button>
+  area.innerHTML = `
+    <div class="svc-clean-head">
+      <div>
+        <div class="b-sec-t" style="margin:0">Boutons terrain</div>
+        <div class="f-hint">Les opérateurs verront ces boutons dans Exécution. Les effets sont masqués par défaut.</div>
+      </div>
+      <button class="btn bp btn-sm pill" onclick="addSvcAction()">＋ Ajouter un bouton</button>
     </div>
     ${!svcBuilderActions.length
-      ?`<div style="text-align:center;padding:32px;color:var(--tl);border:2px dashed var(--bd);border-radius:10px"><div style="font-size:24px;opacity:.3">◉</div>Aucun bouton.</div>`
-      :svcBuilderActions.map((a,i)=>{
-        const effects=a.effects||[{type:a.type||'change_status',config:a.config||{}}];
-        return `<div style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:10px">
-          <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
-            <input class="ci" style="flex:1" value="${h(a.nom)}" oninput="svcBuilderActions[${i}].nom=this.value">
-            <div style="display:flex;gap:4px">${COLORS.slice(0,6).map(c=>`<div style="width:18px;height:18px;border-radius:4px;background:${c};cursor:pointer;border:2px solid ${a.couleur===c?'#fff':'transparent'};box-shadow:${a.couleur===c?'0 0 0 2px '+c:'none'}" onclick="svcBuilderActions[${i}].couleur='${c}';renderSvcTab()"></div>`).join('')}</div>
-            <button class="ic-btn" onclick="svcBuilderActions.splice(${i},1);renderSvcTab()">🗑</button>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;padding:4px 0 8px;flex-wrap:wrap">
-            <span style="font-size:11px;font-weight:700;color:var(--tl);flex-shrink:0">Visible par :</span>
-            ${renderVisibilitySelector(a.visibleBy||[], `_toggleActionVis.bind(null,${i})`)}
-          </div>
-          <div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">Effets séquentiels</div>
-          ${effects.map((ef,ei)=>`<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;background:var(--bg);border-radius:8px;padding:8px 10px">
-            <span style="font-size:11px;font-weight:800;color:var(--tl);min-width:16px;margin-top:6px">${ei+1}</span>
-            <div style="flex:1;display:flex;flex-direction:column;gap:6px">
-              <select class="ci" onchange="updateEffect(${i},${ei},'type',this.value)">${ET.map(t=>`<option value="${t.v}" ${ef.type===t.v?'selected':''}>${t.l}</option>`).join('')}</select>
-              ${ef.type==='change_status'?`<select class="ci" onchange="updateEffect(${i},${ei},'targetStatusId',this.value)"><option value="">— Statut cible —</option>${sOpts}</select>`:''}
-              ${ef.type==='fill_form'?`<select class="ci" onchange="updateEffect(${i},${ei},'formId',+this.value)"><option value="">— Formulaire —</option>${fOpts}</select>`:''}
-${ef.type==='update_db_row'? renderDbEffectHtml(i,ei,ef) :''}
+      ? `<div class="svc-empty"><div>◉</div>Aucun bouton pour le moment.</div>`
+      : `<div class="svc-action-grid">
+        ${svcBuilderActions.map((a,i)=>{
+          const effects=a.effects||[{type:a.type||'change_status',config:a.config||{}}];
+          const effectLabel = effects.length + ' effet' + (effects.length>1?'s':'');
+          return `<details class="svc-action-card" ${i===0?'open':''}>
+            <summary>
+              <div class="svc-card-main">
+                <span class="svc-action-dot" style="background:${a.couleur||'#0ea5e9'}"></span>
+                <div>
+                  <strong>${h(a.nom || 'Bouton sans nom')}</strong>
+                  <small>${effectLabel}</small>
+                </div>
+              </div>
+              <div class="svc-card-right">
+                <span class="svc-pill action">Action</span>
+                <span class="svc-edit-label">Modifier</span>
+              </div>
+            </summary>
+            <div class="svc-card-edit">
+              <label>Libellé du bouton</label>
+              <input class="ci" value="${h(a.nom)}" oninput="svcBuilderActions[${i}].nom=this.value;this.closest('details').querySelector('summary strong').textContent=this.value||'Bouton sans nom'">
+              <label>Couleur</label>
+              <div class="svc-color-row">${COLORS.map(c=>`<button type="button" class="svc-color" style="background:${c};${a.couleur===c?'box-shadow:0 0 0 3px #fff,0 0 0 5px '+c:''}" onclick="svcBuilderActions[${i}].couleur='${c}';renderSvcTab()"></button>`).join('')}</div>
+              <label>Visible par</label>
+              <div class="svc-vis-row">${renderVisibilitySelector(a.visibleBy||[], `_toggleActionVis.bind(null,${i})`)}</div>
+              <div class="svc-effects-title">Effets exécutés dans l’ordre</div>
+              ${effects.map((ef,ei)=>`<div class="svc-effect-line">
+                <span>${ei+1}</span>
+                <div>
+                  <select class="ci" onchange="updateEffect(${i},${ei},'type',this.value)">${ET.map(t=>`<option value="${t.v}" ${ef.type===t.v?'selected':''}>${t.l}</option>`).join('')}</select>
+                  ${ef.type==='change_status'?`<select class="ci" onchange="updateEffect(${i},${ei},'targetStatusId',this.value)"><option value="">— Statut cible —</option>${sOpts}</select>`:''}
+                  ${ef.type==='fill_form'?`<select class="ci" onchange="updateEffect(${i},${ei},'formId',+this.value)"><option value="">— Formulaire —</option>${fOpts}</select>`:''}
+                  ${ef.type==='update_db_row'? renderDbEffectHtml(i,ei,ef) :''}
+                </div>
+                <button class="ic-btn" onclick="removeEffect(${i},${ei})">✕</button>
+              </div>`).join('')}
+              <button class="svc-add-effect" onclick="addEffect(${i})">＋ Ajouter un effet</button>
+              <div class="svc-card-footer"><button class="ic-btn" onclick="svcBuilderActions.splice(${i},1);renderSvcTab()">🗑 Supprimer le bouton</button></div>
             </div>
-            <button class="ic-btn" onclick="removeEffect(${i},${ei})">✕</button>
-          </div>`).join('')}
-          <button style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--bd);background:transparent;color:var(--tm);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit" onclick="addEffect(${i})">＋ Ajouter un effet</button>
-        </div>`;}).join('')}
-  </div>`;
+          </details>`;}).join('')}
+      </div>`}`;
 }
+
 function updateEffect(ai,ei,key,val){if(!svcBuilderActions[ai].effects)svcBuilderActions[ai].effects=[];const ef=svcBuilderActions[ai].effects[ei];if(!ef)return;if(key==='type'){ef.type=val;ef.config={};renderSvcTab();}else if(key==='targetStatusId')ef.config={targetStatusId:val};else if(key==='formId'){
     const fid = String(val).startsWith('sdb_') ? val : +val;
     if(ef.type==='update_db_row'){ef.config={formId:fid,matchCriteria:[],updates:[]};renderSvcTab();}
@@ -771,16 +813,15 @@ function goProdServices(){
   document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
   document.getElementById('sb-prod-services').classList.add('on');
   show('v-prod-services-list');
-  document.getElementById('tb-t').textContent='Exécution';
-  document.getElementById('breadcrumb').innerHTML='<span style="color:var(--tl)">▶ Production / Exécution</span>';
+  document.getElementById('tb-t').textContent='Services';
+  document.getElementById('breadcrumb').innerHTML='<span style="color:var(--tl)">▶ Production / Services</span>';
   renderProdServices();
 }
 function renderProdServices(list){
   list=(list||SERVICES_DATA).filter(s=>s.actif!==false);
   const grid=document.getElementById('prod-services-grid');
-  if(!grid)return;
-  if(!list.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;opacity:.3">⚡</div>Aucun service actif.<br><small>Créez d'abord un service dans Studio / Workflows.</small></div>`;return;}
-  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="display:flex;gap:6px"><button onclick="openCreateInstance(${svc.id})" style="padding:6px 13px;border-radius:20px;background:${c};color:#fff;border:none;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit">＋ Lancer</button><button onclick="openServiceKanban(${svc.id})" style="padding:6px 13px;border-radius:20px;background:#fff;color:${c};border:1.5px solid ${c};font-size:12px;font-weight:800;cursor:pointer;font-family:inherit">Suivre →</button></div></div></div></div>`;}).join('');
+  if(!list.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;opacity:.3">⚡</div>Aucun service actif.</div>`;return;}
+  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div onclick="openServiceKanban(${svc.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="padding:5px 14px;border-radius:20px;background:${c};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div></div></div></div>`;}).join('');
 }
 function searchProdServices(q){renderProdServices(SERVICES_DATA.filter(s=>s.nom.toLowerCase().includes(q.toLowerCase())));}
 function openServiceKanban(svcId){
