@@ -223,12 +223,37 @@ function _ptRunDbRowTrigger(form, submission) {
   const fields = form.fields || [];
   const formValues = submission.values || {};
 
-  if ((cfg.mappingMode || 'auto') === 'manual') {
-    (cfg.mappings || []).forEach(m => {
-      if (!m.colId || !m.fieldId) return;
-      values[m.colId] = formValues[m.fieldId] !== undefined ? formValues[m.fieldId] : '';
-    });
-  } else {
+ if ((cfg.mappingMode || 'auto') === 'manual') {
+  (cfg.mappings || []).forEach(m => {
+    if (!m.colId || !m.fieldId) return;
+
+    const fld = fields.find(f =>
+      String(f.id) === String(m.fieldId) ||
+      String(f.field_key) === String(m.fieldId) ||
+      String(f.nom) === String(m.fieldId)
+    );
+
+    const possibleKeys = [
+      m.fieldId,
+      String(m.fieldId),
+      fld?.id,
+      fld ? String(fld.id) : '',
+      fld?.field_key,
+      fld?.nom
+    ].filter(Boolean);
+
+    let val = '';
+
+    for (const k of possibleKeys) {
+      if (formValues[k] !== undefined) {
+        val = formValues[k];
+        break;
+      }
+    }
+
+    values[m.colId] = val;
+  });
+} else {
     (targetDb.columns || []).forEach(col => {
       const colKey = _ptNormalizeKey(col.nom || col.name || col.id);
       const match = fields.find(f =>
