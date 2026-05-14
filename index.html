@@ -978,14 +978,14 @@ const mailFieldOptions = mailFields.map(f => (
     )}
 
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-      <input value={triggers.sendMail.to||""} onChange={e=>setTrigger('sendMail',{to:e.target.value})} placeholder="Destinataire(s) fixe(s)" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+      <input value={triggers.sendMail.to||""} onChange={e=>setTrigger('sendMail',{to:e.target.value})} placeholder="Destinataires fixes séparés par ;" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
       <select value={triggers.sendMail.toField||""} onChange={e=>setTrigger('sendMail',{toField:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
         <option value="">Destinataire depuis un champ</option>
         {mailFieldOptions}
       </select>
     </div>
 
-    <input value={triggers.sendMail.cc||""} onChange={e=>setTrigger('sendMail',{cc:e.target.value})} placeholder="CC optionnel" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+    <input value={triggers.sendMail.cc||""} onChange={e=>setTrigger('sendMail',{cc:e.target.value})} placeholder="CC séparés par ;" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
     <input value={triggers.sendMail.subject||""} onChange={e=>setTrigger('sendMail',{subject:e.target.value})} placeholder="Objet du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
     <textarea value={triggers.sendMail.body||""} onChange={e=>setTrigger('sendMail',{body:e.target.value})} placeholder="Message du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12,minHeight:74,fontFamily:"inherit",resize:"vertical"}}/>
 
