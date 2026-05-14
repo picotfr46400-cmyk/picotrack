@@ -190,10 +190,34 @@ function _ptRunDbRowTrigger(form, submission) {
     : null;
 
   if (!targetDb) {
-    console.warn('[PicoTrack DB] Base cible introuvable', cfg.targetDbId);
+  console.warn('[PicoTrack DB] Base cible introuvable localement, mais tentative Supabase', cfg.targetDbId);
+
+  if (typeof sbFetch === 'function') {
+    sbFetch('database_rows', {
+      method: 'POST',
+      body: JSON.stringify({
+        database_id: String(cfg.targetDbId || cfg.database || ''),
+        environment_code: (typeof _licenseEnvCode === 'function') ? _licenseEnvCode() : 'DEMO',
+        source: 'form:' + (form.nom || ''),
+        form_id: String(form.id),
+        submission_id: String(submission.id),
+        values: submission.values || {}
+      })
+    })
+      .then(() => {
+        console.log('[PicoTrack DB] Ligne Supabase ajoutée sans base locale');
+        toast('s','🗃 Ligne ajoutée dans Supabase');
+      })
+      .catch(e => {
+        console.warn('[PicoTrack DB] Erreur Supabase database_rows:', e);
+        toast('e','Erreur ajout base Supabase');
+      });
+  } else {
     toast('w','Base cible introuvable');
-    return;
   }
+
+  return;
+}
 
   const values = {};
   const fields = form.fields || [];
