@@ -36,6 +36,7 @@ let svcBuilderColor = '#3b82f6', svcBuilderFormId = null;
 let curInstanceId = null, curKanbanGroupId = null;
 let svcBuilderCardConfig = {couleur:'#3b82f6', titleFieldId:null, subtitle1FieldId:null, subtitle2FieldId:null};
 let svcBuilderKanbanGroups = [];
+function jsArg(v){ return JSON.stringify(String(v)); }
 
 // ══ NAVIGATION ══
 function goServices() {
@@ -52,6 +53,7 @@ function goServices() {
 function renderServices(list) {
   list = list || SERVICES_DATA;
   const grid = document.getElementById('services-grid');
+  if (!grid) return;
   if (!list.length) {
     grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)">
       <div style="font-size:32px;margin-bottom:12px;opacity:.3">⚡</div>Aucun service créé</div>`;
@@ -71,7 +73,7 @@ function renderServices(list) {
             <div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>
             ${svc.desc ? `<div style="font-size:11px;color:var(--tl);margin-top:1px">${h(svc.desc)}</div>` : ''}
           </div>
-          <button class="ic-btn" onclick="event.stopPropagation();openServiceBuilder(${svc.id})" title="Configurer">✏️</button>
+          <button class="ic-btn" onclick="event.stopPropagation();openServiceBuilder(${jsArg(svc.id)})" title="Configurer">✏️</button>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
           <span style="font-size:11px;padding:3px 9px;border-radius:20px;background:#f1f5f9;color:var(--tm)">${svc.statuses.length} statuts</span>
@@ -86,7 +88,7 @@ function renderServices(list) {
             <span style="font-size:11px;color:var(--tl)"> en cours</span>
             <span style="font-size:11px;color:var(--tl);margin-left:6px">/ ${all.length} total</span>
           </div>
-          <button onclick="openServiceInstances(${svc.id})" style="padding:6px 16px;border-radius:20px;background:${color};color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Voir →</button>
+          <button onclick="openServiceInstances(${jsArg(svc.id)})" style="padding:6px 16px;border-radius:20px;background:${color};color:#fff;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Voir →</button>
         </div>
       </div>
     </div>`;
@@ -538,7 +540,7 @@ function generateRef(svc) {
 }
 
 function openServiceInstances(id) {
-  const svc = SERVICES_DATA.find(s => s.id === id); if (!svc) return;
+  const svc = SERVICES_DATA.find(s => String(s.id) === String(id)); if (!svc) return;
   curService = svc;
   document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(svc.nom)}</span>`;
   document.getElementById('tb-t').textContent = svc.nom;
@@ -554,7 +556,7 @@ function renderServiceInstances(svc) {
       <div style="font-size:17px;font-weight:800">${h(svc.nom)}</div>
       <div style="font-size:12px;color:var(--tl);margin-top:2px">${instances.length} demande${instances.length>1?'s':''}</div>
     </div>
-    <button class="btn bp" onclick="openCreateInstance(${svc.id})" style="background:${color};border-color:${color}">＋ Nouvelle demande</button>
+    <button class="btn bp" onclick="openCreateInstance(${jsArg(svc.id)})" style="background:${color};border-color:${color}">＋ Nouvelle demande</button>
   </div>`;
   if (!instances.length) {
     html += `<div style="text-align:center;padding:60px;color:var(--tl);background:#fff;border-radius:12px;border:1.5px dashed var(--bd)">
@@ -563,7 +565,7 @@ function renderServiceInstances(svc) {
     html += instances.map(inst => {
       const status = svc.statuses.find(s => s.id === inst.currentStatusId);
       const title  = getInstanceTitle(svc, inst);
-      return `<div onclick="openInstanceDetail(${inst.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px 18px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:14px;transition:all .15s"
+      return `<div onclick="openInstanceDetail(${jsArg(inst.id)})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px 18px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:14px;transition:all .15s"
         onmouseover="this.style.borderColor='${color}';this.style.boxShadow='0 2px 10px rgba(0,0,0,.08)'"
         onmouseout="this.style.borderColor='var(--bd)';this.style.boxShadow='none'">
         <div style="font-size:11.5px;font-weight:800;font-family:'DM Mono',monospace;color:var(--tl);min-width:130px">${h(inst.reference)}</div>
@@ -588,11 +590,11 @@ function getInstanceTitle(svc, inst) {
 }
 
 function openCreateInstance(svcId) {
-  const svc = SERVICES_DATA.find(s => s.id === svcId); if (!svc) return;
+  const svc = SERVICES_DATA.find(s => String(s.id) === String(svcId)); if (!svc) return;
   const f = FORMS_DATA.find(x => x.id === svc.formId);
   if (!f) { toast('e','⚠️ Formulaire introuvable — configurez le service'); return; }
   curService = svc; curSaisieFormId = f.id; saisieValues = {};
-  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="openServiceInstances(${svc.id})">▶ ${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">Nouvelle demande</span>`;
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="openServiceInstances(${jsArg(svc.id)})">▶ ${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">Nouvelle demande</span>`;
   document.getElementById('tb-t').textContent = svc.nom;
   renderSaisieForm(f);
   // patch le bouton submit
@@ -656,10 +658,10 @@ async function submitServiceInstance(f, svc) {
 }
 // ── Détail d'une demande ──
 function openInstanceDetail(id) {
-  const inst = SERVICE_INSTANCES_DATA.find(x => x.id === id); if (!inst) return;
+  const inst = SERVICE_INSTANCES_DATA.find(x => String(x.id) === String(id)); if (!inst) return;
   const svc  = SERVICES_DATA.find(s => s.id === inst.serviceId); if (!svc) return;
   curService = svc; curInstanceId = id;
-  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span style="color:var(--tl);margin:0 4px">/</span><span class="bc-link" onclick="openServiceInstances(${svc.id})">${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(inst.reference)}</span>`;
+  document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span style="color:var(--tl);margin:0 4px">/</span><span class="bc-link" onclick="openServiceInstances(${jsArg(svc.id)})">${h(svc.nom)}</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(inst.reference)}</span>`;
   document.getElementById('tb-t').textContent = inst.reference;
   renderInstanceDetail(inst, svc);
   show('v-service-instance-detail');
@@ -705,7 +707,7 @@ function renderInstanceDetail(inst, svc) {
     main += `<div style="margin-bottom:18px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">Actions disponibles</div>
       <div style="display:flex;flex-wrap:wrap;gap:8px">`;
     availableActions.forEach(a => {
-      main += `<button onclick="executeAction(${inst.id},'${a.id}')"
+      main += `<button onclick="executeAction(${jsArg(inst.id)},${jsArg(a.id)})"
         style="padding:8px 20px;border-radius:8px;border:none;background:${a.couleur};color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s"
         onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">${h(a.nom)}</button>`;
     });
@@ -719,7 +721,7 @@ function renderInstanceDetail(inst, svc) {
     <textarea id="comment-input-${inst.id}" style="width:100%;border:1.5px solid var(--bd);border-radius:8px;padding:10px;font-family:'Plus Jakarta Sans',sans-serif;font-size:13px;resize:none;height:72px;outline:none;box-sizing:border-box;transition:border-color .15s" placeholder="Votre commentaire..."
       onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'"></textarea>
     <div style="display:flex;justify-content:flex-end;margin-top:8px">
-      <button onclick="addComment(${inst.id})" style="padding:7px 18px;border-radius:8px;border:none;background:${color};color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit">Envoyer</button>
+      <button onclick="addComment(${jsArg(inst.id)})" style="padding:7px 18px;border-radius:8px;border:none;background:${color};color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit">Envoyer</button>
     </div>
   </div></div>`;
 
@@ -751,9 +753,9 @@ const LABELS = {created:'Demande créée', status_changed:'Statut modifié', com
 
 // ── Exécuter une action ──
 function executeAction(instId, actionId) {
-  const inst=SERVICE_INSTANCES_DATA.find(x=>x.id===instId);if(!inst)return;
-  const svc=SERVICES_DATA.find(s=>s.id===inst.serviceId);if(!svc)return;
-  const action=svc.actions.find(a=>a.id===actionId);if(!action)return;
+  const inst=SERVICE_INSTANCES_DATA.find(x=>String(x.id)===String(instId));if(!inst)return;
+  const svc=SERVICES_DATA.find(s=>String(s.id)===String(inst.serviceId));if(!svc)return;
+  const action=svc.actions.find(a=>String(a.id)===String(actionId));if(!action)return;
   const effects=action.effects||(action.type?[{type:action.type,config:action.config||{}}]:[]);
   const now=new Date().toLocaleString('fr-FR');
   if(effects.some(ef=>ef.type==='comment')){const inp=document.getElementById('comment-input-'+instId);if(!inp||!inp.value.trim()){toast('e','⚠️ Ce bouton requiert un commentaire');inp&&inp.focus();return;}}
@@ -821,7 +823,7 @@ function renderProdServices(list){
   list=(list||SERVICES_DATA).filter(s=>s.actif!==false);
   const grid=document.getElementById('prod-services-grid');
   if(!list.length){grid.innerHTML=`<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--tl)"><div style="font-size:32px;opacity:.3">⚡</div>Aucun service actif.</div>`;return;}
-  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div onclick="openServiceKanban(${svc.id})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="padding:5px 14px;border-radius:20px;background:${c};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div></div></div></div>`;}).join('');
+  grid.innerHTML=list.map(svc=>{const all=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id);const open=all.filter(i=>!isTerminalStatus(svc,i.currentStatusId)).length;const c=svc.couleur||'#3b82f6';return`<div onclick="openServiceKanban(${jsArg(svc.id)})" style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--bd)';this.style.transform=''"><div style="height:5px;background:${c}"></div><div style="padding:16px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:36px;height:36px;border-radius:9px;background:${c}22;display:flex;align-items:center;justify-content:center;font-size:18px">⚡</div><div style="flex:1"><div style="font-weight:800;font-size:14px">${h(svc.nom)}</div>${svc.desc?`<div style="font-size:11px;color:var(--tl)">${h(svc.desc)}</div>`:''}</div></div><div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;align-items:center;justify-content:space-between"><div><span style="font-size:15px;font-weight:800">${open}</span><span style="font-size:11px;color:var(--tl)"> en cours / ${all.length} total</span></div><div style="padding:5px 14px;border-radius:20px;background:${c};color:#fff;font-size:12px;font-weight:700">Ouvrir →</div></div></div></div>`;}).join('');
 }
 function searchProdServices(q){renderProdServices(SERVICES_DATA.filter(s=>s.nom.toLowerCase().includes(q.toLowerCase())));}
 function openServiceKanban(svcId){
@@ -837,7 +839,7 @@ function openServiceKanban(svcId){
 function renderKanbanTabs(svc){
   const groups=(svc.kanbanGroups||[]).filter(g=>g.visible).sort((a,b)=>a.order-b.order);
   const el=document.getElementById('kanban-group-tabs');if(!groups.length){el.innerHTML='';return;}
-  el.innerHTML=groups.map(g=>{const cnt=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&g.statusIds.includes(i.currentStatusId)).length;const on=g.id===curKanbanGroupId;return`<div onclick="curKanbanGroupId='${g.id}';renderKanbanTabs(curService);renderKanbanBoard(curService,'${g.id}')" style="padding:12px 20px;font-size:13px;font-weight:700;cursor:pointer;border-bottom:3px solid ${on?'var(--p)':'transparent'};color:${on?'var(--p)':'var(--tl)'};white-space:nowrap;display:flex;align-items:center;gap:7px">${h(g.nom)}<span style="font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;background:${on?'var(--pl)':'#f1f5f9'};color:${on?'var(--p)':'var(--tl)'}">${cnt}</span></div>`;}).join('');
+  el.innerHTML=groups.map(g=>{const cnt=SERVICE_INSTANCES_DATA.filter(i=>i.serviceId===svc.id&&g.statusIds.includes(i.currentStatusId)).length;const on=g.id===curKanbanGroupId;return`<div onclick="curKanbanGroupId=${jsArg(g.id)};renderKanbanTabs(curService);renderKanbanBoard(curService,${jsArg(g.id)})" style="padding:12px 20px;font-size:13px;font-weight:700;cursor:pointer;border-bottom:3px solid ${on?'var(--p)':'transparent'};color:${on?'var(--p)':'var(--tl)'};white-space:nowrap;display:flex;align-items:center;gap:7px">${h(g.nom)}<span style="font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;background:${on?'var(--pl)':'#f1f5f9'};color:${on?'var(--p)':'var(--tl)'}">${cnt}</span></div>`;}).join('');
 }
 function renderKanbanBoard(svc,groupId){
   const board=document.getElementById('kanban-board');if(!board)return;
@@ -851,7 +853,7 @@ function renderKanbanBoard(svc,groupId){
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px 14px;background:#fff;border-radius:10px;border:1.5px solid var(--bd);border-left:4px solid ${status.couleur}">
         <span style="font-size:13px;font-weight:800">${h(status.nom)}</span>
         <span style="font-size:11px;font-weight:800;padding:1px 8px;border-radius:20px;background:${status.couleur}20;color:${status.couleur};margin-left:auto">${instances.length}</span>
-        <button onclick="openCreateInstance(${svc.id})" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--bd);background:#fff;cursor:pointer;font-size:14px;color:var(--tl)" title="Nouvelle demande">＋</button>
+        <button onclick="openCreateInstance(${jsArg(svc.id)})" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--bd);background:#fff;cursor:pointer;font-size:14px;color:var(--tl)" title="Nouvelle demande">＋</button>
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;min-height:60px">
         ${instances.length?instances.map(inst=>buildKanbanCardHtml(inst,svc,status)).join(''):`<div style="border:2px dashed var(--bd);border-radius:8px;padding:20px;text-align:center;color:var(--tl);font-size:12px">Aucune demande</div>`}
@@ -864,7 +866,7 @@ function buildKanbanCardHtml(inst,svc,status){
   const gv=fid=>{if(!fid||!sub)return null;const v=sub.values[fid];return Array.isArray(v)?v.join(', '):(v||null);};
   const tV=gv(cc.titleFieldId)||inst.reference;const s1=gv(cc.subtitle1FieldId);const s2=gv(cc.subtitle2FieldId);
   const acts=svc.actions.filter(a=>svc.flux.find(fl=>fl.statusId===status.id&&fl.actionId===a.id&&fl.enabled));
-  return`<div onclick="openInstanceDetail(${inst.id})" style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}'" onmouseout="this.style.borderColor='var(--bd)'">
+  return`<div onclick="openInstanceDetail(${jsArg(inst.id)})" style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;overflow:hidden;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='${c}'" onmouseout="this.style.borderColor='var(--bd)'">
     <div style="height:3px;background:${c}"></div>
     <div style="padding:11px 13px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
@@ -874,7 +876,7 @@ function buildKanbanCardHtml(inst,svc,status){
       <div style="font-size:13px;font-weight:800;margin-bottom:3px">${h(tV)}</div>
       ${s1?`<div style="font-size:11.5px;color:var(--tl)">${h(s1)}</div>`:''}
       ${s2?`<div style="font-size:11.5px;color:var(--tl)">${h(s2)}</div>`:''}
-      ${acts.length?`<div onclick="event.stopPropagation()" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bg)">${acts.map(a=>`<button onclick="event.stopPropagation();executeAction(${inst.id},'${a.id}')" style="padding:4px 10px;border-radius:6px;border:none;background:${a.couleur};color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">${h(a.nom)}</button>`).join('')}</div>`:''}
+      ${acts.length?`<div onclick="event.stopPropagation()" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bg)">${acts.map(a=>`<button onclick="event.stopPropagation();executeAction(${jsArg(inst.id)},${jsArg(a.id)})" style="padding:4px 10px;border-radius:6px;border:none;background:${a.couleur};color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">${h(a.nom)}</button>`).join('')}</div>`:''}
     </div>
   </div>`;
 }
