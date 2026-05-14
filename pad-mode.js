@@ -216,6 +216,10 @@ async function connectPad() {
     document.querySelectorAll('#pad-overlay').forEach(el => el.remove());
     applyPadEnvironment(env);
     showPadHome();
+    if (typeof checkSupabaseConnection === 'function') await checkSupabaseConnection();
+    if (typeof syncAllFromSupabase === 'function') await syncAllFromSupabase();
+    if (typeof startSync === 'function') startSync();
+    if (typeof padGoForms === 'function') padGoForms();
 
   } catch (e) {
     console.warn('[PAD] Login error:', e);
@@ -293,7 +297,10 @@ function showPadHome() {
         <div style="font-size:13px;font-weight:800;color:#f1f5f9" id="pad-tb-title">Formulaires</div>
         <div style="font-size:10px;color:#059669;font-weight:600">${cfg.nom}</div>
       </div>
-      <div style="width:8px;height:8px;border-radius:50%;background:#10b981" title="Connecté"></div>
+      <div style="display:flex;align-items:center;gap:6px;font-size:10px;color:#94a3b8;font-weight:700">
+        <span id="pad-sync-dot" style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block" title="Synchronisation"></span>
+        <span id="pad-sync-text">Synchronisation…</span>
+      </div>
     </div>`);
   }
 

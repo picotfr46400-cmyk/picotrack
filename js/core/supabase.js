@@ -14,7 +14,14 @@ async function sbFetch(path, options = {}) {
     }
   });
   const text = await res.text();
-  if (!res.ok) throw new Error(`Supabase ${res.status}: ${text}`);
+  if (!res.ok) {
+    _ptSupabaseOnline = false;
+    updateSupabaseStatusUI('offline', `Supabase ${res.status}`);
+    throw new Error(`Supabase ${res.status}: ${text}`);
+  }
+  _ptSupabaseOnline = true;
+  _ptLastSyncLabel = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  updateSupabaseStatusUI('online', 'Supabase connecté');
   return text ? JSON.parse(text) : [];
 }
 
@@ -70,7 +77,9 @@ function formToDb(f){
     couleur:f.couleur||'#3b82f6',
     actif:f.actif!==false,
     modules:f.type||f.modules||[],
-    fields:f.fields||[]
+    fields:f.fields||[],
+    visible_roles:f.visibleRoles||f.visible_roles||[],
+    triggers:f.triggers||{}
   };
 }
 function mapServiceFromDb(r){
@@ -165,6 +174,9 @@ const _syncListeners = {};
 const _instanceHashes = new Map();
 const _formHashes = new Map();
 const _serviceHashes = new Map();
+let _syncStarted = false;
+let _ptSupabaseOnline = null;
+let _ptLastSyncLabel = 'Non synchronisé';
 
 function onSync(table, callback){ if(!_syncListeners[table]) _syncListeners[table]=[]; _syncListeners[table].push(callback); }
 function _emitSync(table, event, row){ (_syncListeners[table]||[]).forEach(cb=>cb(event,row)); }
@@ -231,14 +243,18 @@ async function _pollCatalog(){
 }
 
 function startSync(){
+  if (_syncStarted) return;
+  _syncStarted = true;
   _lastSubSyncAt = new Date().toISOString();
   setInterval(_pollNewSubmissions, 5000);
   setInterval(_pollInstances, 5000);
   setInterval(_pollCatalog, 10000);
   console.log('[Sync] Polling démarré formulaires + services + statuts (5s)');
+  updateSupabaseStatusUI(_ptSupabaseOnline ? 'online' : 'syncing', 'Synchronisation active');
 }
 
 async function syncAllFromSupabase(){
+  updateSupabaseStatusUI('syncing','Synchronisation catalogue');
   try{
     const [forms, services, submissions, instances] = await Promise.all([DB.getForms(), DB.getServices(), DB.getAllSubmissions(), DB.getAllInstances()]);
     if(forms.length){
@@ -261,6 +277,7 @@ async function syncAllFromSupabase(){
     _instanceHashes.clear(); instances.forEach(r=>_instanceHashes.set(String(r.id), _hash(r)));
 
     console.log('[DB] Données chargées depuis Supabase ✅', {forms:FORMS_DATA.length, services:SERVICES_DATA.length, submissions:SUBMISSIONS_DATA.length, instances:SERVICE_INSTANCES_DATA.length});
+    updateSupabaseStatusUI('online','Synchronisation OK');
     refreshCurrentViewAfterSync();
   }catch(e){ console.warn('[DB] Chargement Supabase échoué:', e.message); }
 }
@@ -275,6 +292,43 @@ function refreshCurrentViewAfterSync(){
     if(document.getElementById('v-submissions')?.classList.contains('on') && typeof curSubFormId!=='undefined' && curSubFormId && typeof openSubmissions==='function') openSubmissions(curSubFormId);
     if(document.getElementById('v-service-instances')?.classList.contains('on') && curService && typeof renderServiceInstances==='function') renderServiceInstances(curService);
   }catch(e){}
+}
+
+
+function updateSupabaseStatusUI(state, label){
+  try{
+    const colors = {online:'#10b981', syncing:'#f59e0b', offline:'#ef4444'};
+    const text = state === 'online' ? 'Synchro active' : state === 'syncing' ? 'Synchronisation…' : 'Hors ligne';
+    let el = document.getElementById('pt-sync-status');
+    if(!el){
+      const sb = document.getElementById('sb');
+      if(!sb) return;
+      el = document.createElement('div');
+      el.id='pt-sync-status';
+      el.style.cssText='margin:12px 14px;padding:10px 12px;border:1px solid rgba(148,163,184,.22);border-radius:14px;background:rgba(15,23,42,.32);color:#cbd5e1;font-size:11px;font-weight:700;display:flex;align-items:center;gap:8px;';
+      const envBox = document.querySelector('.sb-env');
+      if(envBox && envBox.parentNode) envBox.parentNode.insertBefore(el, envBox.nextSibling);
+      else sb.appendChild(el);
+    }
+    el.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${colors[state]||colors.syncing};box-shadow:0 0 0 3px ${colors[state]||colors.syncing}22"></span><span>${text}</span><span style="margin-left:auto;color:#94a3b8;font-weight:600">${_ptLastSyncLabel||''}</span>`;
+    const padDot = document.getElementById('pad-sync-dot');
+    if(padDot) padDot.style.background = colors[state]||colors.syncing;
+    const padTxt = document.getElementById('pad-sync-text');
+    if(padTxt) padTxt.textContent = text;
+  }catch(e){}
+}
+
+async function checkSupabaseConnection(){
+  updateSupabaseStatusUI('syncing','Test connexion Supabase');
+  try{
+    await sbFetch('forms?select=id&limit=1');
+    updateSupabaseStatusUI('online','Supabase connecté');
+    return true;
+  }catch(e){
+    console.warn('[DB] Test connexion Supabase échoué:', e.message);
+    updateSupabaseStatusUI('offline','Supabase inaccessible');
+    return false;
+  }
 }
 
 async function migrateDataToSupabase(){

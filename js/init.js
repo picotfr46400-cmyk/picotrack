@@ -2,10 +2,19 @@
 async function startPicoTrackApp() {
   if (typeof isPadMode === 'function' && isPadMode()) {
     if (typeof initPadMode === 'function') initPadMode();
+    // Important : le PAD doit aussi charger le catalogue Supabase.
+    // Sinon les formulaires créés côté PC ne remontent pas sur le terminal.
+    if (typeof getPadConfig === 'function' && getPadConfig()) {
+      if (typeof checkSupabaseConnection === 'function') await checkSupabaseConnection();
+      if (typeof syncAllFromSupabase === 'function') await syncAllFromSupabase();
+      if (typeof startSync === 'function') startSync();
+      if (typeof padGoForms === 'function') padGoForms();
+    }
   } else {
     const isLogged = await checkPcLogin();
     if (!isLogged) return;
 
+    if (typeof checkSupabaseConnection === 'function') await checkSupabaseConnection();
     if (typeof migrateDataToSupabase === 'function') await migrateDataToSupabase();
 
     if (typeof renderTable === 'function') renderTable();
