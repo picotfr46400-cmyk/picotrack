@@ -502,6 +502,7 @@ function showPadHome(){
   document.body.insertAdjacentHTML('beforeend', `
     <div id="pad-navbar" class="pad-lite-nav">
       <button id="pnav-home" onclick="padGoForms()"><span>🏠</span><b>Accueil</b></button>
+      <button id="pnav-services" onclick="padGoServices()"><span>⚡</span><b>Services</b></button>
       <button id="pnav-scan" onclick="padGoScanner()"><span>▣</span><b>Scanner</b></button>
       <button id="pnav-profile" onclick="padGoProfile()"><span>👤</span><b>Profil</b></button>
     </div>
@@ -685,7 +686,203 @@ function padGoScanner(){
     </div>`;
 }
 
+
+function _padServices(){
+  return (typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : []).filter(s => s && s.actif !== false);
+}
+function _padServiceInstances(){
+  return (typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : []).filter(Boolean);
+}
+function _padTerminalStatusIds(svc){
+  return (svc.statuses || []).filter(s => s.type === 'terminal').map(s => s.id);
+}
+function _padStatusOf(svc, inst){
+  return (svc.statuses || []).find(s => String(s.id) === String(inst.currentStatusId)) || null;
+}
+function _padIsTerminal(svc, inst){
+  return _padTerminalStatusIds(svc).includes(inst.currentStatusId);
+}
+function _padInstanceTitle(svc, inst){
+  try {
+    if (typeof getInstanceTitle === 'function') return getInstanceTitle(svc, inst) || inst.reference || 'Mission';
+  } catch(e) {}
+  const sub = (typeof SUBMISSIONS_DATA !== 'undefined' ? SUBMISSIONS_DATA : []).find(x => String(x.id) === String(inst.submissionId));
+  if (sub && sub.values) {
+    const first = Object.values(sub.values).find(v => v !== null && v !== undefined && String(v).trim() !== '');
+    if (first) return Array.isArray(first) ? first.join(', ') : String(first);
+  }
+  return inst.reference || svc.nom || 'Mission';
+}
+function _padMissionDateLabel(v){
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d)) return String(v);
+  return d.toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit'}) + ' ' + d.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+}
+function _padActionsForInstance(svc, inst){
+  const statusId = inst.currentStatusId;
+  return (svc.actions || []).filter(a => (svc.flux || []).some(fl => String(fl.statusId) === String(statusId) && String(fl.actionId) === String(a.id) && fl.enabled !== false));
+}
+function _padCanTake(svc, inst){
+  const st = _padStatusOf(svc, inst);
+  const initial = st && st.type === 'initial';
+  return initial && !inst.assignedTo && !_padIsTerminal(svc, inst);
+}
+function _padMyName(){
+  const cfg = getPadConfig() || {};
+  return cfg.login || cfg.licenseLabel || 'PAD';
+}
+function _padMissionCard(inst, svc, mode){
+  const st = _padStatusOf(svc, inst) || {nom:'Statut', couleur:svc.couleur || '#2563eb'};
+  const title = _padInstanceTitle(svc, inst);
+  const acts = _padActionsForInstance(svc, inst);
+  const primary = acts[0];
+  const btnLabel = mode === 'take' ? 'Prendre' : (_padIsTerminal(svc, inst) ? 'Voir' : 'Continuer');
+  return `
+    <article class="pad-svc-card" onclick="padOpenMission('${_padH(inst.id)}')" style="--svc:${_padH(st.couleur || svc.couleur || '#2563eb')}">
+      <div class="pad-svc-icon">⚡</div>
+      <div class="pad-svc-body">
+        <div class="pad-svc-top"><b>${_padH(svc.nom)}</b><span>${_padH(st.nom)}</span></div>
+        <h3>${_padH(title)}</h3>
+        <p>${_padH(inst.reference || '')}${inst.assignedTo ? ' · ' + _padH(inst.assignedTo) : ''}</p>
+        <small>${_padH(_padMissionDateLabel(inst.createdAt))}</small>
+      </div>
+      <button onclick="event.stopPropagation();${primary && mode !== 'view' ? `padServiceExecute('${_padH(inst.id)}','${_padH(primary.id)}')` : `padOpenMission('${_padH(inst.id)}')`}">${btnLabel}</button>
+    </article>`;
+}
 function padGoServices(){
-  // Gardé pour compatibilité : sur PAD Lite, Services renvoie vers l'accueil terrain.
-  padGoForms();
+  padSetActive('pnav-services');
+  setPadTitle('Services');
+  padHideAll();
+
+  const main = document.getElementById('main');
+  if (!main) return;
+  let el = document.getElementById('pad-services-view');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'pad-services-view';
+    el.className = 'view pad-lite-home';
+    main.appendChild(el);
+  }
+  el.style.display = '';
+  el.classList.add('on');
+  renderPadServicesLite();
+}
+function renderPadServicesLite(){
+  const el = document.getElementById('pad-services-view');
+  if (!el) return;
+  const services = _padServices();
+  const instances = _padServiceInstances();
+  const me = _padMyName();
+  const active = [];
+  const toTake = [];
+  const done = [];
+
+  instances.forEach(inst => {
+    const svc = services.find(s => String(s.id) === String(inst.serviceId));
+    if (!svc) return;
+    if (_padIsTerminal(svc, inst)) done.push({inst, svc});
+    else if (_padCanTake(svc, inst)) toTake.push({inst, svc});
+    else if (!inst.assignedTo || String(inst.assignedTo).toLowerCase() === String(me).toLowerCase()) active.push({inst, svc});
+  });
+
+  const activeSorted = active.slice().sort((a,b) => new Date(b.inst.createdAt||0) - new Date(a.inst.createdAt||0));
+  const takeSorted = toTake.slice().sort((a,b) => new Date(a.inst.createdAt||0) - new Date(b.inst.createdAt||0));
+  const doneSorted = done.slice().sort((a,b) => new Date(b.inst.updatedAt||b.inst.createdAt||0) - new Date(a.inst.updatedAt||a.inst.createdAt||0));
+
+  el.innerHTML = `
+    <div class="pad-lite-wrap pad-services-wrap">
+      <section class="pad-svc-head">
+        <div>
+          <div class="pad-lite-time">${_padH(_padNow())}</div>
+          <h1>Mes missions</h1>
+          <p>Traitez uniquement les dossiers terrain utiles maintenant.</p>
+        </div>
+        <button onclick="padShowServicePicker()">＋ Nouveau</button>
+      </section>
+
+      ${activeSorted.length ? `
+        <section class="pad-svc-focus">
+          <span>Mission en cours</span>
+          ${_padMissionCard(activeSorted[0].inst, activeSorted[0].svc, 'continue')}
+        </section>` : ''}
+
+      <section class="pad-lite-section">
+        <h2>À prendre ${takeSorted.length ? `<em class="pad-svc-count">${takeSorted.length}</em>` : ''}</h2>
+        <div class="pad-svc-list">
+          ${takeSorted.slice(0,4).map(x => _padMissionCard(x.inst, x.svc, 'take')).join('') || `<div class="pad-lite-empty"><b>Aucune mission à prendre</b><span>Tout est traité ou déjà assigné.</span></div>`}
+        </div>
+      </section>
+
+      <section class="pad-lite-section">
+        <h2>En cours ${activeSorted.length ? `<em class="pad-svc-count">${activeSorted.length}</em>` : ''}</h2>
+        <div class="pad-svc-list">
+          ${activeSorted.slice(0,5).map(x => _padMissionCard(x.inst, x.svc, 'continue')).join('') || `<div class="pad-lite-empty"><b>Aucune mission en cours</b><span>Vous n’avez rien à traiter pour le moment.</span></div>`}
+        </div>
+      </section>
+
+      <section class="pad-lite-section">
+        <h2>Terminées récemment</h2>
+        <div class="pad-svc-list compact">
+          ${doneSorted.slice(0,3).map(x => _padMissionCard(x.inst, x.svc, 'view')).join('') || `<div class="pad-lite-empty"><b>Aucune mission terminée</b><span>Les dernières clôtures apparaîtront ici.</span></div>`}
+        </div>
+      </section>
+    </div>`;
+}
+function padShowServicePicker(){
+  const services = _padServices();
+  document.querySelectorAll('.pad-lite-modal').forEach(x => x.remove());
+  document.body.insertAdjacentHTML('beforeend', `
+    <div class="pad-lite-modal" onclick="if(event.target===this)this.remove()">
+      <div class="pad-lite-sheet">
+        <div class="pad-lite-sheet-head">
+          <div><b>Nouveau dossier</b><small>Choisissez un service</small></div>
+          <button onclick="document.querySelector('.pad-lite-modal')?.remove()">×</button>
+        </div>
+        <div class="pad-lite-form-list">
+          ${services.length ? services.map(svc => `
+            <button onclick="document.querySelector('.pad-lite-modal')?.remove(); if(typeof openCreateInstance==='function'){openCreateInstance('${_padH(svc.id)}')} else {alert('Création indisponible.')} ">
+              <i style="background:${_padH(svc.couleur || '#2563eb')}18;color:${_padH(svc.couleur || '#2563eb')}">⚡</i>
+              <span><b>${_padH(svc.nom)}</b><small>${_padH(svc.desc || 'Créer un dossier terrain')}</small></span>
+              <em>›</em>
+            </button>
+          `).join('') : `<div class="pad-lite-empty"><b>Aucun service disponible</b><span>Créez un service depuis le PC.</span></div>`}
+        </div>
+      </div>
+    </div>`);
+}
+function padOpenMission(instId){
+  const inst = _padServiceInstances().find(i => String(i.id) === String(instId));
+  if (!inst) { alert('Mission introuvable.'); return; }
+  const svc = _padServices().find(s => String(s.id) === String(inst.serviceId));
+  if (!svc) { alert('Service introuvable.'); return; }
+  const st = _padStatusOf(svc, inst) || {nom:'Statut', couleur:svc.couleur || '#2563eb'};
+  const title = _padInstanceTitle(svc, inst);
+  const actions = _padActionsForInstance(svc, inst);
+  document.querySelectorAll('.pad-lite-modal').forEach(x => x.remove());
+  document.body.insertAdjacentHTML('beforeend', `
+    <div class="pad-lite-modal" onclick="if(event.target===this)this.remove()">
+      <div class="pad-lite-sheet pad-mission-sheet">
+        <div class="pad-lite-sheet-head">
+          <div><b>${_padH(title)}</b><small>${_padH(svc.nom)} · ${_padH(inst.reference || '')}</small></div>
+          <button onclick="document.querySelector('.pad-lite-modal')?.remove()">×</button>
+        </div>
+        <div class="pad-mission-status" style="--svc:${_padH(st.couleur || svc.couleur || '#2563eb')}">
+          <span>${_padH(st.nom)}</span>
+          <small>${_padH(_padMissionDateLabel(inst.createdAt))}</small>
+        </div>
+        <div class="pad-mission-actions">
+          ${actions.length ? actions.map((a,idx) => `<button class="${idx===0?'main':''}" style="--svc:${_padH(a.couleur || svc.couleur || '#2563eb')}" onclick="padServiceExecute('${_padH(inst.id)}','${_padH(a.id)}')">${idx===0?'▶':'↳'} ${_padH(a.nom)}</button>`).join('') : `<div class="pad-lite-empty"><b>Aucune action disponible</b><span>Cette mission ne demande rien sur ce statut.</span></div>`}
+          <button class="ghost" onclick="if(typeof openInstanceDetail==='function'){document.querySelector('.pad-lite-modal')?.remove();openInstanceDetail('${_padH(inst.id)}')}else{alert('Détail indisponible.')} ">Voir la fiche complète</button>
+        </div>
+      </div>
+    </div>`);
+}
+function padServiceExecute(instId, actionId){
+  if (typeof executeAction !== 'function') { alert('Action indisponible.'); return; }
+  executeAction(instId, actionId);
+  document.querySelectorAll('.pad-lite-modal').forEach(x => x.remove());
+  setTimeout(() => {
+    if (document.getElementById('pad-services-view')?.classList.contains('on')) renderPadServicesLite();
+  }, 80);
 }
