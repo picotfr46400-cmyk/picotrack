@@ -559,12 +559,33 @@ function _ptRunDbRowTrigger(form, submission){
 }
 
 
-function saisieFileChange(fid, input, photoOnly){
+async function saisieFileChange(fid, input, photoOnly){
   const files = Array.from(input.files || []);
   if(!files.length) return;
-  const meta = files.map(f => ({ name:f.name, size:f.size, type:f.type, lastModified:f.lastModified }));
-  // V1 : on stocke les métadonnées dans la réponse. Le stockage fichier Supabase pourra être branché ensuite.
+
+  const toDataUrl = (file) => new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      lastModified: file.lastModified,
+      dataUrl: reader.result,
+      url: reader.result
+    });
+    reader.onerror = () => resolve({
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      lastModified: file.lastModified,
+      dataUrl: ''
+    });
+    reader.readAsDataURL(file);
+  });
+
+  const meta = await Promise.all(files.map(toDataUrl));
   saisieValues[fid] = photoOnly ? meta[0] : { files: meta };
+
   const el = document.getElementById('file-name-' + fid);
   if(el) el.textContent = photoOnly ? meta[0].name : meta.map(f=>f.name).join(', ');
   if(typeof toast === 'function') toast('s', (photoOnly ? 'Photo sélectionnée : ' : 'Fichier sélectionné : ') + (photoOnly ? meta[0].name : meta.length + ' fichier(s)'));

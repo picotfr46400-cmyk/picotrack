@@ -785,32 +785,8 @@ function AddPop({onAdd}){
 }
 
 function AddLine({afterIndex,onAdd}){
-  const [hov,setHov]=useState(false);
-  const [open,setOpen]=useState(false);
-  const wRef=useRef(null);
-  useEffect(()=>{
-    if(!open)return;
-    const h=e=>{if(wRef.current&&!wRef.current.contains(e.target)){setOpen(false);setHov(false);}};
-    document.addEventListener("mousedown",h);
-    return()=>document.removeEventListener("mousedown",h);
-  },[open]);
-  return (
-    <div ref={wRef} style={{position:"relative",height:26,display:"flex",alignItems:"center",zIndex:open?20:1}} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>{if(!open)setHov(false);}}>
-      {(hov||open)?(
-        <div style={{width:"100%",display:"flex",alignItems:"center",gap:6}}>
-          <div style={{flex:1,height:1.5,background:C.em+"40",borderRadius:1}}/>
-          <button onClick={()=>setOpen(o=>!o)}
-            style={{width:22,height:22,borderRadius:"50%",border:"none",background:C.em,color:"#fff",fontSize:15,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,lineHeight:1}}>+</button>
-          <div style={{flex:1,height:1.5,background:C.em+"40",borderRadius:1}}/>
-        </div>
-      ):(
-        <div style={{width:"100%",height:1,background:"transparent"}}/>
-      )}
-      {open&&(<AddPop onAdd={(type,label)=>{onAdd(afterIndex,type,label);setOpen(false);setHov(false);}}/>)}
-    </div>
-  );
+  return null;
 }
-
 function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
   const [hov,setHov]=useState(false);
   const [adv,setAdv]=useState(false);

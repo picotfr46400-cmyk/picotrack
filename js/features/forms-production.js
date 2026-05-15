@@ -56,8 +56,42 @@ function renderProdForms(list){
   }).join('');
 }
 
+function formatFileSize(bytes){
+  bytes = Number(bytes||0);
+  if(!bytes) return '';
+  if(bytes < 1024) return bytes + ' o';
+  if(bytes < 1024*1024) return Math.round(bytes/1024) + ' Ko';
+  return (bytes/1024/1024).toFixed(1).replace('.', ',') + ' Mo';
+}
+function normalizeFileList(v){
+  if(!v) return [];
+  if(Array.isArray(v)) return v.map(normalizeOneFileMeta);
+  if(typeof v === 'object'){
+    if(Array.isArray(v.files)) return v.files.map(normalizeOneFileMeta);
+    if(v.name || v.url || v.dataUrl || v.data_url) return [normalizeOneFileMeta(v)];
+  }
+  if(typeof v === 'string'){
+    try{return normalizeFileList(JSON.parse(v));}catch(e){return [{name:v}]}
+  }
+  return [];
+}
+function normalizeOneFileMeta(file){
+  file = file || {};
+  const data = file.dataUrl || file.data_url || file.url || '';
+  return {
+    ...file,
+    name: file.name || file.filename || 'Fichier',
+    filename: file.filename || file.name || 'Fichier',
+    dataUrl: String(data).startsWith('data:') ? data : (file.dataUrl || file.data_url || ''),
+    url: file.url || (String(data).startsWith('data:') ? data : '')
+  };
+}
+function ptFileDownloadHref(file){
+  return file && (file.dataUrl || file.url || file.data_url || '');
+}
 function formatSubmissionValueForDisplay(v, fld){
   if(v==null || v==='') return '—';
+  if(fld && fld.type==='checkbox') return (v === true || v === 'true' || v === 1 || v === '1') ? 'Coché' : 'Non coché';
   if(fld && fld.type==='appointment'){
     try{
       const obj = (typeof v==='string' && v.trim().startsWith('{')) ? JSON.parse(v) : v;
@@ -74,6 +108,10 @@ function formatSubmissionValueForDisplay(v, fld){
       }
     }catch(e){}
   }
+  if(fld && (fld.type==='file' || fld.type==='photo')){
+    const files = normalizeFileList(v);
+    return files.length ? files.map(x=>x.name || x.filename || x.url || 'Fichier').join(', ') : '—';
+  }
   if(Array.isArray(v)) return v.map(x=>formatSubmissionValueForDisplay(x, fld)).join(', ');
   if(typeof v==='object'){
     if(v.url) return v.name || v.filename || v.url;
@@ -82,6 +120,42 @@ function formatSubmissionValueForDisplay(v, fld){
   }
   return String(v);
 }
+function renderSubmissionValueHTML(v, fld){
+  const val = formatSubmissionValueForDisplay(v, fld);
+  if(val === '—') return '<span style="color:var(--tl);font-weight:400">—</span>';
+  if(fld && fld.type==='checkbox'){
+    const checked = (v === true || v === 'true' || v === 1 || v === '1');
+    return '<span style="display:inline-flex;align-items:center;gap:8px;font-weight:700;color:var(--tx)"><span style="width:18px;height:18px;border-radius:5px;border:1.5px solid '+(checked?'#10b981':'var(--bd)')+';background:'+(checked?'#10b981':'#fff')+';color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:12px">'+(checked?'✓':'')+'</span>'+(checked?'Coché':'Non coché')+'</span>';
+  }
+  if(fld && fld.type==='photo'){
+    const files = normalizeFileList(v);
+    if(!files.length) return '<span style="color:var(--tl);font-weight:400">—</span>';
+    return files.map(function(file){
+      const name = h(file.name || file.filename || 'Photo');
+      const info = formatFileSize(file.size);
+      const href = ptFileDownloadHref(file);
+      if(href){
+        return '<div style="display:grid;gap:8px;max-width:420px"><img src="'+href+'" alt="'+name+'" style="max-width:360px;max-height:240px;border-radius:12px;border:1px solid var(--bd);object-fit:contain;background:#fff"><a href="'+href+'" download="'+name+'" style="display:inline-flex;align-items:center;gap:8px;width:max-content;color:#0ea5e9;font-weight:800;text-decoration:none">📷 Télécharger '+name+'</a>'+(info?'<span style="font-size:11px;color:var(--tl)">'+info+'</span>':'')+'</div>';
+      }
+      return '<span style="font-weight:700">📷 '+name+'</span>'+(info?' <span style="font-size:11px;color:var(--tl)">('+info+')</span>':'')+'<div style="font-size:11px;color:var(--tl);margin-top:4px">Photo enregistrée sans aperçu téléchargeable. Refaire la saisie avec la version actuelle.</div>';
+    }).join('<div style="height:10px"></div>');
+  }
+  if(fld && fld.type==='file'){
+    const files = normalizeFileList(v);
+    if(!files.length) return '<span style="color:var(--tl);font-weight:400">—</span>';
+    return '<div style="display:grid;gap:8px">'+files.map(function(file){
+      const name = h(file.name || file.filename || 'Fichier');
+      const info = formatFileSize(file.size);
+      const href = ptFileDownloadHref(file);
+      if(href){
+        return '<a href="'+href+'" download="'+name+'" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1.5px solid var(--bd);border-radius:10px;background:var(--bg);text-decoration:none;color:var(--tx);font-weight:800"><span>📎 '+name+'</span><span style="font-size:11px;color:#0ea5e9;font-weight:800">⬇ Télécharger '+(info?('· '+info):'')+'</span></a>';
+      }
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1.5px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx);font-weight:800"><span>📎 '+name+'</span><span style="font-size:11px;color:var(--tl);font-weight:700">Fichier enregistré sans contenu téléchargeable</span></div>';
+    }).join('')+'</div>';
+  }
+  return '<span style="font-size:13.5px;color:var(--tx);font-weight:600">'+h(val)+'</span>';
+}
+
 function openSubmissions(id){
   const f=FORMS_DATA.find(x=>x.id===id);if(!f)return;
   curSaisieFormId=id;
@@ -174,10 +248,10 @@ function renderSubmissionDetail(s,f){
   main+='<div><div style="font-size:15px;font-weight:800;color:var(--tx)">'+h(f.nom)+'</div>';
   main+='<div style="font-size:11px;color:var(--tl);margin-top:2px">'+s.dateLabel+' — '+h(s.utilisateur)+'</div></div></div>';
   fields.forEach(fld=>{
-    const v=s.values[fld.id];const val=formatSubmissionValueForDisplay(v,fld);
+    const v=s.values[fld.id];
     main+='<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--bg)">';
-    main+='<div style="font-size:10.5px;font-weight:700;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">'+h(fld.nom)+'</div>';
-    main+='<div style="font-size:13.5px;color:'+(val==='—'?'var(--tl)':'var(--tx)')+';font-weight:'+(val==='—'?'400':'600')+'">'+h(val)+'</div></div>';
+    main+='<div style="font-size:10.5px;font-weight:700;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+h(fld.nom)+'</div>';
+    main+='<div>'+renderSubmissionValueHTML(v,fld)+'</div></div>';
   });
   main+='</div>';
   let hist='<div style="background:var(--card,#fff);border-radius:12px;border:1.5px solid var(--bd);padding:18px">';
