@@ -131,8 +131,8 @@ function renderSubTable(f,subs){
   wrap.innerHTML=html;
 }
 function openSubmission(id){
-  const s=SUBMISSIONS_DATA.find(x=>x.id===id);if(!s)return;
-  const f=FORMS_DATA.find(x=>x.id===s.formId);if(!f)return;
+  const s=SUBMISSIONS_DATA.find(x=>String(x.id)===String(id));if(!s){console.warn("[openSubmission] réponse introuvable", id);return;}
+  const f=FORMS_DATA.find(x=>String(x.id)===String(s.formId));if(!f){console.warn("[openSubmission] formulaire introuvable", s.formId);return;}
   document.getElementById('breadcrumb').innerHTML='<span class="bc-link" onclick="goProduction()">▶ Production / Formulaires</span><span style="color:var(--tl);margin:0 4px">/</span><span class="bc-link" onclick="openSubmissions('+f.id+')">'+h(f.nom)+'</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">Saisie du '+s.dateLabel+'</span>';
   document.getElementById('tb-t').textContent=f.nom;
   renderSubmissionDetail(s,f);

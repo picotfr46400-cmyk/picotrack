@@ -252,7 +252,7 @@ function ptAppointmentSubmissionHtml(row){
     const val=sub.values ? sub.values[fld.id] : '';
     const isFile=(fld.type==='file'||fld.type==='upload'||fld.type==='piecejointe');
     return `<div style="padding:11px 0;border-bottom:1px solid var(--bg)"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:900;color:var(--tl);margin-bottom:4px">${isFile?'📎 ':''}${h(fld.nom||fld.label||fld.id)}</div><div style="font-size:13px;color:var(--tx);font-weight:700;word-break:break-word">${ptValueToHtml(val)}</div></div>`;
-  }).join('') + `<button class="btn btn-sm bp" style="margin-top:12px" onclick="openSubmission('${h(sub.id)}')">Ouvrir la réponse complète</button>`;
+  }).join('') + `<button class="btn btn-sm bp" style="margin-top:12px" onclick="ptOpenPlanningSubmission('${h(sub.id)}')">Ouvrir la réponse complète</button>`;
 }
 function ptOpenAppointmentGroup(encodedKey){
   const key=decodeURIComponent(encodedKey||'');
@@ -274,6 +274,19 @@ function ptOpenAppointmentGroup(encodedKey){
   document.body.appendChild(overlay);
 }
 function ptClosePlanningDetail(){ const o=document.getElementById('pt-planning-detail-overlay'); if(o) o.remove(); }
+
+function ptOpenPlanningSubmission(id){
+  try{ ptClosePlanningDetail(); }catch(e){}
+  const sid = String(id);
+  const sub = (typeof SUBMISSIONS_DATA !== 'undefined' ? SUBMISSIONS_DATA : []).find(s=>String(s.id)===sid);
+  if(!sub){ alert('Réponse complète introuvable localement. ID : '+sid); return; }
+  if(typeof openSubmission === 'function'){
+    openSubmission(sub.id);
+    return;
+  }
+  alert('Module de réponses non chargé. Retourne dans Production > Formulaires pour ouvrir la réponse.');
+}
+
 
 function ptRenderWeek(groupedRows, rows){
   const start = ptStartOfWeek(ptPlanningBase);
