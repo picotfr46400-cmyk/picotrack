@@ -815,15 +815,10 @@ function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
             <button onClick={()=>{onEdit(null);setAdv(false);}} style={{width:26,height:26,borderRadius:6,border:"1.5px solid "+C.bd,background:"#fff",cursor:"pointer",fontSize:11,color:C.tl}}>✓</button>
           </div>
           {["select","multi"].includes(f.type)&&(<OptsEd opts={f.opts||[]} onChange={opts=>upd(f.id,{opts})}/>)}
-          <TypePicker active={f.type} onSel={type=>upd(f.id,{type,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[],...(type==="appointment"?{slotDuration:f.slotDuration||30,startHour:f.startHour||"08:00",endHour:f.endHour||"18:00",parallelSlots:f.parallelSlots||2,daysAvailable:f.daysAvailable||["1","2","3","4","5"],manualValidation:!!f.manualValidation}: {})})}/>
           <Preview f={f}/>
-          <button onClick={()=>setAdv(a=>!a)}
-            style={{marginTop:8,width:"100%",padding:"6px 10px",borderRadius:7,border:"1.5px solid "+C.bd,background:adv?C.eml:"#fff",color:adv?C.em:C.tl,fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:6}}>
-            <span>⚙ Paramètres avancés</span>
-            {ac>0&&<span style={{padding:"1px 6px",borderRadius:10,background:C.em,color:"#fff",fontSize:10}}>{ac}</span>}
-            <span style={{marginLeft:"auto",fontSize:11,display:"inline-block",transform:adv?"rotate(180deg)":"none"}}>▾</span>
-          </button>
-          {adv&&(<div onClick={e=>e.stopPropagation()}><Adv f={f} upd={upd}/></div>)}
+          <div style={{marginTop:8,padding:"7px 10px",borderRadius:8,border:"1px dashed "+C.bd,background:C.bg,color:C.ts,fontSize:11.5,lineHeight:1.35}}>
+            Les paramètres détaillés du champ se règlent dans le panneau de droite.
+          </div>
         </div>
       ):(
         <div>
@@ -1064,14 +1059,7 @@ const dbFieldOptions = (
         <button style={{padding:"6px 13px",borderRadius:8,border:"1.5px solid "+C.bd,background:"#fff",color:C.tm,fontSize:12.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>👁 Aperçu</button>
         <button onClick={handleSave} style={{padding:"6px 16px",borderRadius:8,border:"none",background:C.em,color:"#fff",fontSize:12.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💾 Enregistrer</button>
       </div>
-      {/* Bandeau info */}
-      <div style={{background:C.eml,borderBottom:"1px solid "+C.em2,padding:"7px 18px",display:"flex",gap:10,fontSize:12,color:"#065F46",alignItems:"center",flexShrink:0}}>
-        <span style={{fontWeight:800,display:"flex",alignItems:"center",gap:5}}>
-          <span style={{width:18,height:18,background:C.em,borderRadius:5,display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:11}}>✦</span>
-          Form Builder Pro
-        </span>
-        <span style={{color:C.emd,opacity:.85}}>Bibliothèque de blocs · Canvas central · Inspecteur champ · Sauvegarde Supabase PC ↔ PAD</span>
-      </div>
+
       {/* Paramétrage formulaire */}
       <div style={{background:"#fff",borderBottom:"1px solid "+C.bd,flexShrink:0}}>
         <button onClick={()=>setShowSettings(!showSettings)} style={{width:"100%",border:"none",background:"#fff",padding:"10px 18px",display:"flex",alignItems:"center",gap:10,cursor:"pointer",fontFamily:"inherit",color:C.tx}}>
@@ -1311,22 +1299,26 @@ overflowX:"visible"
           </div>
         </div>
         <aside style={{borderLeft:"1px solid "+C.bd,background:"#fff",padding:14,overflowY:"auto"}}>
-          <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Inspecteur</div>
+          <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Paramètres du champ</div>
           {selectedField?(
             <div style={{display:"grid",gap:10}}>
               <div style={{padding:12,border:"1.5px solid "+C.bd,borderRadius:12,background:C.bg}}>
-                <div style={{fontSize:12,fontWeight:900,marginBottom:6}}>{selectedField.label}</div>
-                <Badge tid={selectedField.type} xs/>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                  <div style={{fontSize:12,fontWeight:900,flex:1}}>{selectedField.label}</div>
+                  <Badge tid={selectedField.type} xs/>
+                </div>
+                <label style={{fontSize:11,fontWeight:800,color:C.tl,display:"block",marginBottom:5}}>Libellé affiché</label>
+                <input value={selectedField.label||""} onChange={e=>updF(selectedField.id,{label:e.target.value})} style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:9,padding:"8px 10px",fontFamily:"inherit",fontSize:12,marginBottom:9}}/>
+                <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:12,fontWeight:800,color:C.tm}}>Obligatoire <Tog on={selectedField.req} cb={()=>updF(selectedField.id,{req:!selectedField.req})}/></label>
               </div>
-              <label style={{fontSize:11,fontWeight:800,color:C.tl}}>Nom technique</label>
-              <input value={selectedField.key||slugKey(selectedField.label)} onChange={e=>updF(selectedField.id,{key:e.target.value})} style={{border:"1.5px solid "+C.bd,borderRadius:9,padding:"9px 10px",fontFamily:"inherit",fontSize:12}}/>
-              <label style={{fontSize:11,fontWeight:800,color:C.tl}}>Section</label>
-              <input value={selectedField.section||""} onChange={e=>updF(selectedField.id,{section:e.target.value})} placeholder="Réception, Contrôle..." style={{border:"1.5px solid "+C.bd,borderRadius:9,padding:"9px 10px",fontFamily:"inherit",fontSize:12}}/>
-              <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:12,fontWeight:800,color:C.tm}}>Obligatoire <Tog on={selectedField.req} cb={()=>updF(selectedField.id,{req:!selectedField.req})}/></label>
-              <div style={{padding:10,border:"1px dashed "+C.bd,borderRadius:10,color:C.ts,fontSize:11.5,lineHeight:1.4}}>Les paramètres complets restent disponibles en cliquant directement sur le champ dans le canvas.</div>
+              <div style={{padding:12,border:"1.5px solid "+C.bd,borderRadius:12,background:"#fff"}}>
+                <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:.8,marginBottom:8}}>Type de champ</div>
+                <TypePicker active={selectedField.type} onSel={type=>updF(selectedField.id,{type,opts:['select','multi'].includes(type)?['Option 1','Option 2']:[],...(type==="appointment"?{slotDuration:selectedField.slotDuration||30,startHour:selectedField.startHour||"08:00",endHour:selectedField.endHour||"18:00",parallelSlots:selectedField.parallelSlots||2,daysAvailable:selectedField.daysAvailable||["1","2","3","4","5"],manualValidation:!!selectedField.manualValidation}: {})})}/>
+              </div>
+              <Adv f={selectedField} upd={updF}/>
             </div>
           ):(
-            <div style={{padding:18,border:"1.5px dashed "+C.bd,borderRadius:12,textAlign:"center",color:C.ts,fontSize:12}}>Sélectionnez un champ pour modifier ses paramètres.</div>
+            <div style={{padding:18,border:"1.5px dashed "+C.bd,borderRadius:12,textAlign:"center",color:C.ts,fontSize:12}}>Sélectionnez un champ dans le formulaire pour modifier ses paramètres.</div>
           )}
         </aside>
       </div>    </div>

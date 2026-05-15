@@ -226,8 +226,21 @@ function ptSlotCard(a){
   </button>`;
 }
 
-function ptValueToHtml(v){
+function ptValueToHtml(v, fld){
   if(v==null || v==='') return '<span style="color:var(--tl)">—</span>';
+  if(fld && fld.type==='appointment'){
+    try{
+      const obj = (typeof v==='string' && v.trim().startsWith('{')) ? JSON.parse(v) : v;
+      if(obj && typeof obj==='object'){
+        const d = obj.date || obj.appointment_date || obj.day || '';
+        const start = obj.time || obj.start || obj.start_time || '';
+        const end = obj.end || obj.end_time || '';
+        let dateTxt = d;
+        if(d){ const dt=new Date(String(d)+'T12:00:00'); if(!isNaN(dt)) dateTxt=dt.toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'}); }
+        return h([dateTxt, start ? (start + (end ? ' - '+end : '')) : ''].filter(Boolean).join(' • ') || '—');
+      }
+    }catch(e){}
+  }
   if(Array.isArray(v)) return v.map(ptValueToHtml).join('<br>');
   if(typeof v==='object'){
     if(v.url) return `<a href="${h(v.url)}" target="_blank" style="color:#2563eb;font-weight:800">${h(v.name||v.filename||'Ouvrir le fichier')}</a>`;
@@ -251,7 +264,7 @@ function ptAppointmentSubmissionHtml(row){
   return fields.map(fld=>{
     const val=sub.values ? sub.values[fld.id] : '';
     const isFile=(fld.type==='file'||fld.type==='upload'||fld.type==='piecejointe');
-    return `<div style="padding:11px 0;border-bottom:1px solid var(--bg)"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:900;color:var(--tl);margin-bottom:4px">${isFile?'📎 ':''}${h(fld.nom||fld.label||fld.id)}</div><div style="font-size:13px;color:var(--tx);font-weight:700;word-break:break-word">${ptValueToHtml(val)}</div></div>`;
+    return `<div style="padding:11px 0;border-bottom:1px solid var(--bg)"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:900;color:var(--tl);margin-bottom:4px">${isFile?'📎 ':''}${h(fld.nom||fld.label||fld.id)}</div><div style="font-size:13px;color:var(--tx);font-weight:700;word-break:break-word">${ptValueToHtml(val,fld)}</div></div>`;
   }).join('') + `<button class="btn btn-sm bp" style="margin-top:12px" onclick="ptOpenPlanningSubmission('${h(sub.id)}')">Ouvrir la réponse complète</button>`;
 }
 function ptOpenAppointmentGroup(encodedKey){

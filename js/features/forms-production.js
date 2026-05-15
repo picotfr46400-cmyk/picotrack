@@ -55,6 +55,33 @@ function renderProdForms(list){
     </div>`;
   }).join('');
 }
+
+function formatSubmissionValueForDisplay(v, fld){
+  if(v==null || v==='') return '—';
+  if(fld && fld.type==='appointment'){
+    try{
+      const obj = (typeof v==='string' && v.trim().startsWith('{')) ? JSON.parse(v) : v;
+      if(obj && typeof obj==='object'){
+        const d = obj.date || obj.appointment_date || obj.day || '';
+        const start = obj.time || obj.start || obj.start_time || '';
+        const end = obj.end || obj.end_time || '';
+        let dateTxt = d;
+        if(d){
+          const dt = new Date(String(d)+'T12:00:00');
+          if(!isNaN(dt)) dateTxt = dt.toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'});
+        }
+        return [dateTxt, start ? (start + (end ? ' - '+end : '')) : ''].filter(Boolean).join(' • ') || '—';
+      }
+    }catch(e){}
+  }
+  if(Array.isArray(v)) return v.map(x=>formatSubmissionValueForDisplay(x, fld)).join(', ');
+  if(typeof v==='object'){
+    if(v.url) return v.name || v.filename || v.url;
+    if(v.label) return v.label;
+    try{return JSON.stringify(v);}catch(e){return String(v);}
+  }
+  return String(v);
+}
 function openSubmissions(id){
   const f=FORMS_DATA.find(x=>x.id===id);if(!f)return;
   curSaisieFormId=id;
@@ -124,7 +151,7 @@ function renderSubTable(f,subs){
     html+='<tr onclick="openSubmission('+s.id+')" style="cursor:pointer;border-bottom:1px solid var(--bd);background:'+bg+'" onmouseover="this.style.background=\'var(--pl)\'" onmouseout="this.style.background=\''+bg+'\'">';
     html+='<td style="padding:10px 14px;color:var(--tl);white-space:nowrap">'+s.dateLabel+'</td>';
     html+='<td style="padding:10px 14px;font-weight:600;color:var(--tx)">'+h(s.utilisateur)+'</td>';
-    fields.forEach(fld=>{const v=s.values[fld.id];html+='<td style="padding:10px 14px;color:var(--tx)">'+h(Array.isArray(v)?v.join(', '):(v||'—'))+'</td>';});
+    fields.forEach(fld=>{const v=s.values[fld.id];const val=formatSubmissionValueForDisplay(v,fld);html+='<td style="padding:10px 14px;color:var(--tx)">'+h(val)+'</td>';});
     html+='</tr>';
   });
   html+='</tbody></table></div>';
@@ -147,7 +174,7 @@ function renderSubmissionDetail(s,f){
   main+='<div><div style="font-size:15px;font-weight:800;color:var(--tx)">'+h(f.nom)+'</div>';
   main+='<div style="font-size:11px;color:var(--tl);margin-top:2px">'+s.dateLabel+' — '+h(s.utilisateur)+'</div></div></div>';
   fields.forEach(fld=>{
-    const v=s.values[fld.id];const val=Array.isArray(v)?v.join(', '):(v||'—');
+    const v=s.values[fld.id];const val=formatSubmissionValueForDisplay(v,fld);
     main+='<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--bg)">';
     main+='<div style="font-size:10.5px;font-weight:700;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">'+h(fld.nom)+'</div>';
     main+='<div style="font-size:13.5px;color:'+(val==='—'?'var(--tl)':'var(--tx)')+';font-weight:'+(val==='—'?'400':'600')+'">'+h(val)+'</div></div>';
