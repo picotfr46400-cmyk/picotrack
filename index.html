@@ -9,24 +9,27 @@
 <meta name="theme-color" content="#059669">
 <link rel="manifest" href="manifest.json">
 <title>PicoTrack — Formulaires v3</title>
+
+<!-- Fonts async (non-bloquant) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+
+<!-- React 18 production (jsDelivr — CDN rapide) -->
 <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
 <link rel="stylesheet" href="style.css">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<meta name="theme-color" content="#059669">
-<link rel="manifest" href="manifest.json">
 </head>
 <body>
+
 <!-- SIDEBAR -->
 <div id="sb">
   <div class="sb-logo">
-  <img src="logo-picotrack.png" alt="PicoTrack Logo" class="sb-logo-img">
-</div>
+    <img src="logo-picotrack.png" alt="PicoTrack Logo" class="sb-logo-img">
+  </div>
   <div class="sb-env">
     <span class="sb-env-dot"></span>
     <div>
@@ -47,8 +50,8 @@
 
   <div class="sb-s">Administration</div>
   <div class="sb-i" id="sb-users" onclick="goUsers()"><span class="sb-ico">👥</span> Utilisateurs <span class="sb-bk" id="sb-users-cnt">0</span></div>
-  <div class="sb-i" id="sb-roles" onclick="goRoles()"><span class="sb-ico">🔑</span> Rôles & Permissions</div>
-  <div class="sb-i" id="sb-api" onclick="goApiConfig()"><span class="sb-ico">🔌</span> API & Intégrations</div>
+  <div class="sb-i" id="sb-roles" onclick="goRoles()"><span class="sb-ico">🔑</span> Rôles &amp; Permissions</div>
+  <div class="sb-i" id="sb-api" onclick="goApiConfig()"><span class="sb-ico">🔌</span> API &amp; Intégrations</div>
 
   <div class="sb-s">Production</div>
   <div class="sb-i" id="sb-prod-forms" onclick="goProduction()"><span class="sb-ico">📱</span> PAD Terrain <span class="sb-bk" id="prod-forms-count">3</span></div>
@@ -56,64 +59,67 @@
   <div class="sb-i" id="sb-prod-db" onclick="goProDatabase()"><span class="sb-ico">📚</span> Données</div>
   <div class="sb-i" id="sb-planning" onclick="goPlanning()"><span class="sb-ico">📅</span> Planning</div>
 </div>
+
 <!-- MAIN -->
 <div id="main">
   <div id="topbar"><div id="tb-t">Formulaires</div></div>
   <div class="breadcrumb" id="breadcrumb"><span class="bc-link" onclick="goList()">▶ Formulaires</span></div>
-<!-- VUE : DASHBOARD -->
-<div class="view" id="v-dashboard">
-  <div style="padding:18px 22px;flex:1;overflow-y:auto" id="dashboard-wrap"></div>
-</div>
 
-
-<!-- VUE : STUDIO HUB -->
-<div class="view" id="v-studio">
-  <div class="studio-page" id="studio-wrap"></div>
-</div>
-
-<!-- VUE : WORKFLOWS V4 -->
-<div class="view" id="v-workflows">
-  <div class="studio-page" id="workflows-wrap"></div>
-</div>
-
-<!-- VUE : AUTOMATISATIONS V4 -->
-<div class="view" id="v-automations">
-  <div class="studio-page" id="automations-wrap"></div>
-</div>
-
-<!-- VUE : DATABASE STUDIO V4 -->
-<div class="view" id="v-database-studio">
-  <div class="studio-page" id="database-studio-wrap"></div>
-</div>
-
-<!-- VUE : LISTE DES RÔLES -->
-<div class="view" id="v-roles">
-  <div style="padding:18px 22px;flex:1;overflow-y:auto">
-    <div class="toolbar">
-      <button class="btn bp pill" onclick="openRoleEditor(null)">＋ Créer un rôle</button>
-      <div class="sp"></div>
-      <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="renderRolesList(this.value)"></div>
-    </div>
-    <div id="roles-grid" style="margin-top:16px"></div>
+  <!-- VUE : DASHBOARD -->
+  <div class="view" id="v-dashboard">
+    <div style="padding:18px 22px;flex:1;overflow-y:auto" id="dashboard-wrap"></div>
   </div>
-</div>
 
-<!-- VUE : EDITEUR DE RÔLE -->
-<div class="view" id="v-role-editor">
-  <div style="display:flex;flex-direction:column;height:100%">
-    <div class="btb">
-      <button class="btn btn-sm" onclick="goRoles()">← Retour</button>
-      <div class="btb-sep"></div>
-      <input class="btb-nm" id="role-editor-name" placeholder="Nom du rôle...">
-      <div class="sp"></div>
-      <button class="btn btn-sm" onclick="saveRole(false)">Enregistrer</button>
-      <button class="btn bp btn-sm" onclick="saveRole(true)">💾 Enregistrer & quitter</button>
-    </div>
-    <div style="flex:1;overflow-y:auto;padding:22px;background:var(--bg);display:flex;flex-direction:column;gap:16px" id="role-editor-body"></div>
+  <!-- VUE : STUDIO HUB -->
+  <div class="view" id="v-studio">
+    <div class="studio-page" id="studio-wrap"></div>
   </div>
-</div>
+
+  <!-- VUE : WORKFLOWS V4 -->
+  <div class="view" id="v-workflows">
+    <div class="studio-page" id="workflows-wrap"></div>
+  </div>
+
+  <!-- VUE : AUTOMATISATIONS V4 -->
+  <div class="view" id="v-automations">
+    <div class="studio-page" id="automations-wrap"></div>
+  </div>
+
+  <!-- VUE : DATABASE STUDIO V4 -->
+  <div class="view" id="v-database-studio">
+    <div class="studio-page" id="database-studio-wrap"></div>
+  </div>
+
+  <!-- VUE : LISTE DES RÔLES -->
+  <div class="view" id="v-roles">
+    <div style="padding:18px 22px;flex:1;overflow-y:auto">
+      <div class="toolbar">
+        <button class="btn bp pill" onclick="openRoleEditor(null)">＋ Créer un rôle</button>
+        <div class="sp"></div>
+        <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="renderRolesList(this.value)"></div>
+      </div>
+      <div id="roles-grid" style="margin-top:16px"></div>
+    </div>
+  </div>
+
+  <!-- VUE : EDITEUR DE RÔLE -->
+  <div class="view" id="v-role-editor">
+    <div style="display:flex;flex-direction:column;height:100%">
+      <div class="btb">
+        <button class="btn btn-sm" onclick="goRoles()">← Retour</button>
+        <div class="btb-sep"></div>
+        <input class="btb-nm" id="role-editor-name" placeholder="Nom du rôle...">
+        <div class="sp"></div>
+        <button class="btn btn-sm" onclick="saveRole(false)">Enregistrer</button>
+        <button class="btn bp btn-sm" onclick="saveRole(true)">💾 Enregistrer &amp; quitter</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:22px;background:var(--bg);display:flex;flex-direction:column;gap:16px" id="role-editor-body"></div>
+    </div>
+  </div>
+
   <!-- VUE : UTILISATEURS -->
-<div class="view" id="v-users"></div>
+  <div class="view" id="v-users"></div>
+
   <!-- LIST VIEW -->
   <div class="view on" id="v-list">
     <div style="padding:18px 22px;flex:1">
@@ -164,155 +170,161 @@
   </div>
 
   <!-- PRODUCTION : LISTE FORMULAIRES -->
-<div class="view" id="v-prod-forms">
-  <div style="padding:18px 22px;flex:1;overflow-y:auto">
-    <!-- Barre de recherche -->
-    <div style="margin-bottom:18px">
-      <div class="sbar" style="max-width:340px">
-        <span style="color:var(--tl)">🔍</span>
-        <input placeholder="Rechercher un formulaire..." oninput="searchProdForms(this.value)" id="prod-search" style="width:280px">
+  <div class="view" id="v-prod-forms">
+    <div style="padding:18px 22px;flex:1;overflow-y:auto">
+      <div style="margin-bottom:18px">
+        <div class="sbar" style="max-width:340px">
+          <span style="color:var(--tl)">🔍</span>
+          <input placeholder="Rechercher un formulaire..." oninput="searchProdForms(this.value)" id="prod-search" style="width:280px">
+        </div>
       </div>
+      <div id="prod-forms-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px"></div>
     </div>
-    <!-- Grille de cartes -->
-    <div id="prod-forms-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px"></div>
   </div>
-</div>
-<div class="view" id="v-saisie">
-  <div style="flex:1;overflow-y:auto;padding:24px;display:flex;justify-content:center;background:var(--bg)">
-    <div id="saisie-wrap" style="width:100%;max-width:680px"></div>
+
+  <div class="view" id="v-saisie">
+    <div style="flex:1;overflow-y:auto;padding:24px;display:flex;justify-content:center;background:var(--bg)">
+      <div id="saisie-wrap" style="width:100%;max-width:680px"></div>
+    </div>
   </div>
-</div>
-<div class="view" id="v-submissions">
-  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
-    <div id="sub-wrap" style="max-width:900px;margin:0 auto"></div>
+
+  <div class="view" id="v-submissions">
+    <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
+      <div id="sub-wrap" style="max-width:900px;margin:0 auto"></div>
+    </div>
   </div>
-</div>
+
   <div class="view" id="v-submission-detail">
-  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg);display:flex;gap:20px;align-items:flex-start">
-    <div id="sd-main" style="flex:1;min-width:0"></div>
-    <div id="sd-history" style="width:260px;flex-shrink:0"></div>
+    <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg);display:flex;gap:20px;align-items:flex-start">
+      <div id="sd-main" style="flex:1;min-width:0"></div>
+      <div id="sd-history" style="width:260px;flex-shrink:0"></div>
+    </div>
   </div>
-</div>
-<!-- SERVICES : LISTE -->
-<div class="view" id="v-services">
-  <div style="padding:18px 22px;flex:1;overflow-y:auto">
-    <div class="toolbar">
-      <button class="btn bp pill" onclick="openServiceBuilder(null)">＋ Nouveau service</button>
+
+  <!-- SERVICES : LISTE -->
+  <div class="view" id="v-services">
+    <div style="padding:18px 22px;flex:1;overflow-y:auto">
+      <div class="toolbar">
+        <button class="btn bp pill" onclick="openServiceBuilder(null)">＋ Nouveau service</button>
+        <div class="sp"></div>
+        <div class="sbar">
+          <span style="color:var(--tl)">🔍</span>
+          <input placeholder="Rechercher un service..." oninput="searchServices(this.value)">
+        </div>
+      </div>
+      <div id="services-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+    </div>
+  </div>
+
+  <!-- SERVICE BUILDER -->
+  <div class="view" id="v-service-builder">
+    <div class="btb">
+      <button class="btn btn-sm" onclick="goServices()">← Retour</button>
+      <div class="btb-sep"></div>
+      <input class="btb-nm" id="sb2-name" placeholder="Nom du service...">
       <div class="sp"></div>
-      <div class="sbar">
-        <span style="color:var(--tl)">🔍</span>
-        <input placeholder="Rechercher un service..." oninput="searchServices(this.value)">
-      </div>
+      <button class="btn btn-sm" onclick="saveService(false)">Enregistrer</button>
+      <button class="btn bp btn-sm" onclick="saveService(true)">💾 Enregistrer &amp; quitter</button>
     </div>
-    <div id="services-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+    <div class="b-tabs">
+      <div class="b-tab on" id="svctab-gen"         onclick="setSvcTab('gen')">        <span class="tab-dot"></span>Général</div>
+      <div class="b-tab"    id="svctab-formulaires"  onclick="setSvcTab('formulaires')"><span class="tab-dot"></span>Formulaires</div>
+      <div class="b-tab"    id="svctab-statuses"     onclick="setSvcTab('statuses')">   <span class="tab-dot"></span>Statuts <span class="b-tab-cnt" id="svc-status-cnt" style="display:none">0</span></div>
+      <div class="b-tab"    id="svctab-actions"      onclick="setSvcTab('actions')">    <span class="tab-dot"></span>Actions <span class="b-tab-cnt" id="svc-action-cnt" style="display:none">0</span></div>
+      <div class="b-tab"    id="svctab-flux"         onclick="setSvcTab('flux')">       <span class="tab-dot"></span>Flux</div>
+      <div class="b-tab"    id="svctab-kanban"       onclick="setSvcTab('kanban')">     <span class="tab-dot"></span>Vue Kanban</div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:22px" id="svc-area"></div>
   </div>
-</div>
 
-<!-- SERVICE BUILDER -->
-<div class="view" id="v-service-builder">
-  <div class="btb">
-    <button class="btn btn-sm" onclick="goServices()">← Retour</button>
-    <div class="btb-sep"></div>
-    <input class="btb-nm" id="sb2-name" placeholder="Nom du service...">
-    <div class="sp"></div>
-    <button class="btn btn-sm" onclick="saveService(false)">Enregistrer</button>
-    <button class="btn bp btn-sm" onclick="saveService(true)">💾 Enregistrer &amp; quitter</button>
+  <!-- SERVICE INSTANCES : LISTE -->
+  <div class="view" id="v-service-instances">
+    <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
+      <div id="svc-instances-wrap" style="max-width:960px;margin:0 auto"></div>
+    </div>
   </div>
-  <div class="b-tabs">
-    <div class="b-tab on" id="svctab-gen"         onclick="setSvcTab('gen')">        <span class="tab-dot"></span>Général</div>
-    <div class="b-tab"    id="svctab-formulaires"  onclick="setSvcTab('formulaires')"><span class="tab-dot"></span>Formulaires</div>
-    <div class="b-tab"    id="svctab-statuses"     onclick="setSvcTab('statuses')">   <span class="tab-dot"></span>Statuts <span class="b-tab-cnt" id="svc-status-cnt" style="display:none">0</span></div>
-    <div class="b-tab"    id="svctab-actions"      onclick="setSvcTab('actions')">    <span class="tab-dot"></span>Actions <span class="b-tab-cnt" id="svc-action-cnt" style="display:none">0</span></div>
-    <div class="b-tab"    id="svctab-flux"         onclick="setSvcTab('flux')">       <span class="tab-dot"></span>Flux</div>
-    <div class="b-tab"    id="svctab-kanban"       onclick="setSvcTab('kanban')">     <span class="tab-dot"></span>Vue Kanban</div>
-  </div>
-  <div style="flex:1;overflow-y:auto;padding:22px" id="svc-area"></div>
-</div>
 
-<!-- SERVICE INSTANCES : LISTE -->
-<div class="view" id="v-service-instances">
-  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
-    <div id="svc-instances-wrap" style="max-width:960px;margin:0 auto"></div>
+  <!-- SERVICE INSTANCE : DETAIL -->
+  <div class="view" id="v-service-instance-detail">
+    <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg);display:flex;gap:20px;align-items:flex-start">
+      <div id="sid-main" style="flex:1;min-width:0"></div>
+      <div id="sid-history" style="width:280px;flex-shrink:0"></div>
+    </div>
   </div>
-</div>
 
-<!-- SERVICE INSTANCE : DETAIL -->
-<div class="view" id="v-service-instance-detail">
-  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg);display:flex;gap:20px;align-items:flex-start">
-    <div id="sid-main" style="flex:1;min-width:0"></div>
-    <div id="sid-history" style="width:280px;flex-shrink:0"></div>
-  </div>
-</div>
   <!-- PRODUCTION SERVICES : LISTE -->
-<div class="view" id="v-prod-services-list">
-  <div style="padding:18px 22px;flex:1;overflow-y:auto">
-    <div class="toolbar"><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProdServices(this.value)"></div></div>
-    <div id="prod-services-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+  <div class="view" id="v-prod-services-list">
+    <div style="padding:18px 22px;flex:1;overflow-y:auto">
+      <div class="toolbar"><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProdServices(this.value)"></div></div>
+      <div id="prod-services-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+    </div>
   </div>
-</div>
 
-<!-- PRODUCTION SERVICES : KANBAN -->
-<div class="view" id="v-service-kanban">
-  <div style="display:flex;flex-direction:column;height:100%;overflow:hidden">
-    <div id="kanban-group-tabs" style="display:flex;padding:0 22px;background:#fff;border-bottom:1px solid var(--bd);flex-shrink:0;overflow-x:auto"></div>
-    <div id="kanban-board" style="flex:1;overflow-x:auto;overflow-y:auto;padding:20px;display:flex;gap:16px;align-items:flex-start;background:var(--bg)"></div>
+  <!-- PRODUCTION SERVICES : KANBAN -->
+  <div class="view" id="v-service-kanban">
+    <div style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+      <div id="kanban-group-tabs" style="display:flex;padding:0 22px;background:#fff;border-bottom:1px solid var(--bd);flex-shrink:0;overflow-x:auto"></div>
+      <div id="kanban-board" style="flex:1;overflow-x:auto;overflow-y:auto;padding:20px;display:flex;gap:16px;align-items:flex-start;background:var(--bg)"></div>
+    </div>
   </div>
-</div>
+
   <!-- PROD : LISTE DES BASES -->
-<div class="view" id="v-prod-database">
-  <div style="padding:18px 22px;flex:1;overflow-y:auto">
-    <div class="toolbar"><button class="btn bp pill" onclick="createDatabaseModal()">＋ Créer une base</button><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProDatabase(this.value)"></div></div>
-    <div id="prod-db-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+  <div class="view" id="v-prod-database">
+    <div style="padding:18px 22px;flex:1;overflow-y:auto">
+      <div class="toolbar"><button class="btn bp pill" onclick="createDatabaseModal()">＋ Créer une base</button><div class="sp"></div><div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="searchProDatabase(this.value)"></div></div>
+      <div id="prod-db-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+    </div>
   </div>
-</div>
 
-<!-- PROD : TABLE D'UNE BASE -->
-<div class="view" id="v-prod-database-table">
-  <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
-    <div id="prod-db-table-wrap" style="max-width:100%"></div>
+  <!-- PROD : TABLE D'UNE BASE -->
+  <div class="view" id="v-prod-database-table">
+    <div style="flex:1;overflow-y:auto;padding:24px;background:var(--bg)">
+      <div id="prod-db-table-wrap" style="max-width:100%"></div>
+    </div>
   </div>
-</div>
+
+  <!-- PLANNING -->
+  <div class="view" id="v-planning">
+    <div style="padding:22px;flex:1;overflow:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <div>
+          <div style="font-size:22px;font-weight:900;color:var(--tx)">Planning opérationnel</div>
+          <div style="font-size:13px;color:var(--tl);margin-top:4px">Vue charge / capacité des rendez-vous issus des formulaires</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm" onclick="ptPlanningShift(-7)">← Semaine précédente</button>
+          <button class="btn btn-sm bp" onclick="ptPlanningToday()">Aujourd'hui</button>
+          <button class="btn btn-sm" onclick="ptPlanningShift(7)">Semaine suivante →</button>
+        </div>
+      </div>
+      <div id="planning-wrap"></div>
+    </div>
+  </div>
+
   <!-- API CONFIG -->
-
-<div class="view" id="v-planning">
-  <div style="padding:22px;flex:1;overflow:auto">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-      <div>
-        <div style="font-size:22px;font-weight:900;color:var(--tx)">Planning opérationnel</div>
-        <div style="font-size:13px;color:var(--tl);margin-top:4px">Vue charge / capacité des rendez-vous issus des formulaires</div>
+  <div class="view" id="v-api-config">
+    <div style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+      <div id="api-tabs" style="display:flex;padding:0 22px;background:#fff;border-bottom:1px solid var(--bd);flex-shrink:0">
+        <div class="b-tab on" id="apitab-keys"      onclick="setApiTab('keys')">     <span class="tab-dot"></span>Clés API</div>
+        <div class="b-tab"    id="apitab-endpoints"  onclick="setApiTab('endpoints')"><span class="tab-dot"></span>Endpoints</div>
+        <div class="b-tab"    id="apitab-webhooks"   onclick="setApiTab('webhooks')"> <span class="tab-dot"></span>Webhooks</div>
+        <div class="b-tab"    id="apitab-logs"       onclick="setApiTab('logs')">     <span class="tab-dot"></span>Logs</div>
       </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-sm" onclick="ptPlanningShift(-7)">← Semaine précédente</button>
-        <button class="btn btn-sm bp" onclick="ptPlanningToday()">Aujourd'hui</button>
-        <button class="btn btn-sm" onclick="ptPlanningShift(7)">Semaine suivante →</button>
-      </div>
+      <div id="api-area" style="flex:1;overflow-y:auto;padding:22px;background:var(--bg)"></div>
     </div>
-    <div id="planning-wrap"></div>
   </div>
-</div>
 
-<div class="view" id="v-api-config">
-  <div style="display:flex;flex-direction:column;height:100%;overflow:hidden">
-    <div id="api-tabs" style="display:flex;padding:0 22px;background:#fff;border-bottom:1px solid var(--bd);flex-shrink:0">
-      <div class="b-tab on" id="apitab-keys"      onclick="setApiTab('keys')">     <span class="tab-dot"></span>Clés API</div>
-      <div class="b-tab"    id="apitab-endpoints"  onclick="setApiTab('endpoints')"><span class="tab-dot"></span>Endpoints</div>
-      <div class="b-tab"    id="apitab-webhooks"   onclick="setApiTab('webhooks')"> <span class="tab-dot"></span>Webhooks</div>
-      <div class="b-tab"    id="apitab-logs"       onclick="setApiTab('logs')">     <span class="tab-dot"></span>Logs</div>
+  <!-- BUILDER VIEW -->
+  <div class="view" id="v-builder" style="overflow:hidden">
+    <div id="react-builder-root" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
+  </div>
+
+  <!-- ADMIN : LICENCES & PAD -->
+  <div class="view" id="v-licensing">
+    <div class="licensing-page">
+      <div id="licensing-wrap"></div>
     </div>
-    <div id="api-area" style="flex:1;overflow-y:auto;padding:22px;background:var(--bg)"></div>
   </div>
-</div>
- <!-- BUILDER VIEW -->
-<div class="view" id="v-builder" style="overflow:hidden">
-  <div id="react-builder-root" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
-</div>
-
-<!-- ADMIN : LICENCES & PAD -->
-<div class="view" id="v-licensing">
-  <div class="licensing-page">
-    <div id="licensing-wrap"></div>
-  </div>
-</div>
 </div>
 
 <!-- CONFIG PANEL -->
@@ -339,12 +351,14 @@
 </div>
 
 <div id="toasts"></div>
-<!-- PicoTrack JS - ordre de chargement important -->
 
+<!-- ═══════════════════════════════════════════════════════════
+     REACT BUILDER (Babel Standalone — inline JSX)
+     Doit rester avant les scripts JS car window.PicoBuilderApp
+     est référencé dans react-builder-mount.js
+═══════════════════════════════════════════════════════════ -->
 <script type="text/babel">
 // PicoTrack Builder v6.1 — React via Babel Standalone
-// Pas d'import : React/ReactDOM chargés via CDN dans index.html
-
 const { useState, useRef, useEffect, useCallback } = React;
 
 const C = {
@@ -353,32 +367,26 @@ const C = {
 };
 
 const TYPES = [
-  // Mise en page
   {id:"titre",        icon:"T",  label:"Titre",           clr:"#6b7280", cat:"layout"},
   {id:"sep",          icon:"—",  label:"Séparateur",      clr:"#94a3b8", cat:"layout"},
   {id:"image",        icon:"🖼", label:"Image",           clr:"#6b7280", cat:"layout"},
   {id:"son",          icon:"🔊", label:"Son",             clr:"#6b7280", cat:"layout"},
   {id:"video",        icon:"▶",  label:"Vidéo",           clr:"#6b7280", cat:"layout"},
   {id:"groupe",       icon:"▣",  label:"Groupe",          clr:"#6b7280", cat:"layout"},
-  // Texte
   {id:"text",         icon:"Aa", label:"Texte",           clr:"#3b82f6", cat:"text"},
   {id:"textarea",     icon:"¶",  label:"Texte long",      clr:"#3b82f6", cat:"text"},
   {id:"number",       icon:"#",  label:"Nombre",          clr:"#8b5cf6", cat:"text"},
-  // Listes
   {id:"checkbox",     icon:"☑",  label:"Case à cocher",   clr:"#f59e0b", cat:"list"},
   {id:"select",       icon:"≡",  label:"Choix unique",    clr:"#f59e0b", cat:"list"},
   {id:"multi",        icon:"⊞", label:"Multi-choix",     clr:"#f59e0b", cat:"list"},
-  // Date
   {id:"date",         icon:"📅", label:"Date",            clr:"#06b6d4", cat:"date"},
   {id:"time",         icon:"⏰", label:"Heure",           clr:"#06b6d4", cat:"date"},
   {id:"datetime",     icon:"📆", label:"Date & heure",    clr:"#06b6d4", cat:"date"},
   {id:"appointment",  icon:"📅", label:"Prise de rendez-vous", clr:"#2563eb", cat:"date"},
-  // Médias
   {id:"photo",        icon:"📷", label:"Photo",           clr:"#10b981", cat:"media"},
   {id:"file",         icon:"📎", label:"Fichier",         clr:"#10b981", cat:"media"},
   {id:"sign",         icon:"✍", label:"Signature",       clr:"#8b5cf6", cat:"media"},
   {id:"location",     icon:"📍", label:"Localisation",   clr:"#ef4444", cat:"media"},
-  // Spéciaux
   {id:"calcul",       icon:"∑",  label:"Calcul",          clr:"#7c3aed", cat:"special"},
   {id:"requete",      icon:"⛁",  label:"Requête",         clr:"#7c3aed", cat:"special"},
   {id:"table_unique", icon:"⊟",  label:"Table unique",    clr:"#f97316", cat:"special"},
@@ -519,14 +527,7 @@ function OptsEd({opts,onChange}){
 }
 
 function TypePicker({active,onSel}){
-  const cats = [
-    {id:"layout",label:"Mise en page"},
-    {id:"text",label:"Saisie texte"},
-    {id:"list",label:"Listes"},
-    {id:"date",label:"Date / heure"},
-    {id:"media",label:"Médias"},
-    {id:"special",label:"Spéciaux"}
-  ];
+  const cats=[{id:"layout",label:"Mise en page"},{id:"text",label:"Saisie texte"},{id:"list",label:"Listes"},{id:"date",label:"Date / heure"},{id:"media",label:"Médias"},{id:"special",label:"Spéciaux"}];
   return (
     <select value={active} onChange={e=>onSel(e.target.value)}
       style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:9,padding:"9px 10px",fontSize:12.5,fontWeight:800,color:C.tm,background:"#fff",fontFamily:"inherit",outline:"none",marginBottom:10}}>
@@ -727,7 +728,7 @@ function Adv({f,upd}){
             <div style={{padding:"9px 12px",border:"1px dashed "+C.bd,borderRadius:8,background:"#FAFAFA"}}>
               <div style={{fontSize:11,fontWeight:700,color:C.ts,marginBottom:6}}>Visible par les rôles</div>
               <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                {(rolesList.length?rolesList:[{id:"administrateur",nom:"Administrateur"},{id:"manager",nom:"Manager"},{id:"operateur",nom:"Opérateur"}]).map(r=>{
+                {(typeof rolesList!=="undefined"&&rolesList.length?rolesList:[{id:"administrateur",nom:"Administrateur"},{id:"manager",nom:"Manager"},{id:"operateur",nom:"Opérateur"}]).map(r=>{
                   const rid=r.id||r.nom;
                   const on=(f.roles||[]).includes(rid);
                   return (
@@ -746,52 +747,10 @@ function Adv({f,upd}){
   );
 }
 
-function AddPop({onAdd}){
-  const [q,setQ]=useState("");
-  const [sug,setSug]=useState(null);
-  const ref=useRef(null);
-  useEffect(()=>{setTimeout(()=>{if(ref.current)ref.current.focus();},60);},[]);
-  const hi=v=>{setQ(v);setSug(v.trim()?detect(v):null);};
-  return (
-    <div style={{position:"absolute",top:"calc(100% + 8px)",left:"50%",transform:"translateX(-50%)",width:314,background:"#fff",border:"1.5px solid "+C.bd,borderRadius:14,boxShadow:"0 16px 48px rgba(0,0,0,.13)",padding:13,zIndex:1000}}>
-      <input ref={ref} value={q} onChange={e=>hi(e.target.value)} placeholder="Nommer le champ... (optionnel)"
-        style={{width:"100%",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none",boxSizing:"border-box",marginBottom:8}}
-        onFocus={e=>{e.target.style.borderColor=C.em;}} onBlur={e=>{e.target.style.borderColor=C.bd;}}/>
-      {sug&&(
-        <div style={{display:"flex",alignItems:"center",gap:7,padding:"5px 9px",background:C.eml,borderRadius:8,border:"1px solid "+C.em2,marginBottom:9}}>
-          <span>✨</span>
-          <span style={{fontSize:11,color:"#065F46",fontWeight:700}}>Suggestion :</span>
-          <Badge tid={sug} xs/>
-          <button onClick={()=>onAdd(sug,q)} style={{marginLeft:"auto",padding:"2px 10px",borderRadius:20,border:"none",background:C.em,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Utiliser →</button>
-        </div>
-      )}
-     <div style={{fontSize:10,fontWeight:700,color:C.ts,textTransform:"uppercase",letterSpacing:".8px",marginBottom:7}}>Choisir un type</div>
-     {TYPE_CATS.map(cat=>(
-        <div key={cat.id} style={{marginBottom:8}}>
-          <div style={{fontSize:9,fontWeight:800,color:C.ts,textTransform:"uppercase",letterSpacing:".6px",marginBottom:4}}>{cat.label}</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
-            {TYPES.filter(t=>t.cat===cat.id).map(t=>(
-              <button key={t.id} onClick={()=>onAdd(t.id,q)}
-                style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"6px 2px",border:"1.5px solid #F1F5F9",borderRadius:8,background:"#FAFAFA",cursor:"pointer",fontFamily:"inherit",fontSize:9.5,fontWeight:700,color:C.tl}}
-                onMouseEnter={e=>{e.currentTarget.style.borderColor=t.clr;e.currentTarget.style.background=t.clr+"12";e.currentTarget.style.color=t.clr;}}
-                onMouseLeave={e=>{e.currentTarget.style.borderColor="#F1F5F9";e.currentTarget.style.background="#FAFAFA";e.currentTarget.style.color=C.tl;}}>
-                <span style={{fontSize:14}}>{t.icon}</span>
-                <span style={{textAlign:"center",lineHeight:1.2}}>{t.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
+function AddLine({afterIndex,onAdd}){ return null; }
 
-function AddLine({afterIndex,onAdd}){
-  return null;
-}
 function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
   const [hov,setHov]=useState(false);
-  const [adv,setAdv]=useState(false);
   const t=TYPES.find(x=>x.id===f.type);
   const ac=(f.vlds?f.vlds.length:0)+(f.conds?f.conds.length:0);
   return (
@@ -815,7 +774,7 @@ function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
               <span style={{fontSize:12,color:C.tl,fontWeight:600}}>Requis</span>
               <Tog on={f.req} cb={()=>upd(f.id,{req:!f.req})}/>
             </div>
-            <button onClick={()=>{onEdit(null);setAdv(false);}} style={{width:26,height:26,borderRadius:6,border:"1.5px solid "+C.bd,background:"#fff",cursor:"pointer",fontSize:11,color:C.tl}}>✓</button>
+            <button onClick={()=>onEdit(null)} style={{width:26,height:26,borderRadius:6,border:"1.5px solid "+C.bd,background:"#fff",cursor:"pointer",fontSize:11,color:C.tl}}>✓</button>
           </div>
           {["select","multi"].includes(f.type)&&(<OptsEd opts={f.opts||[]} onChange={opts=>upd(f.id,{opts})}/>)}
           <Preview f={f}/>
@@ -843,6 +802,7 @@ function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
     </div>
   );
 }
+
 function _mapTypeBack(t){
   const map={
     text:'text',textarea:'textarea',number:'number',checkbox:'checkbox',
@@ -854,7 +814,7 @@ function _mapTypeBack(t){
   };
   return map[t]||'text';
 }
-// ══ COMPOSANT PRINCIPAL — intégré dans PicoTrack ══
+
 function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
   const [fields,setFields]=useState(initialFields && initialFields.length ? initialFields : []);
   const [editId,setEditId]=useState(null);
@@ -864,123 +824,62 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
   const rolesList=(typeof ROLES_DATA!=="undefined" ? ROLES_DATA : []);
   const [visibleRoles,setVisibleRoles]=useState((initialMeta&&initialMeta.visibleRoles)||[]);
   const [triggers,setTriggers]=useState((initialMeta&&initialMeta.triggers)||{
-  printLabel:{enabled:false,template:"Etiquette arrivage",printer:"Imprimante étiquettes"},
-  sendMail:{
-    enabled:false,
-    event:"create",
-    conditionField:"",
-    conditionOperator:"always",
-    conditionValue:"",
-    to:"",
-    toField:"",
-toFields:[],
-ccFields:[],
-    cc:"",
-    subject:"Nouvelle saisie - {formName}",
-    body:"Bonjour,\n\nUne nouvelle saisie a été réalisée.\n\nCordialement,\nPicoTrack",
-    attachPdf:true
-  },
-  addDbRow:{
-  enabled:false,
-  targetDbId:"",
-  mappingMode:"auto",
-  mappings:[]
-}
-});
-const setTrigger=(key,patch)=>setTriggers(prev=>({...prev,[key]:{...(prev[key]||{}),...patch}}));
+    printLabel:{enabled:false,template:"Etiquette arrivage",printer:"Imprimante étiquettes"},
+    sendMail:{
+      enabled:false,event:"create",conditionField:"",conditionOperator:"always",conditionValue:"",
+      to:"",toField:"",toFields:[],ccFields:[],cc:"",
+      subject:"Nouvelle saisie - {formName}",
+      body:"Bonjour,\n\nUne nouvelle saisie a été réalisée.\n\nCordialement,\nPicoTrack",
+      attachPdf:true
+    },
+    addDbRow:{enabled:false,targetDbId:"",mappingMode:"auto",mappings:[]}
+  });
+  const setTrigger=(key,patch)=>setTriggers(prev=>({...prev,[key]:{...(prev[key]||{}),...patch}}));
 
-const mailFields = fields.filter(f => !["sep","titre","image","groupe"].includes(f.type));
-const mailFieldOptions = mailFields.map(f => (
-  <option key={f.id} value={f.id}>{f.label}</option>
-));
-  const insertMailVar = (target, value) => {
-  const cur = triggers.sendMail || {};
-  const old = cur[target] || "";
-  setTrigger("sendMail", { [target]: old + value });
-};
+  const mailFields = fields.filter(f => !["sep","titre","image","groupe"].includes(f.type));
+  const mailFieldOptions = mailFields.map(f => (<option key={f.id} value={f.id}>{f.label}</option>));
 
-const mailVariableButtons = (
-  <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:6}}>
-    <button type="button" onClick={()=>insertMailVar("subject","{formName}")} style={{padding:"4px 9px",border:"1px solid "+C.bd,borderRadius:20,background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Formulaire</button>
-    <button type="button" onClick={()=>insertMailVar("body","{date_saisie}")} style={{padding:"4px 9px",border:"1px solid "+C.bd,borderRadius:20,background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Date saisie</button>
-    <button type="button" onClick={()=>insertMailVar("body","{utilisateur}")} style={{padding:"4px 9px",border:"1px solid "+C.bd,borderRadius:20,background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Utilisateur</button>
-    {mailFields.map(f=>(
-      <button key={f.id} type="button" onClick={()=>insertMailVar("body","{champ:"+(f.key || slugKey(f.label))+"}")} style={{padding:"4px 9px",border:"1px solid "+C.em2,borderRadius:20,background:C.eml,color:C.em,fontSize:11,fontWeight:800,cursor:"pointer"}}>
-        {f.label}
-      </button>
-    ))}
-  </div>
-);
-  const toggleMailField = (target, fieldId) => {
-  const cur = triggers.sendMail || {};
-  const arr = Array.isArray(cur[target]) ? cur[target] : [];
-  const next = arr.includes(fieldId)
-    ? arr.filter(x => x !== fieldId)
-    : [...arr, fieldId];
-
-  setTrigger("sendMail", { [target]: next });
-};
-
-const mailFieldChips = (target) => (
-  <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:6}}>
-    {mailFields.map(f=>{
-      const cur = triggers.sendMail || {};
-      const arr = Array.isArray(cur[target]) ? cur[target] : [];
-      const on = arr.includes(f.id);
-      return (
-        <button
-          key={f.id}
-          type="button"
-          onClick={()=>toggleMailField(target,f.id)}
-          style={{
-            padding:"5px 10px",
-            borderRadius:999,
-            border:"1.5px solid "+(on?C.em:C.bd),
-            background:on?C.eml:"#fff",
-            color:on?C.em:C.tm,
-            fontSize:11,
-            fontWeight:800,
-            cursor:"pointer",
-            fontFamily:"inherit"
-          }}
-        >
-          {on ? "✓ " : "+ "}{f.label}
-        </button>
-      );
-    })}
-  </div>
-);
-  const dbList = (typeof DATABASES_DATA !== "undefined" ? DATABASES_DATA : []);
-
-const selectedDb = dbList.find(db => String(db.id) === String(triggers.addDbRow?.targetDbId));
-
-const setDbMapping = (colId, fieldId) => {
-  const cur = triggers.addDbRow || {};
-  const mappings = Array.isArray(cur.mappings) ? cur.mappings : [];
-  const next = mappings.filter(m => String(m.colId) !== String(colId));
-
-  if (fieldId) {
-    next.push({ colId, fieldId });
-  }
-
-  setTrigger("addDbRow", { mappings: next });
-};
-
-const getMappedField = (colId) => {
-  const cur = triggers.addDbRow || {};
-  const mappings = Array.isArray(cur.mappings) ? cur.mappings : [];
-  const found = mappings.find(m => String(m.colId) === String(colId));
-  return found ? found.fieldId : "";
-};
-
-const dbFieldOptions = (
-  <>
-    <option value="">— Aucun champ —</option>
-    {mailFields.map(f => (
-      <option key={f.id} value={f.id}>{f.label}</option>
-    ))}
-  </>
-);
+  const insertMailVar=(target,value)=>{
+    const cur=triggers.sendMail||{};
+    setTrigger("sendMail",{[target]:(cur[target]||"")+value});
+  };
+  const mailVariableButtons=(
+    <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:6}}>
+      <button type="button" onClick={()=>insertMailVar("subject","{formName}")} style={{padding:"4px 9px",border:"1px solid "+C.bd,borderRadius:20,background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Formulaire</button>
+      <button type="button" onClick={()=>insertMailVar("body","{date_saisie}")} style={{padding:"4px 9px",border:"1px solid "+C.bd,borderRadius:20,background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Date saisie</button>
+      <button type="button" onClick={()=>insertMailVar("body","{utilisateur}")} style={{padding:"4px 9px",border:"1px solid "+C.bd,borderRadius:20,background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Utilisateur</button>
+      {mailFields.map(f=>(<button key={f.id} type="button" onClick={()=>insertMailVar("body","{champ:"+(f.key||slugKey(f.label))+"}")} style={{padding:"4px 9px",border:"1px solid "+C.em2,borderRadius:20,background:C.eml,color:C.em,fontSize:11,fontWeight:800,cursor:"pointer"}}>{f.label}</button>))}
+    </div>
+  );
+  const toggleMailField=(target,fieldId)=>{
+    const cur=triggers.sendMail||{};
+    const arr=Array.isArray(cur[target])?cur[target]:[];
+    setTrigger("sendMail",{[target]:arr.includes(fieldId)?arr.filter(x=>x!==fieldId):[...arr,fieldId]});
+  };
+  const mailFieldChips=(target)=>(
+    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:6}}>
+      {mailFields.map(f=>{
+        const cur=triggers.sendMail||{};
+        const arr=Array.isArray(cur[target])?cur[target]:[];
+        const on=arr.includes(f.id);
+        return (<button key={f.id} type="button" onClick={()=>toggleMailField(target,f.id)} style={{padding:"5px 10px",borderRadius:999,border:"1.5px solid "+(on?C.em:C.bd),background:on?C.eml:"#fff",color:on?C.em:C.tm,fontSize:11,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>{on?"✓ ":"+ "}{f.label}</button>);
+      })}
+    </div>
+  );
+  const dbList=(typeof DATABASES_DATA!=="undefined"?DATABASES_DATA:[]);
+  const selectedDb=dbList.find(db=>String(db.id)===String(triggers.addDbRow?.targetDbId));
+  const setDbMapping=(colId,fieldId)=>{
+    const cur=triggers.addDbRow||{};
+    const mappings=(Array.isArray(cur.mappings)?cur.mappings:[]).filter(m=>String(m.colId)!==String(colId));
+    if(fieldId) mappings.push({colId,fieldId});
+    setTrigger("addDbRow",{mappings});
+  };
+  const getMappedField=(colId)=>{
+    const cur=triggers.addDbRow||{};
+    const found=(Array.isArray(cur.mappings)?cur.mappings:[]).find(m=>String(m.colId)===String(colId));
+    return found?found.fieldId:"";
+  };
+  const dbFieldOptions=(<><option value="">— Aucun champ —</option>{mailFields.map(f=>(<option key={f.id} value={f.id}>{f.label}</option>))}</>);
   const toggleRole=(rid)=>setVisibleRoles(prev=>prev.includes(rid)?prev.filter(x=>x!==rid):[...prev,rid]);
   const [saved,setSaved]=useState(false);
   const [dragId,setDragId]=useState(null);
@@ -989,14 +888,13 @@ const dbFieldOptions = (
 
   const addF=useCallback((ai,type,label)=>{
     const t=TYPES.find(x=>x.id===type);
-    const f={id:nid.current++,type,req:false,label:(label&&label.trim())?label.trim():t.label,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[],ph:"",leg:"",showLeg:false,vSup:true,vNom:true,dup:false,vlds:[],conds:[],...(type==="appointment"?{slotDuration:30,startHour:"08:00",endHour:"18:00",parallelSlots:2,daysAvailable:["1","2","3","4","5"],manualValidation:false}: {})};
+    const f={id:nid.current++,type,req:false,label:(label&&label.trim())?label.trim():t.label,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[],ph:"",leg:"",showLeg:false,vSup:true,vNom:true,dup:false,vlds:[],conds:[],...(type==="appointment"?{slotDuration:30,startHour:"08:00",endHour:"18:00",parallelSlots:2,daysAvailable:["1","2","3","4","5"],manualValidation:false}:{})};
     setFields(prev=>{const next=[...prev];next.splice(ai+1,0,f);return next;});
     setEditId(f.id);
   },[]);
 
   const updF=useCallback((id,u)=>{setFields(prev=>prev.map(f=>f.id===id?{...f,...u}:f));},[]);
   const delF=useCallback((id)=>{setFields(prev=>prev.filter(f=>f.id!==id));setEditId(e=>e===id?null:e);},[]);
-
   const drop=useCallback((tid)=>{
     if(!dragId||dragId===tid)return;
     setFields(prev=>{const a=[...prev];const fi=a.findIndex(f=>f.id===dragId);const ti=a.findIndex(f=>f.id===tid);const[item]=a.splice(fi,1);a.splice(ti,0,item);return a;});
@@ -1006,54 +904,33 @@ const dbFieldOptions = (
   const req=fields.filter(f=>f.req).length;
   const selectedField=fields.find(f=>f.id===editId)||null;
 
-  const handleSave = () => {
+  const handleSave=()=>{
     setSaved(true);
     setTimeout(()=>setSaved(false),2200);
     if(onSave) onSave(fname, fields.map(f=>({
-      id: f.id,
-      type: _mapTypeBack(f.type),
-      nom: f.label,
-      obligatoire: f.req,
-      valeurs: f.opts||[],
-      placeholder: f.ph||'',
-      legendeText: f.leg||'',
-      afficher_legende: f.showLeg||false,
-      afficher_placeholder: !!(f.ph),
-      vis_sup: f.vSup!==false,
-      vis_nom: f.vNom!==false,
-      field_key: f.key || slugKey(f.label),
-      section: f.section || '',
-      defaultValue: f.def || '',
-      precision: f.precision || 0,
-      step: f.step || 1,
-      minEnabled: !!f.minEnabled,
-      minValue: f.minValue || '',
-      maxEnabled: !!f.maxEnabled,
-      maxValue: f.maxValue || '',
-      roles: f.roles || [],
-      duplicable: f.dup||false,
-      duplicable_min: 1,
-      duplicable_max: 10,
-      validateurs: f.vlds||[],
-      conditions: f.conds||[],
-      transformateurs: (f.trfs||[]).map(tr=>({nom:tr.n, param:tr.param||''})),
-      slotDuration: f.slotDuration || 30,
-      startHour: f.startHour || "08:00",
-      endHour: f.endHour || "18:00",
-      parallelSlots: f.parallelSlots || 1,
-      daysAvailable: f.daysAvailable || ["1","2","3","4","5"],
-      manualValidation: !!f.manualValidation,
-    })),{
-      visibleRoles: visibleRoles,
-      triggers: triggers
-    });
+      id:f.id, type:_mapTypeBack(f.type), nom:f.label, obligatoire:f.req,
+      valeurs:f.opts||[], placeholder:f.ph||'', legendeText:f.leg||'',
+      afficher_legende:f.showLeg||false, afficher_placeholder:!!(f.ph),
+      vis_sup:f.vSup!==false, vis_nom:f.vNom!==false,
+      field_key:f.key||slugKey(f.label), section:f.section||'',
+      defaultValue:f.def||'', precision:f.precision||0, step:f.step||1,
+      minEnabled:!!f.minEnabled, minValue:f.minValue||'',
+      maxEnabled:!!f.maxEnabled, maxValue:f.maxValue||'',
+      roles:f.roles||[], duplicable:f.dup||false, duplicable_min:1, duplicable_max:10,
+      validateurs:f.vlds||[], conditions:f.conds||[],
+      transformateurs:(f.trfs||[]).map(tr=>({nom:tr.n,param:tr.param||''})),
+      slotDuration:f.slotDuration||30, startHour:f.startHour||"08:00",
+      endHour:f.endHour||"18:00", parallelSlots:f.parallelSlots||1,
+      daysAvailable:f.daysAvailable||["1","2","3","4","5"],
+      manualValidation:!!f.manualValidation,
+    })),{visibleRoles,triggers});
   };
 
   return (
     <div style={{flex:1,minHeight:0,background:C.bg,fontFamily:"'DM Sans',-apple-system,sans-serif",fontSize:13,color:C.tx,display:"flex",flexDirection:"column",overflow:"hidden"}}>
       {/* Topbar */}
       <div style={{height:52,background:"#fff",borderBottom:"1px solid "+C.bd,display:"flex",alignItems:"center",padding:"0 18px",gap:10,boxShadow:"0 1px 3px rgba(0,0,0,.04)",flexShrink:0}}>
-        <button onClick={()=>{ if(window.goList) window.goList(); }} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 11px",borderRadius:7,border:"1.5px solid "+C.bd,background:"#fff",color:C.tl,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>← Formulaires</button>
+        <button onClick={()=>{if(window.goList)window.goList();}} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 11px",borderRadius:7,border:"1.5px solid "+C.bd,background:"#fff",color:C.tl,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>← Formulaires</button>
         <div style={{width:1,height:20,background:C.bd}}/>
         {editFn?(
           <input value={fname} autoFocus onChange={e=>setFname(e.target.value)} onBlur={()=>setEditFn(false)} onKeyDown={e=>{if(e.key==="Enter")setEditFn(false);}}
@@ -1087,177 +964,63 @@ const dbFieldOptions = (
             <div style={{border:"1.5px solid "+C.bd,borderRadius:12,padding:12,background:C.bg}}>
               <div style={{fontSize:12,fontWeight:800,marginBottom:8}}>Visibilité par rôle</div>
               <div style={{display:"flex",flexDirection:"column",gap:7}}>
-                {rolesList.map(r=>(
-                  <label key={r.id} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,cursor:"pointer"}}>
-                    <input type="checkbox" checked={visibleRoles.includes(r.id)} onChange={()=>toggleRole(r.id)}/>
-                    <span style={{fontWeight:700}}>{r.nom}</span>
-                  </label>
-                ))}
+                {rolesList.map(r=>(<label key={r.id} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,cursor:"pointer"}}><input type="checkbox" checked={visibleRoles.includes(r.id)} onChange={()=>toggleRole(r.id)}/><span style={{fontWeight:700}}>{r.nom}</span></label>))}
                 {rolesList.length===0&&<span style={{fontSize:12,color:C.ts}}>Aucun rôle configuré.</span>}
               </div>
             </div>
-           <div style={{
-  border:"1.5px solid "+C.bd,
-  borderRadius:12,
-  padding:12,
-  background:C.bg,
-  maxHeight:"520px",
-  overflowY:"scroll",
-  overflowX:"hidden"
-}}>
+            <div style={{border:"1.5px solid "+C.bd,borderRadius:12,padding:12,background:C.bg,maxHeight:"520px",overflowY:"scroll",overflowX:"hidden"}}>
               <div style={{fontSize:12,fontWeight:800,marginBottom:8}}>Actions après validation</div>
               <div style={{display:"grid",gap:8}}>
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.printLabel?.enabled} onChange={e=>setTrigger('printLabel',{enabled:e.target.checked})}/> Imprimer une étiquette</label>
                 {triggers.printLabel?.enabled&&<div style={{display:"flex",gap:6}}><input value={triggers.printLabel.template||""} onChange={e=>setTrigger('printLabel',{template:e.target.value})} placeholder="Modèle d'étiquette" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/><input value={triggers.printLabel.printer||""} onChange={e=>setTrigger('printLabel',{printer:e.target.value})} placeholder="Imprimante" style={{flex:1,border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/></div>}
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.sendMail?.enabled} onChange={e=>setTrigger('sendMail',{enabled:e.target.checked})}/> Envoyer un mail</label>
                 {triggers.sendMail?.enabled&&(
-<div style={{
-  display:"grid",
-  gap:8,
-  background:"#fff",
-  border:"1px solid "+C.bd,
-  borderRadius:10,
-  padding:10,
-  maxHeight:"none",
-overflowY:"visible",
-overflowX:"visible"
-}}>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-      <select value={triggers.sendMail.event||"create"} onChange={e=>setTrigger('sendMail',{event:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
-        <option value="create">À la création</option>
-        <option value="update">À la modification</option>
-      </select>
-      <select value={triggers.sendMail.conditionOperator||"always"} onChange={e=>setTrigger('sendMail',{conditionOperator:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
-        <option value="always">Toujours envoyer</option>
-        <option value="equals">Si champ = valeur</option>
-        <option value="not_equals">Si champ ≠ valeur</option>
-        <option value="contains">Si champ contient</option>
-        <option value="not_empty">Si champ non vide</option>
-      </select>
-    </div>
-
-    {triggers.sendMail.conditionOperator!=="always"&&(
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-        <select value={triggers.sendMail.conditionField||""} onChange={e=>setTrigger('sendMail',{conditionField:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>
-          <option value="">Champ condition</option>
-          {mailFieldOptions}
-        </select>
-        <input value={triggers.sendMail.conditionValue||""} onChange={e=>setTrigger('sendMail',{conditionValue:e.target.value})} placeholder="Valeur attendue" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
-      </div>
-    )}
-
-    <div style={{display:"grid",gap:8}}>
-  <div>
-    <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Destinataires fixes</div>
-    <input value={triggers.sendMail.to||""} onChange={e=>setTrigger('sendMail',{to:e.target.value})} placeholder="Emails séparés par ;" style={{width:"100%",boxSizing:"border-box",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
-  </div>
-
-  <div>
-    <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Destinataires depuis les champs du formulaire</div>
-    {mailFieldChips("toFields")}
-  </div>
-
-  <div>
-    <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>CC fixes</div>
-    <input value={triggers.sendMail.cc||""} onChange={e=>setTrigger('sendMail',{cc:e.target.value})} placeholder="CC séparés par ;" style={{width:"100%",boxSizing:"border-box",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
-  </div>
-
-  <div>
-    <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>CC depuis les champs</div>
-    {mailFieldChips("ccFields")}
-  </div>
-</div>
-
-    <input value={triggers.sendMail.cc||""} onChange={e=>setTrigger('sendMail',{cc:e.target.value})} placeholder="CC séparés par ;" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
-    <input value={triggers.sendMail.subject||""} onChange={e=>setTrigger('sendMail',{subject:e.target.value})} placeholder="Objet du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
-    <div>
-  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-    <span style={{fontSize:11,fontWeight:800,color:C.tl}}>Message du mail</span>
-    <span style={{fontSize:10,color:C.ts}}>Cliquez sur une variable pour l’insérer</span>
-  </div>
-
-  <textarea value={triggers.sendMail.body||""} onChange={e=>setTrigger('sendMail',{body:e.target.value})} placeholder="Message du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12,minHeight:74,fontFamily:"inherit",resize:"vertical",width:"100%",boxSizing:"border-box"}}/>
-
-  {mailVariableButtons}
-</div>
-
-    <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}>
-      <input type="checkbox" checked={triggers.sendMail.attachPdf!==false} onChange={e=>setTrigger('sendMail',{attachPdf:e.target.checked})}/>
-      Joindre le PDF de la saisie
-    </label>
-  </div>
-)}
+                  <div style={{display:"grid",gap:8,background:"#fff",border:"1px solid "+C.bd,borderRadius:10,padding:10}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                      <select value={triggers.sendMail.event||"create"} onChange={e=>setTrigger('sendMail',{event:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}><option value="create">À la création</option><option value="update">À la modification</option></select>
+                      <select value={triggers.sendMail.conditionOperator||"always"} onChange={e=>setTrigger('sendMail',{conditionOperator:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}><option value="always">Toujours envoyer</option><option value="equals">Si champ = valeur</option><option value="not_equals">Si champ ≠ valeur</option><option value="contains">Si champ contient</option><option value="not_empty">Si champ non vide</option></select>
+                    </div>
+                    {triggers.sendMail.conditionOperator!=="always"&&(
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                        <select value={triggers.sendMail.conditionField||""} onChange={e=>setTrigger('sendMail',{conditionField:e.target.value})} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}><option value="">Champ condition</option>{mailFieldOptions}</select>
+                        <input value={triggers.sendMail.conditionValue||""} onChange={e=>setTrigger('sendMail',{conditionValue:e.target.value})} placeholder="Valeur attendue" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+                      </div>
+                    )}
+                    <div><div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Destinataires fixes</div><input value={triggers.sendMail.to||""} onChange={e=>setTrigger('sendMail',{to:e.target.value})} placeholder="Emails séparés par ;" style={{width:"100%",boxSizing:"border-box",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/></div>
+                    <div><div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Destinataires depuis les champs</div>{mailFieldChips("toFields")}</div>
+                    <div><div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>CC fixes</div><input value={triggers.sendMail.cc||""} onChange={e=>setTrigger('sendMail',{cc:e.target.value})} placeholder="CC séparés par ;" style={{width:"100%",boxSizing:"border-box",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/></div>
+                    <div><div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>CC depuis les champs</div>{mailFieldChips("ccFields")}</div>
+                    <input value={triggers.sendMail.subject||""} onChange={e=>setTrigger('sendMail',{subject:e.target.value})} placeholder="Objet du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}/>
+                    <div>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}><span style={{fontSize:11,fontWeight:800,color:C.tl}}>Message</span><span style={{fontSize:10,color:C.ts}}>Cliquez sur une variable pour l'insérer</span></div>
+                      <textarea value={triggers.sendMail.body||""} onChange={e=>setTrigger('sendMail',{body:e.target.value})} placeholder="Message du mail" style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12,minHeight:74,fontFamily:"inherit",resize:"vertical",width:"100%",boxSizing:"border-box"}}/>
+                      {mailVariableButtons}
+                    </div>
+                    <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={triggers.sendMail.attachPdf!==false} onChange={e=>setTrigger('sendMail',{attachPdf:e.target.checked})}/>Joindre le PDF de la saisie</label>
+                  </div>
+                )}
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={!!triggers.addDbRow?.enabled} onChange={e=>setTrigger('addDbRow',{enabled:e.target.checked})}/> Ajouter une ligne dans une base</label>
                 {triggers.addDbRow?.enabled&&(
-  <div style={{display:"grid",gap:10,background:"#fff",border:"1px solid "+C.bd,borderRadius:10,padding:10}}>
-    <div>
-      <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Base cible</div>
-      <select
-        value={triggers.addDbRow.targetDbId||""}
-        onChange={e=>setTrigger('addDbRow',{targetDbId:e.target.value,mappings:[]})}
-        style={{width:"100%",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}
-      >
-        <option value="">— Sélectionner une base —</option>
-        {dbList.map(db=>(
-          <option key={db.id} value={db.id}>{db.nom}</option>
-        ))}
-      </select>
-    </div>
-
-    <div>
-      <div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Mode de mapping</div>
-      <select
-        value={triggers.addDbRow.mappingMode||"auto"}
-        onChange={e=>setTrigger('addDbRow',{mappingMode:e.target.value})}
-        style={{width:"100%",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}
-      >
-        <option value="auto">Mapping auto — noms identiques</option>
-        <option value="manual">Mapping manuel — champ par colonne</option>
-      </select>
-    </div>
-
-    {selectedDb&&triggers.addDbRow.mappingMode==="manual"&&(
-      <div style={{display:"grid",gap:8}}>
-        <div style={{fontSize:11,fontWeight:900,color:C.tl,textTransform:"uppercase",letterSpacing:".5px"}}>
-          Mapping manuel
-        </div>
-
-        {(selectedDb.columns||[]).map(col=>(
-          <div key={col.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,alignItems:"center"}}>
-            <div style={{fontSize:12,fontWeight:800,color:C.tm,background:C.bg,border:"1px solid "+C.bd,borderRadius:7,padding:"7px 8px"}}>
-              Colonne : {col.nom}
-            </div>
-            <select
-              value={getMappedField(col.id)}
-              onChange={e=>setDbMapping(col.id,e.target.value)}
-              style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}
-            >
-              {dbFieldOptions}
-            </select>
-          </div>
-        ))}
-      </div>
-    )}
-
-    {selectedDb&&triggers.addDbRow.mappingMode==="auto"&&(
-      <div style={{fontSize:11.5,color:C.tl,lineHeight:1.4,background:C.bg,border:"1px dashed "+C.bd,borderRadius:8,padding:9}}>
-        Mapping auto : PicoTrack remplira les colonnes dont le nom correspond à un champ du formulaire.
-      </div>
-    )}
-
-    {!selectedDb&&(
-      <div style={{fontSize:11.5,color:C.ts,lineHeight:1.4}}>
-        Crée d’abord une base dans Database Studio si aucune base n’apparaît.
-      </div>
-    )}
-  </div>
-)}
+                  <div style={{display:"grid",gap:10,background:"#fff",border:"1px solid "+C.bd,borderRadius:10,padding:10}}>
+                    <div><div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Base cible</div><select value={triggers.addDbRow.targetDbId||""} onChange={e=>setTrigger('addDbRow',{targetDbId:e.target.value,mappings:[]})} style={{width:"100%",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}><option value="">— Sélectionner une base —</option>{dbList.map(db=>(<option key={db.id} value={db.id}>{db.nom}</option>))}</select></div>
+                    <div><div style={{fontSize:11,fontWeight:800,color:C.tl,marginBottom:5}}>Mode de mapping</div><select value={triggers.addDbRow.mappingMode||"auto"} onChange={e=>setTrigger('addDbRow',{mappingMode:e.target.value})} style={{width:"100%",border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}><option value="auto">Mapping auto — noms identiques</option><option value="manual">Mapping manuel — champ par colonne</option></select></div>
+                    {selectedDb&&triggers.addDbRow.mappingMode==="manual"&&(
+                      <div style={{display:"grid",gap:8}}>
+                        <div style={{fontSize:11,fontWeight:900,color:C.tl,textTransform:"uppercase",letterSpacing:".5px"}}>Mapping manuel</div>
+                        {(selectedDb.columns||[]).map(col=>(<div key={col.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,alignItems:"center"}}><div style={{fontSize:12,fontWeight:800,color:C.tm,background:C.bg,border:"1px solid "+C.bd,borderRadius:7,padding:"7px 8px"}}>Colonne : {col.nom}</div><select value={getMappedField(col.id)} onChange={e=>setDbMapping(col.id,e.target.value)} style={{border:"1px solid "+C.bd,borderRadius:7,padding:7,fontSize:12}}>{dbFieldOptions}</select></div>))}
+                      </div>
+                    )}
+                    {selectedDb&&triggers.addDbRow.mappingMode==="auto"&&(<div style={{fontSize:11.5,color:C.tl,lineHeight:1.4,background:C.bg,border:"1px dashed "+C.bd,borderRadius:8,padding:9}}>Mapping auto : PicoTrack remplira les colonnes dont le nom correspond à un champ du formulaire.</div>)}
+                    {!selectedDb&&(<div style={{fontSize:11.5,color:C.ts,lineHeight:1.4}}>Crée d'abord une base dans Database Studio si aucune base n'apparaît.</div>)}
+                  </div>
+                )}
               </div>
             </div>
           </div>
         )}
       </div>
-      {/* Builder Pro : bibliothèque | canvas | inspecteur */}
+
+      {/* Builder : bibliothèque | canvas | inspecteur */}
       <div style={{flex:1,minHeight:0,display:"grid",gridTemplateColumns:"240px minmax(420px,1fr) 300px",overflow:"hidden",background:C.bg}}>
         <aside style={{borderRight:"1px solid "+C.bd,background:"#fff",padding:14,overflowY:"auto"}}>
           <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Bibliothèque de blocs</div>
@@ -1266,8 +1029,7 @@ overflowX:"visible"
               <div style={{fontSize:10,fontWeight:900,color:C.tl,textTransform:"uppercase",letterSpacing:.7,margin:"0 0 7px"}}>{cat.label}</div>
               <div style={{display:"grid",gap:6}}>
                 {TYPES.filter(t=>t.cat===cat.id).map(t=>(
-                  <button key={t.id} onClick={()=>addF(fields.length-1,t.id,"")}
-                    style={{display:"flex",alignItems:"center",gap:8,padding:"8px 9px",border:"1.5px solid "+C.bd,borderRadius:10,background:"#fff",cursor:"pointer",fontFamily:"inherit",color:C.tm,fontWeight:800,fontSize:12,textAlign:"left"}}>
+                  <button key={t.id} onClick={()=>addF(fields.length-1,t.id,"")} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 9px",border:"1.5px solid "+C.bd,borderRadius:10,background:"#fff",cursor:"pointer",fontFamily:"inherit",color:C.tm,fontWeight:800,fontSize:12,textAlign:"left"}}>
                     <span style={{width:24,height:24,borderRadius:8,background:t.clr+"18",color:t.clr,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:12,flexShrink:0}}>{t.icon}</span>
                     <span>{t.label}</span>
                   </button>
@@ -1278,7 +1040,6 @@ overflowX:"visible"
         </aside>
         <div style={{overflowY:"auto",padding:"20px 0 60px"}}>
           <div style={{maxWidth:700,margin:"0 auto",padding:"0 16px"}}>
-            {/* Header formulaire */}
             <div style={{background:"#fff",border:"1.5px solid "+C.bd,borderRadius:14,padding:"14px 18px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,.05)"}}>
               <div style={{display:"flex",alignItems:"center",gap:11}}>
                 <div style={{width:4,height:36,borderRadius:3,background:C.em,flexShrink:0}}/>
@@ -1288,7 +1049,6 @@ overflowX:"visible"
                 </div>
               </div>
             </div>
-            {/* Champs */}
             <AddLine afterIndex={-1} onAdd={addF}/>
             {fields.map((f,idx)=>(
               <div key={f.id}>
@@ -1322,7 +1082,7 @@ overflowX:"visible"
               </div>
               <div style={{padding:12,border:"1.5px solid "+C.bd,borderRadius:12,background:"#fff"}}>
                 <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:.8,marginBottom:8}}>Type de champ</div>
-                <TypePicker active={selectedField.type} onSel={type=>updF(selectedField.id,{type,opts:['select','multi'].includes(type)?['Option 1','Option 2']:[],...(type==="appointment"?{slotDuration:selectedField.slotDuration||30,startHour:selectedField.startHour||"08:00",endHour:selectedField.endHour||"18:00",parallelSlots:selectedField.parallelSlots||2,daysAvailable:selectedField.daysAvailable||["1","2","3","4","5"],manualValidation:!!selectedField.manualValidation}: {})})}/>
+                <TypePicker active={selectedField.type} onSel={type=>updF(selectedField.id,{type,opts:['select','multi'].includes(type)?['Option 1','Option 2']:[],...(type==="appointment"?{slotDuration:selectedField.slotDuration||30,startHour:selectedField.startHour||"08:00",endHour:selectedField.endHour||"18:00",parallelSlots:selectedField.parallelSlots||2,daysAvailable:selectedField.daysAvailable||["1","2","3","4","5"],manualValidation:!!selectedField.manualValidation}:{})})}/>
               </div>
               <Adv f={selectedField} upd={updF}/>
             </div>
@@ -1330,14 +1090,19 @@ overflowX:"visible"
             <div style={{padding:18,border:"1.5px dashed "+C.bd,borderRadius:12,textAlign:"center",color:C.ts,fontSize:12}}>Sélectionnez un champ dans le formulaire pour modifier ses paramètres.</div>
           )}
         </aside>
-      </div>    </div>
+      </div>
+    </div>
   );
 }
 window.PicoBuilderApp = PicoBuilderApp;
 </script>
-  <script src="js/core/supabase.js" defer></script>
-<script src="js/core/constants.js" defer></script>
-<script src="js/core/data.js" defer></script>
+
+<!-- ═══════════════════════════════════════════════════════════
+     SCRIPTS JS — ordre de chargement strict (pas de defer)
+═══════════════════════════════════════════════════════════ -->
+<script src="js/core/supabase.js"></script>
+<script src="js/core/constants.js"></script>
+<script src="js/core/data.js"></script>
 <script src="js/core/environments.js"></script>
 <script src="js/core/state.js"></script>
 <script src="js/core/licenses.js"></script>
@@ -1348,7 +1113,6 @@ window.PicoBuilderApp = PicoBuilderApp;
 <script src="js/features/forms-builder.js"></script>
 <script src="js/features/react-builder-mount.js"></script>
 <script src="js/features/forms-preview-layout.js"></script>
-
 <script src="js/features/admin-navigation.js"></script>
 <script src="js/features/roles.js"></script>
 <script src="js/features/users.js"></script>
