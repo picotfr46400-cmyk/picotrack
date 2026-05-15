@@ -226,9 +226,42 @@ function ptSlotCard(a){
   </button>`;
 }
 
+function ptSafeFileName(v){ return h(v && (v.name || v.filename || v.fileName || 'Fichier')); }
+function ptFileSizeLabel(bytes){
+  var n = parseInt(bytes||0,10)||0;
+  if(!n) return '';
+  if(n < 1024) return n+' o';
+  if(n < 1024*1024) return Math.round(n/1024)+' Ko';
+  return (n/1024/1024).toFixed(1)+' Mo';
+}
+function ptSingleFileHtml(file, isPhoto){
+  if(!file) return '<span style="color:var(--tl)">—</span>';
+  var name = file.name || file.filename || file.fileName || (isPhoto ? 'Photo' : 'Fichier');
+  var url = file.url || file.dataUrl || file.dataURL || file.base64 || file.content || '';
+  var size = ptFileSizeLabel(file.size || file.size_bytes || file.sizeBytes);
+  var isImg = isPhoto || String(file.type||file.mime||'').startsWith('image/') || String(url||'').startsWith('data:image/');
+  if(url && String(url).startsWith('data:')){
+    if(isImg){
+      return `<div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap"><a href="${h(url)}" download="${h(name)}" title="Télécharger la photo"><img src="${h(url)}" alt="${h(name)}" style="max-width:180px;max-height:130px;border-radius:12px;border:1px solid var(--bd);object-fit:cover;background:#f8fafc"></a><div><div style="font-weight:900;color:var(--tx)">${h(name)}</div>${size?`<div style="font-size:11px;color:var(--tl);margin-top:3px">${h(size)}</div>`:''}<a href="${h(url)}" download="${h(name)}" style="display:inline-flex;margin-top:8px;color:#2563eb;font-weight:900;text-decoration:none">Télécharger</a></div></div>`;
+    }
+    return `<a href="${h(url)}" download="${h(name)}" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--bd);border-radius:12px;background:#f8fafc;color:var(--tx);text-decoration:none;font-weight:900"><span>📎 ${h(name)}</span><span style="color:var(--tl);font-size:11px">${h(size || 'Télécharger')}</span></a>`;
+  }
+  if(url && /^https?:\/\//i.test(String(url))){
+    if(isImg){
+      return `<div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap"><a href="${h(url)}" target="_blank"><img src="${h(url)}" alt="${h(name)}" style="max-width:180px;max-height:130px;border-radius:12px;border:1px solid var(--bd);object-fit:cover;background:#f8fafc"></a><div><div style="font-weight:900;color:var(--tx)">${h(name)}</div>${size?`<div style="font-size:11px;color:var(--tl);margin-top:3px">${h(size)}</div>`:''}<a href="${h(url)}" target="_blank" style="display:inline-flex;margin-top:8px;color:#2563eb;font-weight:900;text-decoration:none">Ouvrir</a></div></div>`;
+    }
+    return `<a href="${h(url)}" target="_blank" download="${h(name)}" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--bd);border-radius:12px;background:#f8fafc;color:var(--tx);text-decoration:none;font-weight:900"><span>📎 ${h(name)}</span><span style="color:var(--tl);font-size:11px">${h(size || 'Ouvrir')}</span></a>`;
+  }
+  return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--bd);border-radius:12px;background:#f8fafc;color:var(--tx);font-weight:900"><span>${isPhoto?'🖼️':'📎'} ${h(name)}</span><span style="color:var(--tl);font-size:11px">${h(size || 'Non stocké')}</span></div>`;
+}
 function ptValueToHtml(v, fld){
   if(v==null || v==='') return '<span style="color:var(--tl)">—</span>';
-  if(fld && fld.type==='appointment'){
+  const type = fld ? String(fld.type||'').toLowerCase() : '';
+  if(type==='checkbox' || type==='case' || type==='case à cocher' || type==='boolean'){
+    const checked = (v===true || v==='true' || v===1 || v==='1' || v==='on' || v==='yes');
+    return checked ? '<span style="display:inline-flex;align-items:center;gap:8px;font-weight:950;color:var(--tx)"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:7px;background:#10b981;color:#fff;font-size:13px">✓</span>Coché</span>' : '<span style="display:inline-flex;align-items:center;gap:8px;font-weight:950;color:var(--tx)"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:7px;border:1.5px solid var(--bd);background:#fff"></span>Non coché</span>';
+  }
+  if(type==='appointment'){
     try{
       const obj = (typeof v==='string' && v.trim().startsWith('{')) ? JSON.parse(v) : v;
       if(obj && typeof obj==='object'){
@@ -241,13 +274,27 @@ function ptValueToHtml(v, fld){
       }
     }catch(e){}
   }
-  if(Array.isArray(v)) return v.map(ptValueToHtml).join('<br>');
+  if(type==='photo' || type==='image_capture' || type==='camera'){
+    if(typeof v==='string' && v.startsWith('data:image/')) return ptSingleFileHtml({name:'Photo', url:v}, true);
+    if(typeof v==='object') return ptSingleFileHtml(v, true);
+  }
+  if(type==='file' || type==='upload' || type==='piecejointe' || type==='fichier'){
+    if(typeof v==='object'){
+      const files = Array.isArray(v.files) ? v.files : (Array.isArray(v) ? v : [v]);
+      return files.map(f=>ptSingleFileHtml(f, false)).join('<div style="height:8px"></div>');
+    }
+  }
+  if(Array.isArray(v)) return v.map(x=>ptValueToHtml(x, fld)).join('<br>');
   if(typeof v==='object'){
-    if(v.url) return `<a href="${h(v.url)}" target="_blank" style="color:#2563eb;font-weight:800">${h(v.name||v.filename||'Ouvrir le fichier')}</a>`;
+    if(v.files && Array.isArray(v.files)) return v.files.map(f=>ptSingleFileHtml(f, type==='photo')).join('<div style="height:8px"></div>');
+    if(v.url || v.dataUrl || v.dataURL || v.base64 || v.content) return ptSingleFileHtml(v, type==='photo');
     if(v.label) return h(v.label);
-    return h(JSON.stringify(v));
+    const compact = JSON.stringify(v);
+    return `<span style="color:var(--tl);font-size:12px">${h(compact.length>180 ? compact.slice(0,180)+'…' : compact)}</span>`;
   }
   const str=String(v);
+  if(str.startsWith('data:image/')) return ptSingleFileHtml({name:'Photo', url:str}, true);
+  if(str.startsWith('data:')) return ptSingleFileHtml({name:'Fichier', url:str}, false);
   if(/^https?:\/\//i.test(str)) return `<a href="${h(str)}" target="_blank" style="color:#2563eb;font-weight:800">${h(str)}</a>`;
   return h(str);
 }
