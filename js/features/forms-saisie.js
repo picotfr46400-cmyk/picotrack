@@ -767,8 +767,23 @@ function ptGenerateSlots(fld){
 async function ptCountAppointments(formId, fieldId, date){
   try{
     if(typeof DB!=='undefined' && DB.getAppointmentsForDate) return await DB.getAppointmentsForDate(formId, fieldId, date);
-  }catch(e){ console.warn('[appointments] lecture impossible', e); }
+  }catch(e){ console.warn('[appointments] lecture date impossible', e); }
   return [];
+}
+async function ptCountAppointmentsForSlot(formId, fieldId, date, startTime){
+  var st = String(startTime||'').slice(0,5);
+  try{
+    if(typeof DB!=='undefined' && DB.getAppointmentsForSlot){
+      var exact = await DB.getAppointmentsForSlot(formId, fieldId, date, st);
+      return Array.isArray(exact) ? exact.length : 0;
+    }
+  }catch(e){ console.warn('[appointments] lecture slot impossible, fallback date', e); }
+  var rows = await ptCountAppointments(formId, fieldId, date);
+  return (rows||[]).filter(function(a){return String(a.start_time||'').slice(0,5)===st;}).length;
+}
+function ptAppointmentSlotCapacityText(remaining, max){
+  if(remaining <= 0) return 'Complet';
+  return remaining + ' place' + (remaining>1?'s':'');
 }
 async function ptAppointmentDateChanged(fid, date){
   var fld=ptGetAppointmentField(fid), wrap=document.getElementById('appt-slots-'+fid);
@@ -781,13 +796,13 @@ async function ptAppointmentDateChanged(fid, date){
     wrap.innerHTML='<div style="grid-column:1/-1;color:#dc2626;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px;font-weight:700;font-size:12px">Jour non disponible.</div>';
     return;
   }
-  wrap.innerHTML='<div style="grid-column:1/-1;color:var(--tl);font-size:12px">Chargement...</div>';
+  wrap.innerHTML='<div style="grid-column:1/-1;color:var(--tl);font-size:12px">Chargement des disponibilités...</div>';
   var formId=curSaisieFormId, taken=await ptCountAppointments(formId, fid, date);
-  var slots=ptGenerateSlots(fld), max=+(fld.parallelSlots||1);
+  var slots=ptGenerateSlots(fld), max=Math.max(1, +(fld.parallelSlots||1));
   wrap.innerHTML=slots.map(function(sl){
     var cnt=(taken||[]).filter(function(a){return String(a.start_time||'').slice(0,5)===sl.start;}).length;
     var rem=max-cnt, full=rem<=0;
-    return '<button type="button" '+(full?'disabled':'')+' onclick="ptSelectAppointmentSlot(\''+fid+'\',\''+date+'\',\''+sl.start+'\',\''+sl.end+'\',this)" style="padding:9px 10px;border-radius:9px;border:1.5px solid '+(full?'#fecaca':'#bbf7d0')+';background:'+(full?'#fef2f2':'#f0fdf4')+';color:'+(full?'#dc2626':'#047857')+';font-weight:800;font-size:12px;cursor:'+(full?'not-allowed':'pointer')+';font-family:inherit;text-align:center">'+sl.start+'<br><span style="font-size:10px;font-weight:700">'+(full?'Complet':rem+' place'+(rem>1?'s':''))+'</span></button>';
+    return '<button type="button" '+(full?'disabled':'')+' onclick="ptSelectAppointmentSlot(\''+fid+'\',\''+date+'\',\''+sl.start+'\',\''+sl.end+'\',this)" data-capacity="'+max+'" data-count="'+cnt+'" style="padding:9px 10px;border-radius:9px;border:1.5px solid '+(full?'#fecaca':'#bbf7d0')+';background:'+(full?'#fef2f2':'#f0fdf4')+';color:'+(full?'#dc2626':'#047857')+';font-weight:800;font-size:12px;cursor:'+(full?'not-allowed':'pointer')+';font-family:inherit;text-align:center">'+sl.start+'<br><span style="font-size:10px;font-weight:700">'+ptAppointmentSlotCapacityText(rem,max)+'</span></button>';
   }).join('');
 }
 function ptSelectAppointmentSlot(fid,date,start,end,btn){
@@ -801,10 +816,17 @@ async function ptCheckAppointmentCapacityBeforeSubmit(form){
   var fields=ptGetAppointmentFields(form);
   for(var i=0;i<fields.length;i++){
     var fld=fields[i], val=saisieValues[fld.id];
-    if(!val||!val.date||!val.start_time){ if(fld.obligatoire){ toast('e','Choisissez un créneau pour '+(fld.nom||'le rendez-vous')); return false; } else continue; }
-    var rows=await ptCountAppointments(form.id, fld.id, val.date);
-    var cnt=(rows||[]).filter(function(a){return String(a.start_time||'').slice(0,5)===val.start_time;}).length;
-    if(cnt >= +(fld.parallelSlots||1)){ toast('e','Créneau complet : '+val.start_time); await ptAppointmentDateChanged(fld.id,val.date); return false; }
+    if(!val||!val.date||!val.start_time){
+      if(fld.obligatoire || fld.req){ toast('e','Choisissez un créneau pour '+(fld.nom||'le rendez-vous')); return false; }
+      continue;
+    }
+    var max=Math.max(1, +(fld.parallelSlots||1));
+    var cnt=await ptCountAppointmentsForSlot(form.id, fld.id, val.date, val.start_time);
+    if(cnt >= max){
+      toast('e','Créneau complet : '+val.start_time+' ('+cnt+'/'+max+')');
+      await ptAppointmentDateChanged(fld.id,val.date);
+      return false;
+    }
   }
   return true;
 }
@@ -813,12 +835,18 @@ async function ptCreateAppointmentsForSubmission(form, submission){
   for(var i=0;i<fields.length;i++){
     var fld=fields[i], val=saisieValues[fld.id];
     if(!val||!val.date||!val.start_time) continue;
+    var max=Math.max(1, +(fld.parallelSlots||1));
+    var cnt=await ptCountAppointmentsForSlot(form.id, fld.id, val.date, val.start_time);
+    if(cnt >= max){
+      toast('e','Créneau complet : réservation non créée dans le planning ('+val.start_time+')');
+      continue;
+    }
     if(typeof DB!=='undefined' && DB.createAppointment){
       await DB.createAppointment({
         form_id:String(form.id), field_id:String(fld.id), response_id:String(submission.id),
         title: form.nom+' - '+(fld.nom||'Rendez-vous'), customer_name:'', date:val.date,
         start_time:val.start_time+':00', end_time:val.end_time+':00',
-        status: fld.manualValidation ? 'pending' : 'confirmed', assigned_team:'', capacity_group:String(fld.id), parallel_slots:+(fld.parallelSlots||1)
+        status: fld.manualValidation ? 'pending' : 'confirmed', assigned_team:'', capacity_group:String(fld.id), parallel_slots:max
       });
     }
   }
