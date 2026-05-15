@@ -1,61 +1,45 @@
-// ══ MODÈLE LICENCES / PAD ══
-// En production, cette valeur doit venir du backend/session.
-// true = propriétaire PicoTrack, false = client simple.
-const IS_PLATFORM_OWNER = false;
+// ══ PicoTrack — Licences v2 (Supabase) ══
 
-// Préparation du modèle commercial : lecture, écriture, supervision et licences nomades liées à des PAD.
 const LICENSE_TYPES = [
-  {id:'read', label:'Lecture', monthlyPrice:35, scope:'environment', canRead:true, canWrite:false, mobile:false, description:'Consultation des données et tableaux de bord d’un environnement.'},
-  {id:'write', label:'Écriture', monthlyPrice:50, scope:'environment', canRead:true, canWrite:true, mobile:false, description:'Saisie, modification et exploitation opérationnelle sur un environnement.'},
-  {id:'supervision', label:'Supervision multi-environnements', monthlyPrice:65, scope:'multi_environment', canRead:true, canWrite:false, mobile:false, description:'Vue consolidée sur plusieurs environnements définis.'},
-  {id:'nomade_pad', label:'Nomade PAD', monthlyPrice:29, scope:'device', canRead:true, canWrite:true, mobile:true, description:'Licence liée à un terminal PAD terrain identifié.'},
+  { id:'supervision', label:'Supervision',  monthlyPrice:65, icon:'🖥',  description:'Accès interface web complète.' },
+  { id:'pad',         label:'PAD Terrain',  monthlyPrice:29, icon:'📱',  description:'Licence terminal nomade terrain.' },
 ];
 
-let LICENSES_DATA = [
-  {id:1, type:'write', environmentId:'edf-blayais', assignedUserId:1, actif:true},
-  {id:2, type:'read', environmentId:'edf-blayais', assignedUserId:2, actif:true},
-  {id:3, type:'nomade_pad', environmentId:'edf-blayais', padId:1, assignedUserId:null, actif:true},
-];
-
-let PADS_DATA = [
-  {id:1, nom:'PAD Réception 01', serial:'PAD-DEMO-001', environmentId:'edf-blayais', licenseType:'nomade_pad', assignedUserId:null, actif:true, zone:'Réception'}
-];
-
-function getLicenseType(typeId){
-  return LICENSE_TYPES.find(t=>t.id===typeId);
+// ── Vérifier si l'user courant est super_admin ──
+function isSuperAdmin() {
+  return window.PT_CURRENT_USER?.role === 'super_admin';
 }
 
-function getPadById(id){
-  return PADS_DATA.find(p=>p.id===id);
+// ── Récupérer les limites du tenant actif ──
+async function getCurrentLicenseLimits() {
+  const tid = window.PT_CURRENT_USER?.active_tenant_id
+    || window.PT_CURRENT_USER?.tenant_id
+    || sessionStorage.getItem('pt_active_tenant');
+  if (!tid) return { max_supervision: 3, max_pad: 10 };
+  try {
+    return await DB.getLicenseLimits(tid);
+  } catch {
+    return { max_supervision: 3, max_pad: 10 };
+  }
 }
 
-
-function isUserLicenseType(typeId){
-  const t=getLicenseType(typeId);
-  return !!t && !t.mobile;
+// ── Récupérer les users du tenant actif ──
+async function getCurrentTenantUsers() {
+  const tid = window.PT_CURRENT_USER?.active_tenant_id
+    || window.PT_CURRENT_USER?.tenant_id
+    || sessionStorage.getItem('pt_active_tenant');
+  if (!tid) return [];
+  try {
+    return await DB.getUsersByTenant(tid);
+  } catch { return []; }
 }
 
-function isPadLicenseType(typeId){
-  const t=getLicenseType(typeId);
-  return !!t && !!t.mobile;
-}
-
-function getUserLicenseSlots(environmentId=CURRENT_ENVIRONMENT_ID){
-  return LICENSES_DATA.filter(l=>l.actif && l.environmentId===environmentId && isUserLicenseType(l.type));
-}
-
-function getAssignedUserLicenseCount(environmentId=CURRENT_ENVIRONMENT_ID){
-  return getUserLicenseSlots(environmentId).filter(l=>!!l.assignedUserId).length;
-}
-
-function getAvailableUserLicenseCount(environmentId=CURRENT_ENVIRONMENT_ID){
-  return Math.max(0, getUserLicenseSlots(environmentId).length - getAssignedUserLicenseCount(environmentId));
-}
-
-function canCreateUserInCurrentEnvironment(){
-  return IS_PLATFORM_OWNER || getAvailableUserLicenseCount(CURRENT_ENVIRONMENT_ID)>0;
-}
-
-function getPadLicenseSlots(environmentId=CURRENT_ENVIRONMENT_ID){
-  return LICENSES_DATA.filter(l=>l.actif && l.environmentId===environmentId && isPadLicenseType(l.type));
+// ── Vérifier si on peut créer un user ──
+async function canCreateUser(licenseType = 'supervision') {
+  if (isSuperAdmin()) return true;
+  const limits = await getCurrentLicenseLimits();
+  const users  = await getCurrentTenantUsers();
+  const used   = users.filter(u => u.active && u.license_type === licenseType).length;
+  const max    = licenseType === 'pad' ? limits.max_pad : limits.max_supervision;
+  return used < max;
 }
