@@ -9,10 +9,12 @@
 <meta name="theme-color" content="#059669">
 <link rel="manifest" href="manifest.json">
 <title>PicoTrack — Formulaires v3</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="style.css">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
@@ -1333,9 +1335,9 @@ overflowX:"visible"
 }
 window.PicoBuilderApp = PicoBuilderApp;
 </script>
-  <script src="js/core/supabase.js"></script>
-<script src="js/core/constants.js"></script>
-<script src="js/core/data.js"></script>
+  <script src="js/core/supabase.js" defer></script>
+<script src="js/core/constants.js" defer></script>
+<script src="js/core/data.js" defer></script>
 <script src="js/core/environments.js"></script>
 <script src="js/core/state.js"></script>
 <script src="js/core/licenses.js"></script>
