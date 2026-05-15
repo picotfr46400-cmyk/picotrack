@@ -1,6 +1,11 @@
 // ══ PicoTrack Planning opérationnel V1.8 - correction dates locales + visuel premium ══
 let ptPlanningBase = new Date();
 let ptPlanningView = 'week'; // day | week | month | year | capacity
+let ptPlanningFormFilter = 'all';
+let ptPlanningServiceFilter = 'all';
+let ptPlanningStatusFilter = 'active';
+let ptPlanningRowsCache = [];
+let ptPlanningGroupsCache = [];
 
 function ptStartOfWeek(d){
   const x = new Date(d);
@@ -108,24 +113,74 @@ async function ptFetchAppointments(){
   return (rows||[]).map(ptNormalizeAppointment).filter(r=>r.date);
 }
 
+function ptPlanningFormName(formId){
+  try{
+    const f=(typeof FORMS_DATA!=='undefined'?FORMS_DATA:[]).find(x=>String(x.id)===String(formId));
+    return f ? (f.nom||('Formulaire '+formId)) : ('Formulaire '+(formId||'inconnu'));
+  }catch(e){ return 'Formulaire'; }
+}
+function ptPlanningServiceName(v){
+  if(!v) return 'Non affecté';
+  try{
+    const s=(typeof SERVICES_DATA!=='undefined'?SERVICES_DATA:[]).find(x=>String(x.id)===String(v)||String(x.nom)===String(v));
+    return s ? (s.nom||v) : v;
+  }catch(e){ return v; }
+}
+function ptPlanningStatusLabel(v){
+  v=String(v||'confirmed');
+  if(v==='pending') return 'En attente';
+  if(v==='cancelled') return 'Annulé';
+  if(v==='done') return 'Terminé';
+  return 'Confirmé';
+}
+function ptPlanningRowService(r){ return r.assigned_team || r.service_id || r.service || r.capacity_group || ''; }
+function ptApplyPlanningFilters(rows){
+  return (rows||[]).filter(r=>{
+    if(ptPlanningFormFilter !== 'all' && String(r.form_id)!==String(ptPlanningFormFilter)) return false;
+    const svc=ptPlanningRowService(r) || '__none__';
+    if(ptPlanningServiceFilter !== 'all' && String(svc)!==String(ptPlanningServiceFilter)) return false;
+    const st=String(r.status||'confirmed');
+    if(ptPlanningStatusFilter === 'active' && st==='cancelled') return false;
+    if(ptPlanningStatusFilter !== 'all' && ptPlanningStatusFilter !== 'active' && st!==ptPlanningStatusFilter) return false;
+    return true;
+  });
+}
+function ptPlanningSetFilter(kind,val){
+  if(kind==='form') ptPlanningFormFilter = val || 'all';
+  if(kind==='service') ptPlanningServiceFilter = val || 'all';
+  if(kind==='status') ptPlanningStatusFilter = val || 'active';
+  renderPlanning();
+}
 function ptGroupSlots(rows){
   const grouped={};
   (rows||[]).forEach(r=>{
-    const k=[r.date, r.form_id||'', String(r.start_time||'').slice(0,5)].join('|');
-    if(!grouped[k]) grouped[k]={...r, count:0, ids:[], max:ptPlanningFormCapacity(r.form_id, r.field_id, r.parallel_slots)};
+    const k=[r.date, r.form_id||'', ptPlanningRowService(r)||'', String(r.start_time||'').slice(0,5)].join('|');
+    if(!grouped[k]) grouped[k]={...r, groupKey:k, count:0, ids:[], rows:[], max:ptPlanningFormCapacity(r.form_id, r.field_id, r.parallel_slots)};
     grouped[k].count += 1;
     grouped[k].ids.push(r.id);
+    grouped[k].rows.push(r);
     grouped[k].max = Math.max(grouped[k].max, ptPlanningFormCapacity(r.form_id, r.field_id, r.parallel_slots));
   });
   return Object.values(grouped).sort((a,b)=>String(a.date+a.start_time).localeCompare(String(b.date+b.start_time)));
 }
 
+function ptPlanningFilterOptions(){
+  const forms=(typeof FORMS_DATA!=='undefined'?FORMS_DATA:[]).filter(f=>(f.fields||[]).some(x=>x.type==='appointment'));
+  const servicesMap={};
+  ptPlanningRowsCache.forEach(r=>{ const svc=ptPlanningRowService(r)||'__none__'; servicesMap[svc]=ptPlanningServiceName(svc==='__none__'?'':svc); });
+  try{ (typeof SERVICES_DATA!=='undefined'?SERVICES_DATA:[]).filter(s=>s.actif!==false).forEach(s=>{ servicesMap[String(s.id)]=s.nom; }); }catch(e){}
+  const formOpts=['<option value="all">Tous les formulaires</option>'].concat(forms.map(f=>`<option value="${h(f.id)}" ${String(ptPlanningFormFilter)===String(f.id)?'selected':''}>${h(f.nom)}</option>`)).join('');
+  const svcOpts=['<option value="all">Tous les services</option>'].concat(Object.keys(servicesMap).map(k=>`<option value="${h(k)}" ${String(ptPlanningServiceFilter)===String(k)?'selected':''}>${h(servicesMap[k])}</option>`)).join('');
+  const statusOpts=`<option value="active" ${ptPlanningStatusFilter==='active'?'selected':''}>Actifs hors annulés</option><option value="all" ${ptPlanningStatusFilter==='all'?'selected':''}>Tous les statuts</option><option value="confirmed" ${ptPlanningStatusFilter==='confirmed'?'selected':''}>Confirmés</option><option value="pending" ${ptPlanningStatusFilter==='pending'?'selected':''}>En attente</option><option value="done" ${ptPlanningStatusFilter==='done'?'selected':''}>Terminés</option><option value="cancelled" ${ptPlanningStatusFilter==='cancelled'?'selected':''}>Annulés</option>`;
+  return {formOpts, svcOpts, statusOpts};
+}
 function ptPlanningShell(inner, stats){
   const r = ptPlanningRange();
   const totalRdv = stats?.totalRdv || 0;
   const totalSlots = stats?.totalSlots || 0;
   const saturated = stats?.saturated || 0;
   const load = stats?.load || 0;
+  const opts = ptPlanningFilterOptions();
   const active = (v)=> ptPlanningView===v ? 'background:#2563eb;color:#fff;border-color:#2563eb;box-shadow:0 8px 20px rgba(37,99,235,.20)' : 'background:#fff;color:var(--tl);border-color:var(--bd)';
   return `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px;flex-wrap:wrap">
@@ -141,6 +196,11 @@ function ptPlanningShell(inner, stats){
         <button class="btn btn-sm bp" onclick="ptPlanningToday()">Aujourd'hui</button>
         <button class="btn btn-sm" onclick="ptPlanningShift('next')">Suivant →</button>
       </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:10px;margin-bottom:14px;background:#fff;border:1px solid var(--bd);border-radius:16px;padding:12px;box-shadow:0 8px 24px rgba(15,23,42,.04)">
+      <select onchange="ptPlanningSetFilter('form',this.value)" style="border:1.5px solid var(--bd);border-radius:11px;padding:10px 12px;font-weight:800;color:var(--tx);font-family:inherit;background:#fff">${opts.formOpts}</select>
+      <select onchange="ptPlanningSetFilter('service',this.value)" style="border:1.5px solid var(--bd);border-radius:11px;padding:10px 12px;font-weight:800;color:var(--tx);font-family:inherit;background:#fff">${opts.svcOpts}</select>
+      <select onchange="ptPlanningSetFilter('status',this.value)" style="border:1.5px solid var(--bd);border-radius:11px;padding:10px 12px;font-weight:800;color:var(--tx);font-family:inherit;background:#fff">${opts.statusOpts}</select>
     </div>
     <div style="display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-bottom:14px">
       <div style="background:#fff;border:1px solid var(--bd);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(15,23,42,.04)"><div style="font-size:12px;color:var(--tl);font-weight:800">Période</div><div style="font-size:17px;font-weight:950;color:var(--tx);margin-top:4px;text-transform:capitalize">${r.label}</div></div>
@@ -158,12 +218,62 @@ function ptSlotCard(a){
   const bg = full ? '#fef2f2' : warn ? '#fff7ed' : '#eff6ff';
   const bd = full ? '#fecaca' : warn ? '#fed7aa' : '#bfdbfe';
   const col = full ? '#dc2626' : warn ? '#d97706' : '#1d4ed8';
-  return `<div style="margin-bottom:8px;padding:10px 11px;border-radius:12px;background:${bg};border:1px solid ${bd}">
+  const key = encodeURIComponent(a.groupKey||'');
+  return `<button type="button" onclick="ptOpenAppointmentGroup('${key}')" style="width:100%;text-align:left;margin-bottom:8px;padding:10px 11px;border-radius:12px;background:${bg};border:1px solid ${bd};cursor:pointer;font-family:inherit;transition:.15s" onmouseover="this.style.transform='translateY(-1px)';this.style.boxShadow='0 10px 24px rgba(15,23,42,.10)'" onmouseout="this.style.transform='';this.style.boxShadow=''">
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div style="font-weight:950;color:${col};font-size:12px">${String(a.start_time||'').slice(0,5)} - ${String(a.end_time||'').slice(0,5)}</div><div style="font-size:11px;font-weight:950;color:${col}">${a.count}/${a.max}</div></div>
-    <div style="font-size:11px;color:var(--tx);font-weight:800;margin-top:4px">${a.title||'Rendez-vous'}</div>
-    <div style="font-size:10px;color:var(--tl);margin-top:2px">${full?'Complet':(a.max-a.count)+' place'+((a.max-a.count)>1?'s':'')+' restante'+((a.max-a.count)>1?'s':'')}</div>
-  </div>`;
+    <div style="font-size:11px;color:var(--tx);font-weight:900;margin-top:4px">${h(ptPlanningFormName(a.form_id))}</div>
+    <div style="font-size:10px;color:var(--tl);margin-top:2px">${h(ptPlanningServiceName(ptPlanningRowService(a)))} · ${full?'Complet':(a.max-a.count)+' place'+((a.max-a.count)>1?'s':'')+' restante'+((a.max-a.count)>1?'s':'')}</div>
+  </button>`;
 }
+
+function ptValueToHtml(v){
+  if(v==null || v==='') return '<span style="color:var(--tl)">—</span>';
+  if(Array.isArray(v)) return v.map(ptValueToHtml).join('<br>');
+  if(typeof v==='object'){
+    if(v.url) return `<a href="${h(v.url)}" target="_blank" style="color:#2563eb;font-weight:800">${h(v.name||v.filename||'Ouvrir le fichier')}</a>`;
+    if(v.label) return h(v.label);
+    return h(JSON.stringify(v));
+  }
+  const str=String(v);
+  if(/^https?:\/\//i.test(str)) return `<a href="${h(str)}" target="_blank" style="color:#2563eb;font-weight:800">${h(str)}</a>`;
+  return h(str);
+}
+function ptFindSubmission(row){
+  try{ return (typeof SUBMISSIONS_DATA!=='undefined'?SUBMISSIONS_DATA:[]).find(s=>String(s.id)===String(row.response_id)); }catch(e){ return null; }
+}
+function ptAppointmentSubmissionHtml(row){
+  const sub=ptFindSubmission(row);
+  const form=(typeof FORMS_DATA!=='undefined'?FORMS_DATA:[]).find(f=>String(f.id)===String(row.form_id));
+  if(!sub || !form){
+    return `<div style="padding:12px;border:1px dashed var(--bd);border-radius:12px;color:var(--tl);font-size:12px">Réponse formulaire non chargée localement. ID réponse : ${h(row.response_id||'—')}</div>`;
+  }
+  const fields=(form.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
+  return fields.map(fld=>{
+    const val=sub.values ? sub.values[fld.id] : '';
+    const isFile=(fld.type==='file'||fld.type==='upload'||fld.type==='piecejointe');
+    return `<div style="padding:11px 0;border-bottom:1px solid var(--bg)"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:900;color:var(--tl);margin-bottom:4px">${isFile?'📎 ':''}${h(fld.nom||fld.label||fld.id)}</div><div style="font-size:13px;color:var(--tx);font-weight:700;word-break:break-word">${ptValueToHtml(val)}</div></div>`;
+  }).join('') + `<button class="btn btn-sm bp" style="margin-top:12px" onclick="openSubmission('${h(sub.id)}')">Ouvrir la réponse complète</button>`;
+}
+function ptOpenAppointmentGroup(encodedKey){
+  const key=decodeURIComponent(encodedKey||'');
+  const group=ptPlanningGroupsCache.find(g=>String(g.groupKey)===String(key));
+  if(!group) return;
+  const rows=group.rows||[];
+  const overlay=document.createElement('div');
+  overlay.id='pt-planning-detail-overlay';
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.35);z-index:9999;display:flex;justify-content:flex-end';
+  overlay.onclick=function(e){ if(e.target===overlay) ptClosePlanningDetail(); };
+  const dateLabel=new Date(group.date+'T12:00:00').toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'});
+  overlay.innerHTML=`<div style="width:min(620px,96vw);height:100%;background:#fff;box-shadow:-20px 0 60px rgba(15,23,42,.25);overflow:auto">
+    <div style="position:sticky;top:0;background:#fff;border-bottom:1px solid var(--bd);padding:18px 20px;z-index:2">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start"><div><div style="font-size:19px;font-weight:950;color:var(--tx)">Dossier rendez-vous</div><div style="font-size:12px;color:var(--tl);margin-top:4px;text-transform:capitalize">${h(dateLabel)} · ${h(group.start_time)} - ${h(group.end_time)} · ${group.count}/${group.max}</div></div><button onclick="ptClosePlanningDetail()" style="border:1px solid var(--bd);background:#fff;border-radius:10px;padding:8px 10px;cursor:pointer;font-weight:900">✕</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><span style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;padding:6px 10px;border-radius:999px;font-size:11px;font-weight:900">${h(ptPlanningFormName(group.form_id))}</span><span style="background:#f8fafc;color:var(--tl);border:1px solid var(--bd);padding:6px 10px;border-radius:999px;font-size:11px;font-weight:900">${h(ptPlanningServiceName(ptPlanningRowService(group)))}</span></div>
+    </div>
+    <div style="padding:18px 20px">${rows.map((row,i)=>`<div style="border:1px solid var(--bd);border-radius:16px;padding:16px;margin-bottom:14px;background:#fff;box-shadow:0 8px 24px rgba(15,23,42,.04)"><div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:12px"><div style="font-weight:950;color:var(--tx)">Réservation ${i+1}</div><div style="font-size:11px;font-weight:900;color:#2563eb;background:#eff6ff;border-radius:999px;padding:5px 8px">${h(ptPlanningStatusLabel(row.status))}</div></div>${ptAppointmentSubmissionHtml(row)}</div>`).join('')}</div>
+  </div>`;
+  document.body.appendChild(overlay);
+}
+function ptClosePlanningDetail(){ const o=document.getElementById('pt-planning-detail-overlay'); if(o) o.remove(); }
 
 function ptRenderWeek(groupedRows, rows){
   const start = ptStartOfWeek(ptPlanningBase);
@@ -221,8 +331,11 @@ async function renderPlanning(){
   if(!wrap) return;
   wrap.innerHTML='<div style="padding:20px;background:#fff;border:1px solid var(--bd);border-radius:14px;color:var(--tl)">Chargement du planning...</div>';
   const rows = await ptFetchAppointments();
-  const groupedRows = ptGroupSlots(rows);
-  const totalRdv = rows.length;
+  ptPlanningRowsCache = rows || [];
+  const filteredRows = ptApplyPlanningFilters(rows);
+  const groupedRows = ptGroupSlots(filteredRows);
+  ptPlanningGroupsCache = groupedRows;
+  const totalRdv = filteredRows.length;
   const totalSlots = groupedRows.length;
   const saturated = groupedRows.filter(r=>r.count>=r.max).length;
   const capTotal = groupedRows.reduce((s,r)=>s+r.max,0);
