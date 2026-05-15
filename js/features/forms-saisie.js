@@ -1,0 +1,825 @@
+// ══ PRODUCTION : SAISIE RÉELLE ══
+
+function openFormSaisie(id){
+  const f = FORMS_DATA.find(x => String(x.id) === String(id));
+  if(!f) return;
+
+  curSaisieFormId = id;
+  saisieValues = {};
+
+  (f.fields || []).forEach(function(fld){
+    if(fld.defaultValue !== undefined && fld.defaultValue !== '' && fld.defaultValue !== null){
+      saisieValues[fld.id] = fld.defaultValue;
+    }
+  });
+
+  document.getElementById('breadcrumb').innerHTML = `
+    <span class="bc-link" onclick="goProduction()">▶ Production / Formulaires</span>
+    <span style="color:var(--tl);margin:0 4px">/</span>
+    <span style="font-weight:600">${h(f.nom)}</span>`;
+
+  document.getElementById('tb-t').textContent = f.nom;
+
+  renderSaisieForm(f);
+  show('v-saisie');
+}
+
+function renderSaisieForm(f){
+  const wrap = document.getElementById('saisie-wrap');
+  const color = f.couleur || '#3b82f6';
+
+  const fields = (f.fields || []).filter(function(fld){
+    return (typeof _ptCanSeeByRoles === 'function') ? _ptCanSeeByRoles(fld.roles || []) : true;
+  });
+
+  if(!fields.length){
+    wrap.innerHTML = `
+      <div style="text-align:center;padding:60px 20px;color:var(--tl)">
+        <div style="font-size:36px;margin-bottom:12px">📋</div>
+        <div style="font-size:14px">Ce formulaire ne contient aucun champ.</div>
+        <button class="btn btn-sm" style="margin-top:16px" onclick="goProduction()">← Retour</button>
+      </div>`;
+    return;
+  }
+
+  let html = `
+    <div style="background:var(--card,#fff);border-radius:14px;box-shadow:0 2px 12px rgba(0,0,0,.09);padding:26px;margin-bottom:24px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:22px;padding-bottom:16px;border-bottom:2px solid var(--bd)">
+        <div style="width:6px;height:44px;border-radius:3px;background:${color};flex-shrink:0"></div>
+        <div style="flex:1">
+          <div style="font-size:16px;font-weight:800;color:var(--tx)">${h(f.nom)}</div>
+          ${f.desc ? `<div style="font-size:12px;color:var(--tl);margin-top:2px">${h(f.desc)}</div>` : ''}
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:11px;color:var(--tl)">🖥 Mode Saisie</div>
+          <div style="font-size:11px;font-weight:700;color:${color};margin-top:2px">${(f.resp || 0).toLocaleString()} réponse${(f.resp || 0) > 1 ? 's' : ''}</div>
+        </div>
+      </div>`;
+
+  fields.forEach(fld => {
+    const fd = FD[fld.type] || {l: fld.nom};
+    const isLayout = ['separator','image','titre'].includes(fld.type);
+    const visible = saisieEvalCond(fld, fields);
+
+    html += `<div class="ap-field" id="sw-${fld.id}" style="margin-bottom:16px;display:${visible ? 'block' : 'none'}">`;
+
+    if(!isLayout){
+      html += `
+        <div style="font-size:12.5px;font-weight:600;color:var(--tx);margin-bottom:6px">
+          ${h(fld.nom || fd.l)}${fld.obligatoire ? '<span style="color:#ef4444"> *</span>' : ''}
+        </div>`;
+    }
+
+    if(fld.afficher_legende && fld.legendeText){
+      html += `<div style="font-size:11px;color:var(--tl);margin-bottom:6px;font-style:italic">${h(fld.legendeText)}</div>`;
+    }
+
+    switch(fld.type){
+      case 'text':
+        if(fld.duplicable){
+          if(!Array.isArray(saisieValues[fld.id])) saisieValues[fld.id] = Array(Math.max(fld.duplicable_min || 1, 1)).fill('');
+          html += renderDupField(fld, color);
+        } else {
+          html += `<input class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:auto;padding:10px 13px;outline:none;width:100%;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s" placeholder="${h(fld.afficher_placeholder && fld.placeholder ? fld.placeholder : 'Saisir un texte...')}" value="${h(saisieValues[fld.id] || '')}" oninput="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;
+        }
+        break;
+
+      case 'textarea':
+        html += `<textarea class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;height:82px;resize:vertical;padding:10px 13px;outline:none;width:100%;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s" placeholder="Saisir un texte..." oninput="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">${h(saisieValues[fld.id] || '')}</textarea>`;
+        break;
+
+      case 'number': {
+        if(fld.duplicable){
+          if(!Array.isArray(saisieValues[fld.id])) saisieValues[fld.id] = Array(Math.max(fld.duplicable_min || 1, 1)).fill(0);
+          html += renderDupField(fld, color);
+          break;
+        }
+
+        const nv = saisieValues[fld.id] !== undefined ? saisieValues[fld.id] : 0;
+
+        html += `
+          <div style="display:flex;align-items:center;gap:10px">
+            <button onclick="var n=document.getElementById('sni_${fld.id}');n.value=Math.round((+n.value-${fld.pas || 1})*1000)/1000;saisieChange('${fld.id}',+n.value)" style="width:38px;height:38px;border:1.5px solid var(--bd);border-radius:8px;background:#f8fafc;font-size:20px;cursor:pointer;transition:all .15s" onmouseover="this.style.background='${color}';this.style.color='#fff';this.style.borderColor='${color}'" onmouseout="this.style.background='#f8fafc';this.style.color='inherit';this.style.borderColor='var(--bd)'">−</button>
+            <input id="sni_${fld.id}" type="number" class="ap-input" style="width:110px;text-align:center;background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:9px;outline:none;font-family:inherit;font-size:15px;font-weight:700;transition:border-color .15s" value="${nv}" step="${fld.pas || 1}" oninput="saisieChange('${fld.id}',+this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">
+            <button onclick="var n=document.getElementById('sni_${fld.id}');n.value=Math.round((+n.value+${fld.pas || 1})*1000)/1000;saisieChange('${fld.id}',+n.value)" style="width:38px;height:38px;border:1.5px solid ${color};border-radius:8px;background:${color};font-size:20px;cursor:pointer;color:#fff;font-weight:700;transition:opacity .15s" onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">+</button>
+          </div>`;
+        break;
+      }
+
+      case 'checkbox': {
+        const cbv = saisieValues[fld.id] === true;
+        html += `<label id="cbl_${fld.id}" style="display:inline-flex;align-items:center;gap:10px;cursor:pointer;padding:10px 16px;border:1.5px solid ${cbv ? color : 'var(--bd)'};border-radius:8px;background:${cbv ? color + '18' : '#f8fafc'};transition:all .15s;user-select:none"><input type="checkbox" ${cbv ? 'checked' : ''} onchange="saisieChange('${fld.id}',this.checked);updateCbLabel('${fld.id}','${color}')" style="width:17px;height:17px;accent-color:${color};cursor:pointer"><span style="font-size:13px;color:var(--tm)">Cocher si applicable</span></label>`;
+        break;
+      }
+
+      case 'select':
+        html += `<select class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:100%;font-family:inherit;font-size:13px;transition:border-color .15s" onchange="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'"><option value="">— Sélectionner —</option>${(fld.valeurs || []).map(v => `<option${saisieValues[fld.id] === v ? ' selected' : ''}>${h(v)}</option>`).join('')}</select>`;
+        break;
+
+      case 'multiselect': {
+        const msv = Array.isArray(saisieValues[fld.id]) ? saisieValues[fld.id] : [];
+        html += `<div id="ms_${fld.id}" style="display:flex;flex-wrap:wrap;gap:8px;padding:4px 0">${(fld.valeurs || []).map(v => {
+          const on = msv.includes(v);
+          return `<label style="display:flex;align-items:center;gap:6px;padding:7px 15px;border:1.5px solid ${on ? color : 'var(--bd)'};border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;background:${on ? color + '18' : '#f8fafc'};color:${on ? color : 'var(--tm)'};transition:all .15s"><input type="checkbox" ${on ? 'checked' : ''} onchange="saisieChangeMulti('${fld.id}','${String(v).replace(/'/g,"\\'")}',this.checked)" style="display:none">${on ? '✓ ' : ''}${h(v)}</label>`;
+        }).join('')}</div>`;
+        break;
+      }
+
+      case 'date':
+        if(fld.duplicable){
+          if(!Array.isArray(saisieValues[fld.id])) saisieValues[fld.id] = Array(Math.max(fld.duplicable_min || 1, 1)).fill('');
+          html += renderDupField(fld, color);
+          break;
+        }
+        html += `<input type="date" class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:200px;font-family:inherit;font-size:13px;transition:border-color .15s" value="${saisieValues[fld.id] || ''}" onchange="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;
+        break;
+
+      case 'heure':
+        if(fld.duplicable){
+          if(!Array.isArray(saisieValues[fld.id])) saisieValues[fld.id] = Array(Math.max(fld.duplicable_min || 1, 1)).fill('');
+          html += renderDupField(fld, color);
+          break;
+        }
+        html += `<input type="time" class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:160px;font-family:inherit;font-size:13px;transition:border-color .15s" value="${saisieValues[fld.id] || ''}" onchange="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;
+        break;
+
+      case 'datetime':
+        if(fld.duplicable){
+          if(!Array.isArray(saisieValues[fld.id])) saisieValues[fld.id] = Array(Math.max(fld.duplicable_min || 1, 1)).fill('');
+          html += renderDupField(fld, color);
+          break;
+        }
+        html += `<input type="datetime-local" class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:100%;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s" value="${saisieValues[fld.id] || ''}" onchange="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;
+        break;
+
+      case 'appointment': {
+        const av = saisieValues[fld.id] || {};
+        const dateVal = av.date || '';
+        html += `<div class="pt-appointment" data-field="${fld.id}" style="border:1.5px solid var(--bd);border-radius:12px;background:#f8fafc;padding:14px">
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+            <div style="width:38px;height:38px;border-radius:10px;background:#dbeafe;color:#2563eb;display:flex;align-items:center;justify-content:center;font-size:18px">📅</div>
+            <div style="flex:1"><div style="font-weight:800;color:var(--tx);font-size:13px">Choisir un créneau</div><div style="font-size:11px;color:var(--tl)">${fld.slotDuration || 30} min · ${fld.parallelSlots || 1} place${(fld.parallelSlots || 1)>1?'s':''} par créneau</div></div>
+          </div>
+          <input type="date" class="ap-input" value="${dateVal}" onchange="ptAppointmentDateChanged('${fld.id}', this.value)" style="background:#fff;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:210px;font-family:inherit;font-size:13px;box-sizing:border-box">
+          <div id="appt-slots-${fld.id}" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-top:12px">${dateVal?'Chargement des créneaux...':'Sélectionnez une date.'}</div>
+        </div>`;
+        setTimeout(function(){ if('${dateVal}') ptAppointmentDateChanged('${fld.id}', '${dateVal}'); }, 0);
+        break;
+      }
+
+      case 'photo':
+        html += `<div style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc">📷 Capture photo — disponible sur l'app nomade</div>`;
+        break;
+
+      case 'signature':
+        html += `<div style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc">✍ Signature — disponible sur l'app nomade</div>`;
+        break;
+
+      case 'file':
+        html += `<div style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc">📎 Fichier — disponible sur l'app nomade</div>`;
+        break;
+
+      case 'location':
+        html += `<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:10px;padding:16px;display:flex;align-items:center;justify-content:space-between"><span style="color:var(--tl);font-size:13px">📍 ${saisieValues[fld.id] || 'Non capturé'}</span><button onclick="saisieChange('${fld.id}','GPS: 45.0473° N, 4.7277° E');this.textContent='✅ Capturé';this.style.background='#10b981';this.style.color='#fff'" style="padding:6px 14px;border-radius:20px;border:1.5px solid ${color};color:${color};background:transparent;cursor:pointer;font-size:12px;font-family:inherit">Capturer</button></div>`;
+        break;
+
+      case 'titre':
+        html += `<div style="font-size:15px;font-weight:800;border-bottom:2px solid var(--bd);padding-bottom:8px;color:var(--tx)">${h(fld.nom)}</div>`;
+        break;
+
+      case 'separator':
+        html += `<hr style="border:none;border-top:1.5px solid var(--bd);margin:4px 0">`;
+        break;
+
+      case 'image':
+        html += fld.imageData
+          ? `<img src="${fld.imageData}" style="max-width:100%;max-height:220px;border-radius:8px;object-fit:contain;display:block">`
+          : `<div style="background:#f8fafc;border:1.5px dashed var(--bd);border-radius:8px;height:80px;display:flex;align-items:center;justify-content:center;color:var(--tl);font-size:13px">🖼 Aucune image configurée</div>`;
+        break;
+
+      case 'calcul': {
+        const cr = computeCalcul(fld, saisieValues);
+        saisieValues[fld.id] = cr;
+        html += `<div style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px"><span id="calcul-result-${fld.id}" style="font-size:17px;font-weight:800;font-family:'DM Mono',monospace;color:var(--tx)">${cr !== '' ? cr : '—'}</span><span style="font-size:11px;color:var(--tl)">calculé automatiquement</span></div>`;
+        break;
+      }
+
+      default:
+        html += `<div class="ap-input" style="color:var(--tl);font-style:italic">${fd.l || '—'}</div>`;
+    }
+
+    html += `</div>`;
+  });
+
+  html += `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding-top:20px;border-top:2px solid var(--bd);margin-top:8px;gap:12px">
+        <button class="btn" onclick="goProduction()" style="padding:9px 20px;border-radius:8px;font-size:13px">← Annuler</button>
+        <div style="display:flex;gap:10px">
+          <button class="btn" onclick="resetSaisie()" style="padding:9px 18px;border-radius:8px;font-size:13px">↺ Réinitialiser</button>
+          <button onclick="submitSaisie()" id="btn-submit-saisie" style="padding:10px 26px;border-radius:8px;border:none;background:${color};color:#fff;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .15s" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">✅ Valider la saisie</button>
+        </div>
+      </div>
+    </div>`;
+
+  wrap.innerHTML = html;
+}
+
+function saisieChange(fid,val){
+  const f = FORMS_DATA.find(x => String(x.id) === String(curSaisieFormId));
+  const fld = f ? (f.fields || []).find(x => String(x.id) === String(fid)) : null;
+
+  if(fld && typeof val === 'string' && (fld.transformateurs || []).length){
+    const tv = applyTransformers(fid, val);
+    if(tv !== val){
+      val = tv;
+      const inp = document.querySelector(`#sw-${fid} input,#sw-${fid} textarea`);
+      if(inp && inp.value !== tv) inp.value = tv;
+    }
+  }
+
+  saisieValues[fid] = val;
+
+  if(!f) return;
+
+  (f.fields || []).forEach(fld => {
+    const w = document.getElementById('sw-' + fld.id);
+    if(!w) return;
+    w.style.display = saisieEvalCond(fld, f.fields) ? 'block' : 'none';
+  });
+
+  (f.fields || []).filter(c => c.type === 'calcul').forEach(c => {
+    const r = computeCalcul(c, saisieValues);
+    saisieValues[c.id] = r;
+    const el = document.getElementById('calcul-result-' + c.id);
+    if(el) el.textContent = r !== '' ? String(r) : '—';
+  });
+}
+
+function saisieChangeMulti(fid,val,checked){
+  if(!Array.isArray(saisieValues[fid])) saisieValues[fid] = [];
+
+  if(checked){
+    if(!saisieValues[fid].includes(val)) saisieValues[fid].push(val);
+  } else {
+    saisieValues[fid] = saisieValues[fid].filter(v => v !== val);
+  }
+
+  saisieChange(fid, saisieValues[fid]);
+
+  const f = FORMS_DATA.find(x => String(x.id) === String(curSaisieFormId));
+  if(!f) return;
+
+  const fld = f.fields.find(x => String(x.id) === String(fid));
+  if(!fld) return;
+
+  const color = f.couleur || '#3b82f6';
+  const container = document.getElementById('ms_' + fid);
+  if(!container) return;
+
+  container.innerHTML = (fld.valeurs || []).map(v => {
+    const on = saisieValues[fid]?.includes(v);
+    return `<label style="display:flex;align-items:center;gap:6px;padding:7px 15px;border:1.5px solid ${on ? color : 'var(--bd)'};border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;background:${on ? color + '18' : '#f8fafc'};color:${on ? color : 'var(--tm)'};transition:all .15s"><input type="checkbox" ${on ? 'checked' : ''} onchange="saisieChangeMulti('${fid}','${String(v).replace(/'/g,"\\'")}',this.checked)" style="display:none">${on ? '✓ ' : ''}${h(v)}</label>`;
+  }).join('');
+}
+
+function updateCbLabel(fid,color){
+  const lbl = document.getElementById('cbl_' + fid);
+  if(!lbl) return;
+
+  const checked = lbl.querySelector('input').checked;
+  lbl.style.borderColor = checked ? color : 'var(--bd)';
+  lbl.style.background = checked ? color + '18' : '#f8fafc';
+}
+
+function saisieEvalCond(fld,allFields){
+  const conds = fld.conditions || [];
+  if(!conds.length) return true;
+
+  const op = fld.condOp || 'all';
+
+  const results = conds.map(c => {
+    const src = allFields.find(x => x.nom === c.field);
+    if(!src) return true;
+
+    const v = saisieValues[src.id];
+    const cv = Array.isArray(v) ? v.join(',') : (v || '');
+
+    if(c.op === '=') return cv === c.val;
+    if(c.op === '!=') return cv !== c.val;
+    if(c.op === 'contains') return cv.includes(c.val);
+    if(c.op === 'empty') return !cv;
+
+    return true;
+  });
+
+  return op === 'all' ? results.every(Boolean) : results.some(Boolean);
+}
+
+function _ptNormalizeKey(v){
+  return String(v || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g,'_')
+    .replace(/^_+|_+$/g,'');
+}
+
+function _ptCurrentEnvCode(){
+  try {
+    if(typeof _licenseEnvCode === 'function') return _licenseEnvCode();
+    if(typeof getPadConfig === 'function'){
+      const cfg = getPadConfig();
+      if(cfg && cfg.code) return cfg.code;
+    }
+  } catch(e){}
+  return 'DEMO';
+}
+
+function _ptGetFieldValue(form, values, fieldId){
+  if(!fieldId) return '';
+
+  const fields = form.fields || [];
+  const fld = fields.find(f =>
+    String(f.id) === String(fieldId) ||
+    String(f.field_key) === String(fieldId) ||
+    String(f.nom) === String(fieldId)
+  );
+
+  const keys = [
+    fieldId,
+    String(fieldId),
+    fld?.id,
+    fld ? String(fld.id) : '',
+    fld?.field_key,
+    fld?.nom
+  ].filter(Boolean);
+
+  for(const k of keys){
+    if(values[k] !== undefined && values[k] !== null) return values[k];
+  }
+
+  return '';
+}
+
+function _ptResolveFieldValue(form, values, fieldId){
+  const v = _ptGetFieldValue(form, values, fieldId);
+  if(Array.isArray(v)) return v.join(', ');
+  return v !== undefined && v !== null ? String(v) : '';
+}
+
+function _ptApplyMailVariables(text, form, submission){
+  let out = String(text || '');
+
+  out = out.replaceAll('{formName}', form.nom || '');
+  out = out.replaceAll('{nom_formulaire}', form.nom || '');
+  out = out.replaceAll('{date_saisie}', submission.dateLabel || '');
+  out = out.replaceAll('{utilisateur}', submission.utilisateur || '');
+
+  (form.fields || []).forEach(fld => {
+    const val = _ptResolveFieldValue(form, submission.values || {}, fld.id);
+
+    out = out.replaceAll('{champ:' + fld.id + '}', val);
+    out = out.replaceAll('{champ:' + (fld.field_key || '') + '}', val);
+    out = out.replaceAll('{champ:' + (fld.nom || '') + '}', val);
+  });
+
+  return out;
+}
+
+function _ptMailConditionOk(form, values, cfg){
+  const op = cfg.conditionOperator || 'always';
+  if(op === 'always') return true;
+
+  const fieldId = cfg.conditionField || '';
+  const val = _ptResolveFieldValue(form, values, fieldId).toLowerCase();
+  const expected = String(cfg.conditionValue || '').toLowerCase();
+
+  if(op === 'equals') return val === expected;
+  if(op === 'not_equals') return val !== expected;
+  if(op === 'contains') return val.includes(expected);
+  if(op === 'not_empty') return val.trim() !== '';
+
+  return true;
+}
+
+function _ptPrepareMailTrigger(form, submission){
+  const cfg = form.triggers && form.triggers.sendMail ? form.triggers.sendMail : null;
+  if(!cfg || !cfg.enabled) return;
+
+  if((cfg.event || 'create') !== 'create') return;
+
+  if(!_ptMailConditionOk(form, submission.values || {}, cfg)){
+    console.log('[PicoTrack Mail] Condition non remplie, mail non préparé');
+    return;
+  }
+
+  const fixedTo = String(cfg.to || '')
+    .split(/[;,]/)
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  const dynamicTo = [
+    ...(cfg.toField ? [cfg.toField] : []),
+    ...(Array.isArray(cfg.toFields) ? cfg.toFields : [])
+  ].flatMap(fieldId =>
+    _ptResolveFieldValue(form, submission.values || {}, fieldId)
+      .split(/[;,]/)
+      .map(x => x.trim())
+      .filter(Boolean)
+  );
+
+  const cc = [
+    ...String(cfg.cc || '').split(/[;,]/).map(x => x.trim()).filter(Boolean),
+    ...(Array.isArray(cfg.ccFields) ? cfg.ccFields : []).flatMap(fieldId =>
+      _ptResolveFieldValue(form, submission.values || {}, fieldId)
+        .split(/[;,]/)
+        .map(x => x.trim())
+        .filter(Boolean)
+    )
+  ];
+
+  const to = [...fixedTo, ...dynamicTo];
+
+  const mail = {
+    id: 'mail_' + Date.now(),
+    formId: form.id,
+    submissionId: submission.id,
+    to,
+    cc,
+    subject: _ptApplyMailVariables(cfg.subject || '', form, submission),
+    body: _ptApplyMailVariables(cfg.body || '', form, submission),
+    attachPdf: cfg.attachPdf !== false,
+    status: 'prepared',
+    createdAt: new Date().toISOString()
+  };
+
+  const outbox = JSON.parse(localStorage.getItem('pt_mail_outbox') || '[]');
+  outbox.push(mail);
+  localStorage.setItem('pt_mail_outbox', JSON.stringify(outbox));
+
+  console.log('[PicoTrack Mail] Mail préparé :', mail);
+  toast('i', '📧 Mail préparé : ' + (to.length ? to.join(', ') : 'aucun destinataire'));
+}
+
+function _ptRunDbRowTrigger(form, submission){
+  const cfg = form.triggers && form.triggers.addDbRow ? form.triggers.addDbRow : null;
+  if(!cfg || !cfg.enabled) return;
+
+  const dbId = String(cfg.targetDbId || cfg.database || '');
+  if(!dbId){
+    console.warn('[PicoTrack DB] Aucune base cible configurée');
+    toast('w','Aucune base cible configurée');
+    return;
+  }
+
+  const targetDb = (typeof DATABASES_DATA !== 'undefined')
+    ? DATABASES_DATA.find(db => String(db.id) === String(dbId))
+    : null;
+
+  const values = {};
+  const fields = form.fields || [];
+  const formValues = submission.values || {};
+
+  if((cfg.mappingMode || 'auto') === 'manual'){
+    (cfg.mappings || []).forEach(m => {
+      if(!m.colId || !m.fieldId) return;
+      values[m.colId] = _ptGetFieldValue(form, formValues, m.fieldId);
+    });
+  } else if(targetDb) {
+    (targetDb.columns || []).forEach(col => {
+      const colKey = _ptNormalizeKey(col.nom || col.name || col.id);
+
+      const match = fields.find(f =>
+        _ptNormalizeKey(f.nom) === colKey ||
+        _ptNormalizeKey(f.field_key) === colKey ||
+        _ptNormalizeKey(f.id) === colKey
+      );
+
+      if(match){
+        values[col.id] = _ptGetFieldValue(form, formValues, match.id);
+      }
+    });
+  } else {
+    Object.assign(values, formValues);
+  }
+
+  const localRow = {
+    id: Date.now(),
+    date: new Date().toISOString(),
+    dateLabel: new Date().toLocaleString('fr-FR'),
+    source: 'form:' + (form.nom || ''),
+    formId: form.id,
+    submissionId: submission.id,
+    values
+  };
+
+  if(targetDb){
+    targetDb.rows = targetDb.rows || [];
+
+    const exists = targetDb.rows.some(r =>
+      String(r.submissionId || '') === String(submission.id) &&
+      String(r.formId || '') === String(form.id)
+    );
+
+    if(!exists){
+      targetDb.rows.push(localRow);
+    }
+  }
+
+  if(typeof sbFetch === 'function'){
+    sbFetch('database_rows', {
+      method: 'POST',
+      body: JSON.stringify({
+        database_id: dbId,
+        environment_code: _ptCurrentEnvCode(),
+        source: localRow.source,
+        form_id: String(form.id),
+        submission_id: String(submission.id),
+        values: values
+      })
+    })
+      .then(() => {
+        console.log('[PicoTrack DB] Ligne Supabase ajoutée', dbId, values);
+      })
+      .catch(e => {
+        console.warn('[PicoTrack DB] Erreur Supabase database_rows:', e);
+        toast('e','Erreur ajout base Supabase');
+      });
+  }
+
+  console.log('[PicoTrack DB] Ligne ajoutée :', targetDb ? targetDb.nom : dbId, values);
+  toast('s','🗃 Ligne ajoutée dans la base');
+}
+
+function resetSaisie(){
+  saisieValues = {};
+  const f = FORMS_DATA.find(x => String(x.id) === String(curSaisieFormId));
+  if(f) renderSaisieForm(f);
+  toast('i','↺ Formulaire réinitialisé');
+}
+
+async function submitSaisie(){
+  if(window.__ptSubmittingSaisie) return;
+  window.__ptSubmittingSaisie = true;
+
+  const f = FORMS_DATA.find(x => String(x.id) === String(curSaisieFormId));
+  if(!f){
+    window.__ptSubmittingSaisie = false;
+    return;
+  }
+
+  const btn = document.getElementById('btn-submit-saisie');
+  if(btn){
+    btn.textContent = '⏳ Enregistrement...';
+    btn.style.pointerEvents = 'none';
+    btn.style.opacity = '.7';
+  }
+
+  const errors = (f.fields || []).filter(fld => {
+    if(!saisieEvalCond(fld, f.fields)) return false;
+    if(!fld.obligatoire) return false;
+
+    const v = saisieValues[fld.id];
+
+    return v === undefined || v === '' || v === false || (Array.isArray(v) && !v.length);
+  });
+
+  if(errors.length){
+    window.__ptSubmittingSaisie = false;
+
+    if(btn){
+      btn.textContent = '✅ Valider la saisie';
+      btn.style.pointerEvents = 'auto';
+      btn.style.opacity = '1';
+    }
+
+    toast('e','⚠️ ' + errors.length + ' champ(s) obligatoire(s) non rempli(s)');
+
+    errors.forEach(fld => {
+      const w = document.getElementById('sw-' + fld.id);
+      if(w){
+        w.style.outline = '2px solid #ef4444';
+        w.style.borderRadius = '8px';
+        w.scrollIntoView({behavior:'smooth',block:'nearest'});
+        setTimeout(() => w.style.outline = '', 2800);
+      }
+    });
+
+    return;
+  }
+
+  const _vldErrors = [];
+
+  (f.fields || []).forEach(fld => {
+    if(!saisieEvalCond(fld, f.fields)) return;
+
+    const val = saisieValues[fld.id];
+    const sv = Array.isArray(val) ? val.join(',') : String(val || '');
+
+    (fld.validateurs || []).forEach(vld => {
+      let ok = true;
+      const msg = vld.message || 'Valeur invalide';
+
+      try {
+        switch(vld.nom){
+          case 'Nb de caractères minimum':
+            ok = sv.length >= (+vld.value || 0);
+            break;
+
+          case 'Nb de caractères maximum':
+            ok = sv.length <= (+vld.value || 999);
+            break;
+
+          case 'Lettres uniquement':
+            ok = /^[a-zA-ZÀ-ÿ\s]*$/.test(sv);
+            break;
+
+          case 'Chiffres uniquement':
+            ok = /^\d*$/.test(sv);
+            break;
+
+          case 'Adresse email':
+            ok = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sv);
+            break;
+
+          case 'Expression régulière':
+            try { ok = new RegExp(vld.value || '').test(sv); } catch(e){ ok = true; }
+            break;
+
+          case 'Validateur avancé':
+            if(vld.code){
+              try {
+                const fn = new Function('value', vld.code);
+                ok = !!fn(sv);
+              } catch(e){ ok = true; }
+            }
+            break;
+        }
+      } catch(e){
+        ok = true;
+      }
+
+      if(!ok) _vldErrors.push({fld,msg:`${fld.nom} : ${msg}`});
+    });
+  });
+
+  if(_vldErrors.length){
+    window.__ptSubmittingSaisie = false;
+
+    if(btn){
+      btn.textContent = '✅ Valider la saisie';
+      btn.style.pointerEvents = 'auto';
+      btn.style.opacity = '1';
+    }
+
+    _vldErrors.forEach(({fld,msg}) => {
+      const w = document.getElementById('sw-' + fld.id);
+      if(w){
+        w.style.outline = '2px solid #ef4444';
+        w.style.borderRadius = '8px';
+        w.scrollIntoView({behavior:'smooth',block:'nearest'});
+        setTimeout(() => w.style.outline = '', 2800);
+      }
+      toast('e','⚠️ ' + msg);
+    });
+
+    return;
+  }
+
+  const capOk = await ptCheckAppointmentCapacityBeforeSubmit(f);
+  if(!capOk){
+    window.__ptSubmittingSaisie = false;
+    if(btn){ btn.textContent = '✅ Valider la saisie'; btn.style.pointerEvents = 'auto'; btn.style.opacity = '1'; }
+    return;
+  }
+
+  const device = (typeof isPadMode === 'function' && isPadMode()) ? 'pad' : 'desktop';
+  const userLabel = device === 'pad' ? '📱 PAD Terrain' : 'Picot Clément';
+
+  let newSub = {
+    id: Date.now(),
+    formId: f.id,
+    formNom: f.nom,
+    date: new Date().toISOString(),
+    dateLabel: new Date().toLocaleString('fr-FR'),
+    utilisateur: userLabel,
+    values: { ...saisieValues }
+  };
+
+  const finalizeSubmit = (submission) => {
+    if(!SUBMISSIONS_DATA.some(s => String(s.id) === String(submission.id))){
+      SUBMISSIONS_DATA.push(submission);
+    }
+
+    f.resp = SUBMISSIONS_DATA.filter(s => String(s.formId) === String(f.id)).length;
+
+    if(document.getElementById('prod-forms-count')){
+      document.getElementById('prod-forms-count').textContent = FORMS_DATA.filter(x => x.actif !== false).length;
+    }
+
+    _ptPrepareMailTrigger(f, submission);
+    _ptRunDbRowTrigger(f, submission);
+
+    if(btn){
+      btn.textContent = '✅ Enregistré !';
+      btn.style.background = '#10b981';
+      btn.style.pointerEvents = 'none';
+      btn.style.opacity = '1';
+    }
+
+    toast('s','✅ Saisie enregistrée ! (' + f.resp.toLocaleString() + ' réponse' + (f.resp > 1 ? 's' : '') + ')');
+
+    setTimeout(() => {
+      window.__ptSubmittingSaisie = false;
+      openSubmissions(curSaisieFormId);
+    }, 900);
+  };
+
+  if(typeof DB !== 'undefined' && DB.createSubmission){
+    DB.createSubmission(f.id, { ...saisieValues }, device)
+      .then(row => {
+        const saved = Array.isArray(row) ? row[0] : row;
+        if(saved && saved.id) newSub.id = saved.id;
+        console.log('[DB] Saisie enregistrée');
+        ptCreateAppointmentsForSubmission(f, newSub).finally(function(){ finalizeSubmit(newSub); });
+      })
+      .catch(e => {
+        console.warn('[DB] Erreur saisie:', e);
+        finalizeSubmit(newSub);
+      });
+  } else {
+    finalizeSubmit(newSub);
+  }
+}
+
+
+// ══ RENDEZ-VOUS / CAPACITÉ ══
+function ptTimeToMinutes(t){ var p=String(t||'00:00').split(':'); return (+p[0]||0)*60+(+p[1]||0); }
+function ptMinutesToTime(m){ var h=Math.floor(m/60), n=m%60; return String(h).padStart(2,'0')+':'+String(n).padStart(2,'0'); }
+function ptGetAppointmentFields(form){ return (form.fields||[]).filter(function(f){return f.type==='appointment';}); }
+function ptGetAppointmentField(fid){
+  var f = FORMS_DATA.find(function(x){return String(x.id)===String(curSaisieFormId);});
+  return f ? (f.fields||[]).find(function(x){return String(x.id)===String(fid);}) : null;
+}
+function ptGenerateSlots(fld){
+  var start=ptTimeToMinutes(fld.startHour||'08:00'), end=ptTimeToMinutes(fld.endHour||'18:00'), dur=+(fld.slotDuration||30);
+  var out=[]; for(var m=start; m+dur<=end; m+=dur) out.push({start:ptMinutesToTime(m), end:ptMinutesToTime(m+dur)}); return out;
+}
+async function ptCountAppointments(formId, fieldId, date){
+  try{
+    if(typeof DB!=='undefined' && DB.getAppointmentsForDate) return await DB.getAppointmentsForDate(formId, fieldId, date);
+  }catch(e){ console.warn('[appointments] lecture impossible', e); }
+  return [];
+}
+async function ptAppointmentDateChanged(fid, date){
+  var fld=ptGetAppointmentField(fid), wrap=document.getElementById('appt-slots-'+fid);
+  if(!fld||!wrap) return;
+  saisieValues[fid] = {date:date, start_time:'', end_time:'', label:''};
+  var d = new Date(date+'T12:00:00');
+  var day = String(d.getDay());
+  var days = fld.daysAvailable || ['1','2','3','4','5'];
+  if(!days.includes(day)){
+    wrap.innerHTML='<div style="grid-column:1/-1;color:#dc2626;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px;font-weight:700;font-size:12px">Jour non disponible.</div>';
+    return;
+  }
+  wrap.innerHTML='<div style="grid-column:1/-1;color:var(--tl);font-size:12px">Chargement...</div>';
+  var formId=curSaisieFormId, taken=await ptCountAppointments(formId, fid, date);
+  var slots=ptGenerateSlots(fld), max=+(fld.parallelSlots||1);
+  wrap.innerHTML=slots.map(function(sl){
+    var cnt=(taken||[]).filter(function(a){return String(a.start_time||'').slice(0,5)===sl.start;}).length;
+    var rem=max-cnt, full=rem<=0;
+    return '<button type="button" '+(full?'disabled':'')+' onclick="ptSelectAppointmentSlot(\''+fid+'\',\''+date+'\',\''+sl.start+'\',\''+sl.end+'\',this)" style="padding:9px 10px;border-radius:9px;border:1.5px solid '+(full?'#fecaca':'#bbf7d0')+';background:'+(full?'#fef2f2':'#f0fdf4')+';color:'+(full?'#dc2626':'#047857')+';font-weight:800;font-size:12px;cursor:'+(full?'not-allowed':'pointer')+';font-family:inherit;text-align:center">'+sl.start+'<br><span style="font-size:10px;font-weight:700">'+(full?'Complet':rem+' place'+(rem>1?'s':''))+'</span></button>';
+  }).join('');
+}
+function ptSelectAppointmentSlot(fid,date,start,end,btn){
+  var box=document.getElementById('appt-slots-'+fid);
+  if(box) box.querySelectorAll('button').forEach(function(b){b.style.outline='none'; b.style.boxShadow='none';});
+  if(btn){ btn.style.outline='2px solid #2563eb'; btn.style.boxShadow='0 0 0 3px rgba(37,99,235,.15)'; }
+  saisieValues[fid]={date:date,start_time:start,end_time:end,label:date+' '+start};
+  if(typeof toast==='function') toast('s','Créneau sélectionné : '+start);
+}
+async function ptCheckAppointmentCapacityBeforeSubmit(form){
+  var fields=ptGetAppointmentFields(form);
+  for(var i=0;i<fields.length;i++){
+    var fld=fields[i], val=saisieValues[fld.id];
+    if(!val||!val.date||!val.start_time){ if(fld.obligatoire){ toast('e','Choisissez un créneau pour '+(fld.nom||'le rendez-vous')); return false; } else continue; }
+    var rows=await ptCountAppointments(form.id, fld.id, val.date);
+    var cnt=(rows||[]).filter(function(a){return String(a.start_time||'').slice(0,5)===val.start_time;}).length;
+    if(cnt >= +(fld.parallelSlots||1)){ toast('e','Créneau complet : '+val.start_time); await ptAppointmentDateChanged(fld.id,val.date); return false; }
+  }
+  return true;
+}
+async function ptCreateAppointmentsForSubmission(form, submission){
+  var fields=ptGetAppointmentFields(form);
+  for(var i=0;i<fields.length;i++){
+    var fld=fields[i], val=saisieValues[fld.id];
+    if(!val||!val.date||!val.start_time) continue;
+    if(typeof DB!=='undefined' && DB.createAppointment){
+      await DB.createAppointment({
+        form_id:String(form.id), field_id:String(fld.id), response_id:String(submission.id),
+        title: form.nom+' - '+(fld.nom||'Rendez-vous'), customer_name:'', date:val.date,
+        start_time:val.start_time+':00', end_time:val.end_time+':00',
+        status: fld.manualValidation ? 'pending' : 'confirmed', assigned_team:'', capacity_group:String(fld.id), parallel_slots:+(fld.parallelSlots||1)
+      });
+    }
+  }
+}
