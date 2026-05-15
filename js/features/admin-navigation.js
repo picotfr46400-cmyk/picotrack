@@ -10,8 +10,17 @@ function goDashboard() {
 
 function renderDashboard(){
   const wrap=document.getElementById('dashboard-wrap'); if(!wrap)return;
-  const env=getCurrentEnvironment();
-  const activeLicenses=LICENSES_DATA.filter(l=>l.actif && l.environmentId===env.id);
+  const activeLicenses=[];
+  const activePads=[];
+  const monthlyTotal=0;
+  const annualTotal=0;
+  const userSlots=0;
+  const assignedUsers=0;
+  const freeSlots=0;
+  const typeRows=[];
+  const mrrSeries=[0,0,0,0,0,0];
+  const maxMrr=200;
+  const env={ nom: window.PT_CURRENT_USER?.active_env || 'Demo', id:'demo', client:'PicoTrack' };
   const activePads=PADS_DATA.filter(p=>p.actif && p.environmentId===env.id);
   const monthlyTotal=calcMRR();
   const annualTotal=monthlyTotal*12;
@@ -113,7 +122,14 @@ function goUsers() {
   document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Administration / Utilisateurs</span>';
   renderUsersList();
 }
-
+function goLicensing() {
+  document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
+  const nav = document.getElementById('sb-licensing'); if(nav) nav.classList.add('on');
+  show('v-licensing');
+  document.getElementById('tb-t').textContent = 'Licences';
+  document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Administration / Licences</span>';
+  renderLicensingPanel();
+}
 function goRoles() {
   document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
   document.getElementById('sb-roles').classList.add('on');
