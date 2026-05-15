@@ -542,9 +542,13 @@ function getInstanceTitle(svc, inst) {
   const sub = SUBMISSIONS_DATA.find(s => s.id === inst.submissionId);
   if (!f || !sub) return inst.reference;
   const firstText = f.fields.find(fld => fld.type === 'text');
-  return (firstText && sub.values[firstText.id]) ? sub.values[firstText.id] : inst.reference;
+  if(firstText){
+    const v = sub.values[firstText.id];
+    const txt = _ptPlainFieldValue(firstText, v);
+    if(txt) return txt;
+  }
+  return inst.reference;
 }
-
 function openCreateInstance(svcId) {
   const svc = SERVICES_DATA.find(s => s.id === svcId); if (!svc) return;
   const f = FORMS_DATA.find(x => x.id === svc.formId);
@@ -559,6 +563,43 @@ function openCreateInstance(svcId) {
   show('v-saisie');
 }
 
+
+async function _svcCreateAppointmentsForSubmission(f, svc, submission){
+  try{
+    const fields = (f.fields||[]).filter(fld => fld.type === 'appointment');
+    if(!fields.length || typeof DB === 'undefined' || !DB.createAppointment) return;
+    for(const fld of fields){
+      const val = saisieValues[fld.id];
+      if(!val || !val.date || !val.start_time) continue;
+      const max = (typeof ptAppointmentCapacity === 'function') ? ptAppointmentCapacity(fld) : Math.max(1, parseInt(fld.parallelSlots || fld.capacity || 1,10)||1);
+      let cnt = 0;
+      if(typeof ptCountAppointmentsForSlot === 'function'){
+        cnt = await ptCountAppointmentsForSlot(f.id, fld.id, val.date, val.start_time);
+      }
+      if(cnt >= max){
+        if(typeof toast === 'function') toast('e','Créneau complet : réservation service non ajoutée au planning ('+val.start_time+')');
+        continue;
+      }
+      await DB.createAppointment({
+        form_id:String(f.id),
+        field_id:String(fld.id || fld.name || fld.nom || 'appointment'),
+        response_id:String(submission.id),
+        title:(svc.nom || f.nom || 'Service')+' - '+(fld.nom || 'Rendez-vous'),
+        customer_name:'',
+        date:val.date,
+        start_time:String(val.start_time).slice(0,5)+':00',
+        end_time:String(val.end_time || val.start_time).slice(0,5)+':00',
+        status: fld.manualValidation ? 'pending' : 'confirmed',
+        assigned_team:String(svc.id),
+        capacity_group:String(svc.id),
+        parallel_slots:max
+      });
+    }
+  }catch(e){
+    console.warn('[planning] RDV service non créé:', e && e.message ? e.message : e);
+  }
+}
+
 async function submitServiceInstance(f, svc) {
   const errors = (f.fields||[]).filter(fld => {
     if (!saisieEvalCond(fld, f.fields)) return false;
@@ -567,6 +608,13 @@ async function submitServiceInstance(f, svc) {
     return v===undefined||v===''||v===false||(Array.isArray(v)&&!v.length);
   });
   if (errors.length) { toast('e','⚠️ '+errors.length+' champ(s) obligatoire(s)'); return; }
+
+  // Les services qui embarquent un formulaire avec champ RDV doivent alimenter le planning.
+  // On réutilise le contrôle de capacité du moteur formulaire avant de créer la demande.
+  if (typeof ptCheckAppointmentCapacityBeforeSubmit === 'function') {
+    const okCapacity = await ptCheckAppointmentCapacityBeforeSubmit(f);
+    if (!okCapacity) return;
+  }
 
   const initialStatus = svc.statuses.find(s => s.type === 'initial');
   const nowIso = new Date().toISOString();
@@ -590,6 +638,10 @@ async function submitServiceInstance(f, svc) {
   const newSub = {id:subId, formId:f.id, formNom:f.nom, date:nowIso, dateLabel:now, utilisateur:userLabel, values:{...saisieValues}};
   if (!SUBMISSIONS_DATA.some(x => x.id == newSub.id)) SUBMISSIONS_DATA.push(newSub);
   f.resp = (f.resp||0) + 1;
+
+  // Création du/des rendez-vous planning liés à cette demande service.
+  // Le planning filtre ensuite par assigned_team = id du service.
+  await _svcCreateAppointmentsForSubmission(f, svc, newSub);
 
   const newInst = {
     id: instId, serviceId: svc.id, reference: ref, submissionId: subId,
@@ -663,6 +715,36 @@ function _ptRenderFileList(files, isPhoto){
     return `<span>📎 ${h(name)}${size?' ('+h(size)+')':''}</span>`;
   }).join('');
 }
+function _ptPlainFieldValue(fld, v){
+  if(v===undefined || v===null || v==='') return '';
+  const type=String(fld && fld.type || '').toLowerCase();
+  if(type==='checkbox') return (v===true || v==='true' || v===1 || v==='1') ? 'Coché' : 'Non coché';
+  if(type==='appointment'){
+    try{
+      const obj=(typeof v==='string' && v.trim().startsWith('{')) ? JSON.parse(v) : v;
+      if(obj && typeof obj==='object'){
+        const date=obj.date||obj.appointment_date||obj.day||obj.selectedDate;
+        const start=obj.time||obj.start||obj.start_time||obj.startTime;
+        const end=obj.end||obj.end_time||obj.endTime;
+        return [_ptFmtDateFR(date), start?String(start).slice(0,5)+(end?' – '+String(end).slice(0,5):''):''].filter(Boolean).join(' • ');
+      }
+    }catch(e){}
+  }
+  if(type==='datetime') return _ptFmtDatetimeFR(v);
+  if(type==='date') return _ptFmtDateFR(v);
+  if(type==='photo' || type==='file' || type==='signature'){
+    const files=_ptAsFiles(v);
+    return files.length ? files.map(_ptFileName).join(', ') : '';
+  }
+  if(Array.isArray(v)) return v.map(x=>String(x)).join(', ');
+  if(typeof v==='object'){
+    if(v.label||v.value) return String(v.label||v.value);
+    const files=_ptAsFiles(v); if(files.length) return files.map(_ptFileName).join(', ');
+    return '';
+  }
+  return String(v);
+}
+
 function _ptFormatFieldValueHtml(fld, v){
   if(v===undefined || v===null || v==='') return '<span style="color:var(--tl)">—</span>';
   const type=String(fld && fld.type || '').toLowerCase();
@@ -1043,7 +1125,13 @@ function _svcProgressForStatus(svc,status){
 }
 function _svcInstTitleParts(svc, inst){
   const cc=svc.cardConfig||{}; const sub=SUBMISSIONS_DATA.find(s=>s.id===inst.submissionId);
-  const gv=fid=>{ if(!fid||!sub) return null; const v=sub.values[fid]; return Array.isArray(v)?v.join(', '):(v||null); };
+  const gv=fid=>{
+    if(!fid||!sub) return null;
+    const fld=(f?.fields||[]).find(x=>String(x.id)===String(fid));
+    const v=sub.values[fid];
+    const txt=_ptPlainFieldValue(fld, v);
+    return txt || null;
+  };
   const title=gv(cc.titleFieldId)||getInstanceTitle(svc,inst)||inst.reference;
   const s1=gv(cc.subtitle1FieldId); const s2=gv(cc.subtitle2FieldId);
   return {title,s1,s2,sub};
