@@ -612,6 +612,80 @@ async function submitServiceInstance(f, svc) {
   toast('s', `✅ Demande ${ref} créée`);
   setTimeout(() => openInstanceDetail(newInst.id), 500);
 }
+
+
+// === PicoTrack value renderer: never display [object Object] ===
+function _ptPad(n){ return String(n).padStart(2,'0'); }
+function _ptFmtDateFR(d){
+  if(!d) return '—';
+  const raw=String(d).slice(0,10);
+  const parts=raw.split('-');
+  if(parts.length===3){
+    const dt=new Date(Number(parts[0]), Number(parts[1])-1, Number(parts[2]));
+    try{return dt.toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'});}catch(e){return parts[2]+'/'+parts[1]+'/'+parts[0];}
+  }
+  return String(d);
+}
+function _ptFmtDatetimeFR(v){
+  if(!v) return '—';
+  const str=String(v);
+  if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str)){
+    const [d,t]=str.split('T');
+    return _ptFmtDateFR(d)+' • '+t.slice(0,5);
+  }
+  return str;
+}
+function _ptFileSize(bytes){
+  const n=Number(bytes||0); if(!n) return '';
+  if(n<1024) return n+' o'; if(n<1024*1024) return Math.round(n/1024)+' Ko';
+  return (n/1024/1024).toFixed(1).replace('.',',')+' Mo';
+}
+function _ptFileUrl(o){ return o && (o.url||o.dataUrl||o.data||o.content||o.base64||''); }
+function _ptFileName(o){ return o && (o.name||o.filename||o.fileName||'Fichier'); }
+function _ptAsFiles(v){
+  if(!v) return [];
+  if(Array.isArray(v)) return v;
+  if(v.files && Array.isArray(v.files)) return v.files;
+  if(v.name || v.url || v.dataUrl || v.data || v.content || v.base64) return [v];
+  return [];
+}
+function _ptRenderFileList(files, isPhoto){
+  if(!files.length) return '<span style="color:var(--tl)">—</span>';
+  return files.map((f,i)=>{
+    const url=_ptFileUrl(f), name=_ptFileName(f), size=_ptFileSize(f.size||f.size_bytes);
+    const isImg=isPhoto || (String(f.type||'').startsWith('image/')) || /^data:image\//.test(String(url));
+    if(isImg && url){
+      return `<div style="display:grid;gap:7px;max-width:260px"><a href="${h(url)}" download="${h(name)}" target="_blank" style="display:inline-block"><img src="${h(url)}" alt="${h(name)}" style="max-width:240px;max-height:170px;border-radius:10px;border:1px solid var(--bd);object-fit:contain;background:#fff"></a><a href="${h(url)}" download="${h(name)}" target="_blank" style="font-weight:800;color:#2563eb;text-decoration:none">📷 ${h(name)} ${size?`<small style="color:var(--tl);font-weight:600">(${h(size)})</small>`:''}</a></div>`;
+    }
+    if(url){
+      return `<a href="${h(url)}" download="${h(name)}" target="_blank" style="display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--bd);border-radius:10px;background:#f8fafc;padding:10px 12px;color:var(--tx);text-decoration:none;font-weight:800;max-width:420px"><span>📎 ${h(name)}</span>${size?`<small style="color:var(--tl);font-weight:600">${h(size)}</small>`:''}</a>`;
+    }
+    return `<span>📎 ${h(name)}${size?' ('+h(size)+')':''}</span>`;
+  }).join('');
+}
+function _ptFormatFieldValueHtml(fld, v){
+  if(v===undefined || v===null || v==='') return '<span style="color:var(--tl)">—</span>';
+  const type=String(fld && fld.type || '').toLowerCase();
+  if(type==='checkbox') return v===true || v==='true' || v===1 || v==='1' ? '<span style="display:inline-flex;align-items:center;gap:8px"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;background:#10b981;color:#fff;font-weight:900">✓</span><b>Coché</b></span>' : '<span style="display:inline-flex;align-items:center;gap:8px"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;border:1.5px solid var(--bd);color:var(--tl)"></span><b>Non coché</b></span>';
+  if(type==='appointment' && typeof v==='object'){
+    const date=v.date||v.appointment_date||v.day||v.selectedDate;
+    const start=v.time||v.start||v.start_time||v.startTime;
+    const end=v.end||v.end_time||v.endTime;
+    return `<b>${h(_ptFmtDateFR(date))}${start?' • '+h(String(start).slice(0,5)):''}${end?' – '+h(String(end).slice(0,5)):''}</b>`;
+  }
+  if(type==='datetime') return `<b>${h(_ptFmtDatetimeFR(v))}</b>`;
+  if(type==='date') return `<b>${h(_ptFmtDateFR(v))}</b>`;
+  if(type==='photo') return _ptRenderFileList(_ptAsFiles(v), true);
+  if(type==='file' || type==='signature') return _ptRenderFileList(_ptAsFiles(v), false);
+  if(Array.isArray(v)) return h(v.join(', '));
+  if(typeof v==='object'){
+    if(v.label||v.value) return h(v.label||v.value);
+    const files=_ptAsFiles(v); if(files.length) return _ptRenderFileList(files, type==='photo');
+    return `<code style="white-space:pre-wrap;font-size:11px;background:#f8fafc;border:1px solid var(--bd);border-radius:8px;padding:8px;display:block;max-width:100%;overflow:auto">${h(JSON.stringify(v,null,2))}</code>`;
+  }
+  return h(String(v));
+}
+
 // ── Détail d'une demande ──
 function openInstanceDetail(id) {
   const inst = SERVICE_INSTANCES_DATA.find(x => x.id === id); if (!inst) return;
@@ -649,10 +723,10 @@ function renderInstanceDetail(inst, svc) {
     main += `<div style="margin-bottom:18px"><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">Données du formulaire</div>`;
     fields.forEach(fld => {
       const v = sub.values[fld.id];
-      const val = Array.isArray(v) ? v.join(', ') : (v||'—');
-      main += `<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--bg)">
+      const valHtml = _ptFormatFieldValueHtml(fld, v);
+      main += `<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--bg);align-items:flex-start">
         <div style="font-size:11.5px;color:var(--tl);width:140px;flex-shrink:0">${h(fld.nom)}</div>
-        <div style="font-size:12.5px;font-weight:600;color:${val==='—'?'var(--tl)':'var(--tx)'}">${h(val)}</div>
+        <div style="font-size:12.5px;font-weight:600;color:var(--tx);min-width:0;flex:1">${valHtml}</div>
       </div>`;
     });
     main += `</div>`;
@@ -1066,7 +1140,7 @@ function renderKanbanDrawerHtml(inst,svc){
   const f=FORMS_DATA.find(x=>x.id===svc.formId);
   const acts=svc.actions.filter(a=>svc.flux.find(fl=>fl.statusId===inst.currentStatusId&&fl.actionId===a.id&&fl.enabled));
   const fields=(f&&sub?(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type)).slice(0,8):[]);
-  const rows=fields.map(fld=>{const v=sub.values[fld.id]; const val=Array.isArray(v)?v.join(', '):(v||'—'); return `<div><span>${h(fld.nom)}</span><b>${h(val)}</b></div>`;}).join('');
+  const rows=fields.map(fld=>{const v=sub.values[fld.id]; const valHtml=_ptFormatFieldValueHtml(fld,v); return `<div><span>${h(fld.nom)}</span><b>${valHtml}</b></div>`;}).join('');
   const events=[...(inst.events||[])].reverse().slice(0,6);
   return `<div class="pt-drawer-head"><div><span>${h(inst.reference)}</span><label style="background:${_svcLight(status.couleur,.14)};color:${status.couleur}">${h(status.nom||'')}</label></div><button onclick="closeKanbanDrawer()">×</button></div>
     <h2>${h(title)}</h2>

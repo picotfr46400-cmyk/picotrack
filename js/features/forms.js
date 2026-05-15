@@ -206,7 +206,7 @@ function renderSubTable(f,subs){
     html+='<tr onclick="openSubmission('+s.id+')" style="cursor:pointer;border-bottom:1px solid var(--bd);background:'+bg+'" onmouseover="this.style.background=\'var(--pl)\'" onmouseout="this.style.background=\''+bg+'\'">';
     html+='<td style="padding:10px 14px;color:var(--tl);white-space:nowrap">'+s.dateLabel+'</td>';
     html+='<td style="padding:10px 14px;font-weight:600;color:var(--tx)">'+h(s.utilisateur)+'</td>';
-    fields.forEach(fld=>{const v=s.values[fld.id];html+='<td style="padding:10px 14px;color:var(--tx)">'+h(Array.isArray(v)?v.join(', '):(v||'—'))+'</td>';});
+    fields.forEach(fld=>{const v=s.values[fld.id];html+='<td style="padding:10px 14px;color:var(--tx)">'+_ptFormatFieldValueHtmlForms(fld,v)+'</td>';});
     html+='</tr>';
   });
   html+='</tbody></table></div>';
@@ -220,6 +220,80 @@ function openSubmission(id){
   renderSubmissionDetail(s,f);
   show('v-submission-detail');
 }
+
+
+// === PicoTrack value renderer: never display [object Object] ===
+function _ptPadForms(n){ return String(n).padStart(2,'0'); }
+function _ptFmtDateFRForms(d){
+  if(!d) return '—';
+  const raw=String(d).slice(0,10);
+  const parts=raw.split('-');
+  if(parts.length===3){
+    const dt=new Date(Number(parts[0]), Number(parts[1])-1, Number(parts[2]));
+    try{return dt.toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'});}catch(e){return parts[2]+'/'+parts[1]+'/'+parts[0];}
+  }
+  return String(d);
+}
+function _ptFmtDatetimeFRForms(v){
+  if(!v) return '—';
+  const str=String(v);
+  if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str)){
+    const [d,t]=str.split('T');
+    return _ptFmtDateFRForms(d)+' • '+t.slice(0,5);
+  }
+  return str;
+}
+function _ptFileSizeForms(bytes){
+  const n=Number(bytes||0); if(!n) return '';
+  if(n<1024) return n+' o'; if(n<1024*1024) return Math.round(n/1024)+' Ko';
+  return (n/1024/1024).toFixed(1).replace('.',',')+' Mo';
+}
+function _ptFileUrlForms(o){ return o && (o.url||o.dataUrl||o.data||o.content||o.base64||''); }
+function _ptFileNameForms(o){ return o && (o.name||o.filename||o.fileName||'Fichier'); }
+function _ptAsFilesForms(v){
+  if(!v) return [];
+  if(Array.isArray(v)) return v;
+  if(v.files && Array.isArray(v.files)) return v.files;
+  if(v.name || v.url || v.dataUrl || v.data || v.content || v.base64) return [v];
+  return [];
+}
+function _ptRenderFileListForms(files, isPhoto){
+  if(!files.length) return '<span style="color:var(--tl)">—</span>';
+  return files.map((f,i)=>{
+    const url=_ptFileUrlForms(f), name=_ptFileNameForms(f), size=_ptFileSizeForms(f.size||f.size_bytes);
+    const isImg=isPhoto || (String(f.type||'').startsWith('image/')) || /^data:image\//.test(String(url));
+    if(isImg && url){
+      return `<div style="display:grid;gap:7px;max-width:260px"><a href="${h(url)}" download="${h(name)}" target="_blank" style="display:inline-block"><img src="${h(url)}" alt="${h(name)}" style="max-width:240px;max-height:170px;border-radius:10px;border:1px solid var(--bd);object-fit:contain;background:#fff"></a><a href="${h(url)}" download="${h(name)}" target="_blank" style="font-weight:800;color:#2563eb;text-decoration:none">📷 ${h(name)} ${size?`<small style="color:var(--tl);font-weight:600">(${h(size)})</small>`:''}</a></div>`;
+    }
+    if(url){
+      return `<a href="${h(url)}" download="${h(name)}" target="_blank" style="display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--bd);border-radius:10px;background:#f8fafc;padding:10px 12px;color:var(--tx);text-decoration:none;font-weight:800;max-width:420px"><span>📎 ${h(name)}</span>${size?`<small style="color:var(--tl);font-weight:600">${h(size)}</small>`:''}</a>`;
+    }
+    return `<span>📎 ${h(name)}${size?' ('+h(size)+')':''}</span>`;
+  }).join('');
+}
+function _ptFormatFieldValueHtmlForms(fld, v){
+  if(v===undefined || v===null || v==='') return '<span style="color:var(--tl)">—</span>';
+  const type=String(fld && fld.type || '').toLowerCase();
+  if(type==='checkbox') return v===true || v==='true' || v===1 || v==='1' ? '<span style="display:inline-flex;align-items:center;gap:8px"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;background:#10b981;color:#fff;font-weight:900">✓</span><b>Coché</b></span>' : '<span style="display:inline-flex;align-items:center;gap:8px"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;border:1.5px solid var(--bd);color:var(--tl)"></span><b>Non coché</b></span>';
+  if(type==='appointment' && typeof v==='object'){
+    const date=v.date||v.appointment_date||v.day||v.selectedDate;
+    const start=v.time||v.start||v.start_time||v.startTime;
+    const end=v.end||v.end_time||v.endTime;
+    return `<b>${h(_ptFmtDateFRForms(date))}${start?' • '+h(String(start).slice(0,5)):''}${end?' – '+h(String(end).slice(0,5)):''}</b>`;
+  }
+  if(type==='datetime') return `<b>${h(_ptFmtDatetimeFRForms(v))}</b>`;
+  if(type==='date') return `<b>${h(_ptFmtDateFRForms(v))}</b>`;
+  if(type==='photo') return _ptRenderFileListForms(_ptAsFilesForms(v), true);
+  if(type==='file' || type==='signature') return _ptRenderFileListForms(_ptAsFilesForms(v), false);
+  if(Array.isArray(v)) return h(v.join(', '));
+  if(typeof v==='object'){
+    if(v.label||v.value) return h(v.label||v.value);
+    const files=_ptAsFilesForms(v); if(files.length) return _ptRenderFileListForms(files, type==='photo');
+    return `<code style="white-space:pre-wrap;font-size:11px;background:#f8fafc;border:1px solid var(--bd);border-radius:8px;padding:8px;display:block;max-width:100%;overflow:auto">${h(JSON.stringify(v,null,2))}</code>`;
+  }
+  return h(String(v));
+}
+
 function renderSubmissionDetail(s,f){
   const color=f.couleur||'#3b82f6';
   const fields=(f.fields||[]).filter(x=>!['separator','image','titre'].includes(x.type));
@@ -229,10 +303,10 @@ function renderSubmissionDetail(s,f){
   main+='<div><div style="font-size:15px;font-weight:800;color:var(--tx)">'+h(f.nom)+'</div>';
   main+='<div style="font-size:11px;color:var(--tl);margin-top:2px">'+s.dateLabel+' — '+h(s.utilisateur)+'</div></div></div>';
   fields.forEach(fld=>{
-    const v=s.values[fld.id];const val=Array.isArray(v)?v.join(', '):(v||'—');
+    const v=s.values[fld.id];const valHtml=_ptFormatFieldValueHtmlForms(fld,v);
     main+='<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--bg)">';
     main+='<div style="font-size:10.5px;font-weight:700;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">'+h(fld.nom)+'</div>';
-    main+='<div style="font-size:13.5px;color:'+(val==='—'?'var(--tl)':'var(--tx)')+';font-weight:'+(val==='—'?'400':'600')+'">'+h(val)+'</div></div>';
+    main+='<div style="font-size:13.5px;color:var(--tx);font-weight:600">'+valHtml+'</div></div>';
   });
   main+='</div>';
   let hist='<div style="background:var(--card,#fff);border-radius:12px;border:1.5px solid var(--bd);padding:18px">';
