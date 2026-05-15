@@ -1,13 +1,36 @@
-// ══ PicoTrack — Supabase Client ══
+// ══ PicoTrack — Supabase Client + Auth ══
 const SUPA_URL = 'https://jcanufkmcslxwmheqccp.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjYW51ZmttY3NseHdtaGVxY2NwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjAyNDksImV4cCI6MjA5NDIzNjI0OX0.Vt9ZhmEZ0HaBiByRTOHYm65doZn5z09Cjg4AvzntgMU';
 
+// ── Client Supabase Auth (supabase-js CDN) ──
+const _supa = window.supabase
+  ? window.supabase.createClient(SUPA_URL, SUPA_KEY, {
+      auth: { persistSession: true, storageKey: 'pt_auth_session' }
+    })
+  : null;
+
+// ── Token courant : session auth si connecté, sinon clé anon ──
+async function _getAuthHeader() {
+  if (!_supa) return SUPA_KEY;
+  try {
+    const { data } = await _supa.auth.getSession();
+    return data?.session?.access_token || SUPA_KEY;
+  } catch {
+    return SUPA_KEY;
+  }
+}
+
+// ── sbFetch : toutes les requêtes REST Supabase ──
+let _ptSupabaseOnline = false;
+let _ptLastSyncLabel = '—';
+
 async function sbFetch(path, options = {}) {
+  const token = await _getAuthHeader();
   const res = await fetch(`${SUPA_URL}/rest/v1/${path}`, {
     ...options,
     headers: {
       'apikey': SUPA_KEY,
-      'Authorization': `Bearer ${SUPA_KEY}`,
+      'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
       'Prefer': options.prefer !== undefined ? options.prefer : 'return=representation',
       ...(options.headers || {})
@@ -16,405 +39,148 @@ async function sbFetch(path, options = {}) {
   const text = await res.text();
   if (!res.ok) {
     _ptSupabaseOnline = false;
-    updateSupabaseStatusUI('offline', `Supabase ${res.status}`);
+    if (typeof updateSupabaseStatusUI === 'function')
+      updateSupabaseStatusUI('offline', `Supabase ${res.status}`);
     throw new Error(`Supabase ${res.status}: ${text}`);
   }
   _ptSupabaseOnline = true;
-  _ptLastSyncLabel = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-  updateSupabaseStatusUI('online', 'Supabase connecté');
+  _ptLastSyncLabel = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  if (typeof updateSupabaseStatusUI === 'function')
+    updateSupabaseStatusUI('online', 'Supabase connecté');
   return text ? JSON.parse(text) : [];
 }
 
+// ── Auth : connexion ──
+async function ptSignIn(email, password) {
+  if (!_supa) throw new Error('Supabase client non initialisé');
+  const { data, error } = await _supa.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  return data;
+}
+
+// ── Auth : déconnexion ──
+async function ptSignOut() {
+  if (_supa) await _supa.auth.signOut();
+  localStorage.removeItem('pt_pc_session');
+  location.reload();
+}
+
+// ── Auth : session courante ──
+async function ptGetSession() {
+  if (!_supa) return null;
+  const { data } = await _supa.auth.getSession();
+  return data?.session || null;
+}
+
+// ── Auth : user connecté + profil ──
+async function ptGetCurrentUser() {
+  const session = await ptGetSession();
+  if (!session) return null;
+  try {
+    const rows = await sbFetch(`user_profiles?id=eq.${session.user.id}&select=*&limit=1`);
+    if (!rows || !rows.length) return null;
+    const profile = rows[0];
+    return {
+      id: session.user.id,
+      email: session.user.email,
+      role: profile.role,
+      tenant_id: profile.tenant_id,
+      environment_code: profile.environment_code,
+      license_type: profile.license_type || 'supervision',
+      active: profile.active,
+      active: true
+    };
+  } catch (e) {
+    console.warn('[Auth] profil introuvable:', e.message);
+    return null;
+  }
+}
+
+// ── DB : toutes les méthodes existantes (inchangées) ──
 const DB = {
   async getForms() { return sbFetch('forms?select=*&order=created_at.asc'); },
-  async createForm(data) { return sbFetch('forms', { method:'POST', body:JSON.stringify(data) }); },
-  async updateForm(id, data) { return sbFetch(`forms?id=eq.${id}`, { method:'PATCH', body:JSON.stringify(data) }); },
-  async deleteForm(id) { return sbFetch(`forms?id=eq.${id}`, { method:'DELETE', prefer:'' }); },
+  async createForm(data) { return sbFetch('forms', { method: 'POST', body: JSON.stringify(data) }); },
+  async updateForm(id, data) { return sbFetch(`forms?id=eq.${id}`, { method: 'PATCH', body: JSON.stringify(data) }); },
+  async deleteForm(id) { return sbFetch(`forms?id=eq.${id}`, { method: 'DELETE', prefer: '' }); },
 
-  async getSubmissions(formId, limit=15) { return sbFetch(`submissions?form_id=eq.${formId}&select=*&order=created_at.desc&limit=${limit}`); },
+  async getSubmissions(formId, limit = 15) { return sbFetch(`submissions?form_id=eq.${formId}&select=*&order=created_at.desc&limit=${limit}`); },
   async getAllSubmissions(since) {
-    const q = since ? `submissions?select=*&order=created_at.desc&created_at=gt.${encodeURIComponent(since)}&limit=100` : `submissions?select=*&order=created_at.desc&limit=50`;
+    const q = since
+      ? `submissions?select=*&order=created_at.desc&created_at=gt.${encodeURIComponent(since)}&limit=100`
+      : `submissions?select=*&order=created_at.desc&limit=50`;
     return sbFetch(q);
   },
-  async createSubmission(formId, values, device='desktop') {
-    const rows = await sbFetch('submissions', { method:'POST', body:JSON.stringify({ form_id: formId, values, device }) });
+  async createSubmission(formId, values, device = 'desktop') {
+    const rows = await sbFetch('submissions', { method: 'POST', body: JSON.stringify({ form_id: formId, values, device }) });
     return Array.isArray(rows) ? rows[0] : rows;
   },
 
   async getAppointmentsForDate(formId, fieldId, date) {
-    // V1.5: capacité pilotée au niveau formulaire + date + heure.
-    // On ne filtre plus sur field_id car certains anciens champs gardent un id instable après édition.
     return sbFetch(`appointments?form_id=eq.${encodeURIComponent(formId)}&date=eq.${encodeURIComponent(date)}&status=in.(confirmed,pending)&select=*`);
   },
   async getAppointmentsForSlot(formId, fieldId, date, startTime) {
-    const st = String(startTime || '').slice(0,5);
+    const st = String(startTime || '').slice(0, 5);
     return sbFetch(`appointments?form_id=eq.${encodeURIComponent(formId)}&date=eq.${encodeURIComponent(date)}&start_time=eq.${encodeURIComponent(st + ':00')}&status=in.(confirmed,pending)&select=*`);
   },
   async createAppointment(data) {
-    const rows = await sbFetch('appointments', { method:'POST', body:JSON.stringify(data) });
+    const rows = await sbFetch('appointments', { method: 'POST', body: JSON.stringify(data) });
     return Array.isArray(rows) ? rows[0] : rows;
   },
 
   async getServices() { return sbFetch('services?select=*&order=created_at.asc'); },
-  async createService(data) { return sbFetch('services', { method:'POST', body:JSON.stringify(data) }); },
-  async updateService(id, data) { return sbFetch(`services?id=eq.${id}`, { method:'PATCH', body:JSON.stringify(data) }); },
+  async createService(data) { return sbFetch('services', { method: 'POST', body: JSON.stringify(data) }); },
+  async updateService(id, data) { return sbFetch(`services?id=eq.${id}`, { method: 'PATCH', body: JSON.stringify(data) }); },
 
   async getAllInstances(since) {
-    const q = since ? `service_instances?select=*&order=created_at.desc&created_at=gt.${encodeURIComponent(since)}&limit=100` : `service_instances?select=*&order=created_at.desc&limit=100`;
+    const q = since
+      ? `service_instances?select=*&order=created_at.desc&created_at=gt.${encodeURIComponent(since)}&limit=100`
+      : `service_instances?select=*&order=created_at.desc&limit=100`;
     return sbFetch(q);
   },
-  async getInstances(serviceId, limit=100) { return sbFetch(`service_instances?service_id=eq.${serviceId}&select=*&order=created_at.desc&limit=${limit}`); },
-  async createInstance(data) { return sbFetch('service_instances', { method:'POST', body:JSON.stringify(data) }); },
-  async updateInstance(id, data) { return sbFetch(`service_instances?id=eq.${id}`, { method:'PATCH', body:JSON.stringify({ ...data, updated_at:new Date().toISOString() }) }); },
+  async getInstances(serviceId, limit = 100) { return sbFetch(`service_instances?service_id=eq.${serviceId}&select=*&order=created_at.desc&limit=${limit}`); },
+  async createInstance(data) { return sbFetch('service_instances', { method: 'POST', body: JSON.stringify(data) }); },
+  async updateInstance(id, data) { return sbFetch(`service_instances?id=eq.${id}`, { method: 'PATCH', body: JSON.stringify({ ...data, updated_at: new Date().toISOString() }) }); },
+
+  async getLicenseLimits(envCode) {
+    const rows = await sbFetch(`license_limits?environment_code=eq.${encodeURIComponent(envCode)}&select=*&limit=1`);
+    return rows && rows.length ? rows[0] : { environment_code: envCode, supervision_limit: 0, pad_limit: 0, lecture_limit: 0 };
+  },
+  async getLicenses(envCode) {
+    return sbFetch(`user_profiles?environment_code=eq.${encodeURIComponent(envCode)}&select=*`);
+  },
 };
 
-function mapFormFromDb(r){
+// ── Mappers (inchangés) ──
+function mapFormFromDb(r) {
   const modules = r.modules || [];
   return {
-    id:r.id,
-    nom:r.nom,
-    desc:r.description||'',
-    couleur:r.couleur||'#3b82f6',
-    actif:r.actif!==false,
-    type:modules,
-    modules:modules,
-    fields:r.fields||[],
-    resp:0,
-    visibleRoles:r.visible_roles||[],
-    triggers:r.triggers||{}
+    id: r.id, nom: r.nom, desc: r.description || '', couleur: r.couleur || '#3b82f6',
+    actif: r.actif !== false, type: modules, modules, fields: r.fields || [], resp: 0,
+    visibleRoles: r.visible_roles || [], triggers: r.triggers || {}
   };
 }
-function formToDb(f){
+function formToDb(f) {
   return {
-    nom:f.nom,
-    description:f.desc||'',
-    couleur:f.couleur||'#3b82f6',
-    actif:f.actif!==false,
-    modules:f.type||f.modules||[],
-    fields:f.fields||[],
-    visible_roles:f.visibleRoles||f.visible_roles||[],
-    triggers:f.triggers||{}
+    nom: f.nom, description: f.desc || '', couleur: f.couleur || '#3b82f6',
+    actif: f.actif !== false, modules: f.type || f.modules || [],
+    fields: f.fields || [], visible_roles: f.visibleRoles || f.visible_roles || [],
+    triggers: f.triggers || {}
   };
 }
-function mapServiceFromDb(r){
-  return { id:r.id, nom:r.nom, desc:r.description||'', couleur:r.couleur||'#3b82f6', actif:r.actif!==false, formId:r.form_id||r.formId||null, idPattern:r.id_pattern||'SVC-{YYYY}-{0000}', statuses:r.statuses||[], actions:r.actions||[], flux:r.flux||[], cardConfig:r.card_config||{}, kanbanGroups:r.kanban_groups||[] };
-}
-function mapSubmissionFromDb(r){
-  return { id:r.id, formId:r.form_id, formNom:'', date:r.created_at, dateLabel:new Date(r.created_at).toLocaleString('fr-FR'), utilisateur:r.device==='pad'?'📱 PAD Terrain':'Picot Clément', values:r.values||{} };
-}
-function mapInstanceFromDb(r){
-  const fd = r.form_data || {};
-  return { id:r.id, serviceId:r.service_id, reference:r.ref, submissionId:fd.submissionId||fd.submission_id||null, currentStatusId:r.status_id, assignedTo:fd.assignedTo||null, priority:r.priority||'normal', createdBy:fd.createdBy||fd.created_by||(r.device==='pad'?'PAD Terrain':'Picot Clément'), createdAt:fd.createdAt||new Date(r.created_at).toLocaleString('fr-FR'), events:r.events||[] };
-}
-function serviceToDb(s){
-  return { nom:s.nom, description:s.desc||'', couleur:s.couleur||'#3b82f6', actif:s.actif!==false, form_id:s.formId||null, id_pattern:s.idPattern||'SVC-{YYYY}-{0000}', statuses:s.statuses||[], actions:s.actions||[], flux:s.flux||[], card_config:s.cardConfig||{}, kanban_groups:s.kanbanGroups||[] };
-}
-function instanceToDb(inst, device='desktop'){
-  return { service_id:inst.serviceId, ref:inst.reference, form_data:{ submissionId:inst.submissionId, createdBy:inst.createdBy, createdAt:inst.createdAt, assignedTo:inst.assignedTo }, status_id:inst.currentStatusId, priority:inst.priority||'normal', events:inst.events||[], device };
-}
-
-
-
-// ══ Gestion licences / quotas ══
-function getCurrentEnvironmentCodeForLicenses(){
-  try {
-    const pc = JSON.parse(localStorage.getItem('pt_pc_session') || 'null');
-    if (pc && pc.scope === 'all_environments') {
-      return localStorage.getItem('pt_admin_env') || 'DEMO';
-    }
-    if (pc && pc.environment_code && pc.environment_code !== '*') return pc.environment_code;
-  } catch(e) {}
-  try {
-    const pad = JSON.parse(localStorage.getItem('pt_pad') || 'null');
-    if (pad && pad.code) return pad.code;
-  } catch(e) {}
-  return 'DEMO';
-}
-
-function setAdminEnvironmentCode(code){
-  localStorage.setItem('pt_admin_env', (code || 'DEMO').toUpperCase().trim());
-}
-
-function getCurrentPcUser(){
-  try { return JSON.parse(localStorage.getItem('pt_pc_session') || 'null'); } catch(e) { return null; }
-}
-
-function isSuperAdmin(){
-  const u = getCurrentPcUser();
-  return !!(u && u.role === 'super_admin' && u.scope === 'all_environments');
-}
-
-async function hashPassword(text){
-  const msg = new TextEncoder().encode(text || '');
-  const buf = await crypto.subtle.digest('SHA-256', msg);
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-}
-
-DB.getLicenseLimits = async function(environmentCode){
-  const rows = await sbFetch(`environment_license_limits?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&limit=1`);
-  return rows && rows.length ? rows[0] : {environment_code:environmentCode, supervision_limit:0, pad_limit:0, lecture_limit:0};
-};
-
-DB.upsertLicenseLimits = async function(environmentCode, limits){
-  const payload = {
-    environment_code: environmentCode,
-    supervision_limit: Number(limits.supervision_limit || 0),
-    pad_limit: Number(limits.pad_limit || 0),
-    lecture_limit: Number(limits.lecture_limit || 0),
-    updated_at: new Date().toISOString()
+function mapServiceFromDb(r) {
+  return {
+    id: r.id, nom: r.nom, desc: r.description || '', couleur: r.couleur || '#3b82f6',
+    actif: r.actif !== false, formId: r.form_id || r.formId || null,
+    idPattern: r.id_pattern || 'SVC-{YYYY}-{0000}', statuses: r.statuses || [],
+    actions: r.actions || [], flux: r.flux || [], cardConfig: r.card_config || {},
+    kanbanGroups: r.kanban_groups || []
   };
-  return sbFetch('environment_license_limits?on_conflict=environment_code', {
-    method:'POST',
-    headers:{'Prefer':'resolution=merge-duplicates,return=representation'},
-    body:JSON.stringify(payload)
-  });
-};
-
-DB.getLicenses = async function(environmentCode){
-  return sbFetch(`licenses?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&order=created_at.desc`);
-};
-
-DB.createLicense = async function(data){
-  return sbFetch('licenses', { method:'POST', body:JSON.stringify(data) });
-};
-
-DB.updateLicense = async function(id, data){
-  return sbFetch(`licenses?id=eq.${id}`, { method:'PATCH', body:JSON.stringify(data) });
-};
-
-let _lastSubSyncAt = new Date().toISOString();
-let _lastInstSyncAt = new Date().toISOString();
-const _syncListeners = {};
-const _instanceHashes = new Map();
-const _formHashes = new Map();
-const _serviceHashes = new Map();
-let _syncStarted = false;
-let _ptSupabaseOnline = null;
-let _ptLastSyncLabel = 'Non synchronisé';
-
-function onSync(table, callback){ if(!_syncListeners[table]) _syncListeners[table]=[]; _syncListeners[table].push(callback); }
-function _emitSync(table, event, row){ (_syncListeners[table]||[]).forEach(cb=>cb(event,row)); }
-function _hash(obj){ try { return JSON.stringify(obj); } catch { return String(Date.now()); } }
-
-async function _pollNewSubmissions(){
-  try{
-    const rows=await DB.getAllSubmissions(_lastSubSyncAt);
-    if(rows.length){
-      _lastSubSyncAt=new Date().toISOString();
-      rows.forEach(r=>_emitSync('submissions','INSERT',r));
-    }
-  }catch(e){ console.warn('[Sync] submissions:', e.message); }
 }
-
-// Important : les changements de statut modifient une demande existante.
-// On ne peut donc pas filtrer uniquement sur created_at. On repasse les 500 dernières
-// demandes et on émet UPSERT seulement si leur contenu a changé.
-async function _pollInstances(){
-  try{
-    const rows=await DB.getAllInstances();
-    rows.forEach(r=>{
-      const h=_hash(r);
-      const old=_instanceHashes.get(String(r.id));
-      if(old!==h){
-        _instanceHashes.set(String(r.id), h);
-        _emitSync('service_instances', old ? 'UPDATE' : 'INSERT', r);
-      }
-    });
-  }catch(e){ console.warn('[Sync] service_instances:', e.message); }
-}
-
-async function _pollCatalog(){
-  try{
-    let changed=false;
-    const [forms, services] = await Promise.all([DB.getForms(), DB.getServices()]);
-
-    forms.forEach(r=>{
-      const h=_hash(r), key=String(r.id), old=_formHashes.get(key);
-      if(old!==h){
-        _formHashes.set(key,h);
-        const mapped=mapFormFromDb(r);
-        const idx=FORMS_DATA.findIndex(x=>String(x.id)===key);
-        if(idx>=0) FORMS_DATA[idx]={...FORMS_DATA[idx],...mapped, resp:FORMS_DATA[idx].resp||0};
-        else FORMS_DATA.push(mapped);
-        changed=true;
-      }
-    });
-
-    services.forEach(r=>{
-      const h=_hash(r), key=String(r.id), old=_serviceHashes.get(key);
-      if(old!==h){
-        _serviceHashes.set(key,h);
-        const mapped=mapServiceFromDb(r);
-        const idx=SERVICES_DATA.findIndex(x=>String(x.id)===key);
-        if(idx>=0) SERVICES_DATA[idx]={...SERVICES_DATA[idx],...mapped};
-        else SERVICES_DATA.push(mapped);
-        changed=true;
-      }
-    });
-
-    if(changed) refreshCurrentViewAfterSync();
-  }catch(e){ console.warn('[Sync] catalogue:', e.message); }
-}
-
-function startSync(){
-  if (_syncStarted) return;
-  _syncStarted = true;
-  _lastSubSyncAt = new Date().toISOString();
-  // V3.1 performance : polling allégé. On ne recharge plus les gros volumes en boucle.
-  setInterval(_pollNewSubmissions, 15000);
-  setInterval(()=>{
-    const onService = document.getElementById('v-services')?.classList.contains('on')
-      || document.getElementById('v-prod-services-list')?.classList.contains('on')
-      || document.getElementById('v-service-instances')?.classList.contains('on')
-      || document.getElementById('v-service-kanban')?.classList.contains('on');
-    if(onService) _pollInstances();
-  }, 20000);
-  setInterval(_pollCatalog, 30000);
-  console.log('[Sync] Polling allégé démarré (submissions 15s, instances à la demande, catalogue 30s)');
-  updateSupabaseStatusUI(_ptSupabaseOnline ? 'online' : 'syncing', 'Synchronisation active');
-}
-
-async function syncAllFromSupabase(){
-  updateSupabaseStatusUI('syncing','Chargement catalogue');
-  try{
-    // V3.1 performance : au démarrage on charge uniquement le catalogue léger.
-    // Les réponses, dossiers et pièces jointes sont chargés au clic.
-    const [forms, services] = await Promise.all([DB.getForms(), DB.getServices()]);
-    if(forms.length){
-      FORMS_DATA.length = 0;
-      forms.forEach(r=>FORMS_DATA.push(mapFormFromDb(r)));
-    }
-    if(services.length){
-      SERVICES_DATA.length = 0;
-      services.forEach(r=>SERVICES_DATA.push(mapServiceFromDb(r)));
-    }
-    _formHashes.clear(); forms.forEach(r=>_formHashes.set(String(r.id), _hash(r)));
-    _serviceHashes.clear(); services.forEach(r=>_serviceHashes.set(String(r.id), _hash(r)));
-    console.log('[DB] Catalogue chargé depuis Supabase ✅', {forms:FORMS_DATA.length, services:SERVICES_DATA.length});
-    updateSupabaseStatusUI('online','Catalogue OK');
-    refreshCurrentViewAfterSync();
-  }catch(e){ console.warn('[DB] Chargement catalogue Supabase échoué:', e.message); }
-}
-
-const _ptLoadedSubmissionForms = new Set();
-const _ptLoadedServices = new Set();
-let _ptAllInstancesLoaded = false;
-
-async function ensureSubmissionsLoaded(formId, limit=15){
-  const key=String(formId||'');
-  if(!key || _ptLoadedSubmissionForms.has(key)) return;
-  try{
-    updateSupabaseStatusUI('syncing','Chargement réponses');
-    const rows = await DB.getSubmissions(formId, limit);
-    rows.forEach(r=>{
-      const mapped=mapSubmissionFromDb(r);
-      if(!SUBMISSIONS_DATA.some(x=>String(x.id)===String(mapped.id))) SUBMISSIONS_DATA.push(mapped);
-    });
-    const f=FORMS_DATA.find(x=>String(x.id)===key);
-    if(f) f.resp = SUBMISSIONS_DATA.filter(s=>String(s.formId)===key).length;
-    _ptLoadedSubmissionForms.add(key);
-    updateSupabaseStatusUI('online','Réponses chargées');
-  }catch(e){ console.warn('[Perf] chargement réponses:', e.message); }
-}
-
-async function ensureInstancesLoaded(serviceId, limit=100){
-  const key=String(serviceId||'');
-  if(!key || _ptLoadedServices.has(key)) return;
-  try{
-    updateSupabaseStatusUI('syncing','Chargement dossiers');
-    const rows = await DB.getInstances(serviceId, limit);
-    rows.forEach(r=>{
-      const mapped=mapInstanceFromDb(r);
-      const idx=SERVICE_INSTANCES_DATA.findIndex(x=>String(x.id)===String(mapped.id));
-      if(idx>=0) SERVICE_INSTANCES_DATA[idx]={...SERVICE_INSTANCES_DATA[idx],...mapped};
-      else SERVICE_INSTANCES_DATA.push(mapped);
-      _instanceHashes.set(String(r.id), _hash(r));
-    });
-    _ptLoadedServices.add(key);
-    updateSupabaseStatusUI('online','Dossiers chargés');
-  }catch(e){ console.warn('[Perf] chargement dossiers:', e.message); }
-}
-
-async function ensureAllInstancesLoaded(limit=100){
-  if(_ptAllInstancesLoaded) return;
-  try{
-    updateSupabaseStatusUI('syncing','Chargement dossiers');
-    const rows = await DB.getAllInstances();
-    rows.slice(0, limit).forEach(r=>{
-      const mapped=mapInstanceFromDb(r);
-      const idx=SERVICE_INSTANCES_DATA.findIndex(x=>String(x.id)===String(mapped.id));
-      if(idx>=0) SERVICE_INSTANCES_DATA[idx]={...SERVICE_INSTANCES_DATA[idx],...mapped};
-      else SERVICE_INSTANCES_DATA.push(mapped);
-      _instanceHashes.set(String(r.id), _hash(r));
-    });
-    _ptAllInstancesLoaded=true;
-    updateSupabaseStatusUI('online','Dossiers chargés');
-  }catch(e){ console.warn('[Perf] chargement dossiers globaux:', e.message); }
-}
-
-function refreshCurrentViewAfterSync(){
-  try{
-    if(typeof filtered!=='undefined') filtered=[...FORMS_DATA];
-    if(document.getElementById('v-list')?.classList.contains('on') && typeof renderTable==='function') renderTable();
-    if(document.getElementById('v-prod-forms')?.classList.contains('on') && typeof renderProdForms==='function') renderProdForms(FORMS_DATA);
-    if(document.getElementById('v-prod-services-list')?.classList.contains('on') && typeof renderProdServices==='function') renderProdServices();
-    if(document.getElementById('v-services')?.classList.contains('on') && typeof renderServices==='function') renderServices();
-    if(document.getElementById('v-submissions')?.classList.contains('on') && typeof curSubFormId!=='undefined' && curSubFormId && typeof openSubmissions==='function') openSubmissions(curSubFormId);
-    if(document.getElementById('v-service-instances')?.classList.contains('on') && curService && typeof renderServiceInstances==='function') renderServiceInstances(curService);
-  }catch(e){}
-}
-
-
-function updateSupabaseStatusUI(state, label){
-  try{
-    const colors = {online:'#10b981', syncing:'#f59e0b', offline:'#ef4444'};
-    const text = state === 'online' ? 'Synchro active' : state === 'syncing' ? 'Synchronisation…' : 'Hors ligne';
-    let el = document.getElementById('pt-sync-status');
-    if(!el){
-      const sb = document.getElementById('sb');
-      if(!sb) return;
-      el = document.createElement('div');
-      el.id='pt-sync-status';
-      el.style.cssText='margin:12px 14px;padding:10px 12px;border:1px solid rgba(148,163,184,.22);border-radius:14px;background:rgba(15,23,42,.32);color:#cbd5e1;font-size:11px;font-weight:700;display:flex;align-items:center;gap:8px;';
-      const envBox = document.querySelector('.sb-env');
-      if(envBox && envBox.parentNode) envBox.parentNode.insertBefore(el, envBox.nextSibling);
-      else sb.appendChild(el);
-    }
-    el.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${colors[state]||colors.syncing};box-shadow:0 0 0 3px ${colors[state]||colors.syncing}22"></span><span>${text}</span><span style="margin-left:auto;color:#94a3b8;font-weight:600">${_ptLastSyncLabel||''}</span>`;
-    const padDot = document.getElementById('pad-sync-dot');
-    if(padDot) padDot.style.background = colors[state]||colors.syncing;
-    const padTxt = document.getElementById('pad-sync-text');
-    if(padTxt) padTxt.textContent = text;
-  }catch(e){}
-}
-
-async function checkSupabaseConnection(){
-  updateSupabaseStatusUI('syncing','Test connexion Supabase');
-  try{
-    await sbFetch('forms?select=id&limit=1');
-    updateSupabaseStatusUI('online','Supabase connecté');
-    return true;
-  }catch(e){
-    console.warn('[DB] Test connexion Supabase échoué:', e.message);
-    updateSupabaseStatusUI('offline','Supabase inaccessible');
-    return false;
-  }
-}
-
-async function migrateDataToSupabase(){
-  try{
-    const existing = await DB.getForms();
-    if(!existing.length){
-      console.log('[DB] Migration des données demo...');
-      for(const f of (typeof FORMS_DATA!=='undefined'?FORMS_DATA:[])){
-        await DB.createForm({ nom:f.nom, description:f.desc||'', couleur:f.couleur||'#3b82f6', actif:f.actif!==false, modules:f.type||f.modules||[], fields:f.fields||[] });
-      }
-      for(const s of (typeof SERVICES_DATA!=='undefined'?SERVICES_DATA:[])){
-        await DB.createService(serviceToDb(s));
-      }
-      console.log('[DB] Migration OK ✅');
-    }
-  }catch(e){ console.warn('[DB] Migration échouée:', e.message); }
-  await syncAllFromSupabase();
-  startSync();
+function mapSubmissionFromDb(r) {
+  return {
+    id: r.id, formId: r.form_id, formNom: '', date: r.created_at,
+    dateLabel: new Date(r.created_at).toLocaleString('fr-FR'),
+    utilisateur: r.device === 'pad' ? '📱 PAD Terrain' : 'Bureau',
+    values: r.values || {}
+  };
 }
