@@ -162,12 +162,24 @@ async function openSubmissions(id){
   document.getElementById('breadcrumb').innerHTML=`<span class="bc-link" onclick="goProduction()">▶ Production / Formulaires</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(f.nom)}</span>`;
   document.getElementById('tb-t').textContent=f.nom;
   show('v-submissions');
-  const v=document.getElementById('v-submissions');
-  if(v && typeof ensureSubmissionsLoaded==='function' && !SUBMISSIONS_DATA.some(s=>String(s.formId)===String(id))){
-    v.innerHTML='<div style="padding:50px;text-align:center;color:var(--tl);font-weight:800">Chargement des réponses…</div>';
-    await ensureSubmissionsLoaded(id, 50);
-  }
+
+  // V3.2 performance : on affiche la page immédiatement.
+  // Les réponses sont chargées ensuite, sans bloquer l’interface.
   renderSubmissions(f);
+
+  const key = String(id);
+  if(typeof ensureSubmissionsLoaded==='function' && !SUBMISSIONS_DATA.some(s=>String(s.formId)===key)){
+    const wrap = document.getElementById('sub-table-wrap');
+    if(wrap) wrap.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--tl);background:var(--card,#fff);border-radius:12px;border:1.5px dashed var(--bd);font-weight:800">Chargement rapide des dernières réponses…</div>';
+    ensureSubmissionsLoaded(id, 15).then(()=>{
+      const stillOn = document.getElementById('v-submissions')?.classList.contains('on') && String(curSaisieFormId)===key;
+      if(stillOn) renderSubmissions(f);
+    }).catch(e=>{
+      console.warn('[openSubmissions] chargement réponses:', e);
+      const w = document.getElementById('sub-table-wrap');
+      if(w) w.innerHTML = '<div style="text-align:center;padding:40px 20px;color:#ef4444;background:var(--card,#fff);border-radius:12px;border:1.5px dashed #fecaca;font-weight:800">Chargement trop long. Ajoute l’index SQL performance sur submissions.</div>';
+    });
+  }
 }
 function renderSubmissions(f){
   const color=f.couleur||'#3b82f6';

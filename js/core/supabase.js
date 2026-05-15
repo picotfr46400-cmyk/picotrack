@@ -31,7 +31,7 @@ const DB = {
   async updateForm(id, data) { return sbFetch(`forms?id=eq.${id}`, { method:'PATCH', body:JSON.stringify(data) }); },
   async deleteForm(id) { return sbFetch(`forms?id=eq.${id}`, { method:'DELETE', prefer:'' }); },
 
-  async getSubmissions(formId, limit=50) { return sbFetch(`submissions?form_id=eq.${formId}&select=*&order=created_at.desc&limit=${limit}`); },
+  async getSubmissions(formId, limit=15) { return sbFetch(`submissions?form_id=eq.${formId}&select=*&order=created_at.desc&limit=${limit}`); },
   async getAllSubmissions(since) {
     const q = since ? `submissions?select=*&order=created_at.desc&created_at=gt.${encodeURIComponent(since)}&limit=100` : `submissions?select=*&order=created_at.desc&limit=50`;
     return sbFetch(q);
@@ -300,7 +300,7 @@ const _ptLoadedSubmissionForms = new Set();
 const _ptLoadedServices = new Set();
 let _ptAllInstancesLoaded = false;
 
-async function ensureSubmissionsLoaded(formId, limit=50){
+async function ensureSubmissionsLoaded(formId, limit=15){
   const key=String(formId||'');
   if(!key || _ptLoadedSubmissionForms.has(key)) return;
   try{
