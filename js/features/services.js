@@ -1124,11 +1124,13 @@ function _svcProgressForStatus(svc,status){
   return st.length>1 ? Math.round((i/(st.length-1))*100) : 0;
 }
 function _svcInstTitleParts(svc, inst){
-  const cc=svc.cardConfig||{}; const sub=SUBMISSIONS_DATA.find(s=>s.id===inst.submissionId);
+  const cc=svc.cardConfig||{};
+  const sub=SUBMISSIONS_DATA.find(s=>String(s.id)===String(inst.submissionId));
+  const form=FORMS_DATA.find(x=>String(x.id)===String(svc.formId));
   const gv=fid=>{
     if(!fid||!sub) return null;
-    const fld=(f?.fields||[]).find(x=>String(x.id)===String(fid));
-    const v=sub.values[fid];
+    const fld=(form?.fields||[]).find(x=>String(x.id)===String(fid));
+    const v=sub.values ? sub.values[fid] : null;
     const txt=_ptPlainFieldValue(fld, v);
     return txt || null;
   };
