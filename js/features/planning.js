@@ -1,4 +1,4 @@
-// ══ PicoTrack Planning opérationnel V1.7 - visuel premium + capacité réelle ══
+// ══ PicoTrack Planning opérationnel V1.8 - correction dates locales + visuel premium ══
 let ptPlanningBase = new Date();
 let ptPlanningView = 'week'; // day | week | month | year | capacity
 
@@ -11,7 +11,15 @@ function ptStartOfWeek(d){
 }
 function ptStartOfMonth(d){ const x=new Date(d); x.setHours(0,0,0,0); x.setDate(1); return x; }
 function ptStartOfYear(d){ const x=new Date(d); x.setHours(0,0,0,0); x.setMonth(0,1); return x; }
-function ptDateISO(d){ return d.toISOString().slice(0,10); }
+function ptDateISO(d){
+  // Important : ne pas utiliser toISOString() ici.
+  // toISOString() convertit en UTC et décale les jours selon le fuseau horaire.
+  const x = new Date(d);
+  const y = x.getFullYear();
+  const m = String(x.getMonth()+1).padStart(2,'0');
+  const day = String(x.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
 function ptAddDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
 function ptAddMonths(d,n){ const x=new Date(d); x.setMonth(x.getMonth()+n); return x; }
 function ptAddYears(d,n){ const x=new Date(d); x.setFullYear(x.getFullYear()+n); return x; }
