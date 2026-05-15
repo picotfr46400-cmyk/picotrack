@@ -42,11 +42,13 @@ const DB = {
   },
 
   async getAppointmentsForDate(formId, fieldId, date) {
-    return sbFetch(`appointments?form_id=eq.${encodeURIComponent(formId)}&field_id=eq.${encodeURIComponent(fieldId)}&date=eq.${encodeURIComponent(date)}&status=in.(confirmed,pending)&select=*`);
+    // V1.5: capacité pilotée au niveau formulaire + date + heure.
+    // On ne filtre plus sur field_id car certains anciens champs gardent un id instable après édition.
+    return sbFetch(`appointments?form_id=eq.${encodeURIComponent(formId)}&date=eq.${encodeURIComponent(date)}&status=in.(confirmed,pending)&select=*`);
   },
   async getAppointmentsForSlot(formId, fieldId, date, startTime) {
     const st = String(startTime || '').slice(0,5);
-    return sbFetch(`appointments?form_id=eq.${encodeURIComponent(formId)}&field_id=eq.${encodeURIComponent(fieldId)}&date=eq.${encodeURIComponent(date)}&start_time=eq.${encodeURIComponent(st + ':00')}&status=in.(confirmed,pending)&select=*`);
+    return sbFetch(`appointments?form_id=eq.${encodeURIComponent(formId)}&date=eq.${encodeURIComponent(date)}&start_time=eq.${encodeURIComponent(st + ':00')}&status=in.(confirmed,pending)&select=*`);
   },
   async createAppointment(data) {
     const rows = await sbFetch('appointments', { method:'POST', body:JSON.stringify(data) });

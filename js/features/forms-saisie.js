@@ -158,7 +158,7 @@ function renderSaisieForm(f){
         html += `<div class="pt-appointment" data-field="${fld.id}" style="border:1.5px solid var(--bd);border-radius:12px;background:#f8fafc;padding:14px">
           <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
             <div style="width:38px;height:38px;border-radius:10px;background:#dbeafe;color:#2563eb;display:flex;align-items:center;justify-content:center;font-size:18px">📅</div>
-            <div style="flex:1"><div style="font-weight:800;color:var(--tx);font-size:13px">Choisir un créneau</div><div style="font-size:11px;color:var(--tl)">${fld.slotDuration || 30} min · ${fld.parallelSlots || 1} place${(fld.parallelSlots || 1)>1?'s':''} par créneau</div></div>
+            <div style="flex:1"><div style="font-weight:800;color:var(--tx);font-size:13px">Choisir un créneau</div><div style="font-size:11px;color:var(--tl)">${fld.slotDuration || 30} min · ${ptAppointmentCapacity(fld)} place${ptAppointmentCapacity(fld)>1?'s':''} par créneau</div></div>
           </div>
           <input type="date" class="ap-input" value="${dateVal}" onchange="ptAppointmentDateChanged('${fld.id}', this.value)" style="background:#fff;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:210px;font-family:inherit;font-size:13px;box-sizing:border-box">
           <div id="appt-slots-${fld.id}" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-top:12px">${dateVal?'Chargement des créneaux...':'Sélectionnez une date.'}</div>
@@ -760,6 +760,11 @@ function ptGetAppointmentField(fid){
   var f = FORMS_DATA.find(function(x){return String(x.id)===String(curSaisieFormId);});
   return f ? (f.fields||[]).find(function(x){return String(x.id)===String(fid);}) : null;
 }
+function ptAppointmentCapacity(fld){
+  var v = fld ? (fld.parallelSlots ?? fld.parallel_slots ?? fld.capacity ?? fld.capacite ?? fld.places ?? 2) : 2;
+  v = parseInt(v, 10);
+  return Math.max(1, isNaN(v) ? 2 : v);
+}
 function ptGenerateSlots(fld){
   var start=ptTimeToMinutes(fld.startHour||'08:00'), end=ptTimeToMinutes(fld.endHour||'18:00'), dur=+(fld.slotDuration||30);
   var out=[]; for(var m=start; m+dur<=end; m+=dur) out.push({start:ptMinutesToTime(m), end:ptMinutesToTime(m+dur)}); return out;
@@ -798,7 +803,7 @@ async function ptAppointmentDateChanged(fid, date){
   }
   wrap.innerHTML='<div style="grid-column:1/-1;color:var(--tl);font-size:12px">Chargement des disponibilités...</div>';
   var formId=curSaisieFormId, taken=await ptCountAppointments(formId, fid, date);
-  var slots=ptGenerateSlots(fld), max=Math.max(1, +(fld.parallelSlots||1));
+  var slots=ptGenerateSlots(fld), max=ptAppointmentCapacity(fld);
   wrap.innerHTML=slots.map(function(sl){
     var cnt=(taken||[]).filter(function(a){return String(a.start_time||'').slice(0,5)===sl.start;}).length;
     var rem=max-cnt, full=rem<=0;
@@ -820,7 +825,7 @@ async function ptCheckAppointmentCapacityBeforeSubmit(form){
       if(fld.obligatoire || fld.req){ toast('e','Choisissez un créneau pour '+(fld.nom||'le rendez-vous')); return false; }
       continue;
     }
-    var max=Math.max(1, +(fld.parallelSlots||1));
+    var max=ptAppointmentCapacity(fld);
     var cnt=await ptCountAppointmentsForSlot(form.id, fld.id, val.date, val.start_time);
     if(cnt >= max){
       toast('e','Créneau complet : '+val.start_time+' ('+cnt+'/'+max+')');
@@ -835,7 +840,7 @@ async function ptCreateAppointmentsForSubmission(form, submission){
   for(var i=0;i<fields.length;i++){
     var fld=fields[i], val=saisieValues[fld.id];
     if(!val||!val.date||!val.start_time) continue;
-    var max=Math.max(1, +(fld.parallelSlots||1));
+    var max=ptAppointmentCapacity(fld);
     var cnt=await ptCountAppointmentsForSlot(form.id, fld.id, val.date, val.start_time);
     if(cnt >= max){
       toast('e','Créneau complet : réservation non créée dans le planning ('+val.start_time+')');
@@ -843,7 +848,7 @@ async function ptCreateAppointmentsForSubmission(form, submission){
     }
     if(typeof DB!=='undefined' && DB.createAppointment){
       await DB.createAppointment({
-        form_id:String(form.id), field_id:String(fld.id), response_id:String(submission.id),
+        form_id:String(form.id), field_id:String(fld.id || fld.name || fld.nom || 'appointment'), response_id:String(submission.id),
         title: form.nom+' - '+(fld.nom||'Rendez-vous'), customer_name:'', date:val.date,
         start_time:val.start_time+':00', end_time:val.end_time+':00',
         status: fld.manualValidation ? 'pending' : 'confirmed', assigned_team:'', capacity_group:String(fld.id), parallel_slots:max

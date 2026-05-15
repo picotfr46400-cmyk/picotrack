@@ -10,6 +10,22 @@ function ptStartOfWeek(d){
 }
 function ptDateISO(d){ return d.toISOString().slice(0,10); }
 function ptAddDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
+function ptPlanningFormCapacity(formId, fieldId, rowCap){
+  var cap = parseInt(rowCap || 0, 10) || 0;
+  try{
+    var form = (typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : []).find(function(f){return String(f.id)===String(formId);});
+    if(form){
+      var fields = (form.fields||[]).filter(function(f){return f.type === 'appointment';});
+      var exact = fields.find(function(f){return String(f.id)===String(fieldId);});
+      var fld = exact || fields[0];
+      if(fld){
+        var v = parseInt(fld.parallelSlots ?? fld.parallel_slots ?? fld.capacity ?? fld.capacite ?? fld.places ?? 0, 10) || 0;
+        if(v > cap) cap = v;
+      }
+    }
+  }catch(e){}
+  return Math.max(1, cap || 1);
+}
 
 async function goPlanning(){
   document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
@@ -38,11 +54,13 @@ async function renderPlanning(){
 
   const grouped={};
   (rows||[]).forEach(r=>{
-    const k=[r.date, r.form_id||'', r.field_id||'', String(r.start_time||'').slice(0,5)].join('|');
-    if(!grouped[k]) grouped[k]={...r, count:0, ids:[], max:Math.max(1, +(r.parallel_slots||1))};
+    // V1.5 : groupement réel par créneau horaire.
+    // On ignore field_id pour éviter 3 cartes séparées quand l'id du champ varie après sauvegarde.
+    const k=[r.date, r.form_id||'', String(r.start_time||'').slice(0,5)].join('|');
+    if(!grouped[k]) grouped[k]={...r, count:0, ids:[], max:ptPlanningFormCapacity(r.form_id, r.field_id, r.parallel_slots)};
     grouped[k].count += 1;
     grouped[k].ids.push(r.id);
-    grouped[k].max = Math.max(grouped[k].max, +(r.parallel_slots||1));
+    grouped[k].max = Math.max(grouped[k].max, ptPlanningFormCapacity(r.form_id, r.field_id, r.parallel_slots));
   });
   const groupedRows=Object.values(grouped).sort((a,b)=>String(a.date+a.start_time).localeCompare(String(b.date+b.start_time)));
   const byDate={};
@@ -58,7 +76,7 @@ async function renderPlanning(){
       </div>
       <div style="display:grid;grid-template-columns:repeat(7,1fr);min-height:420px">
         ${days.map(d=>{ const k=ptDateISO(d); const list=byDate[k]||[]; return `<div style="padding:10px;border-right:1px solid var(--bd);min-height:420px;background:#fff">
-          ${list.length?list.map(a=>{ const full=a.count>=a.max; const mid=a.count/a.max>=0.7; const bg=full?'#fef2f2':(mid?'#fff7ed':'#eff6ff'); const bd=full?'#fecaca':(mid?'#fed7aa':'#bfdbfe'); const col=full?'#dc2626':(mid?'#c2410c':'#1d4ed8'); return `<div style="margin-bottom:8px;padding:9px 10px;border-radius:10px;background:${bg};border:1px solid ${bd}">
+          ${list.length?list.map(a=>{ const full=a.count>=a.max; const mid=a.count/a.max>=0.7; const bg=full?'#fef2f2':'#eff6ff'; const bd=full?'#fecaca':'#bfdbfe'; const col=full?'#dc2626':'#1d4ed8'; return `<div style="margin-bottom:8px;padding:9px 10px;border-radius:10px;background:${bg};border:1px solid ${bd}">
             <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div style="font-weight:900;color:${col};font-size:12px">${String(a.start_time||'').slice(0,5)} - ${String(a.end_time||'').slice(0,5)}</div><div style="font-size:11px;font-weight:900;color:${col}">${a.count}/${a.max}</div></div>
             <div style="font-size:11px;color:var(--tx);font-weight:700;margin-top:3px">${a.title||'Rendez-vous'}</div>
             <div style="font-size:10px;color:var(--tl);margin-top:2px">${full?'Complet':(a.max-a.count)+' place'+((a.max-a.count)>1?'s':'')+' restante'+((a.max-a.count)>1?'s':'')}</div>
