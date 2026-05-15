@@ -1,252 +1,283 @@
-// ══ UTILISATEURS / LICENCES — UI PRO ══
-let _licenseRows = [];
+// ══ PicoTrack — Utilisateurs / Licences v2 (multi-tenant) ══
+let _licenseRows   = [];
 let _licenseLimits = null;
 
-function _licenseEnvCode(){
-  return (typeof getCurrentEnvironmentCodeForLicenses === 'function') ? getCurrentEnvironmentCodeForLicenses() : 'DEMO';
+// ── Helpers ──
+function _getTid() {
+  return window.PT_CURRENT_USER?.active_tenant_id
+    || window.PT_CURRENT_USER?.tenant_id
+    || sessionStorage.getItem('pt_active_tenant')
+    || null;
 }
-function _isSuperAdmin(){ return (typeof isSuperAdmin === 'function') && isSuperAdmin(); }
-function _typeLabel(type){ return type === 'supervision' ? 'Supervision' : type === 'pad' ? 'PAD' : type === 'lecture' ? 'Lecture' : type || '—'; }
-function _roleForType(type){ return type === 'supervision' ? 'client_admin' : type === 'pad' ? 'pad_user' : type === 'lecture' ? 'read_only' : 'client_admin'; }
-function _safeH(v){ return (typeof h === 'function') ? h(v) : String(v ?? '').replace(/[&<>"]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[s])); }
-
+function _isSuperAdmin() {
+  return window.PT_CURRENT_USER?.role === 'super_admin';
+}
+function _typeLabel(t) {
+  return t === 'supervision' ? 'Supervision' : t === 'pad' ? 'PAD' : t || '—';
+}
+function _safeH(v) {
+  return String(v ?? '').replace(/[&<>"]/g, s => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[s]));
+}
 function _getAvailableRoles() {
-  if (typeof ROLES_DATA !== 'undefined' && Array.isArray(ROLES_DATA)) {
-    return ROLES_DATA.map(r => ({
-      id: r.id || r.nom || r.name || r.role || '',
-      nom: r.nom || r.name || r.role || r.id || ''
-    })).filter(r => r.id);
-  }
+  if (typeof ROLES_DATA !== 'undefined' && Array.isArray(ROLES_DATA))
+    return ROLES_DATA.map(r => ({ id: r.id || r.nom || '', nom: r.nom || r.id || '' })).filter(r => r.id);
   return [
-    { id:'administrateur', nom:'Administrateur' },
-    { id:'manager', nom:'Manager' },
+    { id:'admin',     nom:'Administrateur' },
+    { id:'manager',   nom:'Manager' },
     { id:'operateur', nom:'Opérateur' }
   ];
 }
-
-function _getLicenseRoles(l) {
-  if (!l) return [];
-  if (Array.isArray(l.roles)) return l.roles.filter(Boolean);
-  if (typeof l.roles === 'string') {
-    try {
-      const parsed = JSON.parse(l.roles);
-      if (Array.isArray(parsed)) return parsed.filter(Boolean);
-    } catch(e) {}
-  }
-  if (l.role) return [l.role];
-  return [];
+function _countType(type) {
+  return _licenseRows.filter(l => l.active !== false && l.license_type === type).length;
 }
-function _countType(type){ return _licenseRows.filter(l => l.active !== false && l.license_type === type && l.role !== 'super_admin').length; }
-function _limitForType(type){
+function _limitForType(type) {
   if (!_licenseLimits) return 0;
-  if (type === 'supervision') return +(_licenseLimits.supervision_limit || 0);
-  if (type === 'pad') return +(_licenseLimits.pad_limit || 0);
-  if (type === 'lecture') return +(_licenseLimits.lecture_limit || 0);
-  return 0;
+  return type === 'pad' ? +(_licenseLimits.max_pad || 0) : +(_licenseLimits.max_supervision || 0);
 }
-function _canAddType(type){ return _countType(type) < _limitForType(type); }
-function _capPercent(used, max){ return max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0; }
+function _canAddType(type) { return _countType(type) < _limitForType(type); }
 
+// ════════════════════════════════════════
+// RENDER PRINCIPAL
+// ════════════════════════════════════════
 async function renderUsersList() {
   const wrap = document.getElementById('v-users');
   if (!wrap) return;
-  const envCode = _licenseEnvCode();
-  wrap.innerHTML = `<div class="pt-loading">Chargement des licences...</div>`;
+  const tid = _getTid();
+  wrap.innerHTML = `<div style="padding:40px;text-align:center;color:var(--tl)">Chargement…</div>`;
+
   try {
-    if (typeof DB !== 'undefined') {
-      [_licenseLimits, _licenseRows] = await Promise.all([DB.getLicenseLimits(envCode), DB.getLicenses(envCode)]);
+    if (tid) {
+      [_licenseLimits, _licenseRows] = await Promise.all([
+        DB.getLicenseLimits(tid),
+        DB.getUsersByTenant(tid)
+      ]);
+    } else {
+      _licenseLimits = { max_supervision: 0, max_pad: 0 };
+      _licenseRows   = [];
     }
-  } catch(e) {
+  } catch (e) {
     console.warn('[Licences] load error:', e);
-    _licenseLimits = {environment_code:envCode, supervision_limit:0, pad_limit:0, lecture_limit:0};
-    _licenseRows = [];
+    _licenseLimits = { max_supervision: 0, max_pad: 0 };
+    _licenseRows   = [];
   }
 
-  const supUsed=_countType('supervision'), padUsed=_countType('pad'), lecUsed=_countType('lecture');
-  const supMax=_limitForType('supervision'), padMax=_limitForType('pad'), lecMax=_limitForType('lecture');
-  const usedTotal = supUsed + padUsed + lecUsed;
-  const maxTotal = supMax + padMax + lecMax;
-  const totalFree = Math.max(0,supMax-supUsed)+Math.max(0,padMax-padUsed)+Math.max(0,lecMax-lecUsed);
-  const isSuper = _isSuperAdmin();
+  const supUsed  = _countType('supervision');
+  const padUsed  = _countType('pad');
+  const supMax   = _limitForType('supervision');
+  const padMax   = _limitForType('pad');
+  const totalFree = Math.max(0, supMax - supUsed) + Math.max(0, padMax - padUsed);
 
-  const badgeUsers = document.getElementById('sb-users-cnt');
-  if (badgeUsers) badgeUsers.textContent = _licenseRows.filter(x => x.role !== 'super_admin').length;
+  // Badge sidebar
+  const badge = document.getElementById('sb-users-cnt');
+  if (badge) badge.textContent = _licenseRows.length;
 
   wrap.innerHTML = `
-  <div class="pt-users-page">
-    ${isSuper ? _renderSuperAdminQuotaPanel(envCode, supUsed, supMax, padUsed, padMax, lecUsed, lecMax, usedTotal, maxTotal) : ''}
+    <div style="padding:18px 22px;flex:1;overflow-y:auto">
 
-    <section class="pt-card pt-list-card">
-      <div class="pt-card-head">
-        <div>
-          <h3>Licences / comptes — ${_safeH(envCode)}</h3>
-          <div class="pt-chips">
-            <span class="pt-chip blue">Supervision : ${supUsed} / ${supMax}</span>
-            <span class="pt-chip green">PAD : ${padUsed} / ${padMax}</span>
-            <span class="pt-chip violet">Lecture : ${lecUsed} / ${lecMax}</span>
-          </div>
-          <p>Tu peux créer une licence seulement si une place est disponible dans son type.</p>
-        </div>
-        <div class="pt-head-actions">
-          <span class="pt-cap ${totalFree>0?'ok':'ko'}">${totalFree>0?totalFree+' disponible(s)':'Capacité atteinte'}</span>
-          <button class="pt-primary-btn" onclick="openLicenseModal(null)" ${totalFree<=0?'disabled title="Aucune licence disponible"':''}>＋ Ajouter une licence</button>
-          <div class="pt-search"><span>🔍</span><input placeholder="Rechercher..." oninput="_filterLicenses(this.value)"></div>
-        </div>
+      <!-- Jauges licences -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:22px">
+        ${_gaugeCard('🖥', 'Supervision', supUsed, supMax, '#3b82f6')}
+        ${_gaugeCard('📱', 'PAD Terrain', padUsed, padMax, '#059669')}
       </div>
 
-      <div id="users-table-wrap">${_renderLicensesTable(_licenseRows)}</div>
-      <div class="pt-list-footer">
-        <span>Affichage de ${_licenseRows.length ? 1 : 0} à ${_licenseRows.length} sur ${_licenseRows.length} licence(s)</span>
-        <div class="pt-pager"><button disabled>‹</button><b>1</b><button disabled>›</button><select><option>10 / page</option></select></div>
+      <!-- Toolbar -->
+      <div class="toolbar">
+        <button class="btn bp pill" onclick="openUserModal(null)" ${!_canAddType('supervision') && !_canAddType('pad') ? 'disabled title="Quotas atteints"' : ''}>
+          ＋ Ajouter un utilisateur
+        </button>
+        <div class="sp"></div>
+        <div class="sbar"><span style="color:var(--tl)">🔍</span><input placeholder="Rechercher..." oninput="_filterUsers(this.value)"></div>
       </div>
-    </section>
-  </div>`;
-}
 
-function _renderSuperAdminQuotaPanel(envCode, supUsed, supMax, padUsed, padMax, lecUsed, lecMax, usedTotal, maxTotal){
-  const pct = _capPercent(usedTotal, maxTotal);
-  return `<section class="pt-quota-card">
-    <div class="pt-quota-main">
-      <div class="pt-quota-title">
-        <h3>Gestion des licences — ${_safeH(envCode)}</h3>
-        <p>Gérez les quotas de licences par type pour cet environnement.</p>
-      </div>
-      <div class="pt-quota-grid">
-        ${_quotaBox('🖥️','Supervision max',supUsed,supMax,'blue','quota-supervision')}
-        ${_quotaBox('📱','PAD max',padUsed,padMax,'green','quota-pad')}
-        ${_quotaBox('📖','Lecture max',lecUsed,lecMax,'violet','quota-lecture')}
+      <!-- Table -->
+      <div id="users-table-wrap" style="margin-top:14px">
+        ${_renderUsersTable(_licenseRows)}
       </div>
     </div>
-    <div class="pt-shield">✓</div>
-    <div class="pt-quota-side">
-      <div class="pt-env-line"><label>Environnement</label><input id="admin-env-code" value="${_safeH(envCode)}" onkeydown="if(event.key==='Enter')changeAdminEnv()"><button onclick="changeAdminEnv()">Charger</button></div>
-      <div class="pt-capacity-title">Capacité utilisée</div>
-      <div class="pt-donut" style="--pct:${pct}"><span>${pct}%</span></div>
-      <div class="pt-used-line">${usedTotal} / ${maxTotal} licences utilisées</div>
-      <button class="pt-save-quotas" onclick="saveLicenseQuotas()">Enregistrer les quotas</button>
-    </div>
-  </section>`;
+  `;
 }
 
-function _quotaBox(icon, title, used, max, tone, inputId){
-  return `<div class="pt-quota-box ${tone}">
-    <div class="pt-qicon">${icon}</div>
-    <div><div class="pt-qtitle">${title}</div><div class="pt-qnums"><input id="${inputId}" type="number" min="0" value="${max}"><span>/ ${max}</span></div><small>${used} utilisée(s)</small></div>
-  </div>`;
+function _gaugeCard(icon, label, used, max, color) {
+  const pct = max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0;
+  const clr = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : color;
+  return `
+    <div style="background:#fff;border:1.5px solid var(--bd);border-radius:14px;padding:16px 20px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <span style="font-size:20px">${icon}</span>
+        <div style="font-size:13px;font-weight:800;color:var(--tx)">${label}</div>
+        <div style="margin-left:auto;font-size:13px;color:var(--tl)">${used} / ${max}</div>
+      </div>
+      <div style="height:6px;background:var(--bg);border-radius:3px">
+        <div style="height:6px;border-radius:3px;background:${clr};width:${pct}%;transition:width .3s"></div>
+      </div>
+    </div>`;
 }
 
-async function changeAdminEnv(){
-  const val = (document.getElementById('admin-env-code')?.value || 'DEMO').toUpperCase().trim();
-  if (typeof setAdminEnvironmentCode === 'function') setAdminEnvironmentCode(val);
-  await renderUsersList();
+function _renderUsersTable(list) {
+  if (!list.length) return `<div style="padding:40px;text-align:center;color:var(--tl);background:#fff;border-radius:12px;border:1.5px dashed var(--bd)">Aucun utilisateur pour cet environnement.</div>`;
+  return `
+    <div class="dt">
+      <div class="dth">
+        <div class="dt-th">Nom / Email</div>
+        <div class="dt-th">Type</div>
+        <div class="dt-th">Rôle</div>
+        <div class="dt-th">Statut</div>
+        <div class="dt-th">Créé le</div>
+        <div class="dt-th"></div>
+      </div>
+      ${list.map(u => {
+        const initials = String(u.email || 'U').slice(0, 2).toUpperCase();
+        const typeTone = u.license_type === 'pad' ? '#059669' : '#3b82f6';
+        return `
+          <div class="dt-row">
+            <div class="dt-td">
+              <div style="display:flex;align-items:center;gap:10px">
+                <div style="width:32px;height:32px;border-radius:8px;background:${typeTone}18;color:${typeTone};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0">${_safeH(initials)}</div>
+                <div>
+                  <div style="font-size:13px;font-weight:700;color:var(--tx)">${_safeH(u.email || '—')}</div>
+                </div>
+              </div>
+            </div>
+            <div class="dt-td"><span style="padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;background:${typeTone}15;color:${typeTone}">${_safeH(_typeLabel(u.license_type))}</span></div>
+            <div class="dt-td" style="font-size:12px;color:var(--tl)">${_safeH(u.role || '—')}</div>
+            <div class="dt-td">
+              <span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:${u.active !== false ? '#059669' : '#94a3b8'}">
+                <span style="width:7px;height:7px;border-radius:50%;background:currentColor"></span>
+                ${u.active !== false ? 'Actif' : 'Inactif'}
+              </span>
+            </div>
+            <div class="dt-td" style="font-size:12px;color:var(--tl)">${u.created_at ? new Date(u.created_at).toLocaleDateString('fr-FR') : '—'}</div>
+            <div class="dt-td">
+              <div style="display:flex;gap:6px">
+                <button onclick="openUserModal('${u.id}')" style="padding:5px 10px;border:1.5px solid var(--bd);border-radius:7px;background:#fff;cursor:pointer;font-size:12px">✏️</button>
+                <button onclick="toggleUserActive('${u.id}',${u.active !== false})" style="padding:5px 10px;border:1.5px solid ${u.active !== false ? '#fecaca' : '#bbf7d0'};border-radius:7px;background:${u.active !== false ? '#fef2f2' : '#f0fdf4'};cursor:pointer;font-size:12px;color:${u.active !== false ? '#ef4444' : '#059669'}">
+                  ${u.active !== false ? '⏸' : '▶'}
+                </button>
+              </div>
+            </div>
+          </div>`;
+      }).join('')}
+    </div>`;
 }
 
-async function saveLicenseQuotas(){
-  const envCode = _licenseEnvCode();
-  const payload = {
-    supervision_limit: +document.getElementById('quota-supervision').value || 0,
-    pad_limit: +document.getElementById('quota-pad').value || 0,
-    lecture_limit: +document.getElementById('quota-lecture').value || 0
-  };
-  try {
-    await DB.upsertLicenseLimits(envCode, payload);
-    toast('s','Quotas enregistrés');
-    await renderUsersList();
-  } catch(e) {
-    console.warn('[Licences] quota error:', e);
-    toast('e','Erreur sauvegarde quotas : ' + e.message);
-  }
-}
-
-function _filterLicenses(q) {
+// ── Filtre ──
+function _filterUsers(q) {
   const lower = (q || '').toLowerCase();
-  const filtered = _licenseRows.filter(l =>
-    String(l.label || '').toLowerCase().includes(lower) ||
-    String(l.email || '').toLowerCase().includes(lower) ||
-    String(l.license_key || '').toLowerCase().includes(lower) ||
-    String(l.license_type || '').toLowerCase().includes(lower) ||
-    _getLicenseRoles(l).join(' ').toLowerCase().includes(lower)
+  const filtered = _licenseRows.filter(u =>
+    String(u.email || '').toLowerCase().includes(lower) ||
+    String(u.role  || '').toLowerCase().includes(lower)
   );
   const w = document.getElementById('users-table-wrap');
-  if (w) w.innerHTML = _renderLicensesTable(filtered);
+  if (w) w.innerHTML = _renderUsersTable(filtered);
 }
 
-function _renderLicensesTable(list) {
-  if (!list.length) return `<div class="pt-empty">Aucune licence créée pour cet environnement.</div>`;
-  return `<div class="pt-table-shell"><table class="pt-table"><thead><tr>
-    <th>Licence</th><th>Identifiant</th><th>Type</th><th>Rôles</th><th>Statut</th><th>Dernière connexion</th><th>Actions</th>
-  </tr></thead><tbody>${list.map(l=>{
-    const initials = String(l.label || l.email || l.license_key || 'LC').slice(0,2).toUpperCase();
-    const typeTone = l.license_type === 'pad' ? 'green' : l.license_type === 'lecture' ? 'violet' : 'blue';
-    return `<tr>
-      <td><div class="pt-license-cell"><div class="pt-avatar">${_safeH(initials)}</div><div><strong>${_safeH(l.label || 'Sans nom')}</strong><small>${_safeH(l.license_key || '')}</small></div></div></td>
-      <td>${_safeH(l.email || '—')}</td>
-      <td><span class="pt-chip ${typeTone}">${_safeH(_typeLabel(l.license_type))}</span></td>
-      <td>${_getLicenseRoles(l).map(r => `<span class="pt-role-chip">${_safeH(r)}</span>`).join('') || '—'}</td>
-      <td><span class="pt-status ${l.active!==false?'on':'off'}"><i></i>${l.active!==false?'Actif':'Inactif'}</span></td>
-      <td>${l.last_seen ? new Date(l.last_seen).toLocaleString('fr-FR') : '—'}</td>
-      <td><div class="pt-actions"><button onclick="openLicenseModal(${l.id})" title="Modifier">✎</button><button class="danger" onclick="toggleLicenseActive(${l.id})" title="Activer/Désactiver">${l.active!==false?'🗑':'✓'}</button></div></td>
-    </tr>`;
-  }).join('')}</tbody></table></div>`;
-}
-
-function openLicenseModal(licenseId) {
-  const l = licenseId ? _licenseRows.find(x => x.id === licenseId) : null;
-  const envCode = _licenseEnvCode();
+// ════════════════════════════════════════
+// MODAL — Ajouter / Modifier utilisateur
+// ════════════════════════════════════════
+function openUserModal(userId) {
+  const u = userId ? _licenseRows.find(x => x.id === userId) : null;
   const modal = document.createElement('div');
-  modal.className = 'pt-modal-backdrop';
-  modal.innerHTML = `<div class="pt-modal">
-    <div class="pt-modal-head"><div>${l?'Modifier':'Ajouter'} une licence</div><button onclick="this.closest('.pt-modal-backdrop').remove()">×</button></div>
-    <div class="pt-modal-body">
-      <div><div class="fl2">Environnement</div><input class="fi" value="${_safeH(envCode)}" disabled></div>
-      <div><div class="fl2">Nom / Libellé <span class="req">*</span></div><input id="lm-label" class="fi" value="${_safeH(l?.label || '')}" placeholder="Ex: Tablette réception 01 ou Jean Dupont"></div>
-      <div><div class="fl2">Identifiant / email</div><input id="lm-email" class="fi" value="${_safeH(l?.email || '')}" placeholder="Ex: jean ou jean@client.fr"></div>
-      <div><div class="fl2">Mot de passe ${l?'(laisser vide pour ne pas changer)':'*'}</div><input id="lm-pass" class="fi" type="password" placeholder="Mot de passe"></div>
-      <div><div class="fl2">Type de licence</div><select id="lm-type" class="fi" ${l?'disabled':''}><option value="supervision" ${l?.license_type==='supervision'?'selected':''}>Supervision PC</option><option value="pad" ${l?.license_type==='pad'?'selected':''}>PAD terrain</option><option value="lecture" ${l?.license_type==='lecture'?'selected':''}>Lecture seule</option></select></div>
-      <div><div class="fl2">Rôles attribués</div><div id="lm-roles" class="pt-role-select">
-        ${_getAvailableRoles().map(r => `<label><input type="checkbox" class="lm-role-check" value="${_safeH(r.id)}" ${_getLicenseRoles(l).includes(r.id) ? 'checked' : ''}><span>${_safeH(r.nom)}</span></label>`).join('')}
-      </div></div>
-      <div class="pt-active-line"><div>Actif</div><div class="tog ${l?.active!==false?'on':'off'}" id="lm-active" onclick="this.classList.toggle('on');this.classList.toggle('off')"></div></div>
+  modal.id = 'user-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:9999';
+  modal.innerHTML = `
+    <div style="width:460px;background:#fff;border-radius:20px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.3)">
+      <div style="padding:20px 26px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:15px;font-weight:800">${u ? 'Modifier' : 'Ajouter'} un utilisateur</div>
+        <button onclick="document.getElementById('user-modal').remove()" style="width:28px;height:28px;border:none;background:var(--bg);border-radius:8px;cursor:pointer">✕</button>
+      </div>
+      <div style="padding:22px 26px;display:flex;flex-direction:column;gap:14px">
+        <div>
+          <label style="font-size:11px;font-weight:800;color:var(--tl);text-transform:uppercase">Email</label>
+          <input id="um-email" type="email" value="${_safeH(u?.email || '')}" placeholder="utilisateur@client.fr"
+            style="width:100%;box-sizing:border-box;margin-top:6px;padding:11px 14px;border:1.5px solid var(--bd);border-radius:10px;font-size:14px;font-family:inherit;outline:none"
+            ${u ? 'disabled style="opacity:.6"' : ''}>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:800;color:var(--tl);text-transform:uppercase">Type de licence</label>
+          <select id="um-type" style="width:100%;margin-top:6px;padding:11px 14px;border:1.5px solid var(--bd);border-radius:10px;font-size:14px;font-family:inherit;outline:none;background:#fff">
+            <option value="supervision" ${u?.license_type==='supervision'?'selected':''}>🖥 Supervision</option>
+            <option value="pad" ${u?.license_type==='pad'?'selected':''}>📱 PAD Terrain</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:800;color:var(--tl);text-transform:uppercase">Rôle</label>
+          <select id="um-role" style="width:100%;margin-top:6px;padding:11px 14px;border:1.5px solid var(--bd);border-radius:10px;font-size:14px;font-family:inherit;outline:none;background:#fff">
+            ${_getAvailableRoles().map(r => `<option value="${_safeH(r.id)}" ${u?.role===r.id?'selected':''}>${_safeH(r.nom)}</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--bg);border-radius:10px">
+          <div style="font-size:13px;font-weight:700">Compte actif</div>
+          <div id="um-active" onclick="this.dataset.on=this.dataset.on==='1'?'0':'1';this.style.background=this.dataset.on==='1'?'var(--em)':'var(--bd)'"
+            data-on="${u?.active!==false?'1':'0'}"
+            style="width:32px;height:18px;border-radius:9px;background:${u?.active!==false?'var(--em)':'var(--bd)'};cursor:pointer;position:relative;transition:background .2s">
+            <div style="width:13px;height:13px;border-radius:50%;background:#fff;position:absolute;top:2.5px;transition:left .2s;left:${u?.active!==false?'16':'2.5'}px"></div>
+          </div>
+        </div>
+        ${!u ? `<div style="padding:10px 14px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;font-size:12px;color:#92400E">
+          ⚡ Un email d'invitation sera envoyé à l'adresse saisie.
+        </div>` : ''}
+      </div>
+      <div style="padding:14px 26px;background:var(--bg);border-top:1px solid var(--bd);display:flex;gap:10px;justify-content:flex-end">
+        <button onclick="document.getElementById('user-modal').remove()" class="btn btn-sm">Annuler</button>
+        <button onclick="saveUserModal('${userId||''}')" class="btn bp btn-sm">💾 ${u ? 'Enregistrer' : 'Inviter'}</button>
+      </div>
     </div>
-    <div class="pt-modal-foot"><button class="btn" onclick="this.closest('.pt-modal-backdrop').remove()">Annuler</button><button class="btn bp" onclick="saveLicense(${licenseId||'null'},this)">Enregistrer</button></div>
-  </div>`;
+  `;
   document.body.appendChild(modal);
 }
 
-async function saveLicense(licenseId, btn) {
-  const modal = btn.closest('.pt-modal-backdrop');
-  const envCode = _licenseEnvCode();
-  const label = document.getElementById('lm-label').value.trim();
-  const email = document.getElementById('lm-email').value.trim();
-  const pass = document.getElementById('lm-pass').value;
-  const type = document.getElementById('lm-type').value;
-  const roles = Array.from(document.querySelectorAll('.lm-role-check:checked')).map(x => x.value);
-  const role = roles[0] || _roleForType(type);
-  const active = document.getElementById('lm-active').classList.contains('on');
-  if (!label) { toast('e','Nom / libellé requis'); return; }
-  if ((type === 'supervision' || type === 'lecture') && !email) { toast('e','Identifiant requis pour une licence PC'); return; }
-  if (!licenseId && !pass) { toast('e','Mot de passe requis'); return; }
-  if (!licenseId && !_canAddType(type)) { toast('e',`Création impossible : quota ${_typeLabel(type)} atteint.`); return; }
-  btn.disabled = true; btn.textContent = 'Enregistrement...';
+async function saveUserModal(userId) {
+  const email  = document.getElementById('um-email')?.value.trim();
+  const type   = document.getElementById('um-type')?.value;
+  const role   = document.getElementById('um-role')?.value;
+  const active = document.getElementById('um-active')?.dataset.on === '1';
+  const tid    = _getTid();
+
+  if (!userId && !email) { showToast('Email requis.', 'error'); return; }
+  if (!userId && !_canAddType(type)) { showToast(`Quota ${_typeLabel(type)} atteint.`, 'error'); return; }
+
   try {
-    const data = { label, email, license_type:type, active, role, roles, scope:'environment' };
-    if (pass) data.password_hash = type === 'pad' ? pass : await hashPassword(pass);
-    if (licenseId) await DB.updateLicense(licenseId, data);
-    else {
-      const prefix = type === 'supervision' ? 'SUP' : type === 'lecture' ? 'LEC' : 'PAD';
-      const rand = Math.random().toString(36).slice(2,7).toUpperCase();
-      data.environment_code = envCode;
-      data.license_key = `${prefix}-${envCode}-${rand}`;
-      await DB.createLicense(data);
+    if (userId) {
+      // Mise à jour profil existant
+      await sbFetch(`user_profiles?id=eq.${userId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ role, license_type: type, active })
+      });
+      showToast('Utilisateur mis à jour ✓', 'success');
+    } else {
+      // Invitation via Supabase Auth
+      const { error } = await _supa.auth.admin?.inviteUserByEmail
+        ? await _supa.auth.admin.inviteUserByEmail(email)
+        : { error: new Error('Invitation non disponible en mode client. Utilisez le dashboard Supabase.') };
+
+      if (error) {
+        // Fallback : créer le profil directement (l'user devra être créé dans Supabase)
+        showToast(`Crée l'user "${email}" dans Supabase Auth puis relance.`, 'error');
+        document.getElementById('user-modal')?.remove();
+        return;
+      }
+      showToast(`Invitation envoyée à ${email} ✓`, 'success');
     }
-    modal.remove(); toast('s','Licence enregistrée'); await renderUsersList();
-  } catch(e) { console.warn('[Licences] save error:', e); toast('e','Erreur création licence : ' + e.message); btn.disabled = false; btn.textContent = 'Enregistrer'; }
+    document.getElementById('user-modal')?.remove();
+    await renderUsersList();
+  } catch (e) {
+    showToast(`Erreur : ${e.message}`, 'error');
+  }
 }
 
-async function toggleLicenseActive(id) {
-  const l = _licenseRows.find(x => x.id === id); if (!l) return;
-  try { await DB.updateLicense(id, { active: !(l.active !== false) }); toast('s','Statut licence modifié'); await renderUsersList(); }
-  catch(e) { toast('e','Erreur modification licence'); }
+async function toggleUserActive(userId, currentlyActive) {
+  try {
+    await sbFetch(`user_profiles?id=eq.${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ active: !currentlyActive })
+    });
+    showToast(`Compte ${!currentlyActive ? 'activé' : 'désactivé'} ✓`, 'success');
+    await renderUsersList();
+  } catch (e) {
+    showToast(`Erreur : ${e.message}`, 'error');
+  }
 }
-function _filterUsers(q){ _filterLicenses(q); }
-function openUserModal(userId){ openLicenseModal(userId); }
+
+// ── Alias legacy ──
+function openLicenseModal(id) { openUserModal(id); }
+function _filterLicenses(q)   { _filterUsers(q); }
