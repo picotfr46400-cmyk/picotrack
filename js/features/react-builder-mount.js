@@ -40,6 +40,7 @@ function mountReactBuilder(formData, onSave) {
       section: f.section || '',
       def: f.defaultValue !== undefined ? f.defaultValue : (f.default_value || ''),
       roles: f.roles || [],
+      appointment_settings: f.appointment_settings || null,
     };
   }) : [];
 
@@ -75,7 +76,7 @@ function _mapType(t) {
     signature:'sign', separator:'sep', titre:'titre',
     image:'image', son:'son', video:'video', groupe:'groupe',
     calcul:'calcul', requete:'requete',
-    table_unique:'table_unique', table_multiple:'table_multi',
+    table_unique:'table_unique', table_multiple:'table_multi', appointment:'appointment',
   };
   return map[t] || 'text';
 }

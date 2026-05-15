@@ -52,6 +52,7 @@
   <div class="sb-i" id="sb-prod-forms" onclick="goProduction()"><span class="sb-ico">📱</span> PAD Terrain <span class="sb-bk" id="prod-forms-count">3</span></div>
   <div class="sb-i" id="sb-prod-services" onclick="goProdServices()"><span class="sb-ico">⚡</span> Exécution</div>
   <div class="sb-i" id="sb-prod-db" onclick="goProDatabase()"><span class="sb-ico">📚</span> Données</div>
+  <div class="sb-i" id="sb-planning" onclick="goPlanning()"><span class="sb-ico">📅</span> Planning <span class="sb-bk">NEW</span></div>
 </div>
 <!-- MAIN -->
 <div id="main">
@@ -190,6 +191,12 @@
     <div id="sd-history" style="width:260px;flex-shrink:0"></div>
   </div>
 </div>
+
+<!-- PRODUCTION : PLANNING OPÉRATIONNEL -->
+<div class="view" id="v-planning">
+  <div id="planning-wrap" style="padding:18px 22px;flex:1;overflow-y:auto;background:var(--bg)"></div>
+</div>
+
 <!-- SERVICES : LISTE -->
 <div class="view" id="v-services">
   <div style="padding:18px 22px;flex:1;overflow-y:auto">
@@ -351,7 +358,7 @@ const TYPES = [
   {id:"date",         icon:"📅", label:"Date",            clr:"#06b6d4", cat:"date"},
   {id:"time",         icon:"⏰", label:"Heure",           clr:"#06b6d4", cat:"date"},
   {id:"datetime",     icon:"📆", label:"Date & heure",    clr:"#06b6d4", cat:"date"},
-  {id:"appointment", icon:"📅", label:"Prise de rendez-vous", clr:"#2563eb", cat:"date"},
+  {id:"appointment",  icon:"📅", label:"Prise de rendez-vous", clr:"#2563eb", cat:"date"},
   // Médias
   {id:"photo",        icon:"📷", label:"Photo",           clr:"#10b981", cat:"media"},
   {id:"file",         icon:"📎", label:"Fichier",         clr:"#10b981", cat:"media"},
@@ -451,6 +458,15 @@ function Preview({f}){
   );
   if(f.type==="date") return (<input type="date" style={{...s,width:180,pointerEvents:"none"}} readOnly/>);
   if(f.type==="time") return (<input type="time" style={{...s,width:140,pointerEvents:"none"}} readOnly/>);
+  if(f.type==="appointment") return (
+    <div style={{border:"1.5px solid "+C.bd,borderRadius:12,background:C.bg,padding:12}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+        <div style={{height:34,border:"1px solid "+C.bd,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",background:"#fff",color:C.tl}}>📅 Choisir une date</div>
+        <div style={{height:34,border:"1px solid "+C.bd,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",background:"#fff",color:C.tl}}>08:00 - 08:30</div>
+      </div>
+      <div style={{marginTop:8,fontSize:11,color:C.tl}}>Créneaux libres / complets selon la capacité configurée</div>
+    </div>
+  );
   if(f.type==="photo") return (<div style={{border:"2px dashed "+C.bd,borderRadius:10,padding:14,textAlign:"center",color:C.ts,fontSize:13,background:C.bg}}>📷 Photo</div>);
   if(f.type==="location") return (
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 13px",border:"1.5px solid "+C.bd,borderRadius:9,background:C.bg}}>
@@ -460,6 +476,28 @@ function Preview({f}){
   );
   if(f.type==="sign") return (<div style={{border:"2px dashed "+C.bd,borderRadius:10,height:58,display:"flex",alignItems:"center",justifyContent:"center",color:C.ts,fontSize:13,background:C.bg}}>✍ Signature</div>);
   return null;
+}
+
+
+function AppointmentEd({f,upd}){
+  const st=f.appointment_settings || {slotDuration:30,daysAvailable:["Mon","Tue","Wed","Thu","Fri"],startHour:"08:00",endHour:"18:00",parallelSlots:2,manualValidation:false,team:"Production"};
+  const set=(patch)=>upd(f.id,{appointment_settings:{...st,...patch}});
+  const days=[['Mon','Lun'],['Tue','Mar'],['Wed','Mer'],['Thu','Jeu'],['Fri','Ven'],['Sat','Sam'],['Sun','Dim']];
+  const toggleDay=(d)=>{ const cur=st.daysAvailable||[]; set({daysAvailable:cur.includes(d)?cur.filter(x=>x!==d):[...cur,d]}); };
+  return (
+    <div style={{marginTop:10,padding:10,background:'#EFF6FF',borderRadius:10,border:'1px solid #BFDBFE',display:'grid',gap:9}}>
+      <div style={{fontSize:11,fontWeight:900,color:'#1D4ED8',textTransform:'uppercase',letterSpacing:.6}}>Paramètres rendez-vous</div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+        <div><div style={{fontSize:10,fontWeight:800,color:C.tl,marginBottom:4}}>Durée créneau</div><select value={st.slotDuration||30} onChange={e=>set({slotDuration:+e.target.value})} style={{width:'100%',border:'1px solid '+C.bd,borderRadius:8,padding:'7px 8px',fontFamily:'inherit'}}><option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">1 h</option></select></div>
+        <div><div style={{fontSize:10,fontWeight:800,color:C.tl,marginBottom:4}}>Créneaux simultanés</div><input type="number" min="1" value={st.parallelSlots||1} onChange={e=>set({parallelSlots:+e.target.value||1})} style={{width:'100%',boxSizing:'border-box',border:'1px solid '+C.bd,borderRadius:8,padding:'7px 8px',fontFamily:'inherit'}}/></div>
+        <div><div style={{fontSize:10,fontWeight:800,color:C.tl,marginBottom:4}}>Ouverture</div><input type="time" value={st.startHour||'08:00'} onChange={e=>set({startHour:e.target.value})} style={{width:'100%',boxSizing:'border-box',border:'1px solid '+C.bd,borderRadius:8,padding:'7px 8px',fontFamily:'inherit'}}/></div>
+        <div><div style={{fontSize:10,fontWeight:800,color:C.tl,marginBottom:4}}>Fermeture</div><input type="time" value={st.endHour||'18:00'} onChange={e=>set({endHour:e.target.value})} style={{width:'100%',boxSizing:'border-box',border:'1px solid '+C.bd,borderRadius:8,padding:'7px 8px',fontFamily:'inherit'}}/></div>
+      </div>
+      <div><div style={{fontSize:10,fontWeight:800,color:C.tl,marginBottom:5}}>Jours disponibles</div><div style={{display:'flex',flexWrap:'wrap',gap:5}}>{days.map(([d,l])=><button key={d} type="button" onClick={()=>toggleDay(d)} style={{border:'1px solid '+((st.daysAvailable||[]).includes(d)?'#2563eb':C.bd),background:(st.daysAvailable||[]).includes(d)?'#DBEAFE':'#fff',color:(st.daysAvailable||[]).includes(d)?'#1D4ED8':C.tl,borderRadius:20,padding:'4px 9px',fontSize:11,fontWeight:800,cursor:'pointer'}}>{l}</button>)}</div></div>
+      <div><div style={{fontSize:10,fontWeight:800,color:C.tl,marginBottom:4}}>Équipe / service</div><input value={st.team||'Production'} onChange={e=>set({team:e.target.value})} style={{width:'100%',boxSizing:'border-box',border:'1px solid '+C.bd,borderRadius:8,padding:'7px 8px',fontFamily:'inherit'}}/></div>
+      <label style={{display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:12,fontWeight:800,color:C.tm}}>Validation manuelle <Tog on={!!st.manualValidation} cb={()=>set({manualValidation:!st.manualValidation})}/></label>
+    </div>
+  );
 }
 
 function OptsEd({opts,onChange}){
@@ -763,8 +801,9 @@ function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
             <button onClick={()=>{onEdit(null);setAdv(false);}} style={{width:26,height:26,borderRadius:6,border:"1.5px solid "+C.bd,background:"#fff",cursor:"pointer",fontSize:11,color:C.tl}}>✓</button>
           </div>
           {["select","multi"].includes(f.type)&&(<OptsEd opts={f.opts||[]} onChange={opts=>upd(f.id,{opts})}/>)}
-          <TypePicker active={f.type} onSel={type=>upd(f.id,{type,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[]})}/>
+          <TypePicker active={f.type} onSel={type=>upd(f.id,{type,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[],appointment_settings:type==="appointment"?(f.appointment_settings||{slotDuration:30,daysAvailable:["Mon","Tue","Wed","Thu","Fri"],startHour:"08:00",endHour:"18:00",parallelSlots:2,manualValidation:false,team:"Production"}):f.appointment_settings})}/>
           <Preview f={f}/>
+          {f.type==="appointment"&&(<AppointmentEd f={f} upd={upd}/>)}
           <button onClick={()=>setAdv(a=>!a)}
             style={{marginTop:8,width:"100%",padding:"6px 10px",borderRadius:7,border:"1.5px solid "+C.bd,background:adv?C.eml:"#fff",color:adv?C.em:C.tl,fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:6}}>
             <span>⚙ Paramètres avancés</span>
@@ -800,7 +839,7 @@ function _mapTypeBack(t){
     photo:'photo',file:'file',sign:'signature',location:'location',
     sep:'separator',titre:'titre',image:'image',son:'son',video:'video',
     groupe:'groupe',calcul:'calcul',requete:'requete',
-    table_unique:'table_unique',table_multi:'table_multiple',
+    table_unique:'table_unique',table_multi:'table_multiple',appointment:'appointment',
   };
   return map[t]||'text';
 }
@@ -939,7 +978,7 @@ const dbFieldOptions = (
 
   const addF=useCallback((ai,type,label)=>{
     const t=TYPES.find(x=>x.id===type);
-    const f={id:nid.current++,type,req:false,label:(label&&label.trim())?label.trim():t.label,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[],ph:"",leg:"",showLeg:false,vSup:true,vNom:true,dup:false,vlds:[],conds:[]};
+    const f={id:nid.current++,type,req:false,label:(label&&label.trim())?label.trim():t.label,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[],ph:"",leg:"",showLeg:false,vSup:true,vNom:true,dup:false,vlds:[],conds:[], appointment_settings: type==="appointment" ? {slotDuration:30,daysAvailable:["Mon","Tue","Wed","Thu","Fri"],startHour:"08:00",endHour:"18:00",parallelSlots:2,manualValidation:false,team:"Production"} : undefined};
     setFields(prev=>{const next=[...prev];next.splice(ai+1,0,f);return next;});
     setEditId(f.id);
   },[]);
@@ -980,6 +1019,7 @@ const dbFieldOptions = (
       duplicable_max: 10,
       validateurs: f.vlds||[],
       conditions: f.conds||[],
+      appointment_settings: f.appointment_settings || null,
       transformateurs: (f.trfs||[]).map(tr=>({nom:tr.n, param:tr.param||''})),
     })),{
       visibleRoles: visibleRoles,
@@ -1300,6 +1340,7 @@ window.PicoBuilderApp = PicoBuilderApp;
 <script src="js/features/databases.js"></script>
 <script src="js/features/api.js"></script>
 <script src="js/features/studio-v4.js"></script>
+<script src="js/features/planning.js"></script>
 <script src="pad-mode.js"></script>
 <script src="js/features/pc-login.js"></script>
 <script src="js/init.js"></script>

@@ -41,6 +41,18 @@ const DB = {
     return Array.isArray(rows) ? rows[0] : rows;
   },
 
+  async getAppointments() { return sbFetch('appointments?select=*&order=date.asc,start_time.asc&limit=1000'); },
+  async createAppointment(data) {
+    const payload = {
+      form_id:data.form_id||data.formId, field_id:data.field_id||data.fieldId, response_id:data.response_id||data.responseId,
+      title:data.title||'Rendez-vous', customer_name:data.customer_name||data.customerName||'',
+      date:data.date, start_time:data.start_time||data.startTime, end_time:data.end_time||data.endTime,
+      status:data.status||'confirmed', assigned_team:data.assigned_team||data.assignedTeam||'', capacity_group:data.capacity_group||data.capacityGroup||''
+    };
+    return sbFetch('appointments', { method:'POST', body:JSON.stringify(payload) });
+  },
+  async updateAppointment(id, data) { return sbFetch(`appointments?id=eq.${id}`, { method:'PATCH', body:JSON.stringify({ ...data, updated_at:new Date().toISOString() }) }); },
+
   async getServices() { return sbFetch('services?select=*&order=created_at.asc'); },
   async createService(data) { return sbFetch('services', { method:'POST', body:JSON.stringify(data) }); },
   async updateService(id, data) { return sbFetch(`services?id=eq.${id}`, { method:'PATCH', body:JSON.stringify(data) }); },
@@ -256,7 +268,7 @@ function startSync(){
 async function syncAllFromSupabase(){
   updateSupabaseStatusUI('syncing','Synchronisation catalogue');
   try{
-    const [forms, services, submissions, instances] = await Promise.all([DB.getForms(), DB.getServices(), DB.getAllSubmissions(), DB.getAllInstances()]);
+    const [forms, services, submissions, instances, appointments] = await Promise.all([DB.getForms(), DB.getServices(), DB.getAllSubmissions(), DB.getAllInstances(), (DB.getAppointments ? DB.getAppointments().catch(e=>{console.warn('[Planning] table appointments absente ou inaccessible:', e.message); return [];}) : Promise.resolve([]))]);
     if(forms.length){
       FORMS_DATA.length = 0;
       forms.forEach(r=>FORMS_DATA.push(mapFormFromDb(r)));
@@ -269,6 +281,7 @@ async function syncAllFromSupabase(){
     submissions.forEach(r=>SUBMISSIONS_DATA.push(mapSubmissionFromDb(r)));
     SERVICE_INSTANCES_DATA.length = 0;
     instances.forEach(r=>SERVICE_INSTANCES_DATA.push(mapInstanceFromDb(r)));
+    if(typeof APPOINTMENTS_DATA !== 'undefined'){ APPOINTMENTS_DATA.length = 0; appointments.forEach(r=>APPOINTMENTS_DATA.push(r)); }
     FORMS_DATA.forEach(f=>{ f.resp = SUBMISSIONS_DATA.filter(s=>s.formId==f.id).length; });
 
     // Références pour détecter ensuite les modifications pendant le polling
@@ -276,7 +289,7 @@ async function syncAllFromSupabase(){
     _serviceHashes.clear(); services.forEach(r=>_serviceHashes.set(String(r.id), _hash(r)));
     _instanceHashes.clear(); instances.forEach(r=>_instanceHashes.set(String(r.id), _hash(r)));
 
-    console.log('[DB] Données chargées depuis Supabase ✅', {forms:FORMS_DATA.length, services:SERVICES_DATA.length, submissions:SUBMISSIONS_DATA.length, instances:SERVICE_INSTANCES_DATA.length});
+    console.log('[DB] Données chargées depuis Supabase ✅', {forms:FORMS_DATA.length, services:SERVICES_DATA.length, submissions:SUBMISSIONS_DATA.length, instances:SERVICE_INSTANCES_DATA.length, appointments:(typeof APPOINTMENTS_DATA!=='undefined'?APPOINTMENTS_DATA.length:0)});
     updateSupabaseStatusUI('online','Synchronisation OK');
     refreshCurrentViewAfterSync();
   }catch(e){ console.warn('[DB] Chargement Supabase échoué:', e.message); }

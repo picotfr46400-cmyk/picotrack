@@ -27,6 +27,7 @@ const FORMS_DATA=[
 
 // ══ SAISIES RÉELLES ══
 let SUBMISSIONS_DATA=[];
+let APPOINTMENTS_DATA=[]; // Rendez-vous générés par les champs appointment
 let DB_DATA = {}; // { formId: [{id, date, user, values}] }
 let DATABASES_DATA = []; // Bases autonomes : [{id, nom, couleur, columns:[{id,nom,type}], rows:[]}]
 let USERS_DATA = [

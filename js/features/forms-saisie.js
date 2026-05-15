@@ -1,5 +1,53 @@
 // ══ PRODUCTION : SAISIE RÉELLE ══
 
+// ══ APPOINTMENT / PLANNING FIELD HELPERS ══
+function ptApptSettings(fld){
+  return fld.appointment_settings || fld.appointmentSettings || {slotDuration:30,daysAvailable:['Mon','Tue','Wed','Thu','Fri'],startHour:'08:00',endHour:'18:00',parallelSlots:2,manualValidation:false,team:'Production'};
+}
+function ptApptDayKey(dateStr){
+  const d = new Date(dateStr + 'T12:00:00');
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
+}
+function ptApptToMin(t){ const p=String(t||'00:00').split(':').map(Number); return (p[0]||0)*60+(p[1]||0); }
+function ptApptMinToTime(m){ const h=Math.floor(m/60), n=m%60; return String(h).padStart(2,'0')+':'+String(n).padStart(2,'0'); }
+function ptApptSlots(fld,dateStr){
+  const st=ptApptSettings(fld), days=st.daysAvailable||[];
+  if(dateStr && days.length && !days.includes(ptApptDayKey(dateStr))) return [];
+  const dur=Number(st.slotDuration||30), start=ptApptToMin(st.startHour||'08:00'), end=ptApptToMin(st.endHour||'18:00');
+  const slots=[]; for(let m=start;m+dur<=end;m+=dur){ slots.push({start:ptApptMinToTime(m),end:ptApptMinToTime(m+dur)}); }
+  return slots;
+}
+function ptApptTakenCount(formId, fieldId, dateStr, start){
+  const arr = (typeof APPOINTMENTS_DATA !== 'undefined' ? APPOINTMENTS_DATA : []);
+  return arr.filter(a => String(a.form_id||a.formId)===String(formId) && String(a.field_id||a.fieldId)===String(fieldId) && String(a.date||'')===String(dateStr) && String(a.start_time||a.startTime||'')===String(start) && String(a.status||'confirmed')!=='cancelled').length;
+}
+function renderAppointmentSlots(fid){
+  const f = FORMS_DATA.find(x => String(x.id) === String(curSaisieFormId)); if(!f) return;
+  const fld = (f.fields||[]).find(x => String(x.id)===String(fid)); if(!fld) return;
+  const dateInput = document.getElementById('appt_date_'+fid);
+  const box = document.getElementById('appt_slots_'+fid);
+  if(!dateInput || !box) return;
+  const date = dateInput.value;
+  if(!date){ box.innerHTML='<div style="font-size:12px;color:var(--tl);padding:10px">Choisissez une date pour afficher les créneaux.</div>'; return; }
+  const st=ptApptSettings(fld), cap=Number(st.parallelSlots||1), slots=ptApptSlots(fld,date);
+  if(!slots.length){ box.innerHTML='<div style="font-size:12px;color:#ef4444;padding:10px;background:#FEF2F2;border-radius:10px">Aucun créneau ouvert sur cette date.</div>'; return; }
+  const current = saisieValues[fid] || {};
+  box.innerHTML = slots.map(sl=>{
+    const taken=ptApptTakenCount(f.id,fid,date,sl.start), free=Math.max(cap-taken,0), full=free<=0;
+    const on=current.date===date && current.start_time===sl.start;
+    const bg=full?'#FEF2F2':on?'#DBEAFE':'#fff';
+    const bd=full?'#FCA5A5':on?'#2563eb':'var(--bd)';
+    const co=full?'#dc2626':on?'#1d4ed8':'var(--tx)';
+    return `<button type="button" ${full?'disabled':''} onclick="selectAppointmentSlot('${fid}','${date}','${sl.start}','${sl.end}')" style="padding:10px 12px;border:1.5px solid ${bd};border-radius:10px;background:${bg};color:${co};font-family:inherit;font-size:12.5px;font-weight:800;cursor:${full?'not-allowed':'pointer'};display:flex;justify-content:space-between;gap:8px"><span>${sl.start} - ${sl.end}</span><span>${full?'Complet':free+' place'+(free>1?'s':'')}</span></button>`;
+  }).join('');
+}
+function selectAppointmentSlot(fid,date,start,end){
+  saisieChange(fid,{date:date,start_time:start,end_time:end,slot_label:start+' - '+end});
+  renderAppointmentSlots(fid);
+}
+function ptAppointmentFieldFilled(v){ return v && v.date && v.start_time && v.end_time; }
+
+
 function openFormSaisie(id){
   const f = FORMS_DATA.find(x => String(x.id) === String(id));
   if(!f) return;
@@ -152,6 +200,22 @@ function renderSaisieForm(f){
         html += `<input type="datetime-local" class="ap-input" style="background:#f8fafc;border:1.5px solid var(--bd);border-radius:8px;cursor:pointer;outline:none;padding:10px 13px;width:100%;font-family:inherit;font-size:13px;box-sizing:border-box;transition:border-color .15s" value="${saisieValues[fld.id] || ''}" onchange="saisieChange('${fld.id}',this.value)" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">`;
         break;
 
+
+      case 'appointment': {
+        const st = ptApptSettings(fld);
+        const cur = saisieValues[fld.id] || {};
+        html += `<div style="border:1.5px solid var(--bd);border-radius:14px;background:#f8fafc;padding:14px;display:grid;gap:12px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <div style="font-size:12px;color:var(--tl)">📅 Sélectionnez une date puis un créneau disponible</div>
+            <div style="font-size:11px;font-weight:800;color:${color};background:${color}18;border:1px solid ${color}33;border-radius:999px;padding:4px 9px">${st.slotDuration || 30} min · ${st.parallelSlots || 1} place(s)</div>
+          </div>
+          <input id="appt_date_${fld.id}" type="date" class="ap-input" style="background:#fff;border:1.5px solid var(--bd);border-radius:10px;cursor:pointer;outline:none;padding:11px 13px;width:220px;font-family:inherit;font-size:13px;transition:border-color .15s" value="${cur.date || ''}" onchange="saisieChange('${fld.id}',{});renderAppointmentSlots('${fld.id}')" onfocus="this.style.borderColor='${color}'" onblur="this.style.borderColor='var(--bd)'">
+          <div id="appt_slots_${fld.id}" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:8px"></div>
+          <div style="font-size:11px;color:var(--tl)">Horaires : ${st.startHour || '08:00'} - ${st.endHour || '18:00'} · Équipe : ${h(st.team || 'Production')}</div>
+        </div>`;
+        break;
+      }
+
       case 'photo':
         html += `<div style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc">📷 Capture photo — disponible sur l'app nomade</div>`;
         break;
@@ -207,6 +271,7 @@ function renderSaisieForm(f){
     </div>`;
 
   wrap.innerHTML = html;
+  try{ fields.filter(x=>x.type==='appointment').forEach(x=>setTimeout(()=>renderAppointmentSlots(x.id),0)); }catch(e){}
 }
 
 function saisieChange(fid,val){
@@ -565,6 +630,7 @@ function submitSaisie(){
 
     const v = saisieValues[fld.id];
 
+    if(fld.type === 'appointment') return !ptAppointmentFieldFilled(v);
     return v === undefined || v === '' || v === false || (Array.isArray(v) && !v.length);
   });
 
@@ -696,6 +762,7 @@ function submitSaisie(){
 
     _ptPrepareMailTrigger(f, submission);
     _ptRunDbRowTrigger(f, submission);
+    _ptCreateAppointmentsFromSubmission(f, submission, device);
 
     if(btn){
       btn.textContent = '✅ Enregistré !';
@@ -727,4 +794,43 @@ function submitSaisie(){
   } else {
     finalizeSubmit(newSub);
   }
+}
+
+
+function _ptCreateAppointmentsFromSubmission(form, submission, device){
+  try{
+    (form.fields || []).filter(fld => fld.type === 'appointment').forEach(fld => {
+      const v = submission.values ? submission.values[fld.id] : null;
+      if(!ptAppointmentFieldFilled(v)) return;
+      const st = ptApptSettings(fld);
+      const row = {
+        id: 'local-' + Date.now() + '-' + String(fld.id),
+        form_id: form.id,
+        field_id: fld.id,
+        response_id: submission.id,
+        title: form.nom + ' — ' + (fld.nom || 'Rendez-vous'),
+        customer_name: _ptGuessCustomerName(form, submission.values || {}),
+        date: v.date,
+        start_time: v.start_time,
+        end_time: v.end_time,
+        status: st.manualValidation ? 'pending' : 'confirmed',
+        assigned_team: st.team || 'Production',
+        capacity_group: st.team || 'Production',
+        created_at: new Date().toISOString()
+      };
+      if(typeof APPOINTMENTS_DATA !== 'undefined') APPOINTMENTS_DATA.push(row);
+      if(typeof DB !== 'undefined' && DB.createAppointment){
+        DB.createAppointment(row).then(saved => {
+          const r = Array.isArray(saved) ? saved[0] : saved;
+          if(r && r.id){ row.id = r.id; }
+        }).catch(e => console.warn('[Planning] création rendez-vous échouée:', e.message || e));
+      }
+    });
+  }catch(e){ console.warn('[Planning] erreur création RDV', e); }
+}
+function _ptGuessCustomerName(form, values){
+  const fields = form.fields || [];
+  const wanted = fields.find(f => /nom|client|demandeur|contact/i.test(f.nom || ''));
+  if(wanted && values[wanted.id]) return Array.isArray(values[wanted.id]) ? values[wanted.id].join(', ') : String(values[wanted.id]);
+  return 'Demande formulaire';
 }
