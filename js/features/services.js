@@ -38,12 +38,15 @@ let svcBuilderCardConfig = {couleur:'#3b82f6', titleFieldId:null, subtitle1Field
 let svcBuilderKanbanGroups = [];
 
 // ══ NAVIGATION ══
-function goServices() {
+async function goServices() {
   document.querySelectorAll('.sb-i').forEach(i => i.classList.remove('on'));
   document.getElementById('sb-workflows')?.classList.add('on');
   show('v-services');
   document.getElementById('tb-t').textContent = 'Services';
   document.getElementById('breadcrumb').innerHTML = '<span style="color:var(--tl)">▶ Services</span>';
+  const grid=document.getElementById('services-grid');
+  if(grid) grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:50px;color:var(--tl);font-weight:800">Chargement des dossiers…</div>';
+  if(typeof ensureAllInstancesLoaded==='function') await ensureAllInstancesLoaded(100);
   renderServices();
 }
 
@@ -495,13 +498,18 @@ function generateRef(svc) {
     .replace('{0000}', n);
 }
 
-function openServiceInstances(id) {
-  const svc = SERVICES_DATA.find(s => s.id === id); if (!svc) return;
+async function openServiceInstances(id) {
+  const svc = SERVICES_DATA.find(s => String(s.id) === String(id)); if (!svc) return;
   curService = svc;
   document.getElementById('breadcrumb').innerHTML = `<span class="bc-link" onclick="goServices()">▶ Services</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(svc.nom)}</span>`;
   document.getElementById('tb-t').textContent = svc.nom;
-  renderServiceInstances(svc);
   show('v-service-instances');
+  const v=document.getElementById('v-service-instances');
+  if(v && typeof ensureInstancesLoaded==='function' && !SERVICE_INSTANCES_DATA.some(i=>String(i.serviceId)===String(id))){
+    v.innerHTML='<div style="padding:50px;text-align:center;color:var(--tl);font-weight:800">Chargement des dossiers…</div>';
+    await ensureInstancesLoaded(id, 100);
+  }
+  renderServiceInstances(svc);
 }
 
 function renderServiceInstances(svc) {
@@ -929,7 +937,7 @@ let _prodServicesViewMode = 'cards';
 let _prodServicesQuery = '';
 let _prodServicesPriority = 'all';
 
-function goProdServices(){
+async function goProdServices(){
   document.querySelectorAll('.sb-i').forEach(i=>i.classList.remove('on'));
   document.getElementById('sb-prod-services')?.classList.add('on');
   show('v-prod-services-list');
@@ -971,6 +979,7 @@ function goProdServices(){
       </div>
     </div>`;
   }
+  if(typeof ensureAllInstancesLoaded==='function') await ensureAllInstancesLoaded(100);
   renderProdServices();
 }
 

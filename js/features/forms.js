@@ -137,12 +137,18 @@ function renderProdForms(list){
     </div>`;
   }).join('');
 }
-function openSubmissions(id){
-  const f=FORMS_DATA.find(x=>x.id===id);if(!f)return;
+async function openSubmissions(id){
+  const f=FORMS_DATA.find(x=>String(x.id)===String(id));if(!f)return;
   curSaisieFormId=id;
   document.getElementById('breadcrumb').innerHTML=`<span class="bc-link" onclick="goProduction()">▶ Production / Formulaires</span><span style="color:var(--tl);margin:0 4px">/</span><span style="font-weight:600">${h(f.nom)}</span>`;
   document.getElementById('tb-t').textContent=f.nom;
-  renderSubmissions(f);show('v-submissions');
+  show('v-submissions');
+  const v=document.getElementById('v-submissions');
+  if(v && typeof ensureSubmissionsLoaded==='function' && !SUBMISSIONS_DATA.some(s=>String(s.formId)===String(id))){
+    v.innerHTML='<div style="padding:50px;text-align:center;color:var(--tl);font-weight:800">Chargement des réponses…</div>';
+    await ensureSubmissionsLoaded(id, 50);
+  }
+  renderSubmissions(f);
 }
 function renderSubmissions(f){
   const color=f.couleur||'#3b82f6';

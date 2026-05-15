@@ -31,9 +31,9 @@ const DB = {
   async updateForm(id, data) { return sbFetch(`forms?id=eq.${id}`, { method:'PATCH', body:JSON.stringify(data) }); },
   async deleteForm(id) { return sbFetch(`forms?id=eq.${id}`, { method:'DELETE', prefer:'' }); },
 
-  async getSubmissions(formId) { return sbFetch(`submissions?form_id=eq.${formId}&select=*&order=created_at.desc`); },
+  async getSubmissions(formId, limit=50) { return sbFetch(`submissions?form_id=eq.${formId}&select=*&order=created_at.desc&limit=${limit}`); },
   async getAllSubmissions(since) {
-    const q = since ? `submissions?select=*&order=created_at.desc&created_at=gt.${encodeURIComponent(since)}` : `submissions?select=*&order=created_at.desc&limit=500`;
+    const q = since ? `submissions?select=*&order=created_at.desc&created_at=gt.${encodeURIComponent(since)}&limit=100` : `submissions?select=*&order=created_at.desc&limit=50`;
     return sbFetch(q);
   },
   async createSubmission(formId, values, device='desktop') {
@@ -60,10 +60,10 @@ const DB = {
   async updateService(id, data) { return sbFetch(`services?id=eq.${id}`, { method:'PATCH', body:JSON.stringify(data) }); },
 
   async getAllInstances(since) {
-    const q = since ? `service_instances?select=*&order=created_at.desc&created_at=gt.${encodeURIComponent(since)}` : `service_instances?select=*&order=created_at.desc&limit=500`;
+    const q = since ? `service_instances?select=*&order=created_at.desc&created_at=gt.${encodeURIComponent(since)}&limit=100` : `service_instances?select=*&order=created_at.desc&limit=100`;
     return sbFetch(q);
   },
-  async getInstances(serviceId) { return sbFetch(`service_instances?service_id=eq.${serviceId}&select=*&order=created_at.desc`); },
+  async getInstances(serviceId, limit=100) { return sbFetch(`service_instances?service_id=eq.${serviceId}&select=*&order=created_at.desc&limit=${limit}`); },
   async createInstance(data) { return sbFetch('service_instances', { method:'POST', body:JSON.stringify(data) }); },
   async updateInstance(id, data) { return sbFetch(`service_instances?id=eq.${id}`, { method:'PATCH', body:JSON.stringify({ ...data, updated_at:new Date().toISOString() }) }); },
 };
@@ -260,17 +260,26 @@ function startSync(){
   if (_syncStarted) return;
   _syncStarted = true;
   _lastSubSyncAt = new Date().toISOString();
-  setInterval(_pollNewSubmissions, 5000);
-  setInterval(_pollInstances, 5000);
-  setInterval(_pollCatalog, 10000);
-  console.log('[Sync] Polling démarré formulaires + services + statuts (5s)');
+  // V3.1 performance : polling allégé. On ne recharge plus les gros volumes en boucle.
+  setInterval(_pollNewSubmissions, 15000);
+  setInterval(()=>{
+    const onService = document.getElementById('v-services')?.classList.contains('on')
+      || document.getElementById('v-prod-services-list')?.classList.contains('on')
+      || document.getElementById('v-service-instances')?.classList.contains('on')
+      || document.getElementById('v-service-kanban')?.classList.contains('on');
+    if(onService) _pollInstances();
+  }, 20000);
+  setInterval(_pollCatalog, 30000);
+  console.log('[Sync] Polling allégé démarré (submissions 15s, instances à la demande, catalogue 30s)');
   updateSupabaseStatusUI(_ptSupabaseOnline ? 'online' : 'syncing', 'Synchronisation active');
 }
 
 async function syncAllFromSupabase(){
-  updateSupabaseStatusUI('syncing','Synchronisation catalogue');
+  updateSupabaseStatusUI('syncing','Chargement catalogue');
   try{
-    const [forms, services, submissions, instances] = await Promise.all([DB.getForms(), DB.getServices(), DB.getAllSubmissions(), DB.getAllInstances()]);
+    // V3.1 performance : au démarrage on charge uniquement le catalogue léger.
+    // Les réponses, dossiers et pièces jointes sont chargés au clic.
+    const [forms, services] = await Promise.all([DB.getForms(), DB.getServices()]);
     if(forms.length){
       FORMS_DATA.length = 0;
       forms.forEach(r=>FORMS_DATA.push(mapFormFromDb(r)));
@@ -279,21 +288,68 @@ async function syncAllFromSupabase(){
       SERVICES_DATA.length = 0;
       services.forEach(r=>SERVICES_DATA.push(mapServiceFromDb(r)));
     }
-    SUBMISSIONS_DATA.length = 0;
-    submissions.forEach(r=>SUBMISSIONS_DATA.push(mapSubmissionFromDb(r)));
-    SERVICE_INSTANCES_DATA.length = 0;
-    instances.forEach(r=>SERVICE_INSTANCES_DATA.push(mapInstanceFromDb(r)));
-    FORMS_DATA.forEach(f=>{ f.resp = SUBMISSIONS_DATA.filter(s=>s.formId==f.id).length; });
-
-    // Références pour détecter ensuite les modifications pendant le polling
     _formHashes.clear(); forms.forEach(r=>_formHashes.set(String(r.id), _hash(r)));
     _serviceHashes.clear(); services.forEach(r=>_serviceHashes.set(String(r.id), _hash(r)));
-    _instanceHashes.clear(); instances.forEach(r=>_instanceHashes.set(String(r.id), _hash(r)));
-
-    console.log('[DB] Données chargées depuis Supabase ✅', {forms:FORMS_DATA.length, services:SERVICES_DATA.length, submissions:SUBMISSIONS_DATA.length, instances:SERVICE_INSTANCES_DATA.length});
-    updateSupabaseStatusUI('online','Synchronisation OK');
+    console.log('[DB] Catalogue chargé depuis Supabase ✅', {forms:FORMS_DATA.length, services:SERVICES_DATA.length});
+    updateSupabaseStatusUI('online','Catalogue OK');
     refreshCurrentViewAfterSync();
-  }catch(e){ console.warn('[DB] Chargement Supabase échoué:', e.message); }
+  }catch(e){ console.warn('[DB] Chargement catalogue Supabase échoué:', e.message); }
+}
+
+const _ptLoadedSubmissionForms = new Set();
+const _ptLoadedServices = new Set();
+let _ptAllInstancesLoaded = false;
+
+async function ensureSubmissionsLoaded(formId, limit=50){
+  const key=String(formId||'');
+  if(!key || _ptLoadedSubmissionForms.has(key)) return;
+  try{
+    updateSupabaseStatusUI('syncing','Chargement réponses');
+    const rows = await DB.getSubmissions(formId, limit);
+    rows.forEach(r=>{
+      const mapped=mapSubmissionFromDb(r);
+      if(!SUBMISSIONS_DATA.some(x=>String(x.id)===String(mapped.id))) SUBMISSIONS_DATA.push(mapped);
+    });
+    const f=FORMS_DATA.find(x=>String(x.id)===key);
+    if(f) f.resp = SUBMISSIONS_DATA.filter(s=>String(s.formId)===key).length;
+    _ptLoadedSubmissionForms.add(key);
+    updateSupabaseStatusUI('online','Réponses chargées');
+  }catch(e){ console.warn('[Perf] chargement réponses:', e.message); }
+}
+
+async function ensureInstancesLoaded(serviceId, limit=100){
+  const key=String(serviceId||'');
+  if(!key || _ptLoadedServices.has(key)) return;
+  try{
+    updateSupabaseStatusUI('syncing','Chargement dossiers');
+    const rows = await DB.getInstances(serviceId, limit);
+    rows.forEach(r=>{
+      const mapped=mapInstanceFromDb(r);
+      const idx=SERVICE_INSTANCES_DATA.findIndex(x=>String(x.id)===String(mapped.id));
+      if(idx>=0) SERVICE_INSTANCES_DATA[idx]={...SERVICE_INSTANCES_DATA[idx],...mapped};
+      else SERVICE_INSTANCES_DATA.push(mapped);
+      _instanceHashes.set(String(r.id), _hash(r));
+    });
+    _ptLoadedServices.add(key);
+    updateSupabaseStatusUI('online','Dossiers chargés');
+  }catch(e){ console.warn('[Perf] chargement dossiers:', e.message); }
+}
+
+async function ensureAllInstancesLoaded(limit=100){
+  if(_ptAllInstancesLoaded) return;
+  try{
+    updateSupabaseStatusUI('syncing','Chargement dossiers');
+    const rows = await DB.getAllInstances();
+    rows.slice(0, limit).forEach(r=>{
+      const mapped=mapInstanceFromDb(r);
+      const idx=SERVICE_INSTANCES_DATA.findIndex(x=>String(x.id)===String(mapped.id));
+      if(idx>=0) SERVICE_INSTANCES_DATA[idx]={...SERVICE_INSTANCES_DATA[idx],...mapped};
+      else SERVICE_INSTANCES_DATA.push(mapped);
+      _instanceHashes.set(String(r.id), _hash(r));
+    });
+    _ptAllInstancesLoaded=true;
+    updateSupabaseStatusUI('online','Dossiers chargés');
+  }catch(e){ console.warn('[Perf] chargement dossiers globaux:', e.message); }
 }
 
 function refreshCurrentViewAfterSync(){
