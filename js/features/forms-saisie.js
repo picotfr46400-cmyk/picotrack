@@ -168,7 +168,11 @@ function renderSaisieForm(f){
       }
 
       case 'photo':
-        html += `<div style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc">📷 Capture photo — disponible sur l'app nomade</div>`;
+        html += `<label style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc;display:block;cursor:pointer">
+          📷 Prendre / importer une photo
+          <input type="file" accept="image/*" capture="environment" onchange="saisieFileChange('${fld.id}', this, true)" style="display:none">
+          <div id="file-name-${fld.id}" style="margin-top:8px;font-size:12px;color:var(--tx);font-weight:700">${saisieValues[fld.id]?.name || ''}</div>
+        </label>`;
         break;
 
       case 'signature':
@@ -176,7 +180,11 @@ function renderSaisieForm(f){
         break;
 
       case 'file':
-        html += `<div style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc">📎 Fichier — disponible sur l'app nomade</div>`;
+        html += `<label style="border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;color:var(--tl);font-size:13px;background:#f8fafc;display:block;cursor:pointer">
+          📎 Insérer un fichier
+          <input type="file" multiple onchange="saisieFileChange('${fld.id}', this, false)" style="display:none">
+          <div id="file-name-${fld.id}" style="margin-top:8px;font-size:12px;color:var(--tx);font-weight:700">${Array.isArray(saisieValues[fld.id]?.files) ? saisieValues[fld.id].files.map(f=>f.name).join(', ') : ''}</div>
+        </label>`;
         break;
 
       case 'location':
@@ -548,6 +556,18 @@ function _ptRunDbRowTrigger(form, submission){
 
   console.log('[PicoTrack DB] Ligne ajoutée :', targetDb ? targetDb.nom : dbId, values);
   toast('s','🗃 Ligne ajoutée dans la base');
+}
+
+
+function saisieFileChange(fid, input, photoOnly){
+  const files = Array.from(input.files || []);
+  if(!files.length) return;
+  const meta = files.map(f => ({ name:f.name, size:f.size, type:f.type, lastModified:f.lastModified }));
+  // V1 : on stocke les métadonnées dans la réponse. Le stockage fichier Supabase pourra être branché ensuite.
+  saisieValues[fid] = photoOnly ? meta[0] : { files: meta };
+  const el = document.getElementById('file-name-' + fid);
+  if(el) el.textContent = photoOnly ? meta[0].name : meta.map(f=>f.name).join(', ');
+  if(typeof toast === 'function') toast('s', (photoOnly ? 'Photo sélectionnée : ' : 'Fichier sélectionné : ') + (photoOnly ? meta[0].name : meta.length + ' fichier(s)'));
 }
 
 function resetSaisie(){

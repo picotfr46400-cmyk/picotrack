@@ -517,136 +517,296 @@ function OptsEd({opts,onChange}){
 }
 
 function TypePicker({active,onSel}){
+  const cats = [
+    {id:"layout",label:"Mise en page"},
+    {id:"text",label:"Saisie texte"},
+    {id:"list",label:"Listes"},
+    {id:"date",label:"Date / heure"},
+    {id:"media",label:"Médias"},
+    {id:"special",label:"Spéciaux"}
+  ];
   return (
     <select value={active} onChange={e=>onSel(e.target.value)}
-      style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:9,padding:"9px 10px",fontSize:12.5,fontWeight:800,color:C.tm,background:"#fff",fontFamily:"inherit",outline:"none"}}>
-      {TYPE_CATS.map(cat=>(
+      style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:9,padding:"9px 10px",fontSize:12.5,fontWeight:800,color:C.tm,background:"#fff",fontFamily:"inherit",outline:"none",marginBottom:10}}>
+      {cats.map(cat=>(
         <optgroup key={cat.id} label={cat.label}>
-          {TYPES.filter(t=>t.cat===cat.id).map(t=>(<option key={t.id} value={t.id}>{t.icon} {t.label}</option>))}
+          {TYPES.filter(t=>t.cat===cat.id).map(t=>(
+            <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
+          ))}
         </optgroup>
       ))}
     </select>
   );
 }
 
-function FieldBox({title,children,sub}){
-  return <div style={{border:"1.5px solid "+C.bd,borderRadius:12,padding:12,background:"#fff"}}>
-    <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:.8,marginBottom:sub?2:9}}>{title}</div>
-    {sub&&<div style={{fontSize:11,color:C.tl,marginBottom:10,lineHeight:1.35}}>{sub}</div>}
-    {children}
-  </div>
-}
-function Txt({label,value,onChange,placeholder,type="text"}){
-  return <div>
-    <div style={{fontSize:11,fontWeight:800,color:C.tm,marginBottom:5}}>{label}</div>
-    <input type={type} value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder||""}
-      style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:9,padding:"8px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none"}}/>
-  </div>
-}
-function Num({label,value,onChange,min,step}){
-  return <Txt type="number" label={label} value={value} onChange={v=>onChange(+v||0)} placeholder="" />
-}
-function SmallToggle({label,sub,on,cb}){
-  return <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"8px 0"}}>
-    <div><div style={{fontSize:12,fontWeight:800,color:C.tm}}>{label}</div>{sub&&<div style={{fontSize:10.5,color:C.tl,marginTop:2,lineHeight:1.35}}>{sub}</div>}</div>
-    <Tog on={!!on} cb={cb}/>
-  </div>
-}
 function Adv({f,upd}){
-  const updateOpt=(i,val)=>{const n=[...(f.opts||[])]; n[i]=val; upd(f.id,{opts:n});};
-  const addOpt=()=>upd(f.id,{opts:[...(f.opts||[]),"Nouvelle option"]});
-  const delOpt=i=>upd(f.id,{opts:(f.opts||[]).filter((_,j)=>j!==i)});
-  const days=[['1','Lun'],['2','Mar'],['3','Mer'],['4','Jeu'],['5','Ven'],['6','Sam'],['0','Dim']];
+  const [tab,setTab]=useState("gen");
+  const vc=f.vlds?f.vlds.length:0, cc=f.conds?f.conds.length:0;
+  const tc=(f.trfs||[]).length;
+  const ts=id=>({padding:"8px 10px",border:"none",borderBottom:"2px solid "+(tab===id?C.em:"transparent"),background:"transparent",color:tab===id?C.em:C.tl,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"});
   return (
-    <div style={{display:"grid",gap:10}}>
-      <FieldBox title="Identification">
-        <div style={{display:"grid",gap:9}}>
-          <Txt label="Nom technique" value={f.key||slugKey(f.label)} onChange={v=>upd(f.id,{key:v})} placeholder="ex : numero_bl" />
-          <Txt label="Section" value={f.section||""} onChange={v=>upd(f.id,{section:v})} placeholder="ex : Réception" />
-        </div>
-      </FieldBox>
-
-      {f.type==="number"&&(
-        <FieldBox title="Paramètres nombre">
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            <Txt type="number" label="Précision" value={f.precision||0} onChange={v=>upd(f.id,{precision:+v||0})}/>
-            <Txt type="number" label="Pas" value={f.step||1} onChange={v=>upd(f.id,{step:+v||1})}/>
+    <div style={{marginTop:10,border:"1.5px solid "+C.bd,borderRadius:10,overflow:"hidden"}}>
+      <div style={{display:"flex",borderBottom:"1px solid "+C.bd,background:C.bg,padding:"0 6px",gap:0,overflowX:"auto"}}>
+        <button style={ts("gen")} onClick={()=>setTab("gen")}>Général</button>
+        {["text","textarea"].includes(f.type)&&<button style={ts("trf")} onClick={()=>setTab("trf")}>Transformateurs{tc>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:10,background:"#8b5cf6",color:"#fff",fontSize:9}}>{tc}</span>}</button>}
+        <button style={ts("vld")} onClick={()=>setTab("vld")}>Validateurs{vc>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:10,background:C.em,color:"#fff",fontSize:9}}>{vc}</span>}</button>
+        <button style={ts("cnd")} onClick={()=>setTab("cnd")}>Conditions{cc>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:10,background:"#f59e0b",color:"#fff",fontSize:9}}>{cc}</span>}</button>
+        <button style={ts("dsp")} onClick={()=>setTab("dsp")}>Affichage</button>
+      </div>
+      <div style={{padding:14,background:"#fff"}}>
+        {tab==="gen"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Nom technique</div>
+              <input value={f.key||slugKey(f.label)} onChange={e=>upd(f.id,{key:e.target.value})} placeholder="ex : numero_bl"
+                style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none"}}/>
+            </div>
+            {!["sep","titre","image","photo","sign","location","file"].includes(f.type)&&(<div>
+              <div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Valeur par défaut</div>
+              {["select","multi"].includes(f.type) ? (
+                <select value={f.def||""} onChange={e=>upd(f.id,{def:e.target.value})}
+                  style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none",background:"#fff"}}>
+                  <option value="">Aucune valeur par défaut</option>
+                  {(f.opts||[]).map((o,i)=><option key={i} value={o}>{o}</option>)}
+                </select>
+              ) : (
+                <input value={f.def||""} onChange={e=>upd(f.id,{def:e.target.value})} placeholder="Pré-remplissage côté PAD"
+                  style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none"}}/>
+              )}
+            </div>)}
+            {["text","textarea","number"].includes(f.type)&&(
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Placeholder</div>
+                <input value={f.ph||""} onChange={e=>upd(f.id,{ph:e.target.value})} placeholder="Ex : Saisir une valeur..."
+                  style={{width:"100%",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none"}}
+                  onFocus={e=>{e.target.style.borderColor=C.em;}} onBlur={e=>{e.target.style.borderColor=C.bd;}}/>
+              </div>
+            )}
+            {f.type==="number"&&(
+              <div style={{border:"1.5px solid "+C.bd,borderRadius:10,padding:12,background:C.bg}}>
+                <div style={{fontSize:12,fontWeight:900,color:C.tm,marginBottom:10}}>Paramètres nombre</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                  <div><div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Précision</div><input type="number" min="0" value={f.precision||0} onChange={e=>upd(f.id,{precision:+e.target.value||0})} style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5}}/></div>
+                  <div><div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Pas</div><input type="number" value={f.step||1} onChange={e=>upd(f.id,{step:e.target.value})} style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5}}/></div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:8,alignItems:"center",marginTop:10}}>
+                  <div><div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Valeur minimum</div><input disabled={!f.minEnabled} type="number" value={f.minValue||""} onChange={e=>upd(f.id,{minValue:e.target.value})} style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,opacity:f.minEnabled?1:.55}}/></div>
+                  <Tog on={!!f.minEnabled} cb={()=>upd(f.id,{minEnabled:!f.minEnabled})}/>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:8,alignItems:"center",marginTop:10}}>
+                  <div><div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Valeur maximum</div><input disabled={!f.maxEnabled} type="number" value={f.maxValue||""} onChange={e=>upd(f.id,{maxValue:e.target.value})} style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,opacity:f.maxEnabled?1:.55}}/></div>
+                  <Tog on={!!f.maxEnabled} cb={()=>upd(f.id,{maxEnabled:!f.maxEnabled})}/>
+                </div>
+              </div>
+            )}
+            {f.type==="appointment"&&(
+              <div style={{border:"1.5px solid #BFDBFE",borderRadius:10,padding:12,background:"#EFF6FF"}}>
+                <div style={{fontSize:12,fontWeight:900,color:"#1D4ED8",marginBottom:10}}>📅 Paramètres rendez-vous</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                  <div><div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Durée créneau (min)</div><input type="number" min="5" step="5" value={f.slotDuration||30} onChange={e=>upd(f.id,{slotDuration:+e.target.value||30})} style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5}}/></div>
+                  <div><div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Places par créneau</div><input type="number" min="1" value={f.parallelSlots||1} onChange={e=>upd(f.id,{parallelSlots:+e.target.value||1})} style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5}}/></div>
+                  <div><div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Heure début</div><input type="time" value={f.startHour||"08:00"} onChange={e=>upd(f.id,{startHour:e.target.value})} style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5}}/></div>
+                  <div><div style={{fontSize:11,fontWeight:700,color:C.tm,marginBottom:5}}>Heure fin</div><input type="time" value={f.endHour||"18:00"} onChange={e=>upd(f.id,{endHour:e.target.value})} style={{width:"100%",boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5}}/></div>
+                </div>
+                <div style={{fontSize:11,fontWeight:700,color:C.tm,margin:"10px 0 6px"}}>Jours disponibles</div>
+                <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                  {[['1','Lun'],['2','Mar'],['3','Mer'],['4','Jeu'],['5','Ven'],['6','Sam'],['0','Dim']].map(d=>{const arr=f.daysAvailable||[]; const on=arr.includes(d[0]); return <button key={d[0]} type="button" onClick={()=>upd(f.id,{daysAvailable:on?arr.filter(x=>x!==d[0]):[...arr,d[0]]})} style={{padding:"5px 10px",borderRadius:20,border:"1.5px solid "+(on?"#2563eb":C.bd),background:on?"#DBEAFE":"#fff",color:on?"#2563eb":C.tm,fontSize:11,fontWeight:800,cursor:"pointer"}}>{d[1]}</button>})}
+                </div>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:10,padding:"8px 10px",background:"#fff",borderRadius:8,border:"1px solid "+C.bd}}>
+                  <div><div style={{fontSize:12,fontWeight:800}}>Validation manuelle</div><div style={{fontSize:10.5,color:C.tl}}>Le rendez-vous sera en attente</div></div>
+                  <Tog on={!!f.manualValidation} cb={()=>upd(f.id,{manualValidation:!f.manualValidation})}/>
+                </div>
+              </div>
+            )}
+            <div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:f.showLeg?6:0}}>
+                <div style={{fontSize:11,fontWeight:700,color:C.tm}}>Légende</div>
+                <Tog on={f.showLeg} cb={()=>upd(f.id,{showLeg:!f.showLeg})}/>
+              </div>
+              {f.showLeg&&(
+                <textarea value={f.leg||""} onChange={e=>upd(f.id,{leg:e.target.value})} placeholder="Texte sous le label..."
+                  style={{width:"100%",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none",resize:"none",height:56,boxSizing:"border-box"}}
+                  onFocus={e=>{e.target.style.borderColor=C.em;}} onBlur={e=>{e.target.style.borderColor=C.bd;}}/>
+              )}
+            </div>
+            {!["sep","sign","photo","location"].includes(f.type)&&(
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div>
+                  <div style={{fontSize:11,fontWeight:700,color:C.tm}}>Champ duplicable</div>
+                  <div style={{fontSize:11,color:C.ts,marginTop:1}}>L'opérateur peut ajouter plusieurs valeurs</div>
+                </div>
+                <Tog on={f.dup} cb={()=>upd(f.id,{dup:!f.dup})}/>
+              </div>
+            )}
           </div>
-          <div style={{height:10}}/>
-          <SmallToggle label="Définir une valeur par défaut" on={!!f.useDef} cb={()=>upd(f.id,{useDef:!f.useDef})}/>
-          {f.useDef&&<Txt type="number" label="Valeur par défaut" value={f.def||""} onChange={v=>upd(f.id,{def:v})}/>} 
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}>
-            <div><SmallToggle label="Valeur minimum" on={!!f.useMin} cb={()=>upd(f.id,{useMin:!f.useMin})}/>{f.useMin&&<Txt type="number" label="Minimum" value={f.min||""} onChange={v=>upd(f.id,{min:v})}/>}</div>
-            <div><SmallToggle label="Valeur maximum" on={!!f.useMax} cb={()=>upd(f.id,{useMax:!f.useMax})}/>{f.useMax&&<Txt type="number" label="Maximum" value={f.max||""} onChange={v=>upd(f.id,{max:v})}/>}</div>
-          </div>
-          <SmallToggle label="Champ duplicable" sub="L'opérateur peut ajouter plusieurs valeurs" on={f.dup} cb={()=>upd(f.id,{dup:!f.dup})}/>
-        </FieldBox>
-      )}
-
-      {["select","multi"].includes(f.type)&&(
-        <FieldBox title="Valeurs" sub={f.type==="multi"?"Plusieurs choix pourront être sélectionnés.":"Un seul choix pourra être sélectionné."}>
-          <div style={{display:"grid",gap:7}}>
-            {(f.opts||[]).map((o,i)=>(
-              <div key={i} style={{display:"grid",gridTemplateColumns:"24px 1fr 28px",gap:7,alignItems:"center",background:C.bg,borderRadius:9,padding:6}}>
-                <span style={{fontSize:14,color:C.tl,textAlign:"center"}}>⠿</span>
-                <input value={o} onChange={e=>updateOpt(i,e.target.value)} style={{border:"1.5px solid "+C.bd,borderRadius:7,padding:"7px 9px",fontSize:12.5,fontFamily:"inherit"}}/>
-                <button onClick={()=>delOpt(i)} style={{height:28,border:"1px solid #FCA5A5",borderRadius:8,background:"#FEF2F2",color:"#EF4444",cursor:"pointer"}}>🗑</button>
+        )}
+        {tab==="vld"&&(
+          <div>
+            {(!f.vlds||f.vlds.length===0)&&(<div style={{textAlign:"center",padding:"18px 0",color:C.ts,fontSize:12}}>Aucun validateur configuré</div>)}
+            {(f.vlds||[]).map((v,i)=>(
+              <div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"8px 10px",border:"1.5px solid "+C.bd,borderRadius:8,marginBottom:6,background:C.bg}}>
+                <span style={{width:20,height:20,borderRadius:5,background:C.em,color:"#fff",fontSize:10,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{i+1}</span>
+                <span style={{flex:1,fontSize:12.5,fontWeight:600}}>{v.n}</span>
+                {v.v&&(<input value={v.val||""} placeholder="Valeur" onChange={e=>{const n=[...(f.vlds||[])];n[i]={...n[i],val:e.target.value};upd(f.id,{vlds:n});}} style={{width:70,border:"1.5px solid "+C.bd,borderRadius:6,padding:"4px 7px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>)}
+                <input value={v.msg||""} placeholder="Message d'erreur" onChange={e=>{const n=[...(f.vlds||[])];n[i]={...n[i],msg:e.target.value};upd(f.id,{vlds:n});}} style={{flex:1,border:"1.5px solid "+C.bd,borderRadius:6,padding:"4px 7px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                <button onClick={()=>{const n=(f.vlds||[]).filter((_,j)=>j!==i);upd(f.id,{vlds:n});}} style={{width:24,height:24,border:"1px solid #FCA5A5",borderRadius:5,background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0}}>✕</button>
               </div>
             ))}
-            <button onClick={addOpt} style={{width:"100%",padding:9,border:"none",borderRadius:999,background:"#24C6C8",color:"#fff",fontSize:12.5,fontWeight:900,cursor:"pointer",fontFamily:"inherit"}}>＋ Ajouter une valeur</button>
+            <div style={{marginTop:8}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.ts,marginBottom:6,textTransform:"uppercase",letterSpacing:".5px"}}>Ajouter</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {getVlds(f.type).map(v=>(
+                  <button key={v.n} onClick={()=>{const n=[...(f.vlds||[]),{...v,val:"",msg:""}];upd(f.id,{vlds:n});}}
+                    style={{padding:"4px 11px",borderRadius:20,border:"1.5px solid "+C.bd,background:"#fff",color:C.tm,fontSize:11.5,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor=C.em;e.currentTarget.style.color=C.em;e.currentTarget.style.background=C.eml;}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor=C.bd;e.currentTarget.style.color=C.tm;e.currentTarget.style.background="#fff";}}>
+                    ＋ {v.n}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-          <div style={{height:10}}/>
-          <div style={{fontSize:11,fontWeight:800,color:C.tm,marginBottom:5}}>Valeur par défaut</div>
-          <select value={f.def||""} onChange={e=>upd(f.id,{def:e.target.value})} style={{width:"100%",border:"1.5px solid "+C.bd,borderRadius:9,padding:"8px 10px",fontSize:12.5,fontFamily:"inherit"}}>
-            <option value="">Aucune valeur par défaut</option>
-            {(f.opts||[]).map((o,i)=><option key={i} value={o}>{o}</option>)}
-          </select>
-        </FieldBox>
-      )}
-
-      {f.type==="appointment"&&(
-        <FieldBox title="Rendez-vous" sub="Ces règles pilotent les créneaux disponibles côté formulaire et la charge/capacité côté planning.">
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            <Txt type="number" label="Durée créneau (min)" value={f.slotDuration||30} onChange={v=>upd(f.id,{slotDuration:+v||30})}/>
-            <Txt type="number" label="Places par créneau" value={f.parallelSlots||1} onChange={v=>upd(f.id,{parallelSlots:+v||1})}/>
-            <Txt type="time" label="Heure début" value={f.startHour||"08:00"} onChange={v=>upd(f.id,{startHour:v})}/>
-            <Txt type="time" label="Heure fin" value={f.endHour||"18:00"} onChange={v=>upd(f.id,{endHour:v})}/>
+        )}
+        {tab==="trf"&&(
+          <div>
+            {(!f.trfs||f.trfs.length===0)&&(<div style={{textAlign:"center",padding:"18px 0",color:C.ts,fontSize:12}}>Aucun transformateur configuré</div>)}
+            {(f.trfs||[]).map((tr,i)=>(
+              <div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"8px 10px",border:"1.5px solid "+C.bd,borderRadius:8,marginBottom:6,background:C.bg}}>
+                <span style={{flex:1,fontSize:12,fontWeight:600}}>{tr.n}</span>
+                {/(préfixe|suffixe|premiers|derniers)/.test(tr.n)&&(
+                  <input value={tr.param||""} placeholder="Paramètre" onChange={e=>{const n=[...(f.trfs||[])];n[i]={...n[i],param:e.target.value};upd(f.id,{trfs:n});}} style={{width:80,border:"1.5px solid "+C.bd,borderRadius:6,padding:"4px 7px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                )}
+                <button onClick={()=>{const n=(f.trfs||[]).filter((_,j)=>j!==i);upd(f.id,{trfs:n});}} style={{width:24,height:24,border:"1px solid #FCA5A5",borderRadius:5,background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            <div style={{marginTop:8}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.ts,marginBottom:6,textTransform:"uppercase",letterSpacing:".5px"}}>Ajouter</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {TRANSFORMERS.map(n=>(
+                  <button key={n} onClick={()=>{const cur=f.trfs||[];upd(f.id,{trfs:[...cur,{n,param:""}]});}}
+                    style={{padding:"4px 10px",borderRadius:20,border:"1.5px solid "+C.bd,background:"#fff",color:C.tm,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor="#8b5cf6";e.currentTarget.style.color="#8b5cf6";e.currentTarget.style.background="#f5f3ff";}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor=C.bd;e.currentTarget.style.color=C.tm;e.currentTarget.style.background="#fff";}}>
+                    ＋ {n}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-          <div style={{fontSize:11,fontWeight:800,color:C.tm,margin:"10px 0 6px"}}>Jours disponibles</div>
-          <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-            {days.map(d=>{const arr=f.daysAvailable||[]; const on=arr.includes(d[0]); return <button key={d[0]} type="button" onClick={()=>upd(f.id,{daysAvailable:on?arr.filter(x=>x!==d[0]):[...arr,d[0]]})} style={{padding:"5px 10px",borderRadius:20,border:"1.5px solid "+(on?"#2563eb":C.bd),background:on?"#DBEAFE":"#fff",color:on?"#2563eb":C.tm,fontSize:11,fontWeight:800,cursor:"pointer"}}>{d[1]}</button>})}
+        )}
+        {tab==="cnd"&&(
+          <div>
+            <div style={{padding:"9px 12px",background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:8,fontSize:11.5,color:"#92400E",marginBottom:12}}>⚡ Ce champ s'affiche si <strong>toutes</strong> les conditions sont remplies.</div>
+            {(!f.conds||f.conds.length===0)&&(<div style={{textAlign:"center",padding:"16px 0",color:C.ts,fontSize:12}}>Aucune condition</div>)}
+            {(f.conds||[]).map((c,i)=>(
+              <div key={i} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,padding:"8px 10px",border:"1.5px solid "+C.bd,borderRadius:8,background:C.bg}}>
+                <span style={{fontSize:11,color:C.ts,fontWeight:700,flexShrink:0}}>Si</span>
+                <input value={c.fn||""} placeholder="Champ source" onChange={e=>{const n=[...(f.conds||[])];n[i]={...n[i],fn:e.target.value};upd(f.id,{conds:n});}} style={{flex:1,border:"1.5px solid "+C.bd,borderRadius:6,padding:"5px 8px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                <select value={c.op||"="} onChange={e=>{const n=[...(f.conds||[])];n[i]={...n[i],op:e.target.value};upd(f.id,{conds:n});}} style={{width:52,border:"1.5px solid "+C.bd,borderRadius:6,padding:"5px 2px",fontSize:12,fontFamily:"inherit",outline:"none",background:"#fff"}}>
+                  <option value="=">=</option><option value="!=">≠</option><option value="contains">∋</option><option value="empty">∅</option>
+                </select>
+                <input value={c.val||""} placeholder="Valeur" onChange={e=>{const n=[...(f.conds||[])];n[i]={...n[i],val:e.target.value};upd(f.id,{conds:n});}} style={{flex:1,border:"1.5px solid "+C.bd,borderRadius:6,padding:"5px 8px",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                <button onClick={()=>{const n=(f.conds||[]).filter((_,j)=>j!==i);upd(f.id,{conds:n});}} style={{width:24,height:24,border:"1px solid #FCA5A5",borderRadius:5,background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            <button onClick={()=>{const n=[...(f.conds||[]),{fn:"",op:"=",val:""}];upd(f.id,{conds:n});}} style={{width:"100%",padding:7,border:"1.5px dashed "+C.bd,borderRadius:8,background:"transparent",color:C.tl,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginTop:4}}>＋ Ajouter une condition</button>
           </div>
-          <SmallToggle label="Validation manuelle" sub="Le rendez-vous sera créé en attente de validation." on={!!f.manualValidation} cb={()=>upd(f.id,{manualValidation:!f.manualValidation})}/>
-        </FieldBox>
-      )}
+        )}
+        {tab==="dsp"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 12px",border:"1.5px solid "+C.bd,borderRadius:8,background:C.bg}}>
+              <div><div style={{fontSize:12.5,fontWeight:700}}>🖥 Supervision</div><div style={{fontSize:11,color:C.ts,marginTop:1}}>Interface web</div></div>
+              <Tog on={f.vSup!==false} cb={()=>upd(f.id,{vSup:!(f.vSup!==false)})}/>
+            </div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 12px",border:"1.5px solid "+C.bd,borderRadius:8,background:C.bg}}>
+              <div><div style={{fontSize:12.5,fontWeight:700}}>📱 App nomade</div><div style={{fontSize:11,color:C.ts,marginTop:1}}>Terminaux terrain</div></div>
+              <Tog on={f.vNom!==false} cb={()=>upd(f.id,{vNom:!(f.vNom!==false)})}/>
+            </div>
+            <div style={{padding:"9px 12px",border:"1px dashed "+C.bd,borderRadius:8,background:"#FAFAFA"}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.ts,marginBottom:6}}>Visible par les rôles</div>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                {(rolesList.length?rolesList:[{id:"administrateur",nom:"Administrateur"},{id:"manager",nom:"Manager"},{id:"operateur",nom:"Opérateur"}]).map(r=>{
+                  const rid=r.id||r.nom;
+                  const on=(f.roles||[]).includes(rid);
+                  return (
+                    <button key={rid} onClick={()=>{const cur=f.roles||[];upd(f.id,{roles:on?cur.filter(x=>x!==rid):[...cur,rid]});}} style={{padding:"4px 11px",borderRadius:20,border:"1.5px solid "+(on?C.em:C.bd),background:on?C.eml:"#fff",color:on?C.em:C.tm,fontSize:11.5,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                      {r.nom||rid}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{fontSize:10.5,color:C.ts,marginTop:6}}>Vide = tous les rôles</div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
-      {f.type==="photo"&&(
-        <FieldBox title="Photo" sub="Côté formulaire, l'opérateur pourra ouvrir l'appareil photo et prendre une photo directement.">
-          <SmallToggle label="Obligatoire" on={f.req} cb={()=>upd(f.id,{req:!f.req})}/>
-          <SmallToggle label="Autoriser plusieurs photos" on={!!f.multiple} cb={()=>upd(f.id,{multiple:!f.multiple})}/>
-        </FieldBox>
+function AddPop({onAdd}){
+  const [q,setQ]=useState("");
+  const [sug,setSug]=useState(null);
+  const ref=useRef(null);
+  useEffect(()=>{setTimeout(()=>{if(ref.current)ref.current.focus();},60);},[]);
+  const hi=v=>{setQ(v);setSug(v.trim()?detect(v):null);};
+  return (
+    <div style={{position:"absolute",top:"calc(100% + 8px)",left:"50%",transform:"translateX(-50%)",width:314,background:"#fff",border:"1.5px solid "+C.bd,borderRadius:14,boxShadow:"0 16px 48px rgba(0,0,0,.13)",padding:13,zIndex:1000}}>
+      <input ref={ref} value={q} onChange={e=>hi(e.target.value)} placeholder="Nommer le champ... (optionnel)"
+        style={{width:"100%",border:"1.5px solid "+C.bd,borderRadius:8,padding:"7px 10px",fontSize:12.5,fontFamily:"inherit",outline:"none",boxSizing:"border-box",marginBottom:8}}
+        onFocus={e=>{e.target.style.borderColor=C.em;}} onBlur={e=>{e.target.style.borderColor=C.bd;}}/>
+      {sug&&(
+        <div style={{display:"flex",alignItems:"center",gap:7,padding:"5px 9px",background:C.eml,borderRadius:8,border:"1px solid "+C.em2,marginBottom:9}}>
+          <span>✨</span>
+          <span style={{fontSize:11,color:"#065F46",fontWeight:700}}>Suggestion :</span>
+          <Badge tid={sug} xs/>
+          <button onClick={()=>onAdd(sug,q)} style={{marginLeft:"auto",padding:"2px 10px",borderRadius:20,border:"none",background:C.em,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>Utiliser →</button>
+        </div>
       )}
+     <div style={{fontSize:10,fontWeight:700,color:C.ts,textTransform:"uppercase",letterSpacing:".8px",marginBottom:7}}>Choisir un type</div>
+     {TYPE_CATS.map(cat=>(
+        <div key={cat.id} style={{marginBottom:8}}>
+          <div style={{fontSize:9,fontWeight:800,color:C.ts,textTransform:"uppercase",letterSpacing:".6px",marginBottom:4}}>{cat.label}</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
+            {TYPES.filter(t=>t.cat===cat.id).map(t=>(
+              <button key={t.id} onClick={()=>onAdd(t.id,q)}
+                style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"6px 2px",border:"1.5px solid #F1F5F9",borderRadius:8,background:"#FAFAFA",cursor:"pointer",fontFamily:"inherit",fontSize:9.5,fontWeight:700,color:C.tl}}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor=t.clr;e.currentTarget.style.background=t.clr+"12";e.currentTarget.style.color=t.clr;}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor="#F1F5F9";e.currentTarget.style.background="#FAFAFA";e.currentTarget.style.color=C.tl;}}>
+                <span style={{fontSize:14}}>{t.icon}</span>
+                <span style={{textAlign:"center",lineHeight:1.2}}>{t.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-      {f.type==="file"&&(
-        <FieldBox title="Fichier" sub="Côté formulaire, l'utilisateur pourra insérer une ou plusieurs pièces jointes.">
-          <SmallToggle label="Obligatoire" on={f.req} cb={()=>upd(f.id,{req:!f.req})}/>
-          <SmallToggle label="Autoriser plusieurs fichiers" on={!!f.multiple} cb={()=>upd(f.id,{multiple:!f.multiple})}/>
-          <Txt label="Formats acceptés" value={f.accept||""} onChange={v=>upd(f.id,{accept:v})} placeholder="ex : PDF, JPG, PNG" />
-        </FieldBox>
+function AddLine({afterIndex,onAdd}){
+  const [hov,setHov]=useState(false);
+  const [open,setOpen]=useState(false);
+  const wRef=useRef(null);
+  useEffect(()=>{
+    if(!open)return;
+    const h=e=>{if(wRef.current&&!wRef.current.contains(e.target)){setOpen(false);setHov(false);}};
+    document.addEventListener("mousedown",h);
+    return()=>document.removeEventListener("mousedown",h);
+  },[open]);
+  return (
+    <div ref={wRef} style={{position:"relative",height:26,display:"flex",alignItems:"center",zIndex:open?20:1}} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>{if(!open)setHov(false);}}>
+      {(hov||open)?(
+        <div style={{width:"100%",display:"flex",alignItems:"center",gap:6}}>
+          <div style={{flex:1,height:1.5,background:C.em+"40",borderRadius:1}}/>
+          <button onClick={()=>setOpen(o=>!o)}
+            style={{width:22,height:22,borderRadius:"50%",border:"none",background:C.em,color:"#fff",fontSize:15,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,lineHeight:1}}>+</button>
+          <div style={{flex:1,height:1.5,background:C.em+"40",borderRadius:1}}/>
+        </div>
+      ):(
+        <div style={{width:"100%",height:1,background:"transparent"}}/>
       )}
-
-      {!['number','select','multi','appointment','photo','file'].includes(f.type)&&(
-        <FieldBox title="Paramètres">
-          {!['sep','titre','image','son','video','groupe','sign','location'].includes(f.type)&&<Txt label="Valeur par défaut" value={f.def||""} onChange={v=>upd(f.id,{def:v})} placeholder="Pré-remplissage côté PAD" />}
-          {['text','textarea'].includes(f.type)&&<div style={{marginTop:9}}><Txt label="Texte de substitution" value={f.ph||""} onChange={v=>upd(f.id,{ph:v})} placeholder="Indication affichée quand le champ est vide" /></div>}
-          {!['sep','titre','image','son','video','groupe','sign','location'].includes(f.type)&&<SmallToggle label="Champ duplicable" sub="L'opérateur peut ajouter plusieurs valeurs" on={f.dup} cb={()=>upd(f.id,{dup:!f.dup})}/>} 
-        </FieldBox>
-      )}
-
-      <FieldBox title="Affichage">
-        <SmallToggle label="Ajouter une légende" sub="Texte explicatif affiché sous le champ." on={f.showLeg} cb={()=>upd(f.id,{showLeg:!f.showLeg})}/>
-        {f.showLeg&&<textarea value={f.leg||""} onChange={e=>upd(f.id,{leg:e.target.value})} placeholder="Texte sous le libellé..." style={{width:"100%",height:58,boxSizing:"border-box",border:"1.5px solid "+C.bd,borderRadius:9,padding:"8px 10px",fontFamily:"inherit",fontSize:12.5,resize:"vertical"}}/>}
-      </FieldBox>
+      {open&&(<AddPop onAdd={(type,label)=>{onAdd(afterIndex,type,label);setOpen(false);setHov(false);}}/>)}
     </div>
   );
 }
@@ -886,6 +1046,12 @@ const dbFieldOptions = (
       field_key: f.key || slugKey(f.label),
       section: f.section || '',
       defaultValue: f.def || '',
+      precision: f.precision || 0,
+      step: f.step || 1,
+      minEnabled: !!f.minEnabled,
+      minValue: f.minValue || '',
+      maxEnabled: !!f.maxEnabled,
+      maxValue: f.maxValue || '',
       roles: f.roles || [],
       duplicable: f.dup||false,
       duplicable_min: 1,
@@ -928,7 +1094,7 @@ const dbFieldOptions = (
       {/* Paramétrage formulaire */}
       <div style={{background:"#fff",borderBottom:"1px solid "+C.bd,flexShrink:0}}>
         <button onClick={()=>setShowSettings(!showSettings)} style={{width:"100%",border:"none",background:"#fff",padding:"10px 18px",display:"flex",alignItems:"center",gap:10,cursor:"pointer",fontFamily:"inherit",color:C.tx}}>
-          <span style={{width:22,height:22,borderRadius:7,background:C.bg,color:C.tl,display:"inline-flex",alignItems:"center",justifyContent:"center",fontWeight:900}}>⚙</span>
+          <span style={{width:22,height:22,borderRadius:7,background:C.eml,color:C.em,display:"inline-flex",alignItems:"center",justifyContent:"center",fontWeight:900}}>⚙</span>
           <span style={{fontSize:13,fontWeight:800}}>Paramétrage du formulaire</span>
           <span style={{fontSize:12,color:C.ts}}>nom · rôles visibles · actions automatiques après validation</span>
           <span style={{marginLeft:"auto",fontSize:11,color:C.ts,transform:showSettings?"rotate(180deg)":"none",display:"inline-block"}}>▾</span>
