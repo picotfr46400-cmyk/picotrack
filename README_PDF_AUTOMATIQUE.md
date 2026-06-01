@@ -1,44 +1,39 @@
-# Corrections appliquées – Licences / Supabase / Performance
+# PicoTrack — PDF automatique
 
-## 1. Super admin hors quota
-Le rôle `super_admin` n'est plus compté dans les licences Supervision ou PAD.
-Il peut accéder aux environnements depuis le sélecteur sans consommer de licence client.
+Cette version ajoute la génération PDF automatique après validation d’un formulaire.
 
-Fichiers modifiés :
-- `js/features/users.js`
-- `js/features/licensing.js`
+## Fonctionnement
 
-## 2. Tenant actif prioritaire
-Pour un super admin, le tenant actif choisi est maintenant prioritaire sur le tenant d'origine du compte.
-Avant, certaines créations pouvaient partir dans le mauvais environnement.
+Dans le Form Builder, section automatisations :
 
-Fichier modifié :
-- `js/core/supabase.js`
+- active **Envoyer un mail** ;
+- coche **Joindre automatiquement le PDF de la saisie au mail** ;
+- configure destinataire, objet et message.
 
-## 3. Limites de licences synchronisées
-Quand tu modifies ou crées un environnement, les limites sont maintenant synchronisées dans :
-- `tenants`
-- `environment_license_limits`
+À la validation du formulaire, PicoTrack :
 
-Cela évite le problème : “je change le nombre de licences, mais la création garde l'ancien quota”.
+1. enregistre la saisie ;
+2. génère un PDF métier côté navigateur ;
+3. envoie le mail via `/api/send-mail` ;
+4. joint le PDF au mail via Resend ;
+5. garde un historique local des mails/PDF envoyés.
 
-Fichier modifié :
-- `js/features/licensing.js`
+## Variables Vercel
 
-## 4. Lecture des quotas renforcée
-La lecture des quotas cherche maintenant par :
-- `tenant_id`
-- `environment_code`
-- fallback sur la table `tenants`
+Obligatoire :
 
-Fichier modifié :
-- `js/core/supabase.js`
+```text
+RESEND_API_KEY
+```
 
-## 5. Performance services
-Le chargement initial des dossiers services passe de 100 à 20 éléments pour éviter le temps de chargement trop long.
+Optionnelles :
 
-Fichier modifié :
-- `js/features/services.js`
+```text
+RESEND_FROM=PicoTrack <notifications@noreply.picotrack.fr>
+PICOTRACK_LOGO_URL=https://picotrack.fr/logo-picotrack.png
+PICOTRACK_BRAND_NAME=PicoTrack Nexus
+```
 
-## Vérification réalisée
-Tous les fichiers JavaScript passent `node --check`.
+## Notes
+
+Le logo est affiché dans le mail HTML. Le PDF joint est volontairement sobre et robuste pour éviter les dépendances externes.

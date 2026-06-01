@@ -1,41 +1,19 @@
-# PicoTrack — Environnement Prospect
+# PicoTrack — PDF professionnel final
 
-## Modification réalisée
+Cette version remplace le PDF texte brut par un rendu PDF opérationnel plus propre :
 
-Le fichier `js/core/supabase.js` ne pointe plus uniquement vers l'environnement Démo.
+- en-tête brandé PicoTrack Nexus ;
+- bloc d'informations générales ;
+- tableau structuré des champs saisis ;
+- couleurs cohérentes avec l'interface ;
+- pagination automatique ;
+- pied de page avec référence ;
+- compatibilité pièce jointe Resend.
 
-Il choisit maintenant automatiquement le Supabase selon le nom de domaine :
+Le PDF est généré côté navigateur sans dépendance externe, puis attaché automatiquement à l'email envoyé via `/api/send-mail.js`.
 
-- Domaine contenant `picotrack-prospect`
-- Domaine `prospect.picotrack.fr`
-- Sous-domaine commençant par `prospect.`
+Fichier principal modifié :
 
-Dans ces cas, PicoTrack utilise :
-
-```txt
-https://ukucbfxyvyvtlglujoht.supabase.co
+```text
+js/core/pdf.js
 ```
-
-Sinon, par défaut, il conserve l'environnement Démo existant :
-
-```txt
-https://jcanufkmcslxwmheqccp.supabase.co
-```
-
-## Résultat attendu
-
-- Le projet Vercel Démo continue de pointer vers Supabase Démo.
-- Le projet Vercel Prospect pointe vers Supabase Prospect.
-- Les données ne se mélangent pas.
-- L'environnement Prospect démarre neuf, car son Supabase vient d'être créé avec le schéma uniquement.
-
-## Attention
-
-Les Edge Functions doivent exister aussi dans le projet Supabase Prospect si les fonctions suivantes sont utilisées :
-
-- `invite-user`
-- `delete-user`
-- envoi de mail
-- automatisations PDF/mail
-
-Le front est prêt, mais les fonctions Supabase doivent être déployées côté projet Supabase Prospect si nécessaire.

@@ -1,661 +1,240 @@
-// ══ PicoTrack — Utilisateurs / Licences v3 (KeepTracking-style + Supabase) ══
-let _licenseRows   = [];
-let _licenseLimits = null;
+/* ══ PicoTrack — Styles PAD / Mobile / Tablette ══ */
 
-// ══ CSS dynamique injecté une seule fois ══
-(function _injectLmStyles() {
-  if (document.getElementById('lm-styles')) return;
-  const style = document.createElement('style');
-  style.id = 'lm-styles';
-  style.textContent = `
-    /* ── Modal élargie avec footer sticky ── */
-    .pt-modal-lg {
-      width: min(700px, 96vw) !important;
-      max-height: 92vh;
-      display: flex !important;
-      flex-direction: column;
-      overflow: hidden;
-    }
-    .pt-modal-lg .pt-modal-body {
-      flex: 1;
-      overflow-y: auto;
-      min-height: 0;
-    }
-    .pt-modal-lg .pt-modal-foot {
-      flex-shrink: 0;
-      border-top: 1px solid var(--bd);
-      background: var(--bg);
-      padding: 14px 22px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
+/* ─── Variables breakpoints ───────────────────────
+   Téléphone  : < 600px
+   Tablette   : 600px – 1024px
+   Desktop    : > 1024px  (mode admin normal, pad.css inactif)
+────────────────────────────────────────────────── */
 
-    /* ── Sections ── */
-    .lm-section { padding: 18px 22px; border-bottom: 1px solid var(--bd); }
-    .lm-section:last-child { border-bottom: none; }
-    .lm-section-title { font-size: 13px; font-weight: 800; color: var(--tm); margin-bottom: 14px; text-transform: uppercase; letter-spacing: .4px; }
-    .lm-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-
-    /* ── Grille 2 colonnes ── */
-    .lm-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    @media (max-width: 540px) { .lm-row2 { grid-template-columns: 1fr; } }
-
-    /* ── Champ ── */
-    .lm-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
-    .lm-field .fl2 { font-size: 11.5px; font-weight: 700; color: var(--tl); margin: 0; }
-
-    /* ── Badges quota ── */
-    .lm-quota { font-size: 10.5px; font-weight: 700; padding: 3px 10px; border-radius: 20px; white-space: nowrap; }
-    .lm-quota-ok   { background: #d1fae5; color: #065f46; }
-    .lm-quota-err  { background: #fee2e2; color: #991b1b; }
-    .lm-quota-warn { background: #fef3c7; color: #92400e; }
-
-    /* ── Rôles ── */
-    .lm-roles-grid { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 4px; }
-    .lm-role-label {
-      display: flex; align-items: center; gap: 6px; padding: 6px 12px;
-      border: 1.5px solid var(--bd); border-radius: 8px; cursor: pointer;
-      font-size: 12.5px; font-weight: 600; transition: border-color .15s, background .15s;
-      user-select: none;
-    }
-    .lm-role-label:hover { border-color: var(--em); background: var(--eml); }
-    .lm-role-label input[type=checkbox] { accent-color: var(--em); width: 14px; height: 14px; cursor: pointer; }
-
-    /* ── Permissions matrix ── */
-    .lm-perm-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
-    .lm-perm-table th { padding: 7px 10px; text-align: left; font-size: 10px; font-weight: 800; color: var(--tl); text-transform: uppercase; letter-spacing: .5px; border-bottom: 1.5px solid var(--bd); }
-    .lm-perm-table td { padding: 8px 10px; border-bottom: 1px solid var(--bg); }
-    .lm-perm-table tr:last-child td { border-bottom: none; }
-    .lm-perm-table tr:hover td { background: var(--bg); }
-
-    /* ── Toggle actif inline ── */
-    .lm-toggle-row { display: flex; align-items: center; gap: 8px; }
-    .lm-toggle-row .fl2 { margin: 0; font-size: 12px; }
-  `;
-  document.head.appendChild(style);
-})();
-
-// ════════════════════════════════════════
-// HELPERS
-// ════════════════════════════════════════
-function _getTid() {
-  // Compatibilité ancien nom : retourne maintenant le code environnement actif.
-  return _licenseEnvCode();
-}
-function _licenseEnvCode() {
-  return window.PT_CURRENT_USER?.active_env
-    || sessionStorage.getItem('pt_active_env')
-    || window.PT_CURRENT_USER?.environment_code
-    || 'DEMO';
-}
-function _isSuperAdmin() {
-  return window.PT_CURRENT_USER?.role === 'super_admin';
-}
-function _typeLabel(t) {
-  return t === 'supervision' ? 'Supervision PC' : t === 'pad' ? 'PAD Terrain' : t || '—';
-}
-function _safeH(v) {
-  return String(v ?? '').replace(/[&<>"]/g, s => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[s]));
+/* ─── Reset base mode PAD ─────────────────────── */
+body.pad-mode {
+  overflow-x: hidden;
 }
 
-const PT_USER_ROLE_ALIASES = {
-  '1': '00000000-0000-0000-0000-000000000001',
-  '2': '00000000-0000-0000-0000-000000000002',
-  '3': '00000000-0000-0000-0000-000000000003',
-  'admin': '00000000-0000-0000-0000-000000000001',
-  'manager': '00000000-0000-0000-0000-000000000002',
-  'operator': '00000000-0000-0000-0000-000000000003'
-};
-
-function _roleValue(v) {
-  const raw = String(v ?? '').trim();
-  return PT_USER_ROLE_ALIASES[raw] || raw;
-}
-function _roleLabel(roleId) {
-  const id = String(roleId ?? '').trim();
-  if (!id) return '';
-  const r = (typeof ROLES_DATA !== 'undefined' ? ROLES_DATA : []).find(x => String(x.id) === id || String(x.nom).toLowerCase() === id.toLowerCase());
-  if (r) return r.nom;
-  if (id === 'pad_user') return 'PAD Terrain';
-  if (id === 'supervision_user') return 'Supervision';
-  if (id === 'super_admin') return 'Super Admin';
-  return id;
-}
-function _getAvailableRoles() {
-  const base = (typeof ROLES_DATA !== 'undefined' && Array.isArray(ROLES_DATA)) ? ROLES_DATA : [];
-  if (base.length) return base.map(r => ({ id: String(r.id), nom: r.nom || String(r.id) }));
-  return [
-    { id: '00000000-0000-0000-0000-000000000001', nom: 'Administrateur' },
-    { id: '00000000-0000-0000-0000-000000000002', nom: 'Manager' },
-    { id: '00000000-0000-0000-0000-000000000003', nom: 'Opérateur' }
-  ];
-}
-function _getLicenseRoles(l) {
-  let raw = [];
-  if (!l) return [];
-  if (Array.isArray(l.roles)) raw = l.roles.filter(Boolean);
-  else if (typeof l.roles === 'string') {
-    try { const p = JSON.parse(l.roles); if (Array.isArray(p)) raw = p.filter(Boolean); } catch {}
-  }
-  // Important : role = type technique (super_admin / supervision_user / pad_user),
-  // roles = rôles applicatifs personnalisés créés dans PicoTrack.
-  return raw.map(x => String(x)).filter(Boolean);
-}
-function _rolesDisplay(l) {
-  const roles = _getLicenseRoles(l).filter(r => !['pad_user','supervision_user','super_admin'].includes(String(r).toLowerCase()));
-  if (!roles.length) return l?.role === 'super_admin' ? 'Super Admin' : '—';
-  return roles.map(_roleLabel).join(', ');
+body.pad-mode #sb,
+body.pad-mode #topbar,
+body.pad-mode .breadcrumb {
+  display: none !important;
 }
 
-function _inferLicenseType(l) {
-  if (!l) return 'supervision';
-  if (l.role === 'super_admin') return 'super_admin';
-  if (l.license_type) return l.license_type;
-  const roles = _getLicenseRoles(l).map(x => String(x).toLowerCase());
-  const role = String(l.role || '').toLowerCase();
-  if (roles.includes('pad') || roles.includes('pad_user') || role === 'operator' || role === 'pad_user') return 'pad';
-  return 'supervision';
-}
-function _countType(type, excludeId = null) {
-  const PAD_ROLES = ['pad_user', 'operator'];
-  const SUP_ROLES = ['supervision', 'manager', 'admin', 'client_admin'];
-  return _licenseRows.filter(l => {
-    if (excludeId && String(l.id) === String(excludeId)) return false;
-    if (l.active === false) return false;
-
-    // Le compte super_admin PicoTrack peut entrer dans tous les environnements,
-    // mais il ne consomme jamais une licence client.
-    if (l.role === 'super_admin' || _inferLicenseType(l) === 'super_admin') return false;
-
-    // Correspondance directe sur license_type
-    return _inferLicenseType(l) === type;
-  }).length;
-}
-function _limitForType(type) {
-  if (!_licenseLimits) return 0;
-  return type === 'pad' ? +(_licenseLimits.max_pad || 0) : +(_licenseLimits.max_supervision || 0);
-}
-function _canAddType(type, excludeId = null) { return _countType(type, excludeId) < _limitForType(type); }
-
-// ════════════════════════════════════════
-// RENDER PRINCIPAL
-// ════════════════════════════════════════
-async function renderUsersList() {
-  const wrap = document.getElementById('v-users');
-  if (!wrap) return;
-  const tid = _getTid();
-  wrap.innerHTML = `<div style="padding:40px;text-align:center;color:var(--tl);font-weight:800">Chargement des utilisateurs…</div>`;
-
-  try {
-    if (typeof loadRolesFromSupabase === 'function') await loadRolesFromSupabase(true);
-    [_licenseLimits, _licenseRows] = await Promise.all([
-      DB.getLicenseLimits(tid),
-      DB.getUsersByTenant(tid)
-    ]);
-  } catch (e) {
-    console.warn('[Users] load error:', e);
-    _licenseLimits = { max_supervision: 3, max_pad: 10 };
-    _licenseRows   = [];
-    toast('e', 'Impossible de charger les utilisateurs : ' + e.message);
-  }
-
-  const supUsed = _countType('supervision');
-  const padUsed = _countType('pad');
-  const supMax  = _limitForType('supervision');
-  const padMax  = _limitForType('pad');
-
-  // Badge sidebar
-  const badge = document.getElementById('sb-users-cnt');
-  if (badge) badge.textContent = _licenseRows.length;
-
-  wrap.innerHTML = `
-    <div style="padding:18px 22px;flex:1;overflow-y:auto">
-
-      <!-- Jauges licences -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:22px">
-        ${_gaugeCard('🖥', 'Supervision PC', supUsed, supMax, '#3b82f6', 65)}
-        ${_gaugeCard('📱', 'PAD Terrain',   padUsed, padMax, '#059669', 29)}
-      </div>
-
-      <!-- Toolbar -->
-      <div class="toolbar" style="margin-bottom:14px">
-        <button class="btn bp pill" onclick="openLicenseModal(null)">
-          ＋ Ajouter un utilisateur
-        </button>
-        <div class="sp"></div>
-        <div class="sbar">
-          <span style="color:var(--tl)">🔍</span>
-          <input placeholder="Rechercher..." oninput="_filterUsers(this.value)">
-        </div>
-      </div>
-
-      <!-- Table -->
-      <div id="users-table-wrap">
-        ${_renderUsersTable(_licenseRows)}
-      </div>
-    </div>
-  `;
+body.pad-mode #main {
+  left: 0 !important;
+  width: 100% !important;
+  padding-top: 56px !important;
+  padding-bottom: 72px !important;
+  background: #f1f5f9 !important;
 }
 
-function _gaugeCard(icon, label, used, max, color, price) {
-  const pct = max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0;
-  const clr = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : color;
-  const mrr = used * price;
-  return `
-    <div style="background:#fff;border:1.5px solid var(--bd);border-radius:14px;padding:16px 20px">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-        <span style="font-size:22px">${icon}</span>
-        <div>
-          <div style="font-size:13px;font-weight:800;color:var(--tx)">${label}</div>
-          <div style="font-size:11px;color:var(--tl);margin-top:1px">${used} / ${max} utilisés · ${mrr} €/mois</div>
-        </div>
-        <div style="margin-left:auto">
-          <div style="font-size:17px;font-weight:900;color:${clr}">${pct}%</div>
-        </div>
-      </div>
-      <div style="height:6px;background:var(--bg);border-radius:3px">
-        <div style="height:6px;border-radius:3px;background:${clr};width:${pct}%;transition:width .3s"></div>
-      </div>
-      <div style="margin-top:8px;display:flex;justify-content:space-between">
-        <div style="font-size:11px;color:var(--tl)">${Math.max(0,max-used)} disponible${max-used>1?'s':''}</div>
-        <div style="font-size:11px;color:${color};font-weight:700">${price} €/mois/licence</div>
-      </div>
-    </div>`;
+/* ─── Topbar PAD ──────────────────────────────── */
+#pad-topbar {
+  height: 56px;
+  display: flex;
+  align-items: center;
 }
 
-function _renderUsersTable(list) {
-  if (!list.length) return `
-    <div style="padding:50px;text-align:center;color:var(--tl);background:#fff;border-radius:12px;border:1.5px dashed var(--bd)">
-      <div style="font-size:32px;opacity:.3;margin-bottom:10px">👥</div>
-      <div style="font-weight:800">Aucun utilisateur pour cet environnement.</div>
-      <div style="font-size:12px;margin-top:6px">Cliquez sur « + Ajouter un utilisateur » pour commencer.</div>
-    </div>`;
-
-  return `
-    <div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);overflow:hidden">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead style="background:var(--bg)">
-          <tr>
-            <th style="padding:11px 16px;text-align:left;font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;border-bottom:1.5px solid var(--bd)">Utilisateur</th>
-            <th style="padding:11px 16px;text-align:left;font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;border-bottom:1.5px solid var(--bd)">Type</th>
-            <th style="padding:11px 16px;text-align:left;font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;border-bottom:1.5px solid var(--bd)">Rôle</th>
-            <th style="padding:11px 16px;text-align:left;font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;border-bottom:1.5px solid var(--bd)">Statut</th>
-            <th style="padding:11px 16px;text-align:left;font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.5px;border-bottom:1.5px solid var(--bd)">Créé le</th>
-            <th style="border-bottom:1.5px solid var(--bd);width:80px"></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${list.map(u => {
-            const label = u.label || [u.firstname,u.lastname].filter(Boolean).join(' ') || u.email || '—';
-            const initials = label.split(' ').filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase() || 'U';
-            const typeTone = _inferLicenseType(u) === 'pad' ? '#059669' : '#3b82f6';
-            return `<tr style="border-bottom:1px solid var(--bg)" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
-              <td style="padding:12px 16px">
-                <div style="display:flex;align-items:center;gap:10px">
-                  <div style="width:34px;height:34px;border-radius:50%;background:${typeTone};color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0">${_safeH(initials)}</div>
-                  <div>
-                    <div style="font-weight:700;font-size:13px">${_safeH(label)}</div>
-                    <div style="font-size:11px;color:var(--tl)">${_safeH(u.email || '—')}</div>
-                  </div>
-                </div>
-              </td>
-              <td style="padding:12px 16px">
-                <span style="font-size:11px;padding:3px 10px;border-radius:20px;background:${typeTone}18;color:${typeTone};font-weight:700">${_safeH(_typeLabel(_inferLicenseType(u)))}</span>
-              </td>
-              <td style="padding:12px 16px;font-size:12px;color:var(--tl);font-weight:600">${_safeH(_rolesDisplay(u))}</td>
-              <td style="padding:12px 16px">
-                <span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:${u.active!==false?'#059669':'#94a3b8'}">
-                  <i style="width:7px;height:7px;border-radius:50%;background:${u.active!==false?'#059669':'#94a3b8'};flex-shrink:0"></i>
-                  ${u.active!==false?'Actif':'Inactif'}
-                </span>
-              </td>
-              <td style="padding:12px 16px;font-size:12px;color:var(--tl)">${u.created_at ? new Date(u.created_at).toLocaleDateString('fr-FR') : '—'}</td>
-              <td style="padding:12px 16px">
-                <div style="display:flex;gap:4px;justify-content:flex-end">
-                  <button onclick="openLicenseModal('${u.id}')" style="width:30px;height:30px;border-radius:7px;border:1.5px solid var(--bd);background:#fff;cursor:pointer;font-size:13px">✏️</button>
-<button onclick="toggleUserActive('${u.id}',${u.active!==false})"
-  style="width:30px;height:30px;border-radius:7px;border:1.5px solid ${u.active!==false?'#fecaca':'#bbf7d0'};background:${u.active!==false?'#fef2f2':'#f0fdf4'};cursor:pointer;font-size:12px"
-  title="${u.active!==false?'Désactiver':'Activer'}">
-  ${u.active!==false?'⏸':'▶'}
-</button>
-${_isSuperAdmin() && u.role !== 'super_admin' ? `
-  <button onclick="deleteUserAccount('${u.id}', '${_safeH(u.email || '')}')"
-    style="width:30px;height:30px;border-radius:7px;border:1.5px solid #fecaca;background:#fff1f2;cursor:pointer;font-size:12px"
-    title="Supprimer définitivement">
-    🗑️
-  </button>
-` : ''}
-                </div>
-              </td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>`;
+/* ─── Navbar PAD bas d'écran ──────────────────── */
+#pad-navbar {
+  height: 60px;
 }
 
-// ── Filtre ──
-function _filterUsers(q) {
-  const lower = (q || '').toLowerCase();
-  const filtered = _licenseRows.filter(u =>
-    String(u.email    || '').toLowerCase().includes(lower) ||
-    String(u.label    || '').toLowerCase().includes(lower) ||
-    String(u.firstname|| '').toLowerCase().includes(lower) ||
-    String(u.lastname || '').toLowerCase().includes(lower) ||
-    String(u.role     || '').toLowerCase().includes(lower)
-  );
-  const w = document.getElementById('users-table-wrap');
-  if (w) w.innerHTML = _renderUsersTable(filtered);
+#pad-navbar button {
+  font-size: 9px !important;
 }
 
-// ════════════════════════════════════════
-// MODAL — Ajouter / Modifier (style KeepTracking)
-// ════════════════════════════════════════
-function openLicenseModal(licenseId) {
-  const l = licenseId ? _licenseRows.find(x => String(x.id) === String(licenseId)) : null;
-
-  // Badges quota
-  const supUsed = _countType('supervision');
-  const supMax  = _limitForType('supervision');
-  const padUsed = _countType('pad');
-  const padMax  = _limitForType('pad');
-
-  const _badge = (used, max, type) => {
-    if (!max) return `<span class="lm-quota lm-quota-warn">Aucune licence ${type}</span>`;
-    if (used >= max) return `<span class="lm-quota lm-quota-err">${used}/${max} — Quota atteint</span>`;
-    return `<span class="lm-quota lm-quota-ok">${max-used} dispo. sur ${max}</span>`;
-  };
-
-  // Valeurs actuelles
-  const curType      = _inferLicenseType(l);
-  const supActive    = !l ? true : (curType === 'supervision' && l.active !== false);
-  const padActive    = !l ? false : (curType === 'pad' && l.active !== false);
-  const firstname    = l?.firstname || (l?.label ? l.label.split(' ')[0] : '') || '';
-  const lastname     = l?.lastname  || (l?.label ? l.label.split(' ').slice(1).join(' ') : '') || '';
-  const supUser      = curType !== 'pad' ? (l?.email || '') : '';
-  const padUser      = curType === 'pad' ? (l?.email || '') : '';
-
-  // Rôles disponibles
-  const rolesHtml = _getAvailableRoles().map(r => {
-    const on = _getLicenseRoles(l).includes(String(r.id));
-    return `<label class="lm-role-label">
-      <input type="checkbox" class="lm-role-check" value="${_safeH(r.id)}" ${on?'checked':''}>
-      <span>${_safeH(r.nom)}</span>
-    </label>`;
-  }).join('');
-
-  // Nettoyer ancienne modale
-  document.getElementById('lm-modal-backdrop')?.remove();
-
-  const modal = document.createElement('div');
-  modal.id = 'lm-modal-backdrop';
-  modal.className = 'pt-modal-backdrop';
- modal.innerHTML = `
-    <div class="pt-modal pt-modal-lg" style="overflow:hidden">
-
-      <!-- En-tête -->
-      <div class="pt-modal-head">
-        <div style="font-size:15px;font-weight:800">${l ? 'Modifier un utilisateur' : 'Ajouter un utilisateur'}</div>
-        <button onclick="document.getElementById('lm-modal-backdrop').remove()" style="width:30px;height:30px;border:none;background:var(--bg);border-radius:8px;cursor:pointer;font-size:16px;color:var(--tl)">×</button>
-      </div>
-
-      <div class="pt-modal-body" style="padding:0;gap:0">
-
-        <!-- ── Informations générales ── -->
-        <div class="lm-section">
-          <div class="lm-section-title">Informations générales</div>
-          <div class="lm-row2">
-            <div class="lm-field">
-              <label class="fl2">Prénom <span class="req">*</span></label>
-              <input id="lm-firstname" class="fi" value="${_safeH(firstname)}" placeholder="Prénom">
-            </div>
-            <div class="lm-field">
-              <label class="fl2">Nom <span class="req">*</span></label>
-              <input id="lm-lastname" class="fi" value="${_safeH(lastname)}" placeholder="Nom">
-            </div>
-          </div>
-          <div class="lm-field">
-            <label class="fl2">E-mail</label>
-            <input id="lm-email" class="fi" type="email" value="${_safeH(l?.email||'')}" placeholder="prenom.nom@exemple.fr">
-          </div>
-        </div>
-
-        <!-- ── Supervision PC ── -->
-        <div class="lm-section">
-          <div class="lm-section-head">
-            <div class="lm-section-title" style="margin:0">🖥 Supervision PC</div>
-            <div style="display:flex;align-items:center;gap:10px">
-              ${_badge(supUsed, supMax, 'Supervision')}
-              <div class="lm-toggle-row">
-                <div class="fl2">Actif</div>
-                <div class="tog ${supActive?'on':'off'}" id="lm-sup-active"
-              onclick="(function(el){var wasOn=el.classList.contains('on');el.classList.toggle('on');el.classList.toggle('off');if(!wasOn){var p=document.getElementById('lm-pad-active');if(p){p.classList.remove('on');p.classList.add('off');}}})(this)"></div>
-              </div>
-            </div>
-          </div>
-          <div class="lm-field">
-            <label class="fl2">Compte Supervision</label>
-            <input class="fi" value="Invitation envoyée par e-mail — l’utilisateur choisira son mot de passe" disabled>
-            <div style="font-size:11.5px;color:var(--tl);margin-top:4px">
-              Pour un compte Supervision PC, PicoTrack utilise l’adresse e-mail ci-dessus. Aucun identifiant ni mot de passe n’est défini par l’administrateur.
-            </div>
-          </div>
-        </div>
-
-        <!-- ── PAD Terrain ── -->
-        <div class="lm-section">
-          <div class="lm-section-head">
-            <div class="lm-section-title" style="margin:0">📱 PAD Terrain</div>
-            <div style="display:flex;align-items:center;gap:10px">
-              ${_badge(padUsed, padMax, 'PAD')}
-              <div class="lm-toggle-row">
-                <div class="fl2">Actif</div>
-               <div class="tog ${padActive?'on':'off'}" id="lm-pad-active"
-              onclick="(function(el){var wasOn=el.classList.contains('on');el.classList.toggle('on');el.classList.toggle('off');if(!wasOn){var s=document.getElementById('lm-sup-active');if(s){s.classList.remove('on');s.classList.add('off');}}})(this)"></div>
-              </div>
-            </div>
-          </div>
-          <div class="lm-row2">
-            <div class="lm-field">
-              <label class="fl2">Nom d'utilisateur PAD</label>
-              <input id="lm-pad-user" class="fi" value="${_safeH(padUser)}" placeholder="login.pad">
-            </div>
-            <div class="lm-field">
-              <label class="fl2">Mot de passe PAD ${l ? '(vide = inchangé)' : ''}</label>
-              <input id="lm-pad-pass" class="fi" type="password" placeholder="••••••••">
-            </div>
-          </div>
-        </div>
-
-        <!-- ── Rôles et permissions ── -->
-        <div class="lm-section">
-          <div class="lm-section-title">Rôles et permissions</div>
-          <div class="lm-field">
-            <label class="fl2">Rôles attribués</label>
-            <div class="lm-roles-grid" id="lm-roles">${rolesHtml}</div>
-          </div>
-        </div>
-
-      </div><!-- /pt-modal-body -->
-
-      <!-- Pied -->
-      <div class="pt-modal-foot" style="justify-content:space-between">
-        <div style="font-size:11px;color:var(--tl)">* champs obligatoires</div>
-        <div style="display:flex;gap:8px">
-          <button class="btn" onclick="document.getElementById('lm-modal-backdrop').remove()">Annuler</button>
-          <button class="btn bp" id="lm-save-btn" onclick="saveLicenseV2('${licenseId||''}',this)">
-            💾 ${l ? 'Enregistrer' : 'Créer'}
-          </button>
-        </div>
-      </div>
-
-    </div><!-- /pt-modal -->
-  `;
-  document.body.appendChild(modal);
-
-  // Focus
-  setTimeout(() => document.getElementById('lm-firstname')?.focus(), 80);
+/* ─── Vue production formulaires ─────────────── */
+body.pad-mode #v-prod-forms {
+  padding: 16px 12px !important;
+  overflow-y: auto;
+  height: calc(100vh - 56px - 60px);
+  box-sizing: border-box;
 }
 
-// ════════════════════════════════════════
-// SAVE — Création ou modification
-// ════════════════════════════════════════
-async function saveLicenseV2(licenseId, btn) {
-  const modal = document.getElementById('lm-modal-backdrop');
+body.pad-mode #v-prod-forms .sbar {
+  max-width: 100% !important;
+  width: 100% !important;
+  margin-bottom: 16px;
+}
 
-  const firstname = (document.getElementById('lm-firstname')?.value || '').trim();
-  const lastname  = (document.getElementById('lm-lastname')?.value  || '').trim();
-  const email     = (document.getElementById('lm-email')?.value     || '').trim().toLowerCase();
-  const padUser   = (document.getElementById('lm-pad-user')?.value  || '').trim();
-  const padPass   =  document.getElementById('lm-pad-pass')?.value  || '';
-  const supActive = document.getElementById('lm-sup-active')?.classList.contains('on');
-  const padActive = document.getElementById('lm-pad-active')?.classList.contains('on');
-  let roles = Array.from(document.querySelectorAll('.lm-role-check:checked'))
-    .map(x => _roleValue(x.value))
-    .filter(Boolean);
+body.pad-mode #v-prod-forms .sbar input {
+  width: 100% !important;
+  font-size: 15px !important;
+  padding: 10px 12px !important;
+}
 
-  // ── Validations ──
-  if (!firstname || !lastname) { toast('e', '⚠️ Prénom et Nom sont obligatoires.'); return; }
-  if (!supActive && !padActive) { toast('e', '⚠️ Activez au moins un type de compte (Supervision ou PAD).'); return; }
+/* Grille des cartes formulaires */
+body.pad-mode #prod-forms-grid {
+  display: grid !important;
+  gap: 12px !important;
+}
 
-  // Supervision = compte nominatif Supabase Auth par e-mail.
-  // PAD = compte appareil / terrain, pas de Supabase Auth et pas forcément d’e-mail.
-  const type = (padActive && !supActive) ? 'pad' : 'supervision';
-
-  if (type === 'supervision' && (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
-    toast('e', '⚠️ Adresse e-mail obligatoire pour un compte Supervision.');
-    return;
-  }
-  if (type === 'pad' && !padUser) {
-    toast('e', '⚠️ Identifiant PAD obligatoire.');
-    return;
-  }
-  if (type === 'pad' && !licenseId && !padPass) {
-    toast('e', '⚠️ Mot de passe PAD obligatoire à la création.');
-    return;
-  }
-
-  const loginUser = type === 'pad' ? padUser : email;
-  const rawPass   = type === 'pad' ? padPass : '';
-
-  // Vérification quota à la création et lors d’un changement de type
-  if (!_canAddType(type, licenseId || null)) {
-    toast('e', `Quota ${_typeLabel(type)} atteint. Contactez PicoTrack pour augmenter votre quota.`);
-    return;
-  }
-
-  // Création finale :
-  // - Supervision : invitation email Supabase Auth.
-  // - PAD : compte terrain avec identifiant/mot de passe stocké en licence PAD.
-
-  // ── Envoi ──
-  btn.disabled = true;
-  btn.textContent = '⏳ Enregistrement…';
-
-  try {
-    const label  = `${firstname} ${lastname}`.trim();
-    const envCode = _licenseEnvCode();
-
-    roles = [...new Set(roles.map(_roleValue).filter(Boolean))];
-    if (!roles.length && type === 'supervision') {
-      // On garde un rôle applicatif facultatif, mais l'accès dépend de license_type.
-      // Si aucun rôle n'est choisi, l'utilisateur pourra se connecter mais n'aura aucune permission métier spécifique.
-      roles = [];
-    }
-    if (type === 'pad') {
-      roles = roles.filter(r => !['supervision_user','super_admin'].includes(String(r).toLowerCase()));
-      if (!roles.includes('pad_user')) roles = ['pad_user', ...roles];
-    }
-    if (type === 'supervision') {
-      roles = roles.filter(r => !['pad_user','pad','supervision_user','super_admin'].includes(String(r).toLowerCase()));
-    }
-
-    const primaryRole = type === 'pad' ? 'pad_user' : 'supervision_user';
-    const selectedRoleObjects = (typeof ROLES_DATA !== 'undefined' ? ROLES_DATA : [])
-      .filter(r => roles.map(String).includes(String(r.id)) || roles.map(String).includes(String(r.nom)));
-    const resolvedPermissions = typeof PT_SECURITY !== 'undefined'
-      ? PT_SECURITY.mergePermissionsFromRoles(selectedRoleObjects)
-      : {};
-
-    const data = {
-      label,
-      firstname,
-      lastname,
-      email: type === 'supervision' ? email : (email || `${loginUser}@pad.local`),
-      role: primaryRole,
-      roles,
-      license_type: type,
-      active: supActive || padActive,
-      scope: 'environment',
-      environment_code: envCode,
-      username: loginUser,
-      login_user: loginUser,
-      resolved_permissions: resolvedPermissions,
-    };
-
-    if (type === 'pad' && rawPass) {
-      data.password_hash = await hashPassword(rawPass);
-    }
-
-    if (licenseId) {
-      // Mise à jour
-      await DB.updateLicense(licenseId, data);
-      if (DB.rebuildResolvedPermissionsForUsers) await DB.rebuildResolvedPermissionsForUsers([licenseId]).catch(e => console.warn('[Users] rebuild permissions:', e.message));
-      toast('s', `✅ Utilisateur "${label}" mis à jour.`);
-    } else {
-      // Création
-      const prefix = type === 'supervision' ? 'SUP' : 'PAD';
-      const rand   = Math.random().toString(36).slice(2, 7).toUpperCase();
-      data.license_key = `${prefix}-${envCode}-${rand}`;
-      await DB.createLicense(data);
-      if (DB.rebuildResolvedPermissionsForUsers) await DB.rebuildResolvedPermissionsForUsers(null).catch(e => console.warn('[Users] rebuild permissions:', e.message));
-      toast('s', type === 'pad' ? `✅ Compte PAD créé.` : `✅ Invitation envoyée à ${data.email}.`);
-    }
-
-    modal?.remove();
-    await renderUsersList();
-
-  } catch (e) {
-    console.error('[Users] save error:', e);
-    toast('e', 'Erreur lors de l\'enregistrement : ' + (e.message || 'erreur inconnue'));
-    btn.disabled = false;
-    btn.textContent = '💾 Enregistrer';
+/* Téléphone → 1 colonne */
+@media (max-width: 599px) {
+  body.pad-mode #prod-forms-grid {
+    grid-template-columns: 1fr !important;
   }
 }
 
-// ── Activer / Désactiver un utilisateur ──
-async function toggleUserActive(userId, currentlyActive) {
-  try {
-    await DB.updateLicense(userId, { active: !currentlyActive });
-    toast('s', `Compte ${!currentlyActive ? 'activé ✓' : 'désactivé ✓'}`);
-    await renderUsersList();
-  } catch (e) {
-    toast('e', `Erreur : ${e.message}`);
+/* Tablette → 2 colonnes */
+@media (min-width: 600px) and (max-width: 1024px) {
+  body.pad-mode #prod-forms-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
   }
 }
-async function deleteUserAccount(userId, email) {
-  if (!_isSuperAdmin()) {
-    toast('e', 'Suppression réservée au super admin.');
-    return;
+
+/* ─── Cartes formulaire PAD ───────────────────── */
+body.pad-mode #prod-forms-grid > div {
+  border-radius: 16px !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,.1) !important;
+  min-height: 130px !important;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Bouton Saisir dans les cartes */
+body.pad-mode #prod-forms-grid a,
+body.pad-mode #prod-forms-grid .saisir-btn,
+body.pad-mode #prod-forms-grid div[style*="Saisir"] {
+  padding: 10px 20px !important;
+  font-size: 13px !important;
+  border-radius: 20px !important;
+}
+
+/* ─── Vue saisie formulaire ───────────────────── */
+body.pad-mode #v-saisie {
+  overflow-y: auto;
+  height: calc(100vh - 56px - 60px);
+  padding: 16px 12px !important;
+  box-sizing: border-box;
+}
+
+body.pad-mode #saisie-wrap {
+  max-width: 100% !important;
+}
+
+/* Carte principale saisie */
+body.pad-mode #saisie-wrap > div {
+  border-radius: 16px !important;
+  padding: 20px 16px !important;
+}
+
+/* Labels de champs */
+body.pad-mode .ap-field > div:first-child {
+  font-size: 14px !important;
+  margin-bottom: 8px !important;
+}
+
+/* Inputs, selects, textareas */
+body.pad-mode input[type="text"],
+body.pad-mode input[type="number"],
+body.pad-mode input[type="date"],
+body.pad-mode input[type="time"],
+body.pad-mode input[type="datetime-local"],
+body.pad-mode input[type="email"],
+body.pad-mode select,
+body.pad-mode textarea {
+  font-size: 16px !important; /* évite le zoom auto iOS */
+  padding: 12px 14px !important;
+  border-radius: 10px !important;
+  min-height: 48px !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* Checkboxes et radios plus grandes */
+body.pad-mode input[type="checkbox"],
+body.pad-mode input[type="radio"] {
+  width: 22px !important;
+  height: 22px !important;
+  min-height: unset !important;
+}
+
+/* Bouton de soumission */
+body.pad-mode button[onclick*="submitSaisie"],
+body.pad-mode button[onclick*="valider"],
+body.pad-mode #saisie-wrap button[style*="background"] {
+  min-height: 52px !important;
+  font-size: 15px !important;
+  border-radius: 14px !important;
+  width: 100% !important;
+}
+
+/* ─── Vue services production ─────────────────── */
+body.pad-mode #v-prod-services {
+  overflow-y: auto;
+  height: calc(100vh - 56px - 60px);
+  padding: 16px 12px !important;
+  box-sizing: border-box;
+}
+
+/* Cartes services : 1 col tel, 2 col tablette */
+body.pad-mode .svc-kanban-col,
+body.pad-mode .svc-instance-card {
+  border-radius: 14px !important;
+  padding: 14px !important;
+}
+
+@media (max-width: 599px) {
+  body.pad-mode .kanban-board {
+    flex-direction: column !important;
+    gap: 12px !important;
   }
-
-  const ok = confirm(
-    `Supprimer définitivement cet utilisateur ?\n\n${email}\n\nCette action supprimera le profil PicoTrack et le compte Supabase Auth.`
-  );
-
-  if (!ok) return;
-
-  try {
-    await DB.deleteLicense(userId);
-    toast('s', 'Utilisateur supprimé définitivement ✓');
-    await renderUsersList();
-  } catch (e) {
-    console.error('[Users] delete error:', e);
-    toast('e', 'Erreur suppression : ' + (e.message || 'erreur inconnue'));
+  body.pad-mode .kanban-col {
+    width: 100% !important;
+    min-width: unset !important;
   }
 }
-// ── Alias legacy (compatibilité pad-mode.js etc.) ──
-function openUserModal(id) { openLicenseModal(id); }
-function saveUserModal(id)  { /* remplacé par saveLicenseV2 */ }
-function _filterLicenses(q) { _filterUsers(q); }
+
+/* ─── Vue profil terminal ─────────────────────── */
+body.pad-mode #pad-profile-view {
+  overflow-y: auto;
+  height: calc(100vh - 56px - 60px);
+}
+
+/* ─── Toasts : repositionner en haut sur mobile ─ */
+@media (max-width: 599px) {
+  body.pad-mode #toasts {
+    bottom: auto !important;
+    top: 64px !important;
+    left: 12px !important;
+    right: 12px !important;
+    width: auto !important;
+  }
+  body.pad-mode .toast {
+    max-width: 100% !important;
+  }
+}
+
+/* ─── Suppression hover/transitions sur touch ── */
+@media (hover: none) {
+  body.pad-mode #prod-forms-grid > div:hover {
+    transform: none !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,.1) !important;
+  }
+}
+
+/* ─── Scrollbar plus discrète sur mobile ──────── */
+body.pad-mode ::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+body.pad-mode ::-webkit-scrollbar-track { background: transparent; }
+body.pad-mode ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+/* Contrôle des vues PAD — priorité absolue */
+body.pad-mode .view { display: none !important; }
+body.pad-mode .view.on { display: block !important; }
+
+/* ══ PAD LITE V3 — simple terrain ══ */
+body.pad-lite-v3{background:#f4f8fd!important;color:#0f172a!important;overflow:hidden}
+body.pad-lite-v3 #main{margin-left:0!important;width:100%!important;min-height:100vh!important;background:linear-gradient(180deg,#f8fbff 0%,#eef5fb 100%)!important;overflow:auto!important}
+.pad-lite-topbar{position:fixed;top:0;left:0;right:0;height:64px;background:#071a31;color:#fff;z-index:9999;display:flex;align-items:center;padding:0 28px;gap:18px;box-shadow:0 8px 28px rgba(2,8,23,.18)}
+.pad-lite-logo{display:flex;align-items:center;gap:10px;font-weight:900;font-size:18px;letter-spacing:-.02em}.pad-lite-logo img{height:30px;max-width:110px;object-fit:contain}.pad-lite-sync{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;font-weight:800;color:#dbeafe}.pad-lite-sync i{width:10px;height:10px;border-radius:999px;background:#10b981;box-shadow:0 0 0 5px rgba(16,185,129,.14)}.pad-lite-user{border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#fff;border-radius:999px;padding:9px 14px;font-weight:800;font-family:inherit}
+.pad-lite-nav{position:fixed;bottom:0;left:0;right:0;height:72px;background:#071a31;z-index:9999;display:flex;align-items:center;justify-content:space-around;padding-bottom:env(safe-area-inset-bottom);box-shadow:0 -10px 35px rgba(2,8,23,.18)}.pad-lite-nav button{border:0;background:transparent;color:#94a3b8;display:flex;flex-direction:column;align-items:center;gap:4px;font-family:inherit;font-size:12px;font-weight:800;min-width:92px;padding:8px 10px;border-radius:16px}.pad-lite-nav button span{font-size:23px;line-height:1}.pad-lite-nav button.active{color:#1d7cff;background:rgba(29,124,255,.12)}
+.pad-lite-home{min-height:calc(100vh - 136px);overflow:auto!important}.pad-lite-wrap{max-width:980px;margin:0 auto;padding:44px 30px 34px}.pad-lite-hello{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px}.pad-lite-time{font-size:15px;color:#64748b;font-weight:800;margin-bottom:6px}.pad-lite-hello h1{margin:0;font-size:34px;line-height:1.05;letter-spacing:-.04em;color:#0f172a}.pad-lite-hello p{margin:8px 0 0;color:#526174;font-size:17px;font-weight:700}
+.pad-lite-main-action{width:100%;min-height:160px;border:0;border-radius:28px;background:linear-gradient(135deg,#2385ff,#0f63e9);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;box-shadow:0 18px 45px rgba(29,124,255,.28);font-family:inherit;cursor:pointer;margin-bottom:34px}.pad-lite-main-action span{width:70px;height:70px;border-radius:22px;background:rgba(255,255,255,.96);color:#126eea;display:flex;align-items:center;justify-content:center;font-size:44px;font-weight:900}.pad-lite-main-action strong{font-size:30px;letter-spacing:-.03em}.pad-lite-main-action small{font-size:16px;opacity:.92;font-weight:700}
+.pad-lite-section{margin-top:28px}.pad-lite-section h2{font-size:22px;margin:0 0 16px;color:#0f172a;letter-spacing:-.03em}.pad-lite-quick-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.pad-lite-quick-card,.pad-lite-last{border:1px solid #dbe7f4;background:#fff;border-radius:22px;box-shadow:0 10px 30px rgba(15,23,42,.06);padding:22px 24px;display:flex;align-items:center;gap:18px;text-align:left;font-family:inherit;cursor:pointer;color:#0f172a;min-height:98px}.pad-lite-quick-card i,.pad-lite-last i{width:58px;height:58px;border-radius:18px;display:flex;align-items:center;justify-content:center;font-style:normal;font-size:27px;flex:0 0 auto}.pad-lite-quick-card span,.pad-lite-last span{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1}.pad-lite-quick-card b,.pad-lite-last b{font-size:18px;line-height:1.15;color:#0f172a}.pad-lite-quick-card small,.pad-lite-last small{font-size:14px;color:#64748b;font-weight:700}.pad-lite-quick-card em{font-style:normal;font-size:34px;color:#64748b;margin-left:auto}.pad-lite-last strong{font-size:14px;color:#059669;background:#dcfce7;border-radius:999px;padding:8px 12px}.pad-lite-empty{border:1.5px dashed #cbd8e8;border-radius:22px;background:rgba(255,255,255,.65);padding:26px;color:#64748b;display:flex;flex-direction:column;gap:6px}.pad-lite-empty b{color:#0f172a;font-size:17px}
+.pad-lite-modal{position:fixed;inset:0;background:rgba(2,8,23,.42);z-index:20000;display:flex;align-items:flex-end;justify-content:center;padding:20px}.pad-lite-sheet{width:min(720px,100%);max-height:82vh;overflow:auto;background:#fff;border-radius:30px 30px 20px 20px;box-shadow:0 30px 90px rgba(2,8,23,.28);padding:22px}.pad-lite-sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}.pad-lite-sheet-head div{display:flex;flex-direction:column}.pad-lite-sheet-head b{font-size:24px}.pad-lite-sheet-head small{color:#64748b;font-weight:700;margin-top:4px}.pad-lite-sheet-head button{width:42px;height:42px;border:1px solid #dbe7f4;background:#fff;border-radius:14px;font-size:28px;color:#64748b}.pad-lite-form-list{display:grid;gap:12px}.pad-lite-form-list button{border:1px solid #dbe7f4;background:#fff;border-radius:20px;padding:18px;display:flex;align-items:center;gap:16px;text-align:left;font-family:inherit}.pad-lite-form-list i{width:52px;height:52px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-style:normal;font-size:24px}.pad-lite-form-list span{display:flex;flex-direction:column;gap:4px;flex:1}.pad-lite-form-list b{font-size:17px;color:#0f172a}.pad-lite-form-list small{font-size:13px;color:#64748b;font-weight:700}.pad-lite-form-list em{font-style:normal;font-size:30px;color:#64748b}.pad-lite-scanner-card{max-width:520px;margin:40px auto;background:#fff;border:1px solid #dbe7f4;border-radius:28px;box-shadow:0 18px 50px rgba(15,23,42,.08);padding:36px;text-align:center}.pad-lite-scanner-icon{width:90px;height:90px;margin:0 auto 18px;border-radius:28px;background:#ede9fe;color:#7c3aed;display:flex;align-items:center;justify-content:center;font-size:48px}.pad-lite-scanner-card h1{margin:0;color:#0f172a}.pad-lite-scanner-card p{color:#64748b;font-weight:700}.pad-lite-scanner-card button{width:100%;border:0;background:#1d7cff;color:#fff;border-radius:18px;padding:17px;font-weight:900;font-size:16px;margin-top:12px;font-family:inherit}.pad-lite-scanner-card button.ghost{background:#fff;color:#0f172a;border:1px solid #dbe7f4}
+@media(max-width:700px){.pad-lite-topbar{padding:0 16px}.pad-lite-user{display:none}.pad-lite-wrap{padding:28px 18px 28px}.pad-lite-hello h1{font-size:28px}.pad-lite-main-action{min-height:142px;border-radius:24px}.pad-lite-quick-grid{grid-template-columns:1fr}.pad-lite-main-action strong{font-size:26px}.pad-lite-main-action small{font-size:14px}.pad-lite-nav{height:68px}}
+
+/* PAD Services Lite V1 - terrain simple */
+.pad-services-wrap{max-width:980px}.pad-svc-head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:24px}.pad-svc-head h1{margin:0;font-size:34px;letter-spacing:-.04em;color:#0f172a}.pad-svc-head p{margin:8px 0 0;color:#526174;font-size:17px;font-weight:700}.pad-svc-head button{border:0;background:#1d7cff;color:#fff;border-radius:18px;padding:16px 22px;font-weight:900;font-size:16px;font-family:inherit;box-shadow:0 12px 30px rgba(29,124,255,.22)}.pad-svc-count{font-style:normal;font-size:13px;background:#eaf3ff;color:#1d7cff;border-radius:999px;padding:5px 10px;margin-left:8px}.pad-svc-focus{background:linear-gradient(135deg,#eef6ff,#ffffff);border:1px solid #cfe1f6;border-radius:26px;padding:18px;margin-bottom:26px;box-shadow:0 12px 35px rgba(15,23,42,.05)}.pad-svc-focus>span{display:block;text-transform:uppercase;letter-spacing:.08em;font-size:12px;color:#64748b;font-weight:900;margin:0 0 12px}.pad-svc-list{display:grid;gap:12px}.pad-svc-card{--svc:#2563eb;border:1px solid #dbe7f4;background:#fff;border-left:6px solid var(--svc);border-radius:22px;box-shadow:0 10px 30px rgba(15,23,42,.06);padding:18px;display:flex;align-items:center;gap:15px;text-align:left;color:#0f172a;cursor:pointer}.pad-svc-icon{width:54px;height:54px;border-radius:17px;background:color-mix(in srgb,var(--svc) 14%,#fff);color:var(--svc);display:flex;align-items:center;justify-content:center;font-size:25px;flex:0 0 auto}.pad-svc-body{min-width:0;flex:1}.pad-svc-top{display:flex;align-items:center;gap:10px;margin-bottom:4px}.pad-svc-top b{font-size:14px;color:#64748b}.pad-svc-top span{font-size:12px;font-weight:900;background:color-mix(in srgb,var(--svc) 12%,#fff);color:var(--svc);border-radius:999px;padding:4px 9px}.pad-svc-card h3{margin:0 0 5px;font-size:19px;line-height:1.15;color:#0f172a}.pad-svc-card p{margin:0 0 4px;color:#526174;font-size:14px;font-weight:700}.pad-svc-card small{color:#94a3b8;font-size:12px;font-weight:800}.pad-svc-card>button{border:0;background:var(--svc);color:#fff;border-radius:15px;padding:13px 16px;font-weight:900;font-family:inherit;min-width:104px}.pad-svc-list.compact .pad-svc-card{opacity:.9}.pad-mission-sheet{max-width:640px}.pad-mission-status{--svc:#2563eb;border-radius:20px;background:color-mix(in srgb,var(--svc) 10%,#fff);border:1px solid color-mix(in srgb,var(--svc) 24%,#dbe7f4);padding:16px;margin:10px 0 18px;display:flex;justify-content:space-between;align-items:center}.pad-mission-status span{color:var(--svc);font-weight:900}.pad-mission-status small{color:#64748b;font-weight:800}.pad-mission-actions{display:grid;gap:12px}.pad-mission-actions button{width:100%;border:1px solid #dbe7f4;background:#fff;color:#0f172a;border-radius:18px;padding:16px;font-weight:900;font-family:inherit;font-size:15px}.pad-mission-actions button.main{background:var(--svc);border-color:var(--svc);color:#fff}.pad-mission-actions button.ghost{background:#fff;color:#0f172a}
+@media(max-width:700px){.pad-svc-head{align-items:flex-start;flex-direction:column}.pad-svc-head h1{font-size:28px}.pad-svc-head button{width:100%}.pad-svc-card{align-items:flex-start}.pad-svc-card>button{min-width:auto;padding:12px}.pad-svc-icon{width:48px;height:48px}.pad-svc-card h3{font-size:17px}}

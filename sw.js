@@ -1,6 +1,6 @@
 // PicoTrack Service Worker — V19 anti-cache obsolète
 // Objectif : ne jamais servir une ancienne version de l'application après un déploiement Vercel.
-const CACHE = 'picotrack-v23-static';
+const CACHE = 'picotrack-v19-static';
 const ASSETS = ['./logo-picotrack.png', './manifest.json'];
 
 self.addEventListener('install', event => {
