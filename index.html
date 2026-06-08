@@ -55,6 +55,9 @@
   <div class="sb-i" id="sb-licensing" onclick="goLicensing()"><span class="sb-ico">🔑</span> Licences</div>
   <div class="sb-i" id="sb-api" onclick="goApiConfig()"><span class="sb-ico">🔌</span> API &amp; Intégrations</div>
 
+  <div class="sb-s">Assistance</div>
+  <div class="sb-i" id="sb-academy" onclick="goAcademy()"><span class="sb-ico">🎓</span> Académie PicoTrack</div>
+
   <div class="sb-s">Production</div>
   <div class="sb-i" id="sb-prod-forms" onclick="goProduction()"><span class="sb-ico">📱</span> PAD Terrain <span class="sb-bk" id="prod-forms-count">3</span></div>
   <div class="sb-i" id="sb-prod-services" onclick="goProdServices()"><span class="sb-ico">⚡</span> Exécution</div>
@@ -325,6 +328,13 @@
   <div class="view" id="v-licensing">
     <div class="licensing-page">
       <div id="licensing-wrap"></div>
+    </div>
+  </div>
+
+  <!-- ASSISTANCE : ACADEMIE PICOTRACK -->
+  <div class="view" id="v-academy">
+    <div class="academy-page">
+      <div id="academy-wrap"></div>
     </div>
   </div>
 </div>
@@ -1202,6 +1212,7 @@ window.PicoBuilderApp = PicoBuilderApp;
 <script src="js/features/api.js"></script>
 <script src="js/features/studio-v4.js"></script>
 <script src="js/features/planning.js"></script>
+<script src="js/features/academy-help.js?v=18.0"></script>
 <script src="pad-mode.js"></script>
 <script src="js/features/performance-v34.js"></script>
 <script src="js/features/pc-login.js"></script>
