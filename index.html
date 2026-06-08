@@ -364,7 +364,8 @@
 const { useState, useRef, useEffect, useCallback } = React;
 
 const C = {
-  em:"#059669", emd:"#047857", eml:"#ECFDF5", em2:"#A7F3D0",
+  em:"#2563EB", emd:"#1D4ED8", eml:"#EFF6FF", em2:"#BFDBFE",
+  ok:"#10B981", okL:"#ECFDF5", danger:"#EF4444", dangerL:"#FEF2F2",
   bd:"#E2E8F0", bg:"#F8FAFC", tx:"#0F172A", tm:"#334155", tl:"#64748B", ts:"#94A3B8"
 };
 
@@ -751,21 +752,23 @@ function Adv({f,upd}){
 
 function AddLine({afterIndex,onAdd}){ return null; }
 
-function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
+function Card({f,editing,selected,selectionCount,onSelect,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
   const [hov,setHov]=useState(false);
   const t=TYPES.find(x=>x.id===f.type);
   const ac=(f.vlds?f.vlds.length:0)+(f.conds?f.conds.length:0);
+  const borderColor=isDO?C.em:selected?C.em:hov?C.bd:C.bd;
   return (
     <div
       draggable={!editing}
-      onDragStart={()=>onDS(f.id)}
+      onDragStart={(e)=>onDS(f.id,e)}
       onDragOver={e=>{e.preventDefault();onDO(f.id);}}
       onDragLeave={()=>onDO(null)}
       onDrop={()=>onDrop(f.id)}
       onMouseEnter={()=>setHov(true)}
       onMouseLeave={()=>setHov(false)}
-      onClick={()=>{if(!editing)onEdit(f.id);}}
-      style={{background:"#fff",border:"1.5px solid "+(isDO?C.em:editing?"#059669":hov?C.bd+"cc":C.bd),borderRadius:10,padding:"11px 13px",marginBottom:1,cursor:editing?"default":"pointer",transition:"border-color .15s, box-shadow .15s",boxShadow:isDO?"0 0 0 3px "+C.em+"30":editing?"0 0 0 3px "+C.em+"20":"none",position:"relative"}}>
+      onClick={(e)=>{if(!editing)onSelect(f.id,e);}}
+      style={{background:"#fff",border:"1.5px solid "+borderColor,borderRadius:14,padding:"14px 16px",marginBottom:6,cursor:editing?"default":"pointer",transition:"border-color .15s, box-shadow .15s, transform .15s",boxShadow:isDO?"0 0 0 3px "+C.em+"30":selected?"0 0 0 3px "+C.em+"18, 0 8px 22px rgba(15,23,42,.06)":hov?"0 8px 22px rgba(15,23,42,.06)":"0 1px 4px rgba(15,23,42,.04)",position:"relative"}}>
+      {selected&&selectionCount>1&&(<div style={{position:"absolute",top:-10,left:"50%",transform:"translateX(-50%)",background:C.em,color:"#fff",borderRadius:999,padding:"2px 10px",fontSize:11,fontWeight:900,boxShadow:"0 6px 14px rgba(37,99,235,.22)"}}>Sélection groupée</div>)}
       {editing?(
         <div onClick={e=>e.stopPropagation()}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
@@ -786,13 +789,14 @@ function Card({f,editing,onEdit,upd,del,onDS,onDO,onDrop,isDO}){
         </div>
       ):(
         <div>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:f.type==="sep"?0:7}}>
-            <span style={{fontSize:13,fontWeight:700,color:C.tx,flex:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:f.type==="sep"?0:8}}>
+            <span title="Déplacer" style={{color:C.ts,fontSize:18,lineHeight:1,cursor:"grab"}}>⠿</span>
+            <span style={{fontSize:13.5,fontWeight:800,color:C.tx,flex:1}}>
               {f.label}{f.req&&(<span style={{color:C.em}}> *</span>)}
               {ac>0&&(<span title={ac+" paramètre(s)"} style={{marginLeft:6,padding:"1px 6px",borderRadius:10,background:C.eml,color:C.em,fontSize:10,fontWeight:800,border:"1px solid "+C.em2}}>⚙ {ac}</span>)}
             </span>
             <Badge tid={f.type} xs/>
-            <div style={{display:"flex",gap:3,opacity:hov?1:0,transition:"opacity .15s"}} onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex",gap:3,opacity:hov||selected?1:0,transition:"opacity .15s"}} onClick={e=>e.stopPropagation()}>
               <button onClick={e=>{e.stopPropagation();onEdit(f.id);}} style={{width:26,height:26,borderRadius:6,border:"1.5px solid "+C.bd,background:"#fff",cursor:"pointer",fontSize:12,color:C.tl}}>✏️</button>
               <button onClick={e=>{e.stopPropagation();del(f.id);}} style={{width:26,height:26,borderRadius:6,border:"1px solid #FCA5A5",background:"#FEF2F2",color:"#EF4444",cursor:"pointer",flexShrink:0,fontSize:11}}>✕</button>
             </div>
@@ -820,6 +824,7 @@ function _mapTypeBack(t){
 function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
   const [fields,setFields]=useState(initialFields && initialFields.length ? initialFields : []);
   const [editId,setEditId]=useState(null);
+  const [selectedIds,setSelectedIds]=useState([]);
   const [fname,setFname]=useState(initialName || "Nouveau formulaire");
   const [editFn,setEditFn]=useState(false);
   const [showSettings,setShowSettings]=useState(false);
@@ -889,23 +894,78 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
   const [dragOvId,setDragOvId]=useState(null);
   const nid=useRef(Date.now());
 
+  const selectField=useCallback((id,e)=>{
+    const multi=e && (e.ctrlKey || e.metaKey || e.shiftKey);
+    setSelectedIds(prev=>{
+      if(multi){
+        const next=prev.includes(id)?prev.filter(x=>x!==id):[...prev,id];
+        return next.length?next:[id];
+      }
+      return [id];
+    });
+    if(!multi) setEditId(id);
+    else setEditId(id);
+  },[]);
+
+  const moveSelected=useCallback((dir)=>{
+    setFields(prev=>{
+      const ids=new Set(selectedIds);
+      if(!ids.size) return prev;
+      const a=[...prev];
+      if(dir<0){
+        for(let i=1;i<a.length;i++){ if(ids.has(a[i].id) && !ids.has(a[i-1].id)){ const tmp=a[i-1]; a[i-1]=a[i]; a[i]=tmp; } }
+      }else{
+        for(let i=a.length-2;i>=0;i--){ if(ids.has(a[i].id) && !ids.has(a[i+1].id)){ const tmp=a[i+1]; a[i+1]=a[i]; a[i]=tmp; } }
+      }
+      return a;
+    });
+  },[selectedIds]);
+
+  const duplicateSelected=useCallback(()=>{
+    setFields(prev=>{
+      const ids=new Set(selectedIds);
+      if(!ids.size) return prev;
+      const copies=prev.filter(f=>ids.has(f.id)).map(f=>({...JSON.parse(JSON.stringify(f)), id:nid.current++, label:(f.label||'Champ')+' (copie)'}));
+      const last=Math.max(...prev.map((f,i)=>ids.has(f.id)?i:-1));
+      const next=[...prev]; next.splice(last+1,0,...copies);
+      setSelectedIds(copies.map(f=>f.id)); setEditId(copies[0]?.id||null);
+      return next;
+    });
+  },[selectedIds]);
+
+  const deleteSelected=useCallback(()=>{
+    setFields(prev=>prev.filter(f=>!selectedIds.includes(f.id)));
+    setEditId(null); setSelectedIds([]);
+  },[selectedIds]);
+
   const addF=useCallback((ai,type,label)=>{
     const t=TYPES.find(x=>x.id===type);
     const f={id:nid.current++,type,req:false,label:(label&&label.trim())?label.trim():t.label,opts:["select","multi"].includes(type)?["Option 1","Option 2"]:[],ph:"",leg:"",showLeg:false,vSup:true,vNom:true,dup:false,vlds:[],conds:[],...(type==="appointment"?{slotDuration:30,startHour:"08:00",endHour:"18:00",parallelSlots:2,daysAvailable:["1","2","3","4","5"],manualValidation:false}:{})};
     setFields(prev=>{const next=[...prev];next.splice(ai+1,0,f);return next;});
     setEditId(f.id);
+    setSelectedIds([f.id]);
   },[]);
 
   const updF=useCallback((id,u)=>{setFields(prev=>prev.map(f=>f.id===id?{...f,...u}:f));},[]);
-  const delF=useCallback((id)=>{setFields(prev=>prev.filter(f=>f.id!==id));setEditId(e=>e===id?null:e);},[]);
+  const delF=useCallback((id)=>{setFields(prev=>prev.filter(f=>f.id!==id));setEditId(e=>e===id?null:e);setSelectedIds(prev=>prev.filter(x=>x!==id));},[]);
   const drop=useCallback((tid)=>{
     if(!dragId||dragId===tid)return;
-    setFields(prev=>{const a=[...prev];const fi=a.findIndex(f=>f.id===dragId);const ti=a.findIndex(f=>f.id===tid);const[item]=a.splice(fi,1);a.splice(ti,0,item);return a;});
+    setFields(prev=>{
+      const movingIds=(selectedIds.includes(dragId)?selectedIds:[dragId]);
+      if(movingIds.includes(tid)) return prev;
+      const movingSet=new Set(movingIds);
+      const moving=prev.filter(f=>movingSet.has(f.id));
+      const rest=prev.filter(f=>!movingSet.has(f.id));
+      const ti=rest.findIndex(f=>f.id===tid);
+      if(ti<0) return prev;
+      const next=[...rest]; next.splice(ti,0,...moving);
+      return next;
+    });
     setDragId(null);setDragOvId(null);
-  },[dragId]);
+  },[dragId,selectedIds]);
 
   const req=fields.filter(f=>f.req).length;
-  const selectedField=fields.find(f=>f.id===editId)||null;
+  const selectedField=fields.find(f=>f.id===editId)||fields.find(f=>selectedIds.includes(f.id))||null;
 
   const handleSave=()=>{
     setSaved(true);
@@ -932,12 +992,12 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
   return (
     <div style={{flex:1,minHeight:0,background:C.bg,fontFamily:"'DM Sans',-apple-system,sans-serif",fontSize:13,color:C.tx,display:"flex",flexDirection:"column",overflow:"hidden"}}>
       {/* Topbar */}
-      <div style={{height:52,background:"#fff",borderBottom:"1px solid "+C.bd,display:"flex",alignItems:"center",padding:"0 18px",gap:10,boxShadow:"0 1px 3px rgba(0,0,0,.04)",flexShrink:0}}>
+      <div style={{height:64,background:"#fff",borderBottom:"1px solid "+C.bd,display:"flex",alignItems:"center",padding:"0 18px",gap:10,boxShadow:"0 1px 3px rgba(0,0,0,.04)",flexShrink:0}}>
         <button onClick={()=>{if(window.goList)window.goList();}} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 11px",borderRadius:7,border:"1.5px solid "+C.bd,background:"#fff",color:C.tl,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>← Formulaires</button>
         <div style={{width:1,height:20,background:C.bd}}/>
         {editFn?(
           <input value={fname} autoFocus onChange={e=>setFname(e.target.value)} onBlur={()=>setEditFn(false)} onKeyDown={e=>{if(e.key==="Enter")setEditFn(false);}}
-            style={{fontSize:14,fontWeight:800,border:"none",borderBottom:"2px solid "+C.em,background:"transparent",outline:"none",color:C.tx,fontFamily:"inherit",minWidth:200}}/>
+            style={{fontSize:22,fontWeight:900,border:"none",borderBottom:"2px solid "+C.em,background:"transparent",outline:"none",color:C.tx,fontFamily:"inherit",minWidth:200}}/>
         ):(
           <div onClick={()=>setEditFn(true)} style={{fontSize:14,fontWeight:800,cursor:"text",display:"flex",alignItems:"center",gap:6}}>
             {fname}<span style={{color:C.bd,fontSize:12,fontWeight:400}}>✎</span>
@@ -1024,8 +1084,8 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
       </div>
 
       {/* Builder : bibliothèque | canvas | inspecteur */}
-      <div style={{flex:1,minHeight:0,display:"grid",gridTemplateColumns:"240px minmax(420px,1fr) 300px",overflow:"hidden",background:C.bg}}>
-        <aside style={{borderRight:"1px solid "+C.bd,background:"#fff",padding:14,overflowY:"auto"}}>
+      <div style={{flex:1,minHeight:0,display:"grid",gridTemplateColumns:"270px minmax(520px,1fr) 360px",overflow:"hidden",background:C.bg}}>
+        <aside style={{borderRight:"1px solid "+C.bd,background:"#fff",padding:18,overflowY:"auto"}}>
           <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Bibliothèque de blocs</div>
           {TYPE_CATS.map(cat=>(
             <div key={cat.id} style={{marginBottom:14}}>
@@ -1042,8 +1102,8 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
           ))}
         </aside>
         <div style={{overflowY:"auto",padding:"20px 0 60px"}}>
-          <div style={{maxWidth:700,margin:"0 auto",padding:"0 16px"}}>
-            <div style={{background:"#fff",border:"1.5px solid "+C.bd,borderRadius:14,padding:"14px 18px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,.05)"}}>
+          <div style={{maxWidth:860,margin:"0 auto",padding:"0 18px"}}>
+            <div style={{background:"#fff",border:"1.5px solid "+C.bd,borderRadius:18,padding:"18px 22px",marginBottom:8,boxShadow:"0 1px 6px rgba(0,0,0,.05)"}}>
               <div style={{display:"flex",alignItems:"center",gap:11}}>
                 <div style={{width:4,height:36,borderRadius:3,background:C.em,flexShrink:0}}/>
                 <div style={{flex:1}}>
@@ -1055,8 +1115,9 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
             <AddLine afterIndex={-1} onAdd={addF}/>
             {fields.map((f,idx)=>(
               <div key={f.id}>
-                <Card f={f} editing={editId===f.id} onEdit={setEditId} upd={updF} del={delF}
-                  onDS={id=>{setDragId(id);setEditId(null);}} onDO={setDragOvId} onDrop={drop}
+                <Card f={f} editing={editId===f.id} selected={selectedIds.includes(f.id)} selectionCount={selectedIds.length}
+                  onSelect={selectField} onEdit={(id)=>{setEditId(id); if(id) setSelectedIds([id]);}} upd={updF} del={delF}
+                  onDS={(id)=>{setDragId(id); if(!selectedIds.includes(id)) setSelectedIds([id]); setEditId(null);}} onDO={setDragOvId} onDrop={drop}
                   isDO={dragOvId===f.id&&dragId!==f.id}/>
                 <AddLine afterIndex={idx} onAdd={addF}/>
               </div>
@@ -1068,9 +1129,18 @@ function PicoBuilderApp({initialFields, initialName, initialMeta, onSave}){
               </div>
             )}
             {fields.length>0&&(<div style={{textAlign:"center",marginTop:12,color:C.ts,fontSize:12}}>{fields.length} champ{fields.length!==1?"s":""} · {req} obligatoire{req!==1?"s":""}</div>)}
+            {selectedIds.length>1&&(
+              <div style={{position:"sticky",bottom:12,margin:"18px auto 0",background:"#fff",border:"1.5px solid "+C.bd,borderRadius:16,padding:"12px 16px",boxShadow:"0 18px 45px rgba(15,23,42,.14)",display:"flex",alignItems:"center",gap:12,maxWidth:680,zIndex:5}}>
+                <div style={{fontSize:13,fontWeight:900,flex:1}}>{selectedIds.length} champs sélectionnés</div>
+                <button onClick={()=>moveSelected(-1)} style={{padding:"8px 12px",border:"1.5px solid "+C.em,borderRadius:10,background:C.eml,color:C.em,fontWeight:900,cursor:"pointer"}}>Déplacer ↑</button>
+                <button onClick={()=>moveSelected(1)} style={{padding:"8px 12px",border:"1.5px solid "+C.em,borderRadius:10,background:C.eml,color:C.em,fontWeight:900,cursor:"pointer"}}>Déplacer ↓</button>
+                <button onClick={duplicateSelected} style={{padding:"8px 12px",border:"1.5px solid "+C.bd,borderRadius:10,background:"#fff",color:C.tm,fontWeight:900,cursor:"pointer"}}>Dupliquer</button>
+                <button onClick={deleteSelected} style={{padding:"8px 12px",border:"1.5px solid #FCA5A5",borderRadius:10,background:C.dangerL,color:C.danger,fontWeight:900,cursor:"pointer"}}>Supprimer</button>
+              </div>
+            )}
           </div>
         </div>
-        <aside style={{borderLeft:"1px solid "+C.bd,background:"#fff",padding:14,overflowY:"auto"}}>
+        <aside style={{borderLeft:"1px solid "+C.bd,background:"#fff",padding:18,overflowY:"auto"}}>
           <div style={{fontSize:11,fontWeight:900,color:C.ts,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Paramètres du champ</div>
           {selectedField?(
             <div style={{display:"grid",gap:10}}>
