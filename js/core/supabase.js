@@ -36,11 +36,16 @@ function _getSupaConfig() {
 // ── Environnement courant ──
 
 function _getEnvironmentCode() {
-  return window.PT_CURRENT_USER?.active_env
-    || sessionStorage.getItem('pt_active_env')
-    || window.PT_CURRENT_USER?.environment_code
-    || window.PT_ENVIRONMENT_CODE
-    || 'DEMO';
+  const active = window.PT_CURRENT_USER?.active_env || sessionStorage.getItem('pt_active_env');
+  const runtimeEnv = window.PT_ENVIRONMENT_CODE;
+  const profileEnv = window.PT_CURRENT_USER?.environment_code;
+
+  // Un compte maître peut avoir environment_code = '*' ou 'GLOBAL'.
+  // Dans ce cas il ne faut pas filtrer l'application sur '*' : on utilise l'environnement runtime Vercel.
+  if (active && active !== '*' && String(active).toUpperCase() !== 'GLOBAL') return active;
+  if (runtimeEnv && runtimeEnv !== '*' && String(runtimeEnv).toUpperCase() !== 'GLOBAL') return runtimeEnv;
+  if (profileEnv && profileEnv !== '*' && String(profileEnv).toUpperCase() !== 'GLOBAL') return profileEnv;
+  return 'DEMO';
 }
 
 function _getTenantId() {
@@ -461,13 +466,44 @@ const DB = {
 
   // ── Tenants (super_admin) ──
   async getTenants() {
+    const runtimeEnv = (typeof _getEnvironmentCode === 'function' ? _getEnvironmentCode() : (window.PT_ENVIRONMENT_CODE || 'DEMO'));
+    const runtimeCode = String(runtimeEnv || 'DEMO').toUpperCase();
+
+    const buildRuntimeTenant = async () => {
+      const limitsRows = await sbFetch(`environment_license_limits?environment_code=eq.${encodeURIComponent(runtimeCode)}&select=*&limit=1`).catch(() => []);
+      const lim = Array.isArray(limitsRows) && limitsRows.length ? limitsRows[0] : {};
+      return [{
+        id: `runtime-${runtimeCode}`,
+        nom: runtimeCode === 'PROSPECT' ? 'Mon Entreprise' : `Environnement ${runtimeCode}`,
+        code: runtimeCode,
+        plan: runtimeCode === 'PROSPECT' ? 'pro' : 'demo',
+        actif: true,
+        couleur: '#059669',
+        max_supervision: lim.supervision_limit ?? 2,
+        max_pad: lim.pad_limit ?? 5,
+        _runtimeFallback: true
+      }];
+    };
+
     try {
-      return await sbFetch('tenants?select=*&actif=eq.true&order=nom.asc');
+      let rows = await sbFetch('tenants?select=*&actif=eq.true&order=nom.asc');
+      if (Array.isArray(rows) && rows.length) {
+        const filtered = rows.filter(t => String(t.code || '').toUpperCase() === runtimeCode);
+        return filtered.length ? filtered : rows;
+      }
     } catch (e) {
-      // Certaines bases historiques n'ont pas encore la colonne actif.
-      // On garde l'application utilisable au lieu de bloquer le super_admin.
-      return sbFetch('tenants?select=*&order=nom.asc');
+      try {
+        let rows = await sbFetch('tenants?select=*&order=nom.asc');
+        if (Array.isArray(rows) && rows.length) {
+          const active = rows.filter(t => t.actif !== false);
+          const filtered = active.filter(t => String(t.code || '').toUpperCase() === runtimeCode);
+          return filtered.length ? filtered : active;
+        }
+      } catch (_) {}
     }
+
+    // Dernier recours : la page licences doit rester utilisable même si RLS masque tenants.
+    return buildRuntimeTenant();
   },
   async createTenant(data) {
     return sbFetch('tenants', { method: 'POST', body: JSON.stringify(data) });

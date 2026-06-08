@@ -65,15 +65,30 @@ module.exports = function handler(req, res) {
     supabaseUrlFromEnv || deriveSupabaseUrlFromAnonKey(supabaseAnonKey)
   );
 
-  const clientCode = pick(
-    'CODE_CLIENT_PICOTRACK',
-    'PICOTRACK_CLIENT_CODE'
-  ) || 'demo';
+  const host = String(req.headers.host || '').toLowerCase();
 
-  const environmentCode = pick(
-    'PICOTRACK_ENVIRONNEMENT_CODE',
-    'PICOTRACK_ENVIRONMENT_CODE'
-  ) || 'DEMO';
+  const clientCode = (pick(
+    'PICOTRACK_CLIENT_CODE',
+    'CODE_CLIENT_PICOTRACK'
+  ) || (host.includes('prospect') ? 'prospect' : 'demo')).trim();
+
+  // Priorité au nom anglais. Le nom français est conservé uniquement en compatibilité.
+  // Sécurité anti-blocage : si le projet/domaine est Prospect et que l'ancienne variable
+  // française force encore DEMO, on bascule sur PROSPECT.
+  let environmentCode = (pick(
+    'PICOTRACK_ENVIRONMENT_CODE',
+    'PICOTRACK_ENVIRONNEMENT_CODE'
+  ) || '').trim();
+
+  if (!environmentCode) {
+    environmentCode = clientCode.toLowerCase() === 'prospect' || host.includes('prospect') ? 'PROSPECT' : 'DEMO';
+  }
+
+  if ((clientCode.toLowerCase() === 'prospect' || host.includes('prospect')) && environmentCode.toUpperCase() === 'DEMO') {
+    environmentCode = 'PROSPECT';
+  }
+
+  environmentCode = environmentCode.toUpperCase();
 
   const payload = {
     supabaseUrl,

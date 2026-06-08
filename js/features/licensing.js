@@ -6,14 +6,35 @@ async function renderLicensingPanel() {
   wrap.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;padding:40px;color:var(--tl)">Chargement…</div>`;
 
   try {
-    const [tenants] = await Promise.all([DB.getTenants()]);
+    let tenants = await DB.getTenants();
 
-    // Charger users par tenant en parallèle
+    // Fallback robuste : sur certains environnements neufs, les politiques RLS ou les seeds
+    // peuvent empêcher la remontée des tenants alors que les limites de licences existent.
+    // On reconstruit alors une carte environnement à partir du runtime Vercel + environment_license_limits.
+    if (!Array.isArray(tenants) || tenants.length === 0) {
+      const envCode = (typeof _getEnvironmentCode === 'function' ? _getEnvironmentCode() : (window.PT_ENVIRONMENT_CODE || 'DEMO'));
+      const limitsRows = await sbFetch(`environment_license_limits?environment_code=eq.${encodeURIComponent(envCode)}&select=*&limit=1`).catch(() => []);
+      const lim = limitsRows && limitsRows.length ? limitsRows[0] : {};
+      tenants = [{
+        id: `runtime-${envCode}`,
+        nom: envCode === 'PROSPECT' ? 'Mon Entreprise' : 'Environnement ' + envCode,
+        code: envCode,
+        plan: 'pro',
+        actif: true,
+        couleur: '#059669',
+        max_supervision: lim.supervision_limit ?? 2,
+        max_pad: lim.pad_limit ?? 5,
+        _runtimeFallback: true
+      }];
+    }
+
+    // Charger users par environnement en parallèle
    const tenantsWithData = await Promise.all(tenants.map(async t => {
       try {
+        const envCode = t.code || (typeof _getEnvironmentCode === 'function' ? _getEnvironmentCode() : window.PT_ENVIRONMENT_CODE || 'DEMO');
         const [users, limits] = await Promise.all([
-          DB.getUsersByTenant(t.id),
-          sbFetch(`environment_license_limits?environment_code=eq.${t.code}&select=*&limit=1`)
+          DB.getUsersByTenant(envCode),
+          sbFetch(`environment_license_limits?environment_code=eq.${encodeURIComponent(envCode)}&select=*&limit=1`)
         ]);
         const lim = limits && limits.length ? limits[0] : {};
         const supUsed = users.filter(u => u.active && u.role !== 'super_admin' && ((Array.isArray(u.roles) ? !u.roles.includes('pad_user') : true) && ['supervision','manager','admin','administrateur','client_admin'].includes(u.role))).length;
@@ -208,11 +229,14 @@ async function saveLicenses(tenantId, envCode) {
     // Sync environment_license_limits + tenants : les deux sources restent cohérentes
     await syncEnvironmentLicenseLimits(tenantId, envCode, maxSup, maxPad);
 
-    // Sync tenants
-    await sbFetch(`tenants?id=eq.${tenantId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ max_supervision: maxSup, max_pad: maxPad })
-    });
+    // Sync tenants lorsque la carte vient réellement de la table tenants.
+    // Si elle vient du fallback runtime, environment_license_limits suffit.
+    if (!String(tenantId).startsWith('runtime-')) {
+      await sbFetch(`tenants?id=eq.${tenantId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ max_supervision: maxSup, max_pad: maxPad })
+      });
+    }
     toast('s', `✓ ${maxSup} supervision · ${maxPad} PAD`);
     await renderLicensingPanel();
   } catch (e) {
