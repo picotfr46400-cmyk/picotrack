@@ -1,6 +1,23 @@
 // ══ PicoTrack — Supabase Client v4 (multi-instance, environment_code) ══
-const SUPA_URL = 'https://jcanufkmcslxwmheqccp.supabase.co';
-const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjYW51ZmttY3NseHdtaGVxY2NwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjAyNDksImV4cCI6MjA5NDIzNjI0OX0.Vt9ZhmEZ0HaBiByRTOHYm65doZn5z09Cjg4AvzntgMU';
+// Configuration injectée au runtime par /api/runtime-config.js depuis les variables Vercel.
+// Noms acceptés côté Vercel :
+// - URL_SUPABASE_VITE
+// - VITE_SUPABASE_ANON_KEY
+// - CODE_CLIENT_PICOTRACK
+// - PICOTRACK_ENVIRONNEMENT_CODE
+// Fallbacks conservés pour compatibilité : VITE_SUPABASE_URL, PICOTRACK_CLIENT_CODE, PICOTRACK_ENVIRONMENT_CODE.
+const PT_RUNTIME_CONFIG = window.PICOTRACK_RUNTIME_CONFIG || {};
+const SUPA_URL = String(PT_RUNTIME_CONFIG.supabaseUrl || '').replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+const SUPA_KEY = String(PT_RUNTIME_CONFIG.supabaseAnonKey || '');
+const PT_CLIENT_CODE = String(PT_RUNTIME_CONFIG.clientCode || 'demo');
+const PT_ENVIRONMENT_CODE = String(PT_RUNTIME_CONFIG.environmentCode || 'DEMO');
+
+window.PT_CLIENT_CODE = PT_CLIENT_CODE;
+window.PT_ENVIRONMENT_CODE = PT_ENVIRONMENT_CODE;
+
+if (!SUPA_URL || !SUPA_KEY) {
+  console.error('[PicoTrack] Configuration Supabase manquante. Vérifier les variables Vercel : URL_SUPABASE_VITE et VITE_SUPABASE_ANON_KEY.');
+}
 
 // ── Client Supabase Auth ──
 const _supa = window.supabase
@@ -22,6 +39,7 @@ function _getEnvironmentCode() {
   return window.PT_CURRENT_USER?.active_env
     || sessionStorage.getItem('pt_active_env')
     || window.PT_CURRENT_USER?.environment_code
+    || window.PT_ENVIRONMENT_CODE
     || 'DEMO';
 }
 
