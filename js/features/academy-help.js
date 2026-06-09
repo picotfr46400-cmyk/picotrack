@@ -57,6 +57,87 @@
     updateToggleLabel();
     syncAcademyToggle();
     applyHelpAttributes();
+    if(!on) hideFloatingHelp();
+  }
+
+
+  function ensureFloatingTooltip(){
+    let tip = document.getElementById('pt-help-floating-tooltip');
+    if(tip) return tip;
+    tip = document.createElement('div');
+    tip.id = 'pt-help-floating-tooltip';
+    tip.setAttribute('role', 'tooltip');
+    document.body.appendChild(tip);
+    return tip;
+  }
+
+  function positionTooltip(tip, target){
+    if(!tip || !target) return;
+    const rect = target.getBoundingClientRect();
+    const margin = 12;
+    const maxW = Math.min(340, window.innerWidth - 24);
+    tip.style.maxWidth = maxW + 'px';
+    tip.style.left = '0px';
+    tip.style.top = '0px';
+    tip.style.visibility = 'hidden';
+    tip.classList.add('visible');
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+
+    let left = rect.right + margin;
+    let top = rect.top + rect.height / 2 - th / 2;
+    let placement = 'right';
+
+    if(left + tw > window.innerWidth - margin){
+      left = rect.left - tw - margin;
+      placement = 'left';
+    }
+    if(left < margin){
+      left = Math.min(Math.max(rect.left, margin), window.innerWidth - tw - margin);
+      top = rect.bottom + margin;
+      placement = 'bottom';
+    }
+    if(top + th > window.innerHeight - margin) top = window.innerHeight - th - margin;
+    if(top < margin) top = margin;
+
+    tip.dataset.placement = placement;
+    tip.style.left = Math.round(left) + 'px';
+    tip.style.top = Math.round(top) + 'px';
+    tip.style.visibility = 'visible';
+  }
+
+  function showFloatingHelp(target){
+    if(!isHelpOn()) return;
+    const el = target && target.closest ? target.closest('[data-pt-help]') : null;
+    if(!el) return;
+    const text = el.getAttribute('data-pt-help');
+    if(!text) return;
+    const tip = ensureFloatingTooltip();
+    tip.textContent = text;
+    positionTooltip(tip, el);
+  }
+
+  function hideFloatingHelp(){
+    const tip = document.getElementById('pt-help-floating-tooltip');
+    if(tip){
+      tip.classList.remove('visible');
+      tip.style.visibility = 'hidden';
+    }
+  }
+
+  function installTooltipDelegation(){
+    if(window.__ptHelpDelegationInstalled) return;
+    window.__ptHelpDelegationInstalled = true;
+    document.addEventListener('mouseover', (ev) => showFloatingHelp(ev.target), true);
+    document.addEventListener('focusin', (ev) => showFloatingHelp(ev.target), true);
+    document.addEventListener('mouseout', (ev) => {
+      const from = ev.target && ev.target.closest ? ev.target.closest('[data-pt-help]') : null;
+      const to = ev.relatedTarget && ev.relatedTarget.closest ? ev.relatedTarget.closest('[data-pt-help]') : null;
+      if(from && from !== to) hideFloatingHelp();
+    }, true);
+    document.addEventListener('focusout', hideFloatingHelp, true);
+    window.addEventListener('scroll', hideFloatingHelp, true);
+    window.addEventListener('resize', hideFloatingHelp, true);
   }
 
   function updateToggleLabel(){
@@ -132,7 +213,8 @@
     if(t.includes('importer')) return 'Ajoute des données ou fichiers depuis une source externe.';
     if(t.includes('exporter')) return 'Télécharge les données pour les exploiter hors PicoTrack, par exemple dans Excel.';
     if(t.includes('rechercher')) return 'Lance une recherche dans les informations affichées.';
-    return 'Action disponible sur cette page. Survolez les zones voisines pour comprendre le contexte.';
+    if(t === '+' || t === '−' || t === '-' || t.includes('plus') || t.includes('moins')) return '';
+    return '';
   }
 
   function helpForInput(el){
@@ -147,7 +229,8 @@
     if(joined.includes('heure')) return 'Sélectionnez une heure ou un créneau.';
     if(joined.includes('libell')) return 'Nom affiché à l’utilisateur final. Il doit être clair et compréhensible sur le terrain.';
     if(joined.includes('nom')) return 'Nom de l’élément affiché dans PicoTrack.';
-    return 'Zone de saisie. Complétez l’information demandée pour avancer correctement.';
+    if(joined.includes('valeur') || placeholder.includes('saisir')) return 'Saisissez ici l’information demandée par le formulaire ou le filtre en cours.';
+    return '';
   }
 
   function helpForElement(el){
@@ -324,6 +407,7 @@
     ensureSidebarMenu();
     applyHelpAttributes();
     updateToggleLabel();
+    installTooltipDelegation();
     let pending = false;
     const obs = new MutationObserver(() => {
       if(pending) return;
