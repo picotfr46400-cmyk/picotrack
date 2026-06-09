@@ -92,37 +92,8 @@ function brandTemplate({ subject, text, html, logoUrl, brandName }) {
 </html>`;
 }
 
-function allowedOrigin(req) {
-  const origin = String(req.headers.origin || '');
-  const host = String(req.headers.host || '');
-  if (!origin) return '*';
-  try {
-    const url = new URL(origin);
-    if (url.hostname === host || url.hostname === 'picotrack.fr' || url.hostname.endsWith('.picotrack.fr') || url.hostname.endsWith('.vercel.app')) return origin;
-  } catch (_) {}
-  return 'https://picotrack.fr';
-}
-
-function pick(...names){for(const name of names){const value=process.env[name];if(value!==undefined&&String(value).trim()!=='')return String(value).trim()}return''}
-function base64UrlDecode(input){try{const normalized=String(input||'').replace(/-/g,'+').replace(/_/g,'/');const padded=normalized+'='.repeat((4-normalized.length%4)%4);return Buffer.from(padded,'base64').toString('utf8')}catch(_){return''}}
-function deriveSupabaseUrlFromAnonKey(anonKey){try{const parts=String(anonKey||'').split('.');if(parts.length<2)return'';const payload=JSON.parse(base64UrlDecode(parts[1])||'{}');const issuer=String(payload.iss||'');const match=issuer.match(/^(https:\/\/[^/]+\.supabase\.co)(?:\/auth\/v1)?/i);return match?match[1].replace(/\/+$/,''):''}catch(_){return''}}
-function normalizeSupabaseUrl(value){return String(value||'').trim().replace(/\/rest\/v1\/?$/,'').replace(/\/auth\/v1\/?$/,'').replace(/\/+$/,'')}
-function bearerToken(req){const raw=String(req.headers.authorization||req.headers.Authorization||'');const m=raw.match(/^Bearer\s+(.+)$/i);return m?m[1].trim():''}
-async function verifySupabaseUser(req){
-  const token=bearerToken(req);
-  if(!token) return {ok:false,status:401,error:'Connexion requise pour envoyer un mail'};
-  const anonKey=pick('VITE_SUPABASE_ANON_KEY','SUPABASE_ANON_KEY','SUPABASE_ANON_PUBLIC_KEY','NEXT_PUBLIC_SUPABASE_ANON_KEY');
-  const supabaseUrl=normalizeSupabaseUrl(pick('URL_SUPABASE_VITE','VITE_SUPABASE_URL','SUPABASE_URL','NEXT_PUBLIC_SUPABASE_URL','PICOTRACK_SUPABASE_URL')||deriveSupabaseUrlFromAnonKey(anonKey));
-  if(!anonKey||!supabaseUrl) return {ok:false,status:500,error:'Configuration Supabase serveur manquante'};
-  const r=await fetch(`${supabaseUrl}/auth/v1/user`,{headers:{apikey:anonKey,Authorization:`Bearer ${token}`}});
-  if(!r.ok) return {ok:false,status:401,error:'Session invalide ou expirée'};
-  const user=await r.json().catch(()=>null);
-  if(!user||!user.id) return {ok:false,status:401,error:'Utilisateur non vérifié'};
-  return {ok:true,user};
-}
-
 module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', allowedOrigin(req));
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -131,9 +102,6 @@ module.exports = async function handler(req, res) {
 
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) { sendJson(res, 500, { ok: false, error: 'RESEND_API_KEY manquante dans Vercel' }); return; }
-
-  const auth = await verifySupabaseUser(req);
-  if (!auth.ok) { sendJson(res, auth.status || 401, { ok: false, error: auth.error }); return; }
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
