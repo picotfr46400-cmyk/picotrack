@@ -16,7 +16,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 
 <!-- React 18 production (jsDelivr — CDN rapide) -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -368,15 +367,16 @@
      Doit rester avant les scripts JS car window.PicoBuilderApp
      est référencé dans react-builder-mount.js
 ═══════════════════════════════════════════════════════════ -->
-<!-- PicoTrack Builder compilé dans assets/app.990d6973b7.js -->
 
-
-<!-- Runtime public minimal + bundle production compilé -->
-<script src="/api/runtime-config.js"></script>
-<script src="assets/network-tunnel.js"></script>
-<script src="assets/app.990d6973b7.js"></script>
+<!-- ═══════════════════════════════════════════════════════════
+     SCRIPTS JS — ordre de chargement strict (pas de defer)
+═══════════════════════════════════════════════════════════ -->
 <script>
 if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
+</script>
+
+<script src="/assets/app.fb7e8d60f2c3.js"></script>
+<script>
 if (typeof isPadMode === 'function' && isPadMode() && typeof initPadMode === 'function') initPadMode();
 </script>
 </body>
