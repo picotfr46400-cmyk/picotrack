@@ -51,7 +51,7 @@
 
   function isHelpOn(){ return localStorage.getItem(HELP_KEY) === 'on'; }
 
-  function setHelp(on){
+  function setHelpMode(on){
     localStorage.setItem(HELP_KEY, on ? 'on' : 'off');
     document.body.classList.toggle('pt-help-on', on);
     updateToggleLabel();
@@ -77,7 +77,7 @@
     btn.id = 'pt-help-toggle';
     btn.type = 'button';
     btn.className = 'pt-help-toggle';
-    btn.onclick = () => setHelp(!isHelpOn());
+    btn.onclick = (ev) => { ev.preventDefault(); setHelpMode(!isHelpOn()); };
     topbar.appendChild(spacer);
     topbar.appendChild(btn);
     updateToggleLabel();
@@ -108,7 +108,7 @@
     return (txt || '').replace(/\s+/g,' ').trim().toLowerCase();
   }
 
-  function setHelp(el, text){
+  function assignHelp(el, text){
     if(!el || !text) return;
     if(el.dataset && el.dataset.ptHelpLocked === '1') return;
     el.setAttribute('data-pt-help', text);
@@ -177,17 +177,17 @@
   function applyHelpAttributes(){
     Object.entries(HELP_TEXTS).forEach(([id, text]) => {
       const el = document.getElementById(id);
-      if(el) setHelp(el, text);
+      if(el) assignHelp(el, text);
     });
 
-    document.querySelectorAll('button,.btn,[role="button"],.sb-i').forEach(el => setHelp(el, helpForButton(el.textContent)));
-    document.querySelectorAll('input,textarea,select').forEach(el => setHelp(el, helpForInput(el)));
+    document.querySelectorAll('button,.btn,[role="button"],.sb-i').forEach(el => assignHelp(el, helpForButton(el.textContent)));
+    document.querySelectorAll('input,textarea,select').forEach(el => assignHelp(el, helpForInput(el)));
     document.querySelectorAll('.card,.row,.pill,.badge,.field,.field-card,.form-field,.builder-field,.pt-ac-card,.pt-ac-step,details,summary,.kpi,.panel,.tab').forEach(el => {
-      setHelp(el, helpForElement(el));
+      assignHelp(el, helpForElement(el));
     });
 
     document.querySelectorAll('[title]').forEach(el => {
-      if(!el.getAttribute('data-pt-help')) setHelp(el, el.getAttribute('title'));
+      if(!el.getAttribute('data-pt-help')) assignHelp(el, el.getAttribute('title'));
     });
   }
 
@@ -242,7 +242,7 @@
           <div class="pt-ac-helpbox">
             <div class="pt-ac-help-title">Mode aide contextuelle</div>
             <p>Activez-le puis survolez les boutons, champs et zones de l’application pour afficher une explication simple orientée usage terrain.</p>
-            <button class="pt-help-toggle big" onclick="window.PicoTrackHelp.toggle()" id="pt-help-toggle-academy"></button>
+            <button class="pt-help-toggle big" onclick="window.PicoTrackHelp.toggle(event)" id="pt-help-toggle-academy"></button>
           </div>
         </div>
 
@@ -336,8 +336,8 @@
   window.goAcademy = goAcademy;
   window.PicoTrackHelp = {
     isOn: isHelpOn,
-    set: setHelp,
-    toggle: function(){ setHelp(!isHelpOn()); syncAcademyToggle(); }
+    set: setHelpMode,
+    toggle: function(event){ if(event) event.preventDefault(); setHelpMode(!isHelpOn()); syncAcademyToggle(); }
   };
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
