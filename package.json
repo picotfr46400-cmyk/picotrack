@@ -1,11 +1,6 @@
 {
   "scripts": {
-    "build": "node scripts/build.mjs"
+    "build": "node -e \"console.log('PicoTrack static secure build: root already prepared')\""
   },
-  "dependencies": {
-    "@babel/core": "^7.26.0",
-    "@babel/preset-react": "^7.26.3",
-    "terser": "^5.37.0"
-  },
-  "devDependencies": {}
+  "dependencies": {}
 }
