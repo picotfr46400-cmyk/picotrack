@@ -29,7 +29,17 @@ const min = await terser.minify(code,{compress:{passes:2},mangle:false,format:{c
 if (min.error) throw min.error;
 const hash = crypto.createHash('sha256').update(min.code).digest('hex').slice(0,12);
 const appName = `app.${hash}.js`;
-fs.writeFileSync(path.join(dist,'assets',appName), min.code);
+const obfuscated = JavaScriptObfuscator.obfuscate(min.code, {
+  compact: true,
+  controlFlowFlattening: false,
+  deadCodeInjection: false,
+  stringArray: true,
+  stringArrayEncoding: ['base64'],
+  stringArrayThreshold: 0.75,
+  identifierNamesGenerator: 'hexadecimal',
+  selfDefending: false,
+});
+fs.writeFileSync(path.join(dist,'assets',appName), obfuscated.getObfuscatedCode());
 const shell = `<!doctype html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="theme-color" content="#059669"><link rel="manifest" href="/manifest.json"><title>PicoTrack</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"><script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script><script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script><link rel="stylesheet" href="/style.css"></head><body><div id="app"></div><script src="/assets/${appName}" defer></script></body></html>`;
 fs.writeFileSync(path.join(dist,'index.html'), shell);
 const sw = `const CACHE='picotrack-v29-${hash}';self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k)))).then(()=>self.clients.claim())));self.addEventListener('fetch',event=>{const req=event.request;const url=new URL(req.url);if(url.pathname.startsWith('/api/'))return;if(req.mode==='navigate'){event.respondWith(fetch(req).catch(()=>caches.match('/index.html')));return;}event.respondWith(fetch(req));});`;
