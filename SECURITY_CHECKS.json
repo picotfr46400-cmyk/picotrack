@@ -1,0 +1,13 @@
+{
+  "source_file_count": 16,
+  "bundle_exists": true,
+  "builder_exists": true,
+  "academy_help_in_bundle": true,
+  "help_toggle_topbar": true,
+  "help_tooltip_zindex_max": true,
+  "send_mail_requires_bearer": true,
+  "client_mail_sends_auth_header": true,
+  "permissions_policy_allows_app_features": true,
+  "no_secret_hits": true,
+  "secret_hits": []
+}
