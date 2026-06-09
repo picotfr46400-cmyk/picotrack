@@ -1001,42 +1001,22 @@ function instanceToDb(inst, device = 'desktop') {
   async function syncItem(item){
     if (!item || item.status === 'synced') return;
 
-    // Chemin recommandé : Edge Function pad-sync. Elle valide la licence PAD et écrit avec service_role côté serveur.
-    // C'est indispensable car le PAD n'utilise pas Supabase Auth.
-    if (typeof sbFunction === 'function' && typeof getPadConfig === 'function') {
-      const cfg = getPadConfig();
-      if (cfg && cfg.licenseId && cfg.licenseKey) {
-        return sbFunction('pad-sync', { pad: cfg, actions: [item] });
-      }
-    }
+    // V22 sécurité : le PAD ne synchronise plus directement vers Supabase.
+    // La licence PAD et l'écriture sont validées côté serveur par /api/pad-sync.
+    if (typeof getPadConfig !== 'function') throw new Error('Session PAD indisponible');
+    const cfg = getPadConfig();
+    if (!cfg || !cfg.padSessionToken) throw new Error('Session PAD expirée : reconnecter le terminal');
 
-    // Fallback direct utile seulement si les policies de test autorisent le PAD.
-    if (typeof DB === 'undefined') throw new Error('DB indisponible');
-    const p = item.payload || {};
-
-    if (item.type === 'form_submission') {
-      const sub = await DB.createSubmission(p.formId, p.values || {}, 'pad');
-      const saved = Array.isArray(sub) ? sub[0] : sub;
-      const form = (typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : []).find(f => String(f.id) === String(p.formId)) || p.form || null;
-      if (saved?.id && form) await createAppointmentsForPayload(form, saved.id, p.values || {}, null, form.nom);
-      return saved;
-    }
-
-    if (item.type === 'service_instance') {
-      const sub = await DB.createSubmission(p.formId, p.values || {}, 'pad');
-      const savedSub = Array.isArray(sub) ? sub[0] : sub;
-      const form = (typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : []).find(f => String(f.id) === String(p.formId)) || p.form || null;
-      const svc = (typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : []).find(s => String(s.id) === String(p.serviceId)) || p.service || null;
-      if (savedSub?.id && form) await createAppointmentsForPayload(form, savedSub.id, p.values || {}, p.serviceId, svc?.nom || form.nom);
-      const inst = p.instance || {};
-      inst.submissionId = savedSub?.id || inst.submissionId;
-      const body = (typeof instanceToDb === 'function') ? instanceToDb(inst, 'pad') : inst;
-      body.service_id = body.service_id || p.serviceId;
-      body.submission_id = body.submission_id || savedSub?.id;
-      return DB.createInstance(body);
-    }
-
-    throw new Error('Type de file inconnu : ' + item.type);
+    const res = await fetch('/api/pad-sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pad: { sessionToken: cfg.padSessionToken }, actions: [item] })
+    });
+    const text = await res.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : {}; } catch { json = { error: text }; }
+    if (!res.ok || json.ok === false) throw new Error(json.error || `Synchronisation PAD refusée (${res.status})`);
+    return json;
   }
 
   async function flush(){

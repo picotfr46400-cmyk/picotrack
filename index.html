@@ -369,14 +369,14 @@
      Doit rester avant les scripts JS car window.PicoBuilderApp
      est référencé dans react-builder-mount.js
 ═══════════════════════════════════════════════════════════ -->
-<script type="text/babel" src="assets/picotrack-builder.jsx?v=20-sec"></script>
+<script type="text/babel" src="assets/picotrack-builder.jsx?v=22-sec"></script>
 
 <!-- ═══════════════════════════════════════════════════════════
      SCRIPTS JS — ordre de chargement strict (pas de defer)
 ═══════════════════════════════════════════════════════════ -->
 <script src="/api/runtime-config.js"></script>
-<script src="assets/picotrack.bundle.js?v=20-sec"></script>
-<script src="pad-mode.js?v=20-sec"></script>
+<script src="assets/picotrack.bundle.js?v=22-sec"></script>
+<script src="pad-mode.js?v=22-sec"></script>
 <script>
 if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js'); }
 if (typeof isPadMode === 'function' && isPadMode() && typeof initPadMode === 'function') initPadMode();

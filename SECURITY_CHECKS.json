@@ -1,13 +1,15 @@
 {
-  "source_file_count": 16,
+  "version": "v22-pad-server-security",
+  "source_file_count": 20,
   "bundle_exists": true,
   "builder_exists": true,
   "academy_help_in_bundle": true,
   "help_toggle_topbar": true,
-  "help_tooltip_zindex_max": true,
+  "pad_auth_server_api_exists": true,
+  "pad_sync_server_api_exists": true,
+  "pad_no_direct_license_rest_fallback": true,
+  "pad_local_storage_no_license_key": true,
+  "pad_sync_uses_vercel_api": true,
   "send_mail_requires_bearer": true,
-  "client_mail_sends_auth_header": true,
-  "permissions_policy_allows_app_features": true,
-  "no_secret_hits": true,
-  "secret_hits": []
+  "no_obvious_secret_values": true
 }

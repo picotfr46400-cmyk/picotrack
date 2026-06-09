@@ -134,30 +134,26 @@ function showPadConnectionScreen() {
   </div>`);
 }
 // ─── Logique de connexion ──────────────────────────────────────
-
-// Mapping codes → environnements (en prod : viendra de l'API)
-const ENV_CODES = {
-  'EDF-BLAYAIS': { id: 'edf-blayais', nom: 'EDF Blayais', client: 'EDF', couleur: '#0ea5e9' },
-  'DEMO':        { id: 'demo',        nom: 'Environnement Demo', client: 'PicoTrack', couleur: '#059669' },
-};
+// Sécurité V22 : la validation PAD ne lit plus la table `licenses` depuis le navigateur.
+// Le navigateur transmet uniquement le code, l'identifiant et le hash du mot de passe à /api/pad-auth.
+// /api/pad-auth vérifie la licence côté serveur avec la clé service_role et renvoie une session PAD limitée.
 
 function padCodeChanged(val) {
-  const code = val.toUpperCase().trim();
+  const code = String(val || '').toUpperCase().trim();
   const identifiant = (document.getElementById('pad-login-id')?.value || '').trim();
   const pass = (document.getElementById('pad-login-pass')?.value || '').trim();
-  const env = ENV_CODES[code];
   const nameEl = document.getElementById('pad-env-name');
   const btn = document.getElementById('pad-connect-btn');
 
-  if (env) {
-    nameEl.textContent = '✓ ' + env.nom + ' — ' + env.client;
-    nameEl.style.color = '#059669';
+  if (code.length >= 2) {
+    nameEl.textContent = 'Code saisi : ' + code;
+    nameEl.style.color = '#94a3b8';
   } else {
-    nameEl.textContent = code.length > 2 ? 'Code non reconnu' : '';
-    nameEl.style.color = code.length > 2 ? '#ef4444' : '#059669';
+    nameEl.textContent = '';
+    nameEl.style.color = '#94a3b8';
   }
 
-  if (env && identifiant.length >= 1 && pass.length >= 1) {
+  if (code.length >= 2 && identifiant.length >= 1 && pass.length >= 1) {
     btn.style.opacity = '1';
     btn.style.pointerEvents = 'auto';
   } else {
@@ -166,15 +162,27 @@ function padCodeChanged(val) {
   }
 }
 
+async function _padApi(path, payload) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : {}; } catch { json = { error: text }; }
+  if (!res.ok || json.ok === false) throw new Error(json.error || `Erreur serveur ${res.status}`);
+  return json;
+}
+
 async function connectPad() {
   const code = document.getElementById('pad-env-code').value.toUpperCase().trim();
   const identifiant = document.getElementById('pad-login-id').value.trim();
   const pass = document.getElementById('pad-login-pass').value.trim();
-  const env = ENV_CODES[code];
   const errorEl = document.getElementById('pad-error');
 
-  if (!env) {
-    errorEl.textContent = 'Code environnement invalide';
+  if (code.length < 2) {
+    errorEl.textContent = 'Code environnement obligatoire';
     return;
   }
 
@@ -184,48 +192,31 @@ async function connectPad() {
   }
 
   try {
+    errorEl.textContent = 'Vérification en cours…';
     const passHash = (typeof hashPassword === 'function') ? await hashPassword(pass) : pass;
-    let license = null;
+    const auth = await _padApi('/api/pad-auth', {
+      environment_code: code,
+      login: identifiant,
+      password_hash: passHash
+    });
 
-    // Chemin recommandé : Edge Function pad-auth, nécessaire si les tables sont protégées par RLS.
-    if (typeof sbFunction === 'function') {
-      try {
-        const auth = await sbFunction('pad-auth', { environment_code: code, login: identifiant, password_hash: passHash });
-        license = auth && auth.license ? auth.license : null;
-      } catch(fnErr) {
-        console.warn('[PAD] pad-auth indisponible, fallback REST:', fnErr.message);
-      }
-    }
-
-    // Fallback historique si les policies autorisent encore la lecture directe des licences.
-    if (!license) {
-      const rows = await sbFetch(
-        `licenses?environment_code=eq.${encodeURIComponent(code)}&email=eq.${encodeURIComponent(identifiant)}&password_hash=eq.${encodeURIComponent(passHash)}&license_type=in.(nomade,pad,PAD)&active=eq.true&select=*`
-      );
-      if (!rows || !rows.length) {
-        errorEl.textContent = 'Identifiants PAD invalides ou licence inactive';
-        return;
-      }
-      license = rows[0];
-      await sbFetch(
-        `licenses?id=eq.${license.id}`,
-        { method: 'PATCH', body: JSON.stringify({ last_seen: new Date().toISOString(), device_name: navigator.userAgent.slice(0, 120) }) }
-      ).catch(()=>null);
-    }
-
+    const license = auth.license || {};
     savePadConfig({
-      ...env,
-      code,
+      id: String(auth.environment?.id || code.toLowerCase()),
+      code: String(auth.environment?.code || code).toUpperCase(),
+      nom: String(auth.environment?.nom || 'Environnement terrain'),
+      client: String(auth.environment?.client || 'Client'),
+      couleur: String(auth.environment?.couleur || '#059669'),
       login: identifiant,
       licenseId: license.id,
-      licenseKey: license.license_key,
       licenseLabel: license.label || '',
       role: license.role || '',
-      roles: Array.isArray(license.roles) ? license.roles : (license.role ? [license.role] : [])
+      roles: Array.isArray(license.roles) ? license.roles : (license.role ? [license.role] : []),
+      padSessionToken: auth.padSessionToken || ''
     });
 
     document.querySelectorAll('#pad-overlay').forEach(el => el.remove());
-    applyPadEnvironment(env);
+    applyPadEnvironment(getPadConfig());
     showPadHome();
     if (typeof checkSupabaseConnection === 'function') await checkSupabaseConnection();
     if (typeof syncAllFromSupabase === 'function') await syncAllFromSupabase();
@@ -234,7 +225,7 @@ async function connectPad() {
 
   } catch (e) {
     console.warn('[PAD] Login error:', e);
-    errorEl.textContent = 'Erreur vérification connexion';
+    errorEl.textContent = e.message || 'Erreur vérification connexion';
   }
 }
 
