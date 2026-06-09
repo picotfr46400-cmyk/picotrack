@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { transformSync } from '@babel/core';
 import terser from 'terser';
+import JavaScriptObfuscator from 'javascript-obfuscator';
 const root = process.cwd();
 const legacy = path.join(root,'src','legacy');
 const dist = path.join(root,'dist');
