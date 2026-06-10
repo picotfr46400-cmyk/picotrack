@@ -1,56 +1,42 @@
 const { getSupabaseConfig, json } = require('./_server-supabase');
 
 function readBody(req) {
-  if (req.body && typeof req.body === 'object') return Promise.resolve(req.body);
   if (typeof req.body === 'string') {
-    try { return Promise.resolve(JSON.parse(req.body || '{}')); } catch (_) { return Promise.resolve({}); }
+    try { return JSON.parse(req.body || '{}'); } catch { return {}; }
   }
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', chunk => {
-      raw += chunk;
-      if (raw.length > 1_000_000) reject(new Error('Payload trop volumineux'));
-    });
-    req.on('end', () => {
-      try { resolve(raw ? JSON.parse(raw) : {}); } catch (_) { resolve({}); }
-    });
-    req.on('error', reject);
-  });
+  return req.body || {};
 }
 
-function cleanString(value, max = 255) {
+function cleanText(value, max = 500) {
   return String(value ?? '').trim().slice(0, max);
 }
 
 function normalizeEmail(value) {
-  return cleanString(value, 320).toLowerCase();
+  return cleanText(value, 320).toLowerCase();
 }
 
-function safeArray(value) {
-  return Array.isArray(value) ? value : [];
+function randomPassword() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%';
+  let out = '';
+  for (let i = 0; i < 24; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
 }
 
-function safeObject(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-}
-
-async function supabaseFetch(url, serviceRole, path, options = {}) {
+async function supaFetch(url, path, serviceRole, options = {}) {
   const upstream = await fetch(`${url}${path}`, {
-    method: options.method || 'GET',
+    ...options,
     headers: {
       apikey: serviceRole,
       Authorization: `Bearer ${serviceRole}`,
       'Content-Type': 'application/json',
-      ...(options.prefer ? { Prefer: options.prefer } : {}),
       ...(options.headers || {})
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+    }
   });
   const text = await upstream.text();
   let payload = null;
-  try { payload = text ? JSON.parse(text) : null; } catch (_) { payload = { message: text }; }
+  try { payload = text ? JSON.parse(text) : null; } catch { payload = { message: text }; }
   if (!upstream.ok) {
-    const msg = payload?.error_description || payload?.msg || payload?.message || payload?.error || text || `Supabase ${upstream.status}`;
+    const msg = payload?.error_description || payload?.msg || payload?.error || payload?.message || `Supabase ${upstream.status}`;
     const err = new Error(msg);
     err.status = upstream.status;
     err.payload = payload;
@@ -59,177 +45,154 @@ async function supabaseFetch(url, serviceRole, path, options = {}) {
   return payload;
 }
 
-async function findAuthUserByEmail(url, serviceRole, email) {
-  const pagesToCheck = 10;
-  for (let page = 1; page <= pagesToCheck; page += 1) {
-    const payload = await supabaseFetch(url, serviceRole, `/auth/v1/admin/users?page=${page}&per_page=100`, { method: 'GET' });
-    const users = Array.isArray(payload?.users) ? payload.users : Array.isArray(payload) ? payload : [];
-    const found = users.find(u => normalizeEmail(u.email) === email);
-    if (found) return found;
-    if (!users.length || users.length < 100) break;
+async function getCallerProfile(url, serviceRole, req) {
+  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  if (!token) return null;
+  try {
+    const user = await supaFetch(url, '/auth/v1/user', serviceRole, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!user?.id) return null;
+    const rows = await supaFetch(url, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(user.id)}&select=id,email,role,environment_code&limit=1`, serviceRole, { method: 'GET' });
+    return rows && rows[0] ? rows[0] : null;
+  } catch (_) {
+    return null;
   }
-  return null;
 }
 
-async function inviteAuthUser(url, serviceRole, payload) {
-  const email = normalizeEmail(payload.email || payload.login_user || payload.username);
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new Error('Adresse e-mail invalide pour la création du compte Supervision.');
-  }
-
-  const redirectTo = cleanString(payload.redirect_to || '', 800);
-  const userMetadata = {
-    label: cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim()),
-    firstname: cleanString(payload.firstname || payload.first_name || ''),
-    lastname: cleanString(payload.lastname || payload.last_name || ''),
-    environment_code: cleanString(payload.environment_code || '').toLowerCase(),
-    license_type: cleanString(payload.license_type || 'supervision'),
-    role: cleanString(payload.role || 'supervision_user')
-  };
-
-  try {
-    const invited = await supabaseFetch(url, serviceRole, '/auth/v1/invite', {
-      method: 'POST',
-      body: {
-        email,
-        data: userMetadata,
-        ...(redirectTo ? { redirect_to: redirectTo } : {})
-      }
-    });
-    return invited?.user || invited;
-  } catch (err) {
-    const message = String(err.message || '').toLowerCase();
-    if (err.status === 422 || message.includes('already') || message.includes('registered') || message.includes('exists')) {
-      const existing = await findAuthUserByEmail(url, serviceRole, email);
-      if (existing?.id) return existing;
-    }
+function assertAdmin(profile) {
+  if (!profile || profile.role !== 'super_admin') {
+    const err = new Error('Action réservée au super administrateur PicoTrack.');
+    err.status = 403;
     throw err;
   }
 }
 
-async function upsertUserProfile(url, serviceRole, authUser, payload) {
-  if (!authUser?.id) throw new Error('Compte Auth créé mais ID utilisateur introuvable.');
-  const environmentCode = cleanString(payload.environment_code || 'efc').toLowerCase();
-  const email = normalizeEmail(payload.email || authUser.email);
+async function findTenantId(url, serviceRole, environmentCode) {
+  const rows = await supaFetch(url, `/rest/v1/tenants?code=eq.${encodeURIComponent(environmentCode)}&select=id&limit=1`, serviceRole, { method: 'GET' }).catch(() => []);
+  return rows && rows[0] ? rows[0].id : null;
+}
+
+async function handleInviteUser(req, res, payload, cfg) {
+  if (!cfg.serviceRole) return json(res, 500, { error: 'SUPABASE_SERVICE_ROLE_KEY manquante dans Vercel. Impossible de créer un compte Auth serveur.' });
+
+  const caller = await getCallerProfile(cfg.url, cfg.serviceRole, req);
+  assertAdmin(caller);
+
+  const email = normalizeEmail(payload.email);
+  const environmentCode = cleanText(payload.environment_code || payload.environmentCode || process.env.PICOTRACK_ENVIRONNEMENT_CODE || process.env.PICOTRACK_ENVIRONMENT_CODE || 'efc', 80);
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json(res, 400, { error: 'Adresse e-mail invalide.' });
+  if (!environmentCode) return json(res, 400, { error: 'environment_code manquant.' });
+
+  let authUser = null;
+
+  try {
+    // Crée d'abord le compte Supabase Auth via invitation officielle.
+    // C'est indispensable car user_profiles.id référence auth.users.id.
+    authUser = await supaFetch(cfg.url, '/auth/v1/invite', cfg.serviceRole, {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        data: {
+          label: cleanText(payload.label),
+          firstname: cleanText(payload.firstname),
+          lastname: cleanText(payload.lastname),
+          environment_code: environmentCode,
+          created_by: 'picotrack'
+        },
+        redirect_to: cleanText(payload.redirect_to || `${req.headers.origin || ''}/`, 500)
+      })
+    });
+  } catch (e) {
+    const msg = String(e.message || '').toLowerCase();
+    if (!msg.includes('already') && !msg.includes('exist') && e.status !== 422 && e.status !== 400) throw e;
+    return json(res, 409, { error: 'Un compte Auth existe déjà avec cet e-mail. Supprime-le dans Authentication > Users ou utilise un autre e-mail.' });
+  }
+
+  const userId = authUser?.id || authUser?.user?.id;
+  if (!userId) return json(res, 500, { error: 'Compte Auth créé mais ID utilisateur introuvable.' });
+
+  const tenantId = await findTenantId(cfg.url, cfg.serviceRole, environmentCode);
   const profile = {
-    id: authUser.id,
+    id: userId,
     email,
-    label: cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim()),
-    firstname: cleanString(payload.firstname || payload.first_name || ''),
-    lastname: cleanString(payload.lastname || payload.last_name || ''),
-    first_name: cleanString(payload.firstname || payload.first_name || ''),
-    last_name: cleanString(payload.lastname || payload.last_name || ''),
-    username: cleanString(payload.username || payload.login_user || email),
-    login_user: cleanString(payload.login_user || payload.username || email),
-    role: cleanString(payload.role || 'supervision_user'),
-    roles: safeArray(payload.roles),
-    scope: cleanString(payload.scope || 'environment'),
-    environment_code: environmentCode,
+    label: cleanText(payload.label) || email,
+    firstname: cleanText(payload.firstname),
+    lastname: cleanText(payload.lastname),
+    first_name: cleanText(payload.firstname),
+    last_name: cleanText(payload.lastname),
+    role: cleanText(payload.role || 'supervision_user'),
+    roles: Array.isArray(payload.roles) ? payload.roles : [],
+    resolved_permissions: payload.resolved_permissions || {},
+    license_type: cleanText(payload.license_type || 'supervision'),
     active: payload.active !== false,
-    license_type: cleanString(payload.license_type || 'supervision'),
-    license_key: payload.license_key || null,
-    resolved_permissions: safeObject(payload.resolved_permissions),
+    scope: cleanText(payload.scope || 'environment'),
+    environment_code: environmentCode,
+    username: cleanText(payload.username || email),
+    login_user: cleanText(payload.login_user || email),
+    license_key: cleanText(payload.license_key),
+    tenant_id: tenantId,
     updated_at: new Date().toISOString()
   };
 
-  const rows = await supabaseFetch(url, serviceRole, '/rest/v1/user_profiles?on_conflict=id', {
+  await supaFetch(cfg.url, '/rest/v1/user_profiles', cfg.serviceRole, {
     method: 'POST',
-    prefer: 'resolution=merge-duplicates,return=representation',
-    body: profile
+    headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+    body: JSON.stringify(profile)
   });
-  return Array.isArray(rows) ? rows[0] : rows;
-}
 
-async function insertLicenseBestEffort(url, serviceRole, payload) {
-  const body = {
-    environment_code: cleanString(payload.environment_code || 'efc').toLowerCase(),
-    license_key: cleanString(payload.license_key || ''),
-    license_type: cleanString(payload.license_type || 'supervision'),
-    label: cleanString(payload.label || ''),
-    email: normalizeEmail(payload.email || payload.login_user || payload.username || ''),
-    role: cleanString(payload.role || 'supervision_user'),
-    roles: safeArray(payload.roles),
-    scope: cleanString(payload.scope || 'environment'),
-    active: payload.active !== false,
-    created_at: new Date().toISOString()
-  };
-  try {
-    await supabaseFetch(url, serviceRole, '/rest/v1/licenses', {
-      method: 'POST',
-      prefer: 'return=minimal',
-      body
-    });
-  } catch (_) {
-    // La table licences n'est pas indispensable à l'accès utilisateur.
-  }
-}
-
-async function handleInviteUser(url, serviceRole, payload) {
-  if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
-  const authUser = await inviteAuthUser(url, serviceRole, payload);
-  const profile = await upsertUserProfile(url, serviceRole, authUser, payload);
-  await insertLicenseBestEffort(url, serviceRole, payload);
-  return {
-    ok: true,
+  return json(res, 200, {
     success: true,
-    user: { id: authUser.id, email: authUser.email || payload.email },
-    profile
-  };
+    id: userId,
+    email,
+    message: 'Invitation Supabase Auth créée puis profil PicoTrack enregistré.'
+  });
 }
 
-async function handleDeleteUser(url, serviceRole, payload) {
-  if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
-  const id = cleanString(payload.user_id || payload.id, 80);
-  if (!id) throw new Error('ID utilisateur manquant.');
+async function handleDeleteUser(req, res, payload, cfg) {
+  if (!cfg.serviceRole) return json(res, 500, { error: 'SUPABASE_SERVICE_ROLE_KEY manquante dans Vercel. Impossible de supprimer un compte Auth serveur.' });
+  const caller = await getCallerProfile(cfg.url, cfg.serviceRole, req);
+  assertAdmin(caller);
 
-  await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    prefer: 'return=minimal'
-  });
+  const userId = cleanText(payload.user_id || payload.id, 100);
+  if (!userId) return json(res, 400, { error: 'user_id manquant.' });
 
-  await supabaseFetch(url, serviceRole, `/auth/v1/admin/users/${encodeURIComponent(id)}`, {
-    method: 'DELETE'
-  }).catch(() => null);
+  await supaFetch(cfg.url, `/rest/v1/licenses?id=eq.${encodeURIComponent(userId)}`, cfg.serviceRole, { method: 'DELETE' }).catch(() => null);
+  await supaFetch(cfg.url, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(userId)}`, cfg.serviceRole, { method: 'DELETE' }).catch(() => null);
+  await supaFetch(cfg.url, `/auth/v1/admin/users/${encodeURIComponent(userId)}`, cfg.serviceRole, { method: 'DELETE' }).catch(() => null);
 
-  return { ok: true, success: true };
+  return json(res, 200, { success: true });
 }
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
-  const { url, anonKey, serviceRole } = getSupabaseConfig();
-  if (!url || !anonKey) return json(res, 500, { error: 'Configuration Supabase serveur manquante' });
+  const cfg = getSupabaseConfig();
+  if (!cfg.url || !cfg.anonKey) return json(res, 500, { error: 'Configuration Supabase serveur manquante' });
 
   try {
-    const body = await readBody(req);
-    const functionName = cleanString(body.functionName || body.fn || '', 80).replace(/[^a-zA-Z0-9_-]/g, '');
-    const payload = safeObject(body.payload);
+    const body = readBody(req);
+    const fn = String(body.functionName || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const payload = body.payload || {};
+    if (!fn) return json(res, 400, { error: 'Fonction invalide' });
 
-    if (functionName === 'invite-user') {
-      return json(res, 200, await handleInviteUser(url, serviceRole, payload));
-    }
-    if (functionName === 'delete-user') {
-      return json(res, 200, await handleDeleteUser(url, serviceRole, payload));
-    }
+    if (fn === 'invite-user') return await handleInviteUser(req, res, payload, cfg);
+    if (fn === 'delete-user') return await handleDeleteUser(req, res, payload, cfg);
 
+    // Compatibilité ancienne : autres fonctions Supabase Edge éventuelles.
     const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    const key = serviceRole || anonKey;
-    const upstream = await fetch(`${url}/functions/v1/${functionName}`, {
+    const key = cfg.serviceRole || cfg.anonKey;
+    const upstream = await fetch(`${cfg.url}/functions/v1/${fn}`, {
       method: 'POST',
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${token || key}`,
-        'Content-Type': 'application/json'
-      },
+      headers: { apikey: key, Authorization: `Bearer ${token || key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     const text = await upstream.text();
     res.statusCode = upstream.status;
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
-    return res.end(text);
-  } catch (err) {
-    return json(res, err.status && err.status >= 400 ? err.status : 500, {
-      error: err.message || 'Erreur fonction serveur'
-    });
+    res.end(text);
+  } catch (e) {
+    json(res, e.status || 500, { error: e.message || 'Erreur fonction' });
   }
 };
