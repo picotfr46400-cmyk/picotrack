@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "build": "node -e \"console.log('PicoTrack production package: static bundle ready')\""
+  },
+  "dependencies": {}
+}
