@@ -1,7 +1,0 @@
-{
-  "version": "prod-clean-efc-user-server-fix",
-  "mode": "production-clean",
-  "keptAssets": ["assets/app.76b44b2cee47.js"],
-  "removed": ["src", "js", "scripts", "legacy", "old bundles", "security markdown docs"],
-  "fixes": ["server-side invite-user", "server-side delete-user"]
-}
