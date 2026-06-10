@@ -1,6 +1,0 @@
-{
-  "version": "v31-efc-user-auth-fix",
-  "app": "app.76b44b2cee47.js",
-  "generatedAt": "2026-06-10T11:26:56.354173Z",
-  "fix": "server-side invite-user creates Supabase Auth before user_profiles"
-}
