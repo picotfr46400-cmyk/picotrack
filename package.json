@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "build": "node -e \"console.log('PicoTrack static secure build: root already prepared')\""
+    "build": "node -e \"const fs=require('fs');const path=require('path');const out='public';fs.rmSync(out,{recursive:true,force:true});fs.mkdirSync(out,{recursive:true});for(const f of ['index.html','style.css','logo-picotrack.png','manifest.json','sw.js','robots.txt','BUILD_INFO.json']){if(fs.existsSync(f))fs.copyFileSync(f,path.join(out,f));}if(fs.existsSync('assets'))fs.cpSync('assets',path.join(out,'assets'),{recursive:true});console.log('PicoTrack static files copied to public');\""
   },
   "dependencies": {}
 }
