@@ -32,11 +32,13 @@ function cleanOffset(value) {
   return Math.max(0, Math.min(Math.trunc(n), 100000));
 }
 
-function cleanOrder(value) {
+function cleanOrder(value, entity = '') {
   const order = String(value || '').trim();
   if (!order) return '';
   const parts = order.split('.');
-  const col = parts[0];
+  let col = parts[0];
+  if (entity === 'app_roles' && col === 'nom') col = 'name';
+  if (entity === 'app_roles' && col === 'desc') col = 'description';
   if (!COL_ALLOW.test(col)) return '';
   const dir = parts[1] === 'desc' ? 'desc' : 'asc';
   return `${col}.${dir}`;
@@ -57,11 +59,21 @@ function cleanFilters(filters) {
   return out;
 }
 
+function mapColumn(entity, column) {
+  if (entity === 'app_roles' && column === 'nom') return 'name';
+  if (entity === 'app_roles' && column === 'desc') return 'description';
+  return column;
+}
+
+function mapFilters(entity, filters) {
+  return cleanFilters(filters).map(f => ({ ...f, column: mapColumn(entity, f.column) }));
+}
+
 function buildReadPath(entity, { select='*', filters=[], order='', limit=1000, offset=0 } = {}) {
   const params = new URLSearchParams();
   params.set('select', cleanSelect(select));
-  for (const f of cleanFilters(filters)) params.append(f.column, `${f.op}.${f.value}`);
-  const safeOrder = cleanOrder(order);
+  for (const f of mapFilters(entity, filters)) params.append(f.column, `${f.op}.${f.value}`);
+  const safeOrder = cleanOrder(order, entity);
   if (safeOrder) params.set('order', safeOrder);
   params.set('limit', String(cleanLimit(limit)));
   const off = cleanOffset(offset);
@@ -69,12 +81,18 @@ function buildReadPath(entity, { select='*', filters=[], order='', limit=1000, o
   return `${entity}?${params.toString()}`;
 }
 
-function normalizeRecord(record) {
+function normalizeRecord(record, entity = '') {
   if (!record || typeof record !== 'object' || Array.isArray(record)) return {};
   const out = {};
-  for (const [k, v] of Object.entries(record)) {
+  for (let [k, v] of Object.entries(record)) {
     if (!COL_ALLOW.test(k)) continue;
+    k = mapColumn(entity, k);
+    if (entity === 'app_roles' && (k === 'nom' || k === 'desc')) continue;
     out[k] = v;
+  }
+  if (entity === 'app_roles') {
+    if (record.nom && !out.name) out.name = record.nom;
+    if (record.desc && !out.description) out.description = record.desc;
   }
   return out;
 }
@@ -115,7 +133,7 @@ async function handleList(req, body) {
 async function handleSave(req, body) {
   const entity = cleanEntity(body.entity);
   if (!entity) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
-  const record = normalizeRecord(body.record || body.body);
+  const record = normalizeRecord(body.record || body.body, entity);
   const id = String(body.id || '').trim();
   const method = id ? 'PATCH' : 'POST';
   const path = id ? `${entity}?id=eq.${encodeURIComponent(id)}` : entity;

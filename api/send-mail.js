@@ -12,6 +12,7 @@ function brandTemplate({subject,html,logoUrl,brandName}){const safeSubject=escap
 module.exports=async function handler(req,res){
   setCors(req,res);
   if(req.method==='OPTIONS'){res.statusCode=204;return res.end()}
+  if(req.method==='GET')return json(res,200,{ok:true,status:'send-mail endpoint ready'});
   if(req.method!=='POST')return json(res,405,{ok:false,error:'Méthode non autorisée'});
   const apiKey=process.env.RESEND_API_KEY;
   if(!apiKey)return json(res,500,{ok:false,error:'RESEND_API_KEY manquante dans Vercel'});
