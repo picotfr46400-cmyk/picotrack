@@ -1,4 +1,4 @@
-const { getSupabaseConfig, json } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin } = require('./_server-supabase');
 
 function readBody(req) {
   if (req.body && typeof req.body === 'object') return Promise.resolve(req.body);
@@ -195,6 +195,8 @@ async function handleDeleteUser(url, serviceRole, payload) {
 }
 
 module.exports = async function handler(req, res) {
+  setCors(req, res);
+  if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
   const { url, anonKey, serviceRole } = getSupabaseConfig();
   if (!url || !anonKey) return json(res, 500, { error: 'Configuration Supabase serveur manquante' });
@@ -205,19 +207,23 @@ module.exports = async function handler(req, res) {
     const payload = safeObject(body.payload);
 
     if (functionName === 'invite-user') {
+      await requireAdmin(req);
       return json(res, 200, await handleInviteUser(url, serviceRole, payload));
     }
     if (functionName === 'delete-user') {
+      await requireAdmin(req);
       return json(res, 200, await handleDeleteUser(url, serviceRole, payload));
     }
 
-    const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    const key = serviceRole || anonKey;
+    if (!functionName) return json(res, 400, { error: 'Fonction manquante' });
+    await requireAuth(req);
+    const token = bearer(req);
+    const key = anonKey;
     const upstream = await fetch(`${url}/functions/v1/${functionName}`, {
       method: 'POST',
       headers: {
         apikey: key,
-        Authorization: `Bearer ${token || key}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
