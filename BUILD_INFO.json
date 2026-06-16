@@ -1,5 +1,12 @@
 {
-  "version": "secured-v12",
-  "generated_at": "2026-06-15T13:05:00Z",
-  "notes": "services persistence and reload schema mapping fixed"
+  "version": "secured-v20",
+  "date": "2026-06-16",
+  "changes": [
+    "security headers added at API helper level",
+    "explicit API headers in vercel.json",
+    "removed previous obsolete frontend bundles",
+    "index loads app.secured-v19.js",
+    "removed unsafe-eval from CSP"
+  ],
+  "securityNote": "security.txt added; headers confirmed on browser response; scanner 401 is caused by Vercel Deployment Protection before app headers."
 }

@@ -1,4 +1,4 @@
-const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, applySecurityHeaders } = require('./_server-supabase');
 
 function readBody(req) {
   if (req.body && typeof req.body === 'object') return Promise.resolve(req.body);
@@ -229,6 +229,7 @@ module.exports = async function handler(req, res) {
       body: JSON.stringify(payload)
     });
     const text = await upstream.text();
+    applySecurityHeaders(res);
     res.statusCode = upstream.status;
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');

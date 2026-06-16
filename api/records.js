@@ -119,6 +119,7 @@ function normalizeRecord(record, entity = '') {
     submissions: new Set(['form_id','values','device','tenant_id','environment_code']),
     app_roles: new Set(['id','tenant_id','environment_code','name','permissions','active','created_at','description','updated_at']),
     environment_license_limits: new Set(['id','environment_code','supervision_limit','pad_limit','lecture_limit','updated_at','tenant_id']),
+    tenants: new Set(['id','nom','code','plan','actif','created_at','logo_url','couleur','max_supervision','max_pad','supa_url','supa_key']),
     licenses: new Set(['id','environment_code','license_key','license_type','label','active','device_name','last_seen','created_at','email','password_hash','role','scope','roles']),
     user_profiles: new Set(['id','email','role','environment_code','active','created_at','tenant_id','label','firstname','lastname','license_key','password_hash','roles','scope','updated_at','login_user','first_name','last_name','username','license_type','resolved_permissions'])
   };
@@ -231,7 +232,8 @@ async function handleSave(req, body) {
   if (profile?.tenant_id && ['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits'].includes(entity)) {
     record.tenant_id = profile.tenant_id;
   }
-  if (!record.environment_code && profile?.environment_code) record.environment_code = profile.environment_code;
+  const entitiesWithEnvironmentCode = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
+  if (entitiesWithEnvironmentCode.has(entity) && !record.environment_code && profile?.environment_code) record.environment_code = profile.environment_code;
 
   const id = String(body.id || '').trim();
   if (!id && ['forms','submissions','services','service_instances'].includes(entity)) delete record.id;

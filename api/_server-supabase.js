@@ -8,10 +8,18 @@ function getSupabaseConfig(){
   const url=normalizeSupabaseUrl(pick('URL_SUPABASE_VITE','VITE_SUPABASE_URL','SUPABASE_URL','NEXT_PUBLIC_SUPABASE_URL','PICOTRACK_SUPABASE_URL')||deriveSupabaseUrlFromAnonKey(anonKey));
   return { url, anonKey, serviceRole };
 }
-function json(res,status,payload){res.statusCode=status;res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.end(JSON.stringify(payload));}
+const SECURITY_HEADERS={
+  'X-Content-Type-Options':'nosniff',
+  'Referrer-Policy':'strict-origin-when-cross-origin',
+  'Permissions-Policy':'camera=(), microphone=(), geolocation=()',
+  'Content-Security-Policy':"default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  'Strict-Transport-Security':'max-age=63072000; includeSubDomains; preload'
+};
+function applySecurityHeaders(res){for(const [key,value] of Object.entries(SECURITY_HEADERS))res.setHeader(key,value);}
+function json(res,status,payload){applySecurityHeaders(res);res.statusCode=status;res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store');res.end(JSON.stringify(payload));}
 function decodeQ(q){try{return Buffer.from(String(q||''),'base64').toString('utf8')}catch(_){return''}}
 function allowedOrigin(req){const origin=String(req.headers.origin||'');const host=String(req.headers.host||'').toLowerCase();if(!origin)return '*';try{const u=new URL(origin);const h=u.hostname.toLowerCase();if(h===host||h==='picotrack.fr'||h.endsWith('.picotrack.fr')||h.endsWith('.vercel.app'))return origin;}catch(_){}return 'https://picotrack.fr'}
-function setCors(req,res,methods='POST, OPTIONS'){res.setHeader('Access-Control-Allow-Origin',allowedOrigin(req));res.setHeader('Vary','Origin');res.setHeader('Access-Control-Allow-Methods',methods);res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');}
+function setCors(req,res,methods='POST, OPTIONS'){applySecurityHeaders(res);res.setHeader('Access-Control-Allow-Origin',allowedOrigin(req));res.setHeader('Vary','Origin');res.setHeader('Access-Control-Allow-Methods',methods);res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');}
 function bearer(req){return String(req.headers.authorization||'').replace(/^Bearer\s+/i,'').trim()}
 async function readJsonBody(req,limit=1000000){if(req.body&&typeof req.body==='object')return req.body;if(typeof req.body==='string'){try{return JSON.parse(req.body||'{}')}catch{return{}}}return await new Promise((resolve,reject)=>{let raw='';req.on('data',c=>{raw+=c;if(raw.length>limit)reject(Object.assign(new Error('Payload trop volumineux'),{status:413}))});req.on('end',()=>{try{resolve(raw?JSON.parse(raw):{})}catch{resolve({})}});req.on('error',reject)})}
 async function getAuthUser(req){const {url,anonKey}=getSupabaseConfig();const token=bearer(req);if(!url||!anonKey||!token)return null;const r=await fetch(`${url}/auth/v1/user`,{headers:{apikey:anonKey,Authorization:`Bearer ${token}`}});if(!r.ok)return null;return await r.json().catch(()=>null)}
@@ -20,4 +28,4 @@ async function serviceRest(path,{method='GET',body,prefer='return=representation
 async function getUserProfile(userId){const rows=await serviceRest(`user_profiles?id=eq.${encodeURIComponent(userId)}&select=id,email,role,roles,environment_code,active,license_type&limit=1`,{method:'GET',prefer:''});return Array.isArray(rows)?rows[0]:null}
 function isAdminProfile(profile){const role=String(profile?.role||'').toLowerCase();const roles=Array.isArray(profile?.roles)?profile.roles.map(r=>String(r).toLowerCase()):[];return profile?.active!==false&&(role==='super_admin'||role==='admin'||roles.includes('super_admin')||roles.includes('admin'))}
 async function requireAdmin(req){const user=await requireAuth(req);const profile=await getUserProfile(user.id);if(!isAdminProfile(profile)){const err=new Error('Droits administrateur requis');err.status=403;throw err;}return {user,profile}}
-module.exports={getSupabaseConfig,json,decodeQ,setCors,bearer,readJsonBody,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,isAdminProfile};
+module.exports={getSupabaseConfig,json,decodeQ,setCors,bearer,readJsonBody,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,isAdminProfile,applySecurityHeaders};
