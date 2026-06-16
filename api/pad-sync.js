@@ -7,7 +7,7 @@ function cleanAction(action){
   return out;
 }
 
-async function insertSubmission(environmentCode, payload){
+async function insertSubmission(req, environmentCode, payload){
   const row = {
     environment_code: environmentCode,
     form_id: String(payload.formId || payload.form_id || ''),
@@ -15,11 +15,11 @@ async function insertSubmission(environmentCode, payload){
     device: 'pad'
   };
   if (!row.form_id) throw new Error('Formulaire manquant dans la synchronisation PAD');
-  const rows = await sbRest('submissions', { method:'POST', body:row });
+  const rows = await sbRest(req, 'submissions', { method:'POST', body:row });
   return Array.isArray(rows) ? rows[0] : rows;
 }
 
-async function insertServiceInstance(environmentCode, payload, submission){
+async function insertServiceInstance(req, environmentCode, payload, submission){
   const inst = { ...(payload.instance || {}) };
   const row = {
     ...inst,
@@ -30,7 +30,7 @@ async function insertServiceInstance(environmentCode, payload, submission){
   };
   delete row.submissionId;
   if (!row.service_id) throw new Error('Service manquant dans la synchronisation PAD');
-  const rows = await sbRest('service_instances', { method:'POST', body:row });
+  const rows = await sbRest(req, 'service_instances', { method:'POST', body:row });
   return Array.isArray(rows) ? rows[0] : rows;
 }
 
@@ -42,10 +42,10 @@ module.exports = async function handler(req, res) {
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
     const token = body?.pad?.sessionToken || body?.padSessionToken || '';
-    const session = verifyToken(token);
+    const session = verifyToken(req, token);
     if (session.typ !== 'pad' || !session.licenseId || !session.environmentCode) throw new Error('Session PAD invalide');
 
-    const licenseRows = await sbRest(`licenses?id=eq.${encodeURIComponent(session.licenseId)}&environment_code=eq.${encodeURIComponent(session.environmentCode)}&active=eq.true&select=id&limit=1`, { method:'GET', prefer:'' });
+    const licenseRows = await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}&environment_code=eq.${encodeURIComponent(session.environmentCode)}&active=eq.true&select=id&limit=1`, { method:'GET', prefer:'' });
     if (!Array.isArray(licenseRows) || !licenseRows.length) throw new Error('Licence PAD inactive ou supprimée');
 
     const actions = Array.isArray(body.actions) ? body.actions.slice(0, 25) : [];
@@ -54,17 +54,17 @@ module.exports = async function handler(req, res) {
       const item = cleanAction(action);
       const payload = item.payload || {};
       if (item.type === 'form_submission') {
-        results.push({ actionId:item.id, type:item.type, row: await insertSubmission(session.environmentCode, payload) });
+        results.push({ actionId:item.id, type:item.type, row: await insertSubmission(req, session.environmentCode, payload) });
       } else if (item.type === 'service_instance') {
-        const sub = await insertSubmission(session.environmentCode, payload);
-        const inst = await insertServiceInstance(session.environmentCode, payload, sub);
+        const sub = await insertSubmission(req, session.environmentCode, payload);
+        const inst = await insertServiceInstance(req, session.environmentCode, payload, sub);
         results.push({ actionId:item.id, type:item.type, row:inst, submission:sub });
       } else {
         throw new Error('Type de file PAD inconnu : ' + item.type);
       }
     }
 
-    await sbRest(`licenses?id=eq.${encodeURIComponent(session.licenseId)}`, { method:'PATCH', body:{ last_seen:new Date().toISOString() } }).catch(()=>null);
+    await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}`, { method:'PATCH', body:{ last_seen:new Date().toISOString() } }).catch(()=>null);
     return sendJson(res, 200, { ok:true, synced:results.length, results });
   } catch (err) {
     return sendJson(res, 401, { ok:false, error:err.message || 'Synchronisation PAD refusée' });

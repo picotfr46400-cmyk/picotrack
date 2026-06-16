@@ -10,7 +10,7 @@ for (const f of ['index.html', 'style.css', 'logo-picotrack.png', 'manifest.json
 if (fs.existsSync('.well-known')) fs.cpSync('.well-known', path.join(out, '.well-known'), { recursive: true });
 if (fs.existsSync('icons')) fs.cpSync('icons', path.join(out, 'icons'), { recursive: true });
 fs.mkdirSync(path.join(out, 'assets'), { recursive: true });
-for (const f of ['app.secured-v19.js']) {
+for (const f of ['app.secured-v21.js']) {
   const src = path.join('assets', f);
   if (fs.existsSync(src)) fs.copyFileSync(src, path.join(out, 'assets', f));
 }

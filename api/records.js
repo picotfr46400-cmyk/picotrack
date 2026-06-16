@@ -188,7 +188,7 @@ function normalizeRecord(record, entity = '') {
 }
 
 async function userRest(req, path, { method='GET', body, prefer='return=representation' } = {}) {
-  const { url, anonKey } = getSupabaseConfig();
+  const { url, anonKey } = getSupabaseConfig(req);
   if (!url || !anonKey) throw Object.assign(new Error('Configuration Supabase serveur manquante'), { status: 500 });
   const token = bearer(req);
   const r = await fetch(`${url}/rest/v1/${path}`, {
@@ -224,7 +224,7 @@ async function handleSave(req, body) {
   const entity = cleanEntity(body.entity);
   if (!entity) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
   const user = await requireAuth(req);
-  const profile = await getUserProfile(user.id).catch(() => null);
+  const profile = await getUserProfile(user.id, req).catch(() => null);
   const source = body.record || body.body;
   const record = normalizeRecord(source, entity);
 
@@ -243,7 +243,7 @@ async function handleSave(req, body) {
 
   // Les écritures passent côté serveur avec clé service après authentification + whitelist + normalisation.
   // Cela évite les pertes silencieuses dues aux politiques RLS incomplètes, sans exposer la clé au navigateur.
-  return await serviceRest(path, { method, body: record, prefer: 'return=representation' });
+  return await serviceRest(path, { method, body: record, prefer: 'return=representation', req });
 }
 
 async function handleDelete(req, body) {
@@ -253,8 +253,8 @@ async function handleDelete(req, body) {
   return await userRest(req, `${entity}?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE', prefer: 'return=minimal' });
 }
 
-async function serviceRead(path) {
-  return await serviceRest(path, { method: 'GET', prefer: '' });
+async function serviceRead(req, path) {
+  return await serviceRest(path, { method: 'GET', prefer: '', req });
 }
 
 async function handleInitialLoad(req, body) {
@@ -266,11 +266,11 @@ async function handleInitialLoad(req, body) {
   // peuvent empêcher le rechargement côté navigateur. Comme PicoTrack cible 1 client = 1 projet
   // Supabase dédié, on lit ici côté serveur après authentification, sans exposer la structure DB.
   let [forms, services, submissions, serviceInstances, databases] = await Promise.all([
-    serviceRead(buildReadPath('forms', { filters: envFilter, select: '*', order: 'created_at.asc', limit: 1000 })),
-    serviceRead(buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: 1000 })),
-    serviceRead(buildReadPath('submissions', { filters: envFilter, select: '*', order: 'created_at.desc', limit: 1000 })),
-    serviceRead(buildReadPath('service_instances', { filters: envFilter, select: '*', order: 'created_at.desc', limit: 1000 })),
-    serviceRead(buildReadPath('databases', { filters: envFilter, select: '*', limit: 1000 }))
+    serviceRead(req, buildReadPath('forms', { filters: envFilter, select: '*', order: 'created_at.asc', limit: 1000 })),
+    serviceRead(req, buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: 1000 })),
+    serviceRead(req, buildReadPath('submissions', { filters: envFilter, select: '*', order: 'created_at.desc', limit: 1000 })),
+    serviceRead(req, buildReadPath('service_instances', { filters: envFilter, select: '*', order: 'created_at.desc', limit: 1000 })),
+    serviceRead(req, buildReadPath('databases', { filters: envFilter, select: '*', limit: 1000 }))
   ]);
 
   // Fallback bac à sable : si l'environnement actif ne correspond pas encore au code stocké
@@ -278,11 +278,11 @@ async function handleInitialLoad(req, body) {
   // remplacera ce besoin.
   if ((!Array.isArray(forms) || forms.length === 0) && env) {
     [forms, services, submissions, serviceInstances, databases] = await Promise.all([
-      serviceRead(buildReadPath('forms', { select: '*', order: 'created_at.asc', limit: 1000 })),
-      serviceRead(buildReadPath('services', { select: '*', order: 'created_at.asc', limit: 1000 })),
-      serviceRead(buildReadPath('submissions', { select: '*', order: 'created_at.desc', limit: 1000 })),
-      serviceRead(buildReadPath('service_instances', { select: '*', order: 'created_at.desc', limit: 1000 })),
-      serviceRead(buildReadPath('databases', { select: '*', limit: 1000 }))
+      serviceRead(req, buildReadPath('forms', { select: '*', order: 'created_at.asc', limit: 1000 })),
+      serviceRead(req, buildReadPath('services', { select: '*', order: 'created_at.asc', limit: 1000 })),
+      serviceRead(req, buildReadPath('submissions', { select: '*', order: 'created_at.desc', limit: 1000 })),
+      serviceRead(req, buildReadPath('service_instances', { select: '*', order: 'created_at.desc', limit: 1000 })),
+      serviceRead(req, buildReadPath('databases', { select: '*', limit: 1000 }))
     ]);
   }
 

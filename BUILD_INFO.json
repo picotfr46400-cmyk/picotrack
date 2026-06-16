@@ -1,5 +1,5 @@
 {
-  "version": "secured-v20",
+  "version": "v21-domain-config",
   "date": "2026-06-16",
   "changes": [
     "security headers added at API helper level",
@@ -8,5 +8,11 @@
     "index loads app.secured-v19.js",
     "removed unsafe-eval from CSP"
   ],
-  "securityNote": "security.txt added; headers confirmed on browser response; scanner 401 is caused by Vercel Deployment Protection before app headers."
+  "securityNote": "security.txt added; headers confirmed on browser response; scanner 401 is caused by Vercel Deployment Protection before app headers.",
+  "generatedAt": "2026-06-16T21:59:00Z",
+  "notes": [
+    "domain-based Supabase configuration",
+    "index loads app.secured-v21.js",
+    "API and PAD routes use host-aware config"
+  ]
 }

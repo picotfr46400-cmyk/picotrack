@@ -25,18 +25,18 @@ module.exports = async function handler(req, res) {
       'limit=1'
     ].join('&');
 
-    const rows = await sbRest(q, { method:'GET', prefer:'' });
+    const rows = await sbRest(req, q, { method:'GET', prefer:'' });
     if (!Array.isArray(rows) || !rows.length) {
       return sendJson(res, 401, { ok:false, error:'Identifiants PAD invalides ou licence inactive' });
     }
 
     const license = rows[0];
-    await sbRest(`licenses?id=eq.${encodeURIComponent(license.id)}`, {
+    await sbRest(req, `licenses?id=eq.${encodeURIComponent(license.id)}`, {
       method:'PATCH',
       body:{ last_seen:new Date().toISOString(), device_name:String(req.headers['user-agent']||'').slice(0,120) }
     }).catch(()=>null);
 
-    const padSessionToken = signPayload({
+    const padSessionToken = signPayload(req, {
       typ:'pad',
       licenseId: license.id,
       environmentCode,

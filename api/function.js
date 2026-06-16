@@ -198,7 +198,7 @@ module.exports = async function handler(req, res) {
   setCors(req, res);
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
-  const { url, anonKey, serviceRole } = getSupabaseConfig();
+  const { url, anonKey, serviceRole } = getSupabaseConfig(req);
   if (!url || !anonKey) return json(res, 500, { error: 'Configuration Supabase serveur manquante' });
 
   try {

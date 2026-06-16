@@ -19,7 +19,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
 
-  const { url, anonKey } = getSupabaseConfig();
+  const { url, anonKey } = getSupabaseConfig(req);
   if (!url || !anonKey) return json(res, 500, { error: 'Configuration Supabase serveur manquante' });
 
   try {
@@ -44,7 +44,7 @@ module.exports = async function handler(req, res) {
 
     if (body.action === 'currentProfile') {
       const user = await requireAuth(req);
-      const profile = await getUserProfile(user.id);
+      const profile = await getUserProfile(user.id, req);
       const normalized = normalizeProfile(user, profile);
       if (!normalized) return json(res, 404, { error: 'Profil utilisateur introuvable' });
       return json(res, 200, { profile: normalized });
