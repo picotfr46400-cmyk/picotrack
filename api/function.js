@@ -209,7 +209,9 @@ async function updateAuthUserPassword(url, serviceRole, userId, payload) {
 
 function normalizeLicenseType(value) {
   const v = String(value || '').trim().toLowerCase();
-  return v === 'pad' || v === 'pad_user' || v === 'terrain' ? 'pad' : 'supervision';
+  if (['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator'].includes(v)) return 'pad';
+  if (['readonly', 'read_only', 'lecture', 'lecture_seule', 'viewer', 'consultation'].includes(v)) return 'readonly';
+  return 'supervision';
 }
 
 function envCandidates(env) {
@@ -287,6 +289,152 @@ async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null)
 }
 
 
+
+function isPlatformOperatorProfile(profile) {
+  const role = String(profile?.role || '').toLowerCase();
+  const licenseType = String(profile?.license_type || '').toLowerCase();
+  const env = String(profile?.environment_code || '').toUpperCase();
+  const perms = profile?.resolved_permissions || {};
+  return role === 'super_admin'
+    || role === 'platform_admin'
+    || licenseType === 'super_admin'
+    || env === 'GLOBAL'
+    || perms.platform_admin === true
+    || perms.manage_global_licenses === true;
+}
+
+function isClientAdminProfile(profile) {
+  const role = String(profile?.role || '').toLowerCase();
+  const perms = profile?.resolved_permissions || {};
+  return role === 'admin'
+    || role === 'client_admin'
+    || role === 'environment_admin'
+    || perms.manage_users === true;
+}
+
+function canManageLicenseLimits(profile) {
+  return isPlatformOperatorProfile(profile);
+}
+
+function canCreateEnvironmentUser(profile) {
+  return isPlatformOperatorProfile(profile) || isClientAdminProfile(profile);
+}
+
+async function getRequestUserProfile(req, url, serviceRole) {
+  const auth = String(req.headers.authorization || req.headers.Authorization || '');
+  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
+  const emailHeader = cleanString(req.headers['x-pt-user-email'] || req.headers['x-user-email'] || '');
+  const userIdHeader = cleanString(req.headers['x-pt-user-id'] || req.headers['x-user-id'] || '');
+
+  let userId = userIdHeader;
+  let email = normalizeEmail(emailHeader);
+
+  if (bearer && !userId && !email) {
+    const authUser = await supabaseFetch(url, serviceRole, `/auth/v1/user`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${bearer}` }
+    }).catch(() => null);
+    userId = cleanString(authUser?.id || '');
+    email = normalizeEmail(authUser?.email || '');
+  }
+
+  let rows = [];
+  if (userId) {
+    rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(userId)}&select=*`, { method: 'GET' }).catch(() => []);
+  }
+  if ((!Array.isArray(rows) || !rows.length) && email) {
+    rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?email=eq.${encodeURIComponent(email)}&select=*`, { method: 'GET' }).catch(() => []);
+  }
+  return Array.isArray(rows) && rows.length ? rows[0] : null;
+}
+
+async function requireLicenseLimitManager(req, url, serviceRole) {
+  const profile = await getRequestUserProfile(req, url, serviceRole);
+  if (!profile || !canManageLicenseLimits(profile)) {
+    throw Object.assign(new Error('Action réservée au compte plateforme PicoTrack.'), { status: 403 });
+  }
+  return profile;
+}
+
+async function requireUserCreator(req, url, serviceRole) {
+  const profile = await getRequestUserProfile(req, url, serviceRole);
+  if (!profile || !canCreateEnvironmentUser(profile)) {
+    throw Object.assign(new Error('Droit de création utilisateur insuffisant.'), { status: 403 });
+  }
+  return profile;
+}
+
+async function handleGetLicenseLimits(url, serviceRole, payload) {
+  if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
+  const environmentCode = cleanString(payload.environment_code || payload.active_env || '', 80);
+  if (!environmentCode) throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+
+  let row = null;
+  for (const env of envCandidates(environmentCode)) {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=*`, { method: 'GET' }).catch(() => []);
+    if (Array.isArray(rows) && rows.length) {
+      row = rows[0];
+      break;
+    }
+  }
+
+  const supervisionLimit = Number(row?.supervision_limit ?? row?.max_supervision ?? 0);
+  const padLimit = Number(row?.pad_limit ?? row?.max_pad ?? 0);
+  const readonlyLimit = Number(row?.readonly_limit ?? row?.lecture_limit ?? 0);
+
+  return {
+    ok: true,
+    success: true,
+    environment_code: row?.environment_code || environmentCode,
+    supervision_limit: Number.isFinite(supervisionLimit) ? supervisionLimit : 0,
+    pad_limit: Number.isFinite(padLimit) ? padLimit : 0,
+    readonly_limit: Number.isFinite(readonlyLimit) ? readonlyLimit : 0,
+    lecture_limit: Number.isFinite(readonlyLimit) ? readonlyLimit : 0,
+    source: row ? 'database' : 'missing'
+  };
+}
+
+async function handleUpdateLicenseLimits(req, url, serviceRole, payload) {
+  if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
+  await requireLicenseLimitManager(req, url, serviceRole);
+
+  const environmentCode = cleanString(payload.environment_code || payload.active_env || '', 80);
+  if (!environmentCode) throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+
+  const supervisionLimit = Number(payload.supervision_limit ?? payload.max_supervision ?? 0);
+  const padLimit = Number(payload.pad_limit ?? payload.max_pad ?? 0);
+  const readonlyLimit = Number(payload.readonly_limit ?? payload.lecture_limit ?? 0);
+
+  if (!Number.isInteger(supervisionLimit) || supervisionLimit < 0) throw Object.assign(new Error('Quota supervision invalide.'), { status: 400 });
+  if (!Number.isInteger(padLimit) || padLimit < 0) throw Object.assign(new Error('Quota PAD invalide.'), { status: 400 });
+  if (!Number.isInteger(readonlyLimit) || readonlyLimit < 0) throw Object.assign(new Error('Quota lecture invalide.'), { status: 400 });
+
+  const existing = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(environmentCode)}&select=id`, { method: 'GET' }).catch(() => []);
+  const body = {
+    environment_code: environmentCode,
+    supervision_limit: supervisionLimit,
+    pad_limit: padLimit,
+    readonly_limit: readonlyLimit,
+    lecture_limit: readonlyLimit,
+    updated_at: new Date().toISOString()
+  };
+
+  let saved;
+  if (Array.isArray(existing) && existing.length) {
+    saved = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?id=eq.${encodeURIComponent(existing[0].id)}&select=*`, {
+      method: 'PATCH',
+      body: JSON.stringify(body)
+    });
+  } else {
+    saved = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?select=*`, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    });
+  }
+
+  return { ok: true, success: true, row: Array.isArray(saved) ? saved[0] : saved };
+}
+
 async function handleListUsers(url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const environmentCode = cleanString(payload.environment_code || payload.active_env || '', 80);
@@ -358,8 +506,9 @@ async function handleListUsers(url, serviceRole, payload) {
   return { ok: true, success: true, environment_code: environmentCode, rows };
 }
 
-async function handleCreateUser(url, serviceRole, payload) {
+async function handleCreateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
+  await requireUserCreator(req, url, serviceRole);
   const quota = await assertQuotaAvailable(url, serviceRole, payload, null);
   const authUser = await createAuthUserWithPassword(url, serviceRole, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
   const profile = await upsertUserProfile(url, serviceRole, authUser, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
@@ -428,13 +577,21 @@ module.exports = async function handler(req, res) {
       await requireAdmin(req);
       return json(res, 200, await handleListUsers(url, serviceRole, payload));
     }
+    if (functionName === 'get-license-limits') {
+      await requireAdmin(req);
+      return json(res, 200, await handleGetLicenseLimits(url, serviceRole, payload));
+    }
+    if (functionName === 'update-license-limits') {
+      await requireAdmin(req);
+      return json(res, 200, await handleUpdateLicenseLimits(req, url, serviceRole, payload));
+    }
     if (functionName === 'create-user') {
       await requireAdmin(req);
-      return json(res, 200, await handleCreateUser(url, serviceRole, payload));
+      return json(res, 200, await handleCreateUser(req, url, serviceRole, payload));
     }
     if (functionName === 'invite-user') {
       await requireAdmin(req);
-      return json(res, 200, await handleCreateUser(url, serviceRole, payload));
+      return json(res, 200, await handleCreateUser(req, url, serviceRole, payload));
     }
     if (functionName === 'update-user') {
       await requireAdmin(req);
