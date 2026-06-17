@@ -1,4 +1,4 @@
-const CACHE='picotrack-v34-env-license-v22';
+const CACHE='picotrack-v35-env-license-v23';
 self.addEventListener('install',event=>self.skipWaiting());
 self.addEventListener('activate',event=>event.waitUntil(
   caches.keys().then(keys=>Promise.all(keys.map(key=>caches.delete(key)))).then(()=>self.clients.claim())

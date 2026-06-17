@@ -1,12 +1,6 @@
 {
-  "version": "v22-env-license-resolution",
-  "date": "2026-06-17",
-  "changes": [
-    "fixed license limit environment resolution for GLOBAL super_admin accounts",
-    "license screens now use runtime/domain environment instead of profile GLOBAL when applicable",
-    "users screen limit reads PROSPECT/DEMO/PROD from domain-aware bootstrap",
-    "sidebar environment label prepared for runtime environment display",
-    "cache version bumped to avoid stale service worker assets"
-  ],
-  "securityNote": "GLOBAL remains a platform role/license scope only; active environment is resolved from host/runtime configuration."
+  "version": "v23",
+  "created_at": "2026-06-17T12:37:00Z",
+  "fix": "build.js now copies all assets; index references app.secured-v23.js",
+  "verified": true
 }
