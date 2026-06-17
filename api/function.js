@@ -286,6 +286,78 @@ async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null)
   return { licenseType, environmentCode, used, max };
 }
 
+
+async function handleListUsers(url, serviceRole, payload) {
+  if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
+  const environmentCode = cleanString(payload.environment_code || payload.active_env || '', 80);
+  if (!environmentCode) throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+
+  function isPlatform(row) {
+    const role = String(row?.role || '').toLowerCase();
+    const scope = String(row?.scope || '').toLowerCase();
+    const env = String(row?.environment_code || '').toUpperCase();
+    const perms = row?.resolved_permissions || {};
+    return role === 'super_admin' || role === 'platform_admin' || scope === 'platform' || env === 'GLOBAL' || perms.platform_admin === true;
+  }
+
+  function normalizedType(row) {
+    return normalizeLicenseType(row?.license_type || (Array.isArray(row?.roles) && row.roles.includes('pad_user') ? 'pad' : 'supervision'));
+  }
+
+  function normalizeUserRow(row, source) {
+    const label = cleanString(row?.label || [row?.firstname || row?.first_name || '', row?.lastname || row?.last_name || ''].join(' ').trim() || row?.email || row?.login_user || row?.username || row?.license_key || '');
+    const email = normalizeEmail(row?.email || '');
+    return {
+      id: row?.id || row?.license_key || row?.email || row?.login_user || row?.username,
+      __source: source,
+      environment_code: row?.environment_code || environmentCode,
+      email,
+      login_user: cleanString(row?.login_user || row?.username || row?.email || row?.license_key || ''),
+      username: cleanString(row?.username || row?.login_user || row?.email || row?.license_key || ''),
+      label,
+      firstname: cleanString(row?.firstname || row?.first_name || ''),
+      lastname: cleanString(row?.lastname || row?.last_name || ''),
+      role: cleanString(row?.role || (normalizedType(row) === 'pad' ? 'pad_user' : 'supervision_user')),
+      roles: safeArray(row?.roles),
+      scope: cleanString(row?.scope || 'environment'),
+      license_type: normalizedType(row),
+      license_key: row?.license_key || null,
+      active: row?.active !== false,
+      created_at: row?.created_at || null,
+      updated_at: row?.updated_at || null,
+      resolved_permissions: safeObject(row?.resolved_permissions)
+    };
+  }
+
+  const rows = [];
+  const seen = new Set();
+
+  for (const env of envCandidates(environmentCode)) {
+    const profiles = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, { method: 'GET' }).catch(() => []);
+    for (const row of Array.isArray(profiles) ? profiles : []) {
+      if (!row || isPlatform(row)) continue;
+      const normalized = normalizeUserRow(row, 'user_profiles');
+      const key = String(normalized.email || normalized.login_user || normalized.username || normalized.license_key || normalized.id || '').toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      rows.push(normalized);
+    }
+
+    const licenses = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, { method: 'GET' }).catch(() => []);
+    for (const row of Array.isArray(licenses) ? licenses : []) {
+      if (!row || isPlatform(row)) continue;
+      const normalized = normalizeUserRow(row, 'licenses');
+      const key = String(normalized.email || normalized.login_user || normalized.username || normalized.license_key || normalized.id || '').toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      rows.push(normalized);
+    }
+  }
+
+  rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  return { ok: true, success: true, environment_code: environmentCode, rows };
+}
+
 async function handleCreateUser(url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const quota = await assertQuotaAvailable(url, serviceRole, payload, null);
@@ -352,6 +424,10 @@ module.exports = async function handler(req, res) {
     const functionName = cleanString(body.functionName || body.fn || '', 80).replace(/[^a-zA-Z0-9_-]/g, '');
     const payload = safeObject(body.payload);
 
+    if (functionName === 'list-users') {
+      await requireAdmin(req);
+      return json(res, 200, await handleListUsers(url, serviceRole, payload));
+    }
     if (functionName === 'create-user') {
       await requireAdmin(req);
       return json(res, 200, await handleCreateUser(url, serviceRole, payload));

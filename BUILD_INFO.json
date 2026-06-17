@@ -1,6 +1,6 @@
 {
-  "version": "v25",
-  "created_at": "2026-06-17T16:35:53Z",
-  "fix": "users page now merges user_profiles and licenses and preserves environment casing",
+  "version": "v26",
+  "created_at": "2026-06-17T16:45:39Z",
+  "fix": "users list now loaded server-side with service role via list-users function",
   "verified": true
 }

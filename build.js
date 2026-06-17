@@ -21,13 +21,8 @@ for (const f of rootFiles) {
   if (fs.existsSync(f)) fs.copyFileSync(f, path.join(out, f));
 }
 
-if (fs.existsSync('.well-known')) {
-  fs.cpSync('.well-known', path.join(out, '.well-known'), { recursive: true });
-}
-
-if (fs.existsSync('icons')) {
-  fs.cpSync('icons', path.join(out, 'icons'), { recursive: true });
-}
+if (fs.existsSync('.well-known')) fs.cpSync('.well-known', path.join(out, '.well-known'), { recursive: true });
+if (fs.existsSync('icons')) fs.cpSync('icons', path.join(out, 'icons'), { recursive: true });
 
 fs.mkdirSync(path.join(out, 'assets'), { recursive: true });
 if (fs.existsSync('assets')) {
@@ -37,5 +32,4 @@ if (fs.existsSync('assets')) {
     if (fs.statSync(src).isFile()) fs.copyFileSync(src, dst);
   }
 }
-
 console.log('PicoTrack static files copied to public with all assets');
