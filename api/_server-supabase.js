@@ -14,7 +14,36 @@ function matchConfigFromJson(host){const cfg=parseConfigJson();if(!cfg)return nu
   }
   return null
 }
-function prefixForHost(host){const h=cleanHost(host);if(h.includes('prospect'))return 'PROSPECT';if(h.includes('sandbox')||h.includes('demo')||h.includes('localhost'))return 'DEMO';return 'PROD'}
+function sanitizeClientCode(value){
+  const code=String(value||'').trim().toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+  return code||'PROD';
+}
+function firstLabel(host){return cleanHost(host).split('.')[0]||''}
+function isReservedSubdomain(label){return ['','www','app','api','assets','static','cdn','admin','main','prod','production'].includes(String(label||'').toLowerCase())}
+function prefixForHost(host){
+  const h=cleanHost(host);
+  if(!h)return 'PROD';
+  if(h==='localhost'||h.startsWith('localhost.')||h.startsWith('127.0.0.1')||h.startsWith('0.0.0.0'))return 'DEMO';
+  if(h==='picotrack.fr'||h==='www.picotrack.fr')return 'PROD';
+  if(h.endsWith('.picotrack.fr')){
+    const label=firstLabel(h);
+    if(label==='demo'||label==='sandbox')return 'DEMO';
+    if(isReservedSubdomain(label))return 'PROD';
+    return sanitizeClientCode(label);
+  }
+  if(h.endsWith('.vercel.app')){
+    const label=firstLabel(h);
+    if(label.includes('demo')||label.includes('sandbox'))return 'DEMO';
+    const m=label.match(/^picotrack-([a-z0-9]+)(?:-|$)/i);
+    if(m&&m[1]&&!isReservedSubdomain(m[1]))return sanitizeClientCode(m[1]);
+    if(label.includes('prospect'))return 'PROSPECT';
+    return 'PROD';
+  }
+  const label=firstLabel(h);
+  if(label==='demo'||label==='sandbox')return 'DEMO';
+  if(!isReservedSubdomain(label))return sanitizeClientCode(label);
+  return 'PROD';
+}
 function configFromPrefixedEnv(host){const p=prefixForHost(host);const anonKey=pick(`${p}_SUPABASE_ANON_KEY`,`PICOTRACK_${p}_SUPABASE_ANON_KEY`,`${p}_VITE_SUPABASE_ANON_KEY`);const serviceRole=pick(`${p}_SUPABASE_SERVICE_ROLE_KEY`,`PICOTRACK_${p}_SUPABASE_SERVICE_ROLE_KEY`,`${p}_SERVICE_ROLE_KEY`);const url=normalizeSupabaseUrl(pick(`${p}_SUPABASE_URL`,`PICOTRACK_${p}_SUPABASE_URL`,`${p}_URL_SUPABASE_VITE`,`${p}_VITE_SUPABASE_URL`)||deriveSupabaseUrlFromAnonKey(anonKey));return {host,clientCode:p.toLowerCase(),environmentCode:p,url,anonKey,serviceRole}}
 function legacyConfig(host){const anonKey=pick('VITE_SUPABASE_ANON_KEY','SUPABASE_ANON_KEY','SUPABASE_ANON_PUBLIC_KEY','NEXT_PUBLIC_SUPABASE_ANON_KEY');const serviceRole=pick('SUPABASE_SERVICE_ROLE_KEY','SUPABASE_SERVICE_KEY','SERVICE_ROLE_KEY','SUPABASE_SERVICE_ROLE');const url=normalizeSupabaseUrl(pick('URL_SUPABASE_VITE','VITE_SUPABASE_URL','SUPABASE_URL','NEXT_PUBLIC_SUPABASE_URL','PICOTRACK_SUPABASE_URL')||deriveSupabaseUrlFromAnonKey(anonKey));return {host,clientCode:pick('PICOTRACK_CLIENT_CODE','CODE_CLIENT_PICOTRACK')||prefixForHost(host).toLowerCase(),environmentCode:pick('PICOTRACK_ENVIRONMENT_CODE','PICOTRACK_ENVIRONNEMENT_CODE')||prefixForHost(host),url,anonKey,serviceRole}}
 function getSupabaseConfig(req){const host=requestHost(req);const fromJson=matchConfigFromJson(host);if(fromJson&&(fromJson.url||fromJson.anonKey||fromJson.serviceRole))return fromJson;const pref=configFromPrefixedEnv(host);if(pref.url||pref.anonKey||pref.serviceRole)return pref;return legacyConfig(host)}
