@@ -303,7 +303,33 @@ async function handleDelete(req, body) {
   const entity = cleanEntity(body.entity);
   const id = String(body.id || '').trim();
   if (!entity || !id) throw Object.assign(new Error('Suppression invalide'), { status: 400 });
-  return await userRest(req, `${entity}?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE', prefer: 'return=minimal' });
+
+  const user = await requireAuth(req);
+  const profile = await getUserProfile(user.id, req).catch(() => null);
+  const profileEnv = String(profile?.environment_code || '').trim().toUpperCase();
+  const isPlatform = isPlatformLicenseManagerProfile(profile);
+
+  const entitiesWithEnvironmentCode = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
+
+  function scopedPath(table, extra = '') {
+    let path = `${table}?id=eq.${encodeURIComponent(id)}${extra}`;
+    if (entitiesWithEnvironmentCode.has(table) && profileEnv && profileEnv !== 'GLOBAL' && !isPlatform) {
+      path += `&environment_code=eq.${encodeURIComponent(profileEnv)}`;
+    }
+    return path;
+  }
+
+  // Suppression métier d'un formulaire : on nettoie d'abord les soumissions liées
+  // pour éviter les blocages de contrainte et les données orphelines.
+  if (entity === 'forms') {
+    let subPath = `submissions?form_id=eq.${encodeURIComponent(id)}`;
+    if (profileEnv && profileEnv !== 'GLOBAL' && !isPlatform) {
+      subPath += `&environment_code=eq.${encodeURIComponent(profileEnv)}`;
+    }
+    await serviceRest(subPath, { method: 'DELETE', prefer: 'return=minimal', req }).catch(() => []);
+  }
+
+  return await serviceRest(scopedPath(entity), { method: 'DELETE', prefer: 'return=minimal', req });
 }
 
 async function serviceRead(req, path) {
