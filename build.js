@@ -18,9 +18,7 @@ const rootFiles = [
 ];
 
 for (const f of rootFiles) {
-  if (fs.existsSync(f)) {
-    fs.copyFileSync(f, path.join(out, f));
-  }
+  if (fs.existsSync(f)) fs.copyFileSync(f, path.join(out, f));
 }
 
 if (fs.existsSync('.well-known')) {
@@ -32,14 +30,11 @@ if (fs.existsSync('icons')) {
 }
 
 fs.mkdirSync(path.join(out, 'assets'), { recursive: true });
-
 if (fs.existsSync('assets')) {
   for (const f of fs.readdirSync('assets')) {
     const src = path.join('assets', f);
     const dst = path.join(out, 'assets', f);
-    if (fs.statSync(src).isFile()) {
-      fs.copyFileSync(src, dst);
-    }
+    if (fs.statSync(src).isFile()) fs.copyFileSync(src, dst);
   }
 }
 

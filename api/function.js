@@ -82,7 +82,7 @@ async function inviteAuthUser(url, serviceRole, payload) {
     label: cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim()),
     firstname: cleanString(payload.firstname || payload.first_name || ''),
     lastname: cleanString(payload.lastname || payload.last_name || ''),
-    environment_code: cleanString(payload.environment_code || '').toLowerCase(),
+    environment_code: cleanString(payload.environment_code || ''),
     license_type: cleanString(payload.license_type || 'supervision'),
     role: cleanString(payload.role || 'supervision_user')
   };
@@ -109,7 +109,7 @@ async function inviteAuthUser(url, serviceRole, payload) {
 
 async function upsertUserProfile(url, serviceRole, authUser, payload) {
   if (!authUser?.id) throw new Error('Compte Auth créé mais ID utilisateur introuvable.');
-  const environmentCode = cleanString(payload.environment_code || 'efc').toLowerCase();
+  const environmentCode = cleanString(payload.environment_code || 'efc');
   const email = normalizeEmail(payload.email || authUser.email);
   const profile = {
     id: authUser.id,
@@ -142,7 +142,7 @@ async function upsertUserProfile(url, serviceRole, authUser, payload) {
 
 async function insertLicenseBestEffort(url, serviceRole, payload) {
   const body = {
-    environment_code: cleanString(payload.environment_code || 'efc').toLowerCase(),
+    environment_code: cleanString(payload.environment_code || 'efc'),
     license_key: cleanString(payload.license_key || ''),
     license_type: cleanString(payload.license_type || 'supervision'),
     label: cleanString(payload.label || ''),
@@ -179,7 +179,7 @@ async function createAuthUserWithPassword(url, serviceRole, payload) {
     label: cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim()),
     firstname: cleanString(payload.firstname || payload.first_name || ''),
     lastname: cleanString(payload.lastname || payload.last_name || ''),
-    environment_code: cleanString(payload.environment_code || '').toLowerCase(),
+    environment_code: cleanString(payload.environment_code || ''),
     license_type: cleanString(payload.license_type || 'supervision'),
     role: cleanString(payload.role || 'supervision_user'),
     login_user: cleanString(payload.login_user || payload.username || email)
@@ -228,25 +228,53 @@ async function getLicenseLimitsForEnvironment(url, serviceRole, environmentCode)
 async function countActiveUsersForType(url, serviceRole, environmentCode, licenseType, excludeId) {
   let total = 0;
   const seen = new Set();
+
+  function isPlatform(row) {
+    const role = String(row?.role || '').toLowerCase();
+    const scope = String(row?.scope || '').toLowerCase();
+    const env = String(row?.environment_code || '').toUpperCase();
+    const perms = row?.resolved_permissions || {};
+    return role === 'super_admin' || role === 'platform_admin' || scope === 'platform' || env === 'GLOBAL' || perms.platform_admin === true;
+  }
+
+  function rowType(row) {
+    return normalizeLicenseType(row?.license_type || (Array.isArray(row?.roles) && row.roles.includes('pad_user') ? 'pad' : 'supervision'));
+  }
+
+  function mark(row, prefix) {
+    const key = String(row?.id || row?.email || row?.login_user || row?.username || row?.license_key || '').toLowerCase();
+    return key ? `${prefix}:${key}` : '';
+  }
+
   for (const env of envCandidates(environmentCode)) {
-    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,role,license_type,roles,scope,resolved_permissions`, { method: 'GET' }).catch(() => []);
-    for (const row of Array.isArray(rows) ? rows : []) {
-      if (!row?.id || seen.has(String(row.id))) continue;
-      seen.add(String(row.id));
+    const profiles = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,login_user,username,role,license_type,roles,scope,resolved_permissions`, { method: 'GET' }).catch(() => []);
+    for (const row of Array.isArray(profiles) ? profiles : []) {
+      if (!row || isPlatform(row)) continue;
       if (excludeId && String(row.id) === String(excludeId)) continue;
-      const role = String(row.role || '').toLowerCase();
-      const scope = String(row.scope || '').toLowerCase();
-      const perms = row.resolved_permissions || {};
-      if (role === 'super_admin' || role === 'platform_admin' || scope === 'platform' || perms.platform_admin === true) continue;
-      const type = normalizeLicenseType(row.license_type || (Array.isArray(row.roles) && row.roles.includes('pad_user') ? 'pad' : 'supervision'));
-      if (type === licenseType) total += 1;
+      const key = mark(row, 'user');
+      const emailKey = row.email ? `email:${String(row.email).toLowerCase()}` : '';
+      if ((key && seen.has(key)) || (emailKey && seen.has(emailKey))) continue;
+      if (key) seen.add(key);
+      if (emailKey) seen.add(emailKey);
+      if (rowType(row) === licenseType) total += 1;
+    }
+
+    const licenses = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,login_user,username,license_key,role,license_type,roles,scope`, { method: 'GET' }).catch(() => []);
+    for (const row of Array.isArray(licenses) ? licenses : []) {
+      if (!row || isPlatform(row)) continue;
+      const emailKey = row.email ? `email:${String(row.email).toLowerCase()}` : '';
+      const licKey = row.license_key ? `license:${String(row.license_key).toLowerCase()}` : mark(row, 'license');
+      if ((emailKey && seen.has(emailKey)) || (licKey && seen.has(licKey))) continue;
+      if (emailKey) seen.add(emailKey);
+      if (licKey) seen.add(licKey);
+      if (rowType(row) === licenseType) total += 1;
     }
   }
   return total;
 }
 
 async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null) {
-  const environmentCode = cleanString(payload.environment_code || '', 80).toLowerCase();
+  const environmentCode = cleanString(payload.environment_code || '', 80);
   if (!environmentCode || environmentCode === 'global') throw Object.assign(new Error('Environnement actif invalide pour créer un utilisateur.'), { status: 400 });
   const licenseType = normalizeLicenseType(payload.license_type);
   const limits = await getLicenseLimitsForEnvironment(url, serviceRole, environmentCode);

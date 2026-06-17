@@ -1,6 +1,6 @@
 {
-  "version": "v23",
-  "created_at": "2026-06-17T12:37:00Z",
-  "fix": "build.js now copies all assets; index references app.secured-v23.js",
+  "version": "v25",
+  "created_at": "2026-06-17T16:35:53Z",
+  "fix": "users page now merges user_profiles and licenses and preserves environment casing",
   "verified": true
 }
