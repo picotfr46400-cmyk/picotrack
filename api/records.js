@@ -203,6 +203,20 @@ function isPlatformLicenseManagerProfile(profile) {
   );
 }
 
+function normalizeEnvCode(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function effectiveEnvironmentCode(profile, requested) {
+  const profileEnv = normalizeEnvCode(profile?.environment_code);
+  if (!isPlatformLicenseManagerProfile(profile) && profileEnv && profileEnv !== 'GLOBAL' && profileEnv !== '*') {
+    return profileEnv;
+  }
+  const reqEnv = normalizeEnvCode(requested);
+  if (reqEnv && reqEnv !== 'GLOBAL' && reqEnv !== '*') return reqEnv;
+  return profileEnv || 'DEMO';
+}
+
 async function saveEnvironmentLicenseLimits(req, record, profile) {
   if (!isPlatformLicenseManagerProfile(profile)) {
     throw Object.assign(new Error('Modification des quotas réservée au compte plateforme PicoTrack.'), { status: 403 });
@@ -282,7 +296,9 @@ async function handleSave(req, body) {
     record.tenant_id = profile.tenant_id;
   }
   const entitiesWithEnvironmentCode = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
-  if (entitiesWithEnvironmentCode.has(entity) && !record.environment_code && profile?.environment_code) record.environment_code = profile.environment_code;
+  if (entitiesWithEnvironmentCode.has(entity)) {
+    record.environment_code = effectiveEnvironmentCode(profile, record.environment_code || body.environment_code);
+  }
 
   if (entity === 'environment_license_limits') {
     return await saveEnvironmentLicenseLimits(req, record, profile);
@@ -337,14 +353,14 @@ async function serviceRead(req, path) {
 }
 
 async function handleInitialLoad(req, body) {
-  await requireAuth(req);
-  const env = String(body.environment_code || 'DEMO').trim().slice(0, 80);
+  const user = await requireAuth(req);
+  const profile = await getUserProfile(user.id, req).catch(() => null);
+  const env = effectiveEnvironmentCode(profile, body.environment_code || body.env);
   const envFilter = [{ column: 'environment_code', op: 'eq', value: env }];
 
-  // Lecture serveur volontaire : les écritures sont sécurisées, mais les politiques RLS
-  // peuvent empêcher le rechargement côté navigateur. Comme PicoTrack cible 1 client = 1 projet
-  // Supabase dédié, on lit ici côté serveur après authentification, sans exposer la structure DB.
-  let [forms, services, submissions, serviceInstances, databases] = await Promise.all([
+  // Lecture serveur après authentification. L'environnement est résolu côté serveur pour éviter
+  // les retours arrière après actualisation lorsqu'un sous-domaine ou une session porte un code différent.
+  const [forms, services, submissions, serviceInstances, databases] = await Promise.all([
     serviceRead(req, buildReadPath('forms', { filters: envFilter, select: '*', order: 'created_at.asc', limit: 1000 })),
     serviceRead(req, buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: 1000 })),
     serviceRead(req, buildReadPath('submissions', { filters: envFilter, select: '*', order: 'created_at.desc', limit: 1000 })),
@@ -352,20 +368,7 @@ async function handleInitialLoad(req, body) {
     serviceRead(req, buildReadPath('databases', { filters: envFilter, select: '*', limit: 1000 }))
   ]);
 
-  // Fallback bac à sable : si l'environnement actif ne correspond pas encore au code stocké
-  // en base, on recharge toutes les lignes. À terme, le mapping sous-domaine -> client Supabase
-  // remplacera ce besoin.
-  if ((!Array.isArray(forms) || forms.length === 0) && env) {
-    [forms, services, submissions, serviceInstances, databases] = await Promise.all([
-      serviceRead(req, buildReadPath('forms', { select: '*', order: 'created_at.asc', limit: 1000 })),
-      serviceRead(req, buildReadPath('services', { select: '*', order: 'created_at.asc', limit: 1000 })),
-      serviceRead(req, buildReadPath('submissions', { select: '*', order: 'created_at.desc', limit: 1000 })),
-      serviceRead(req, buildReadPath('service_instances', { select: '*', order: 'created_at.desc', limit: 1000 })),
-      serviceRead(req, buildReadPath('databases', { select: '*', limit: 1000 }))
-    ]);
-  }
-
-  return { forms, services, submissions, serviceInstances, databases };
+  return { environment_code: env, forms, services, submissions, serviceInstances, databases };
 }
 
 async function handleCurrentProfile(req) {
