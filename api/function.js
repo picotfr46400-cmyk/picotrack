@@ -423,12 +423,12 @@ async function handleUpdateLicenseLimits(req, url, serviceRole, payload) {
   if (Array.isArray(existing) && existing.length) {
     saved = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?id=eq.${encodeURIComponent(existing[0].id)}&select=*`, {
       method: 'PATCH',
-      body: JSON.stringify(body)
+      body
     });
   } else {
     saved = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?select=*`, {
       method: 'POST',
-      body: JSON.stringify(body)
+      body
     });
   }
 

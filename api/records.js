@@ -187,6 +187,55 @@ function normalizeRecord(record, entity = '') {
   return out;
 }
 
+
+function isPlatformLicenseManagerProfile(profile) {
+  const role = String(profile?.role || '').toLowerCase();
+  const scope = String(profile?.scope || '').toLowerCase();
+  const env = String(profile?.environment_code || '').toUpperCase();
+  const perms = profile?.resolved_permissions || {};
+  return profile?.active !== false && (
+    role === 'super_admin' ||
+    role === 'platform_admin' ||
+    scope === 'platform' ||
+    env === 'GLOBAL' ||
+    perms.platform_admin === true ||
+    perms.manage_global_licenses === true
+  );
+}
+
+async function saveEnvironmentLicenseLimits(req, record, profile) {
+  if (!isPlatformLicenseManagerProfile(profile)) {
+    throw Object.assign(new Error('Modification des quotas réservée au compte plateforme PicoTrack.'), { status: 403 });
+  }
+  const environmentCode = String(record.environment_code || '').trim().slice(0, 80);
+  if (!environmentCode) throw Object.assign(new Error('Code environnement manquant.'), { status: 400 });
+
+  const body = {
+    environment_code: environmentCode,
+    supervision_limit: Math.max(0, Number(record.supervision_limit ?? record.max_supervision ?? 0) || 0),
+    pad_limit: Math.max(0, Number(record.pad_limit ?? record.max_pad ?? 0) || 0),
+    lecture_limit: Math.max(0, Number(record.lecture_limit ?? record.readonly_limit ?? 0) || 0),
+    updated_at: new Date().toISOString()
+  };
+  if (profile?.tenant_id) body.tenant_id = profile.tenant_id;
+
+  const existing = await serviceRest(`environment_license_limits?environment_code=eq.${encodeURIComponent(environmentCode)}&select=id&limit=1`, { method: 'GET', prefer: '', req });
+  if (Array.isArray(existing) && existing[0]?.id) {
+    return await serviceRest(`environment_license_limits?id=eq.${encodeURIComponent(existing[0].id)}`, {
+      method: 'PATCH',
+      body,
+      prefer: 'return=representation',
+      req
+    });
+  }
+  return await serviceRest('environment_license_limits?on_conflict=environment_code', {
+    method: 'POST',
+    body,
+    prefer: 'resolution=merge-duplicates,return=representation',
+    req
+  });
+}
+
 async function userRest(req, path, { method='GET', body, prefer='return=representation' } = {}) {
   const { url, anonKey } = getSupabaseConfig(req);
   if (!url || !anonKey) throw Object.assign(new Error('Configuration Supabase serveur manquante'), { status: 500 });
@@ -234,6 +283,10 @@ async function handleSave(req, body) {
   }
   const entitiesWithEnvironmentCode = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
   if (entitiesWithEnvironmentCode.has(entity) && !record.environment_code && profile?.environment_code) record.environment_code = profile.environment_code;
+
+  if (entity === 'environment_license_limits') {
+    return await saveEnvironmentLicenseLimits(req, record, profile);
+  }
 
   const id = String(body.id || '').trim();
   if (!id && ['forms','submissions','services','service_instances'].includes(entity)) delete record.id;
