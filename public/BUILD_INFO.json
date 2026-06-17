@@ -1,18 +1,12 @@
 {
-  "version": "v21-domain-config",
-  "date": "2026-06-16",
+  "version": "v22-env-license-resolution",
+  "date": "2026-06-17",
   "changes": [
-    "security headers added at API helper level",
-    "explicit API headers in vercel.json",
-    "removed previous obsolete frontend bundles",
-    "index loads app.secured-v19.js",
-    "removed unsafe-eval from CSP"
+    "fixed license limit environment resolution for GLOBAL super_admin accounts",
+    "license screens now use runtime/domain environment instead of profile GLOBAL when applicable",
+    "users screen limit reads PROSPECT/DEMO/PROD from domain-aware bootstrap",
+    "sidebar environment label prepared for runtime environment display",
+    "cache version bumped to avoid stale service worker assets"
   ],
-  "securityNote": "security.txt added; headers confirmed on browser response; scanner 401 is caused by Vercel Deployment Protection before app headers.",
-  "generatedAt": "2026-06-16T21:59:00Z",
-  "notes": [
-    "domain-based Supabase configuration",
-    "index loads app.secured-v21.js",
-    "API and PAD routes use host-aware config"
-  ]
+  "securityNote": "GLOBAL remains a platform role/license scope only; active environment is resolved from host/runtime configuration."
 }
