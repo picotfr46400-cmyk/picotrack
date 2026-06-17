@@ -1,4 +1,4 @@
-const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest } = require('./_server-supabase');
 
 function normalizeProfile(user, profile) {
   if (!user || !profile) return null;
@@ -26,10 +26,16 @@ module.exports = async function handler(req, res) {
     const body = await readJsonBody(req, 200000);
 
     if (body.action === 'signIn') {
+      let loginEmail = String(body.email || '').trim().toLowerCase();
+      if (loginEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginEmail)) {
+        const safeLogin = encodeURIComponent(loginEmail);
+        const rows = await serviceRest(`user_profiles?or=(login_user.eq.${safeLogin},username.eq.${safeLogin})&select=email,active&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []);
+        if (Array.isArray(rows) && rows[0]?.email) loginEmail = String(rows[0].email || '').trim().toLowerCase();
+      }
       const upstream = await fetch(`${url}/auth/v1/token?grant_type=password`, {
         method: 'POST',
         headers: { apikey: anonKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: body.email, password: body.password })
+        body: JSON.stringify({ email: loginEmail, password: body.password })
       });
       const text = await upstream.text();
       let payload = {};

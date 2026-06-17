@@ -164,6 +164,109 @@ async function insertLicenseBestEffort(url, serviceRole, payload) {
   }
 }
 
+
+async function createAuthUserWithPassword(url, serviceRole, payload) {
+  const login = normalizeEmail(payload.email || '') || normalizeEmail(payload.login_user || payload.username || '');
+  const email = normalizeEmail(payload.email || login);
+  const password = String(payload.password || payload.user_password || payload.plain_password || '').trim();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw Object.assign(new Error('Adresse e-mail invalide pour la création du compte.'), { status: 400 });
+  if (!password || password.length < 8) throw Object.assign(new Error('Le mot de passe doit contenir au moins 8 caractères.'), { status: 400 });
+
+  const existing = await findAuthUserByEmail(url, serviceRole, email);
+  if (existing?.id) throw Object.assign(new Error('Un compte existe déjà avec cet identifiant.'), { status: 409 });
+
+  const userMetadata = {
+    label: cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim()),
+    firstname: cleanString(payload.firstname || payload.first_name || ''),
+    lastname: cleanString(payload.lastname || payload.last_name || ''),
+    environment_code: cleanString(payload.environment_code || '').toLowerCase(),
+    license_type: cleanString(payload.license_type || 'supervision'),
+    role: cleanString(payload.role || 'supervision_user'),
+    login_user: cleanString(payload.login_user || payload.username || email)
+  };
+
+  const created = await supabaseFetch(url, serviceRole, '/auth/v1/admin/users', {
+    method: 'POST',
+    body: {
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: userMetadata
+    }
+  });
+  return created?.user || created;
+}
+
+async function updateAuthUserPassword(url, serviceRole, userId, payload) {
+  const password = String(payload.password || payload.user_password || payload.plain_password || '').trim();
+  if (!password) return null;
+  if (password.length < 8) throw Object.assign(new Error('Le nouveau mot de passe doit contenir au moins 8 caractères.'), { status: 400 });
+  return await supabaseFetch(url, serviceRole, `/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+    method: 'PUT',
+    body: { password }
+  });
+}
+
+function normalizeLicenseType(value) {
+  const v = String(value || '').trim().toLowerCase();
+  return v === 'pad' || v === 'pad_user' || v === 'terrain' ? 'pad' : 'supervision';
+}
+
+function envCandidates(env) {
+  const raw = cleanString(env || '', 80);
+  return [...new Set([raw, raw.toLowerCase(), raw.toUpperCase()].filter(Boolean))];
+}
+
+async function getLicenseLimitsForEnvironment(url, serviceRole, environmentCode) {
+  for (const env of envCandidates(environmentCode)) {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit&limit=1`, { method: 'GET' }).catch(() => []);
+    if (Array.isArray(rows) && rows[0]) return rows[0];
+  }
+  return null;
+}
+
+async function countActiveUsersForType(url, serviceRole, environmentCode, licenseType, excludeId) {
+  let total = 0;
+  const seen = new Set();
+  for (const env of envCandidates(environmentCode)) {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,role,license_type,roles,scope,resolved_permissions`, { method: 'GET' }).catch(() => []);
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (!row?.id || seen.has(String(row.id))) continue;
+      seen.add(String(row.id));
+      if (excludeId && String(row.id) === String(excludeId)) continue;
+      const role = String(row.role || '').toLowerCase();
+      const scope = String(row.scope || '').toLowerCase();
+      const perms = row.resolved_permissions || {};
+      if (role === 'super_admin' || role === 'platform_admin' || scope === 'platform' || perms.platform_admin === true) continue;
+      const type = normalizeLicenseType(row.license_type || (Array.isArray(row.roles) && row.roles.includes('pad_user') ? 'pad' : 'supervision'));
+      if (type === licenseType) total += 1;
+    }
+  }
+  return total;
+}
+
+async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null) {
+  const environmentCode = cleanString(payload.environment_code || '', 80).toLowerCase();
+  if (!environmentCode || environmentCode === 'global') throw Object.assign(new Error('Environnement actif invalide pour créer un utilisateur.'), { status: 400 });
+  const licenseType = normalizeLicenseType(payload.license_type);
+  const limits = await getLicenseLimitsForEnvironment(url, serviceRole, environmentCode);
+  if (!limits) throw Object.assign(new Error(`Aucun quota configuré pour l’environnement ${environmentCode}.`), { status: 400 });
+  const max = licenseType === 'pad' ? Number(limits.pad_limit || 0) : Number(limits.supervision_limit || 0);
+  if (!max || max < 1) throw Object.assign(new Error(`Aucune licence ${licenseType === 'pad' ? 'PAD Terrain' : 'Supervision PC'} disponible pour cet environnement.`), { status: 403 });
+  const used = await countActiveUsersForType(url, serviceRole, environmentCode, licenseType, excludeId);
+  if (used >= max) throw Object.assign(new Error(`Quota ${licenseType === 'pad' ? 'PAD Terrain' : 'Supervision PC'} atteint (${used}/${max}).`), { status: 403 });
+  return { licenseType, environmentCode, used, max };
+}
+
+async function handleCreateUser(url, serviceRole, payload) {
+  if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
+  const quota = await assertQuotaAvailable(url, serviceRole, payload, null);
+  const authUser = await createAuthUserWithPassword(url, serviceRole, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  const profile = await upsertUserProfile(url, serviceRole, authUser, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  await insertLicenseBestEffort(url, serviceRole, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  return { ok: true, success: true, mode: 'direct-create', quota, user: { id: authUser.id, email: authUser.email || payload.email }, profile };
+}
+
 async function handleInviteUser(url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const authUser = await inviteAuthUser(url, serviceRole, payload);
@@ -175,6 +278,21 @@ async function handleInviteUser(url, serviceRole, payload) {
     user: { id: authUser.id, email: authUser.email || payload.email },
     profile
   };
+}
+
+
+async function handleUpdateUser(url, serviceRole, payload) {
+  if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
+  const id = cleanString(payload.user_id || payload.id, 80);
+  if (!id) throw Object.assign(new Error('ID utilisateur manquant.'), { status: 400 });
+  const currentRows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,email,environment_code,license_type&limit=1`, { method: 'GET' });
+  const current = Array.isArray(currentRows) ? currentRows[0] : null;
+  if (!current?.id) throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
+  const merged = { ...current, ...payload, environment_code: payload.environment_code || current.environment_code, license_type: payload.license_type || current.license_type };
+  await assertQuotaAvailable(url, serviceRole, merged, id);
+  await updateAuthUserPassword(url, serviceRole, id, payload);
+  const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged);
+  return { ok: true, success: true, mode: 'direct-update', profile };
 }
 
 async function handleDeleteUser(url, serviceRole, payload) {
@@ -206,9 +324,17 @@ module.exports = async function handler(req, res) {
     const functionName = cleanString(body.functionName || body.fn || '', 80).replace(/[^a-zA-Z0-9_-]/g, '');
     const payload = safeObject(body.payload);
 
+    if (functionName === 'create-user') {
+      await requireAdmin(req);
+      return json(res, 200, await handleCreateUser(url, serviceRole, payload));
+    }
     if (functionName === 'invite-user') {
       await requireAdmin(req);
-      return json(res, 200, await handleInviteUser(url, serviceRole, payload));
+      return json(res, 200, await handleCreateUser(url, serviceRole, payload));
+    }
+    if (functionName === 'update-user') {
+      await requireAdmin(req);
+      return json(res, 200, await handleUpdateUser(url, serviceRole, payload));
     }
     if (functionName === 'delete-user') {
       await requireAdmin(req);
