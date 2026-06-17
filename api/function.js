@@ -26,6 +26,11 @@ function normalizeEmail(value) {
   return cleanString(value, 320).toLowerCase();
 }
 
+function normalizeEnvironmentCode(value) {
+  const v = cleanString(value || '', 80).toUpperCase();
+  return v === '*' ? 'GLOBAL' : v;
+}
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -82,7 +87,7 @@ async function inviteAuthUser(url, serviceRole, payload) {
     label: cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim()),
     firstname: cleanString(payload.firstname || payload.first_name || ''),
     lastname: cleanString(payload.lastname || payload.last_name || ''),
-    environment_code: cleanString(payload.environment_code || ''),
+    environment_code: normalizeEnvironmentCode(payload.environment_code || ''),
     license_type: cleanString(payload.license_type || 'supervision'),
     role: cleanString(payload.role || 'supervision_user')
   };
@@ -109,7 +114,7 @@ async function inviteAuthUser(url, serviceRole, payload) {
 
 async function upsertUserProfile(url, serviceRole, authUser, payload) {
   if (!authUser?.id) throw new Error('Compte Auth créé mais ID utilisateur introuvable.');
-  const environmentCode = cleanString(payload.environment_code || 'efc');
+  const environmentCode = normalizeEnvironmentCode(payload.environment_code || 'EFC');
   const email = normalizeEmail(payload.email || authUser.email);
   const profile = {
     id: authUser.id,
@@ -142,7 +147,7 @@ async function upsertUserProfile(url, serviceRole, authUser, payload) {
 
 async function insertLicenseBestEffort(url, serviceRole, payload) {
   const body = {
-    environment_code: cleanString(payload.environment_code || 'efc'),
+    environment_code: normalizeEnvironmentCode(payload.environment_code || 'EFC'),
     license_key: cleanString(payload.license_key || ''),
     license_type: cleanString(payload.license_type || 'supervision'),
     label: cleanString(payload.label || ''),
@@ -179,7 +184,7 @@ async function createAuthUserWithPassword(url, serviceRole, payload) {
     label: cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim()),
     firstname: cleanString(payload.firstname || payload.first_name || ''),
     lastname: cleanString(payload.lastname || payload.last_name || ''),
-    environment_code: cleanString(payload.environment_code || ''),
+    environment_code: normalizeEnvironmentCode(payload.environment_code || ''),
     license_type: cleanString(payload.license_type || 'supervision'),
     role: cleanString(payload.role || 'supervision_user'),
     login_user: cleanString(payload.login_user || payload.username || email)
@@ -216,7 +221,8 @@ function normalizeLicenseType(value) {
 
 function envCandidates(env) {
   const raw = cleanString(env || '', 80);
-  return [...new Set([raw, raw.toLowerCase(), raw.toUpperCase()].filter(Boolean))];
+  const upper = normalizeEnvironmentCode(raw);
+  return [...new Set([upper, raw, raw.toLowerCase()].filter(Boolean))];
 }
 
 async function getLicenseLimitsForEnvironment(url, serviceRole, environmentCode) {
@@ -276,8 +282,8 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
 }
 
 async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null) {
-  const environmentCode = cleanString(payload.environment_code || '', 80);
-  if (!environmentCode || environmentCode === 'global') throw Object.assign(new Error('Environnement actif invalide pour créer un utilisateur.'), { status: 400 });
+  const environmentCode = normalizeEnvironmentCode(payload.environment_code || '');
+  if (!environmentCode || environmentCode === 'GLOBAL') throw Object.assign(new Error('Environnement actif invalide pour créer un utilisateur.'), { status: 400 });
   const licenseType = normalizeLicenseType(payload.license_type);
   const limits = await getLicenseLimitsForEnvironment(url, serviceRole, environmentCode);
   if (!limits) throw Object.assign(new Error(`Aucun quota configuré pour l’environnement ${environmentCode}.`), { status: 400 });
@@ -305,11 +311,16 @@ function isPlatformOperatorProfile(profile) {
 
 function isClientAdminProfile(profile) {
   const role = String(profile?.role || '').toLowerCase();
+  const licenseType = String(profile?.license_type || '').toLowerCase();
   const perms = profile?.resolved_permissions || {};
-  return role === 'admin'
+  return profile?.active !== false && (
+    role === 'admin'
     || role === 'client_admin'
     || role === 'environment_admin'
-    || perms.manage_users === true;
+    || role === 'supervision_user'
+    || licenseType === 'supervision'
+    || perms.manage_users === true
+  );
 }
 
 function canManageLicenseLimits(profile) {
@@ -348,6 +359,35 @@ async function getRequestUserProfile(req, url, serviceRole) {
   return Array.isArray(rows) && rows.length ? rows[0] : null;
 }
 
+
+function profileEnvironmentCode(profile) {
+  return normalizeEnvironmentCode(profile?.environment_code || '');
+}
+
+function sameEnvironment(profile, environmentCode) {
+  const profileEnv = profileEnvironmentCode(profile);
+  const requestedEnv = normalizeEnvironmentCode(environmentCode || '');
+  return !!profileEnv && !!requestedEnv && profileEnv === requestedEnv;
+}
+
+function assertSameEnvironmentOrPlatform(profile, environmentCode) {
+  if (isPlatformOperatorProfile(profile)) return normalizeEnvironmentCode(environmentCode || profileEnvironmentCode(profile));
+  const requestedEnv = normalizeEnvironmentCode(environmentCode || profileEnvironmentCode(profile));
+  if (!sameEnvironment(profile, requestedEnv)) {
+    throw Object.assign(new Error('Accès refusé à cet environnement.'), { status: 403 });
+  }
+  return requestedEnv;
+}
+
+async function getEffectiveEnvironmentCode(req, url, serviceRole, payload, requireProfile = true) {
+  const profile = await getRequestUserProfile(req, url, serviceRole);
+  if (!profile && requireProfile) throw Object.assign(new Error('Profil utilisateur introuvable.'), { status: 403 });
+  const requested = normalizeEnvironmentCode(payload.environment_code || payload.active_env || profileEnvironmentCode(profile) || '');
+  if (!requested) throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+  if (profile && !isPlatformOperatorProfile(profile)) return assertSameEnvironmentOrPlatform(profile, requested);
+  return requested;
+}
+
 async function requireLicenseLimitManager(req, url, serviceRole) {
   const profile = await getRequestUserProfile(req, url, serviceRole);
   if (!profile || !canManageLicenseLimits(profile)) {
@@ -364,10 +404,9 @@ async function requireUserCreator(req, url, serviceRole) {
   return profile;
 }
 
-async function handleGetLicenseLimits(url, serviceRole, payload) {
+async function handleGetLicenseLimits(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
-  const environmentCode = cleanString(payload.environment_code || payload.active_env || '', 80);
-  if (!environmentCode) throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+  const environmentCode = await getEffectiveEnvironmentCode(req, url, serviceRole, payload, true);
 
   let row = null;
   for (const env of envCandidates(environmentCode)) {
@@ -398,7 +437,7 @@ async function handleUpdateLicenseLimits(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   await requireLicenseLimitManager(req, url, serviceRole);
 
-  const environmentCode = cleanString(payload.environment_code || payload.active_env || '', 80);
+  const environmentCode = normalizeEnvironmentCode(payload.environment_code || payload.active_env || '');
   if (!environmentCode) throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
 
   const supervisionLimit = Number(payload.supervision_limit ?? payload.max_supervision ?? 0);
@@ -409,7 +448,11 @@ async function handleUpdateLicenseLimits(req, url, serviceRole, payload) {
   if (!Number.isInteger(padLimit) || padLimit < 0) throw Object.assign(new Error('Quota PAD invalide.'), { status: 400 });
   if (!Number.isInteger(readonlyLimit) || readonlyLimit < 0) throw Object.assign(new Error('Quota lecture invalide.'), { status: 400 });
 
-  const existing = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(environmentCode)}&select=id`, { method: 'GET' }).catch(() => []);
+  let existing = [];
+  for (const env of envCandidates(environmentCode)) {
+    existing = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=id`, { method: 'GET' }).catch(() => []);
+    if (Array.isArray(existing) && existing.length) break;
+  }
   const body = {
     environment_code: environmentCode,
     supervision_limit: supervisionLimit,
@@ -435,10 +478,9 @@ async function handleUpdateLicenseLimits(req, url, serviceRole, payload) {
   return { ok: true, success: true, row: Array.isArray(saved) ? saved[0] : saved };
 }
 
-async function handleListUsers(url, serviceRole, payload) {
+async function handleListUsers(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
-  const environmentCode = cleanString(payload.environment_code || payload.active_env || '', 80);
-  if (!environmentCode) throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+  const environmentCode = await getEffectiveEnvironmentCode(req, url, serviceRole, payload, true);
 
   function isPlatform(row) {
     const role = String(row?.role || '').toLowerCase();
@@ -508,12 +550,13 @@ async function handleListUsers(url, serviceRole, payload) {
 
 async function handleCreateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
-  await requireUserCreator(req, url, serviceRole);
-  const quota = await assertQuotaAvailable(url, serviceRole, payload, null);
+  const profile = await requireUserCreator(req, url, serviceRole);
+  const environmentCode = assertSameEnvironmentOrPlatform(profile, payload.environment_code || payload.active_env || profileEnvironmentCode(profile));
+  const quota = await assertQuotaAvailable(url, serviceRole, { ...payload, environment_code: environmentCode }, null);
   const authUser = await createAuthUserWithPassword(url, serviceRole, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
-  const profile = await upsertUserProfile(url, serviceRole, authUser, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
   await insertLicenseBestEffort(url, serviceRole, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
-  return { ok: true, success: true, mode: 'direct-create', quota, user: { id: authUser.id, email: authUser.email || payload.email }, profile };
+  return { ok: true, success: true, mode: 'direct-create', quota, user: { id: authUser.id, email: authUser.email || payload.email }, profile: createdProfile };
 }
 
 async function handleInviteUser(url, serviceRole, payload) {
@@ -530,13 +573,15 @@ async function handleInviteUser(url, serviceRole, payload) {
 }
 
 
-async function handleUpdateUser(url, serviceRole, payload) {
+async function handleUpdateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
+  const profileRequester = await requireUserCreator(req, url, serviceRole);
   const id = cleanString(payload.user_id || payload.id, 80);
   if (!id) throw Object.assign(new Error('ID utilisateur manquant.'), { status: 400 });
   const currentRows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,email,environment_code,license_type&limit=1`, { method: 'GET' });
   const current = Array.isArray(currentRows) ? currentRows[0] : null;
   if (!current?.id) throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
+  assertSameEnvironmentOrPlatform(profileRequester, current.environment_code);
   const merged = { ...current, ...payload, environment_code: payload.environment_code || current.environment_code, license_type: payload.license_type || current.license_type };
   await assertQuotaAvailable(url, serviceRole, merged, id);
   await updateAuthUserPassword(url, serviceRole, id, payload);
@@ -544,10 +589,16 @@ async function handleUpdateUser(url, serviceRole, payload) {
   return { ok: true, success: true, mode: 'direct-update', profile };
 }
 
-async function handleDeleteUser(url, serviceRole, payload) {
+async function handleDeleteUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
+  const profileRequester = await requireUserCreator(req, url, serviceRole);
   const id = cleanString(payload.user_id || payload.id, 80);
   if (!id) throw new Error('ID utilisateur manquant.');
+
+  const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,environment_code&limit=1`, { method: 'GET' });
+  const current = Array.isArray(rows) ? rows[0] : null;
+  if (!current?.id) throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
+  assertSameEnvironmentOrPlatform(profileRequester, current.environment_code);
 
   await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}`, {
     method: 'DELETE',
@@ -574,32 +625,32 @@ module.exports = async function handler(req, res) {
     const payload = safeObject(body.payload);
 
     if (functionName === 'list-users') {
-      await requireAdmin(req);
-      return json(res, 200, await handleListUsers(url, serviceRole, payload));
+      await requireAuth(req);
+      return json(res, 200, await handleListUsers(req, url, serviceRole, payload));
     }
     if (functionName === 'get-license-limits') {
-      await requireAdmin(req);
-      return json(res, 200, await handleGetLicenseLimits(url, serviceRole, payload));
+      await requireAuth(req);
+      return json(res, 200, await handleGetLicenseLimits(req, url, serviceRole, payload));
     }
     if (functionName === 'update-license-limits') {
-      await requireAdmin(req);
+      await requireAuth(req);
       return json(res, 200, await handleUpdateLicenseLimits(req, url, serviceRole, payload));
     }
     if (functionName === 'create-user') {
-      await requireAdmin(req);
+      await requireAuth(req);
       return json(res, 200, await handleCreateUser(req, url, serviceRole, payload));
     }
     if (functionName === 'invite-user') {
-      await requireAdmin(req);
+      await requireAuth(req);
       return json(res, 200, await handleCreateUser(req, url, serviceRole, payload));
     }
     if (functionName === 'update-user') {
-      await requireAdmin(req);
-      return json(res, 200, await handleUpdateUser(url, serviceRole, payload));
+      await requireAuth(req);
+      return json(res, 200, await handleUpdateUser(req, url, serviceRole, payload));
     }
     if (functionName === 'delete-user') {
-      await requireAdmin(req);
-      return json(res, 200, await handleDeleteUser(url, serviceRole, payload));
+      await requireAuth(req);
+      return json(res, 200, await handleDeleteUser(req, url, serviceRole, payload));
     }
 
     if (!functionName) return json(res, 400, { error: 'Fonction manquante' });
