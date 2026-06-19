@@ -1,6 +1,0 @@
-{
-  "version": "v28",
-  "created_at": "2026-06-17T20:09:20Z",
-  "fix": "client admin separated from GLOBAL licensing; client licenses read-only; readonly license type prepared",
-  "verified": true
-}
