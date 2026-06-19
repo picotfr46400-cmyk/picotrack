@@ -445,7 +445,6 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
 
   try {
-    await requireAuth(req);
     const body = await readJsonBody(req, 2_000_000);
 
     if ('path' in body || 'resource' in body || 'method' in body) {

@@ -8,5 +8,8 @@ for (const f of rootFiles) if (fs.existsSync(f)) fs.copyFileSync(f, path.join(ou
 if (fs.existsSync('.well-known')) fs.cpSync('.well-known', path.join(out, '.well-known'), { recursive: true });
 if (fs.existsSync('icons')) fs.cpSync('icons', path.join(out, 'icons'), { recursive: true });
 fs.mkdirSync(path.join(out, 'assets'), { recursive: true });
-if (fs.existsSync('assets')) for (const f of fs.readdirSync('assets')) { const src=path.join('assets',f); const dst=path.join(out,'assets',f); if (fs.statSync(src).isFile()) fs.copyFileSync(src,dst); }
-console.log('PicoTrack static files copied to public with all assets');
+const latestAsset = 'app.secured-v44.js';
+const latestPath = path.join('assets', latestAsset);
+if (!fs.existsSync(latestPath)) throw new Error(`${latestAsset} manquant`);
+fs.copyFileSync(latestPath, path.join(out, 'assets', latestAsset));
+console.log('PicoTrack build optimisé : seul l’asset applicatif courant est publié.');
