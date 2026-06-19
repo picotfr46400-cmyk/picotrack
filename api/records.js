@@ -357,18 +357,47 @@ async function handleInitialLoad(req, body) {
   const profile = await getUserProfile(user.id, req).catch(() => null);
   const env = effectiveEnvironmentCode(profile, body.environment_code || body.env);
   const envFilter = [{ column: 'environment_code', op: 'eq', value: env }];
+  const scope = String(body.scope || body.mode || 'forms').trim().toLowerCase();
 
-  // Lecture serveur après authentification. L'environnement est résolu côté serveur pour éviter
-  // les retours arrière après actualisation lorsqu'un sous-domaine ou une session porte un code différent.
+  // V42 performance : le démarrage ne charge plus tout PicoTrack.
+  // Par défaut, on charge les formulaires + un comptage léger des soumissions.
+  // Les écrans lourds (services, instances, bases, soumissions détaillées) se chargent à l'ouverture.
+  if (scope === 'forms' || scope === 'light') {
+    const [forms, submissionRefs] = await Promise.all([
+      serviceRead(req, buildReadPath('forms', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.limit, 300) })),
+      serviceRead(req, buildReadPath('submissions', { filters: envFilter, select: 'id,form_id', order: 'created_at.desc', limit: cleanLimit(body.submissions_limit, 1000) })).catch(() => [])
+    ]);
+    const submissionCounts = {};
+    for (const row of Array.isArray(submissionRefs) ? submissionRefs : []) {
+      const key = String(row?.form_id || '');
+      if (key) submissionCounts[key] = (submissionCounts[key] || 0) + 1;
+    }
+    return { environment_code: env, scope: 'forms', forms, submissionCounts, services: [], submissions: [], serviceInstances: [], databases: [] };
+  }
+
+  if (scope === 'services') {
+    const [services, serviceInstances] = await Promise.all([
+      serviceRead(req, buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.limit, 500) })),
+      serviceRead(req, buildReadPath('service_instances', { filters: envFilter, select: '*', order: 'created_at.desc', limit: cleanLimit(body.instances_limit, 500) }))
+    ]);
+    return { environment_code: env, scope: 'services', services, serviceInstances };
+  }
+
+  if (scope === 'databases') {
+    const databases = await serviceRead(req, buildReadPath('databases', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.limit, 300) }));
+    return { environment_code: env, scope: 'databases', databases };
+  }
+
+  // Mode complet conservé pour compatibilité ou diagnostic.
   const [forms, services, submissions, serviceInstances, databases] = await Promise.all([
-    serviceRead(req, buildReadPath('forms', { filters: envFilter, select: '*', order: 'created_at.asc', limit: 1000 })),
-    serviceRead(req, buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: 1000 })),
-    serviceRead(req, buildReadPath('submissions', { filters: envFilter, select: '*', order: 'created_at.desc', limit: 1000 })),
-    serviceRead(req, buildReadPath('service_instances', { filters: envFilter, select: '*', order: 'created_at.desc', limit: 1000 })),
-    serviceRead(req, buildReadPath('databases', { filters: envFilter, select: '*', limit: 1000 }))
+    serviceRead(req, buildReadPath('forms', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.forms_limit, 500) })),
+    serviceRead(req, buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.services_limit, 500) })),
+    serviceRead(req, buildReadPath('submissions', { filters: envFilter, select: '*', order: 'created_at.desc', limit: cleanLimit(body.submissions_limit, 500) })),
+    serviceRead(req, buildReadPath('service_instances', { filters: envFilter, select: '*', order: 'created_at.desc', limit: cleanLimit(body.instances_limit, 500) })),
+    serviceRead(req, buildReadPath('databases', { filters: envFilter, select: '*', limit: cleanLimit(body.databases_limit, 300) }))
   ]);
 
-  return { environment_code: env, forms, services, submissions, serviceInstances, databases };
+  return { environment_code: env, scope: 'full', forms, services, submissions, serviceInstances, databases };
 }
 
 async function handleCurrentProfile(req) {
