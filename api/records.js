@@ -279,8 +279,37 @@ async function userRest(req, path, { method='GET', body, prefer='return=represen
 async function handleList(req, body) {
   const entity = cleanEntity(body.entity);
   if (!entity) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
-  const path = buildReadPath(entity, body);
-  return await userRest(req, path, { method: 'GET', prefer: '' });
+
+  // V43 performance/sécurité : les lectures métier passent côté serveur.
+  // Avant, certaines listes repassaient par le token utilisateur/RLS puis revenaient vides
+  // ou lentes selon l'écran. On applique ici un filtre environnement systématique
+  // sans laisser le navigateur choisir librement le périmètre client.
+  const user = await requireAuth(req);
+  const profile = await getUserProfile(user.id, req).catch(() => null);
+  const profileEnv = String(profile?.environment_code || '').trim().toUpperCase();
+  const isPlatform = isPlatformLicenseManagerProfile(profile);
+  const scopedEntities = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
+
+  const requestFilters = Array.isArray(body.filters) ? body.filters.slice(0, 20) : [];
+  const filters = [...requestFilters];
+
+  if (scopedEntities.has(entity) && !isPlatform) {
+    const env = effectiveEnvironmentCode(profile, body.environment_code || body.env);
+    if (env && env !== 'GLOBAL') {
+      const already = filters.some(f => String(f?.column || '').trim() === 'environment_code');
+      if (!already) filters.push({ column: 'environment_code', op: 'eq', value: env });
+    }
+  }
+
+  // Le super_admin peut lire GLOBAL/*, mais s'il demande explicitement un environnement, on filtre aussi.
+  if (scopedEntities.has(entity) && isPlatform && body.environment_code && String(body.environment_code).trim() !== '*') {
+    const env = String(body.environment_code).trim().toUpperCase();
+    const already = filters.some(f => String(f?.column || '').trim() === 'environment_code');
+    if (env && !already) filters.push({ column: 'environment_code', op: 'eq', value: env });
+  }
+
+  const path = buildReadPath(entity, { ...body, filters });
+  return await serviceRead(req, path);
 }
 
 async function handleSave(req, body) {
