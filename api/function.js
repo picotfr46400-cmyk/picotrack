@@ -589,25 +589,87 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   return { ok: true, success: true, mode: 'direct-update', profile };
 }
 
+function isUuidLike(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cleanString(value, 80));
+}
+
 async function handleDeleteUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const profileRequester = await requireUserCreator(req, url, serviceRole);
-  const id = cleanString(payload.user_id || payload.id, 80);
-  if (!id) throw new Error('ID utilisateur manquant.');
 
-  const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,environment_code&limit=1`, { method: 'GET' });
-  const current = Array.isArray(rows) ? rows[0] : null;
-  if (!current?.id) throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
-  assertSameEnvironmentOrPlatform(profileRequester, current.environment_code);
+  const rawId = cleanString(payload.user_id || payload.profile_id || payload.id, 80);
+  const rawLicenseId = cleanString(payload.license_id || '', 80);
+  const email = normalizeEmail(payload.email || payload.login_user || payload.username || '');
+  const requestedEnv = normalizeEnvironmentCode(payload.environment_code || payload.active_env || profileEnvironmentCode(profileRequester));
 
-  await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    prefer: 'return=minimal'
-  });
+  if (!rawId && !rawLicenseId && !email) {
+    throw Object.assign(new Error('Identifiant utilisateur ou email manquant.'), { status: 400 });
+  }
 
-  await supabaseFetch(url, serviceRole, `/auth/v1/admin/users/${encodeURIComponent(id)}`, {
-    method: 'DELETE'
-  }).catch(() => null);
+  let current = null;
+  let licenseRow = null;
+
+  if (rawId && isUuidLike(rawId)) {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(rawId)}&select=*&limit=1`, { method: 'GET' }).catch(() => []);
+    current = Array.isArray(rows) ? rows[0] : null;
+  }
+
+  const licenseIdToTry = rawLicenseId || (rawId && !isUuidLike(rawId) ? rawId : '');
+  if (!current && licenseIdToTry) {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseIdToTry)}&select=*&limit=1`, { method: 'GET' }).catch(() => []);
+    licenseRow = Array.isArray(rows) ? rows[0] : null;
+  }
+
+  const lookupEmail = email || normalizeEmail(licenseRow?.email || '');
+  const lookupEnv = normalizeEnvironmentCode(licenseRow?.environment_code || requestedEnv);
+
+  if (!current && lookupEmail) {
+    const profilePaths = [];
+    if (lookupEnv) profilePaths.push(`/rest/v1/user_profiles?email=eq.${encodeURIComponent(lookupEmail)}&environment_code=eq.${encodeURIComponent(lookupEnv)}&select=*&limit=1`);
+    profilePaths.push(`/rest/v1/user_profiles?email=eq.${encodeURIComponent(lookupEmail)}&select=*&limit=1`);
+    for (const path of profilePaths) {
+      const rows = await supabaseFetch(url, serviceRole, path, { method: 'GET' }).catch(() => []);
+      current = Array.isArray(rows) ? rows[0] : null;
+      if (current?.id) break;
+    }
+  }
+
+  if (!current?.id && lookupEmail) {
+    const authUser = await findAuthUserByEmail(url, serviceRole, lookupEmail).catch(() => null);
+    if (authUser?.id) {
+      current = { id: authUser.id, email: lookupEmail, environment_code: lookupEnv };
+    }
+  }
+
+  if (!current?.id && !licenseRow?.id) {
+    throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
+  }
+
+  const targetEnv = normalizeEnvironmentCode(current?.environment_code || licenseRow?.environment_code || lookupEnv);
+  assertSameEnvironmentOrPlatform(profileRequester, targetEnv);
+
+  if (current?.id) {
+    await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(current.id)}`, {
+      method: 'DELETE',
+      prefer: 'return=minimal'
+    }).catch(() => null);
+
+    await supabaseFetch(url, serviceRole, `/auth/v1/admin/users/${encodeURIComponent(current.id)}`, {
+      method: 'DELETE'
+    }).catch(() => null);
+  }
+
+  if (licenseRow?.id) {
+    await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseRow.id)}`, {
+      method: 'DELETE',
+      prefer: 'return=minimal'
+    }).catch(() => null);
+  } else if (lookupEmail && targetEnv) {
+    await supabaseFetch(url, serviceRole, `/rest/v1/licenses?email=eq.${encodeURIComponent(lookupEmail)}&environment_code=eq.${encodeURIComponent(targetEnv)}`, {
+      method: 'DELETE',
+      prefer: 'return=minimal'
+    }).catch(() => null);
+  }
 
   return { ok: true, success: true };
 }
