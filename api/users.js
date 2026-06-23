@@ -50,7 +50,7 @@ function normalizeUserRow(row, source, environmentCode) {
     id: row?.id || row?.license_key || row?.email || row?.login_user || row?.username,
     license_id: source === 'licenses' ? row?.id : row?.license_id || null,
     __source: source,
-    environment_code: row?.environment_code || environmentCode,
+    environment_code: normalizeEnvironmentCode(row?.environment_code || environmentCode),
     email,
     login_user: cleanString(row?.login_user || row?.username || row?.email || row?.license_key || ''),
     username: cleanString(row?.username || row?.login_user || row?.email || row?.license_key || ''),
@@ -169,7 +169,7 @@ async function handleSummary(req, body) {
     roles: Array.isArray(rolesRows) ? rolesRows : [],
     counts,
     limits: {
-      environment_code: limits.environment_code || env,
+      environment_code: normalizeEnvironmentCode(limits.environment_code || env),
       max_supervision: supervisionLimit,
       supervision_limit: supervisionLimit,
       max_pad: padLimit,

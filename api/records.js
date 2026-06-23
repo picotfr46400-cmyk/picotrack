@@ -95,7 +95,11 @@ function mapColumn(entity, column) {
 }
 
 function mapFilters(entity, filters) {
-  return cleanFilters(filters).map(f => ({ ...f, column: mapColumn(entity, f.column) }));
+  return cleanFilters(filters).map(f => {
+    const column = mapColumn(entity, f.column);
+    const value = column === 'environment_code' ? normalizeEnvRecordValue(f.value, '') : f.value;
+    return { ...f, column, value };
+  });
 }
 
 function buildReadPath(entity, { select='*', filters=[], order='', limit=1000, offset=0 } = {}) {
@@ -133,6 +137,7 @@ function normalizeRecord(record, entity = '') {
     out[k] = v;
   }
   if (entity === 'submissions') {
+    out.environment_code = normalizeEnvRecordValue(out.environment_code || record.environment_code, 'DEMO');
     if (!out.device) out.device = 'desktop';
   }
   if (entity === 'forms') {
@@ -142,7 +147,7 @@ function normalizeRecord(record, entity = '') {
     if (record.visibleRoles && !out.visible_roles) out.visible_roles = record.visibleRoles;
     if (record.color && !out.couleur) out.couleur = record.color;
     if (record.active !== undefined && out.actif === undefined) out.actif = !!record.active;
-    if (!out.environment_code) out.environment_code = String(record.environment_code || '').trim() || 'DEMO';
+    out.environment_code = normalizeEnvRecordValue(out.environment_code || record.environment_code, 'DEMO');
     if (out.actif === undefined) out.actif = true;
     if (!Array.isArray(out.modules)) out.modules = Array.isArray(record.modules) ? record.modules : [];
     if (!out.fields || typeof out.fields !== 'object') out.fields = Array.isArray(record.fields) ? record.fields : [];
@@ -160,7 +165,7 @@ function normalizeRecord(record, entity = '') {
     if (record.cardConfig && !out.card_config) out.card_config = record.cardConfig;
     if (record.kanbanGroups && !out.kanban_groups) out.kanban_groups = record.kanbanGroups;
     if (record.active !== undefined && out.actif === undefined) out.actif = !!record.active;
-    if (!out.environment_code) out.environment_code = String(record.environment_code || '').trim() || 'DEMO';
+    out.environment_code = normalizeEnvRecordValue(out.environment_code || record.environment_code, 'DEMO');
     if (out.actif === undefined) out.actif = true;
     if (!Array.isArray(out.statuses)) out.statuses = Array.isArray(record.statuses) ? record.statuses : [];
     if (!Array.isArray(out.actions)) out.actions = Array.isArray(record.actions) ? record.actions : [];
@@ -175,10 +180,13 @@ function normalizeRecord(record, entity = '') {
     if (record.assignedTo && !out.assigned_to) out.assigned_to = record.assignedTo;
     if (record.createdBy && !out.created_by) out.created_by = record.createdBy;
     if (record.submissionId && !out.submission_id) out.submission_id = record.submissionId;
-    if (!out.environment_code) out.environment_code = String(record.environment_code || '').trim() || 'DEMO';
+    out.environment_code = normalizeEnvRecordValue(out.environment_code || record.environment_code, 'DEMO');
     if (!out.device) out.device = 'desktop';
     if (!out.events || typeof out.events !== 'object') out.events = Array.isArray(record.events) ? record.events : [];
     if (!out.form_data || typeof out.form_data !== 'object') out.form_data = record.form_data || record.formData || {};
+  }
+  if (['app_roles','environment_license_limits','licenses','user_profiles','appointments','mail_logs','databases','database_rows'].includes(entity) && ('environment_code' in out || record.environment_code !== undefined)) {
+    out.environment_code = normalizeEnvRecordValue(out.environment_code || record.environment_code, 'DEMO');
   }
   if (entity === 'app_roles') {
     if (record.nom && !out.name) out.name = record.nom;
@@ -204,7 +212,15 @@ function isPlatformLicenseManagerProfile(profile) {
 }
 
 function normalizeEnvCode(value) {
-  return String(value || '').trim().toUpperCase();
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (raw === '*') return 'GLOBAL';
+  return raw.toUpperCase();
+}
+
+function normalizeEnvRecordValue(value, fallback = 'DEMO') {
+  const normalized = normalizeEnvCode(value);
+  return normalized || normalizeEnvCode(fallback) || 'DEMO';
 }
 
 function effectiveEnvironmentCode(profile, requested) {
@@ -221,7 +237,7 @@ async function saveEnvironmentLicenseLimits(req, record, profile) {
   if (!isPlatformLicenseManagerProfile(profile)) {
     throw Object.assign(new Error('Modification des quotas réservée au compte plateforme PicoTrack.'), { status: 403 });
   }
-  const environmentCode = String(record.environment_code || '').trim().slice(0, 80);
+  const environmentCode = normalizeEnvRecordValue(record.environment_code, '').slice(0, 80);
   if (!environmentCode) throw Object.assign(new Error('Code environnement manquant.'), { status: 400 });
 
   const body = {
@@ -294,7 +310,7 @@ async function handleList(req, body) {
   const filters = [...requestFilters];
 
   if (scopedEntities.has(entity) && !isPlatform) {
-    const env = effectiveEnvironmentCode(profile, body.environment_code || body.env);
+    const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, body.environment_code || body.env), 'DEMO');
     if (env && env !== 'GLOBAL') {
       const already = filters.some(f => String(f?.column || '').trim() === 'environment_code');
       if (!already) filters.push({ column: 'environment_code', op: 'eq', value: env });
@@ -326,7 +342,7 @@ async function handleSave(req, body) {
   }
   const entitiesWithEnvironmentCode = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
   if (entitiesWithEnvironmentCode.has(entity)) {
-    record.environment_code = effectiveEnvironmentCode(profile, record.environment_code || body.environment_code);
+    record.environment_code = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, record.environment_code || body.environment_code), 'DEMO');
   }
 
   if (entity === 'environment_license_limits') {
@@ -384,7 +400,7 @@ async function serviceRead(req, path) {
 async function handleInitialLoad(req, body) {
   const user = await requireAuth(req);
   const profile = await getUserProfile(user.id, req).catch(() => null);
-  const env = effectiveEnvironmentCode(profile, body.environment_code || body.env);
+  const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, body.environment_code || body.env), 'DEMO');
   const envFilter = [{ column: 'environment_code', op: 'eq', value: env }];
   const scope = String(body.scope || body.mode || 'forms').trim().toLowerCase();
 
