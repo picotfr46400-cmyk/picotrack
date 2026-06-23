@@ -117,8 +117,8 @@ function buildReadPath(entity, { select='*', filters=[], order='', limit=1000, o
 function normalizeRecord(record, entity = '') {
   if (!record || typeof record !== 'object' || Array.isArray(record)) return {};
   const allowedByEntity = {
-    forms: new Set(['id','nom','description','couleur','actif','modules','fields','created_at','visible_roles','triggers','version','published','tenant_id','environment_code']),
-    services: new Set(['id','nom','description','couleur','actif','statuses','actions','created_at','form_id','id_pattern','flux','card_config','kanban_groups','tenant_id','environment_code']),
+    forms: new Set(['id','nom','description','couleur','actif','modules','fields','created_at','visible_roles','permissions','triggers','version','published','tenant_id','environment_code']),
+    services: new Set(['id','nom','description','couleur','actif','statuses','actions','created_at','form_id','id_pattern','flux','card_config','kanban_groups','permissions','tenant_id','environment_code']),
     service_instances: new Set(['id','service_id','ref','form_data','status_id','priority','events','device','created_at','updated_at','tenant_id','assigned_to','environment_code','created_by','current_status_id','reference','submission_id']),
     submissions: new Set(['form_id','values','device','tenant_id','environment_code']),
     app_roles: new Set(['id','tenant_id','environment_code','name','permissions','active','created_at','description','updated_at']),
@@ -152,6 +152,7 @@ function normalizeRecord(record, entity = '') {
     if (!Array.isArray(out.modules)) out.modules = Array.isArray(record.modules) ? record.modules : [];
     if (!out.fields || typeof out.fields !== 'object') out.fields = Array.isArray(record.fields) ? record.fields : [];
     if (!out.visible_roles || typeof out.visible_roles !== 'object') out.visible_roles = record.visible_roles || [];
+    if (!out.permissions || typeof out.permissions !== 'object') out.permissions = record.permissions || { view: out.visible_roles || [], submit: [] };
     if (!out.triggers || typeof out.triggers !== 'object') out.triggers = record.triggers || {};
     if (out.version === undefined) out.version = 1;
     if (out.published === undefined) out.published = true;
@@ -170,6 +171,7 @@ function normalizeRecord(record, entity = '') {
     if (!Array.isArray(out.statuses)) out.statuses = Array.isArray(record.statuses) ? record.statuses : [];
     if (!Array.isArray(out.actions)) out.actions = Array.isArray(record.actions) ? record.actions : [];
     if (!Array.isArray(out.flux)) out.flux = Array.isArray(record.flux) ? record.flux : [];
+    if (!out.permissions || typeof out.permissions !== 'object') out.permissions = record.permissions || { view: [], create: [], edit: [], delete: [] };
     if (!out.card_config || typeof out.card_config !== 'object') out.card_config = record.card_config || record.cardConfig || {};
     if (!Array.isArray(out.kanban_groups)) out.kanban_groups = Array.isArray(record.kanban_groups) ? record.kanban_groups : (Array.isArray(record.kanbanGroups) ? record.kanbanGroups : []);
   }
@@ -231,6 +233,85 @@ function effectiveEnvironmentCode(profile, requested) {
   const reqEnv = normalizeEnvCode(requested);
   if (reqEnv && reqEnv !== 'GLOBAL' && reqEnv !== '*') return reqEnv;
   return profileEnv || 'DEMO';
+}
+
+function parseRoleArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean);
+  if (typeof value === 'string') {
+    try { const parsed = JSON.parse(value); if (Array.isArray(parsed)) return parsed.map(v => String(v).trim()).filter(Boolean); } catch (_) {}
+    return value.split(',').map(v => v.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function profileRoleKeys(profile) {
+  const keys = [];
+  const add = v => { const s = String(v || '').trim(); if (s) keys.push(s.toLowerCase()); };
+  add(profile?.role);
+  add(profile?.license_type);
+  for (const r of parseRoleArray(profile?.roles)) add(r);
+  const uniq = [...new Set(keys)];
+  if (uniq.includes('super_admin') || uniq.includes('platform_admin')) uniq.push('administrateur', 'admin');
+  return [...new Set(uniq)];
+}
+
+function permissionRolesForRecord(entity, record, action) {
+  const perms = record && typeof record.permissions === 'object' && !Array.isArray(record.permissions) ? record.permissions : {};
+  const direct = parseRoleArray(perms[action]);
+  if (direct.length) return direct;
+  if (entity === 'forms') {
+    if (action === 'view') return parseRoleArray(record.visible_roles || record.visibleRoles);
+    if (action === 'submit') return parseRoleArray(perms.submit);
+  }
+  if (entity === 'services') {
+    if (action === 'view') return parseRoleArray(perms.view || record.visibleBy || record.visible_by);
+    if (action === 'create') return parseRoleArray(perms.create);
+  }
+  return [];
+}
+
+function recordAllowedForProfile(entity, record, action, profile) {
+  if (isPlatformLicenseManagerProfile(profile)) return true;
+  const required = permissionRolesForRecord(entity, record, action);
+  if (!required.length) return true;
+  const userRoles = profileRoleKeys(profile);
+  if (!userRoles.length) return false;
+  const normalized = required.map(r => String(r).trim().toLowerCase()).filter(Boolean);
+  return normalized.some(r => userRoles.includes(r));
+}
+
+function assertRecordAllowed(entity, record, action, profile, message) {
+  if (!recordAllowedForProfile(entity, record, action, profile)) {
+    const err = new Error(message || 'Accès refusé par les rôles configurés.');
+    err.status = 403;
+    err.code = 'PT_RBAC_DENIED';
+    throw err;
+  }
+}
+
+async function readOneById(req, entity, id, env) {
+  if (!id) return null;
+  let path = `${entity}?id=eq.${encodeURIComponent(id)}&select=*&limit=1`;
+  if (env && env !== 'GLOBAL' && env !== '*') path += `&environment_code=eq.${encodeURIComponent(env)}`;
+  const rows = await serviceRest(path, { method: 'GET', prefer: '', req }).catch(() => []);
+  return Array.isArray(rows) ? rows[0] : null;
+}
+
+async function readFormForSubmission(req, formId, env) {
+  if (!formId) return null;
+  let path = `forms?id=eq.${encodeURIComponent(formId)}&select=*&limit=1`;
+  if (env && env !== 'GLOBAL' && env !== '*') path += `&environment_code=eq.${encodeURIComponent(env)}`;
+  const rows = await serviceRest(path, { method: 'GET', prefer: '', req }).catch(() => []);
+  return Array.isArray(rows) ? rows[0] : null;
+}
+
+async function readServiceForInstance(req, serviceId, env) {
+  if (!serviceId) return null;
+  let path = `services?id=eq.${encodeURIComponent(serviceId)}&select=*&limit=1`;
+  if (env && env !== 'GLOBAL' && env !== '*') path += `&environment_code=eq.${encodeURIComponent(env)}`;
+  const rows = await serviceRest(path, { method: 'GET', prefer: '', req }).catch(() => []);
+  return Array.isArray(rows) ? rows[0] : null;
 }
 
 async function saveEnvironmentLicenseLimits(req, record, profile) {
@@ -325,7 +406,11 @@ async function handleList(req, body) {
   }
 
   const path = buildReadPath(entity, { ...body, filters });
-  return await serviceRead(req, path);
+  const rows = await serviceRead(req, path);
+  if (Array.isArray(rows) && (entity === 'forms' || entity === 'services')) {
+    return rows.filter(row => recordAllowedForProfile(entity, row, 'view', profile));
+  }
+  return rows;
 }
 
 async function handleSave(req, body) {
@@ -350,6 +435,29 @@ async function handleSave(req, body) {
   }
 
   const id = String(body.id || '').trim();
+  const env = record.environment_code || effectiveEnvironmentCode(profile, body.environment_code);
+
+  if (entity === 'forms' && id) {
+    const existing = await readOneById(req, 'forms', id, env);
+    if (existing) assertRecordAllowed('forms', existing, 'edit', profile, 'Modification du formulaire refusée par les rôles.');
+  }
+  if (entity === 'services' && id) {
+    const existing = await readOneById(req, 'services', id, env);
+    if (existing) assertRecordAllowed('services', existing, 'edit', profile, 'Modification du service refusée par les rôles.');
+  }
+  if (entity === 'submissions') {
+    const form = await readFormForSubmission(req, record.form_id || source?.formId, env);
+    if (form) assertRecordAllowed('forms', form, 'submit', profile, 'Saisie du formulaire refusée par les rôles.');
+  }
+  if (entity === 'appointments') {
+    const form = await readFormForSubmission(req, record.form_id || source?.formId, env);
+    if (form) assertRecordAllowed('forms', form, 'submit', profile, 'Réservation refusée par les rôles du formulaire.');
+  }
+  if (entity === 'service_instances') {
+    const service = await readServiceForInstance(req, record.service_id || source?.serviceId, env);
+    if (service) assertRecordAllowed('services', service, 'create', profile, 'Création de demande refusée par les rôles du service.');
+  }
+
   if (!id && ['forms','submissions','services','service_instances'].includes(entity)) delete record.id;
 
   const method = id ? 'PATCH' : 'POST';
@@ -378,6 +486,11 @@ async function handleDelete(req, body) {
       path += `&environment_code=eq.${encodeURIComponent(profileEnv)}`;
     }
     return path;
+  }
+
+  if (entity === 'forms' || entity === 'services') {
+    const existing = await readOneById(req, entity, id, profileEnv || body.environment_code);
+    if (existing) assertRecordAllowed(entity, existing, 'delete', profile, `Suppression ${entity === 'forms' ? 'du formulaire' : 'du service'} refusée par les rôles.`);
   }
 
   // Suppression métier d'un formulaire : on nettoie d'abord les soumissions liées

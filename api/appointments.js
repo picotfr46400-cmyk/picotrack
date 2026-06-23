@@ -53,6 +53,54 @@ function sameEnv(profile, requested) {
   return reqEnv || 'DEMO';
 }
 
+function parseRoleArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean);
+  if (typeof value === 'string') {
+    try { const parsed = JSON.parse(value); if (Array.isArray(parsed)) return parsed.map(v => String(v).trim()).filter(Boolean); } catch (_) {}
+    return value.split(',').map(v => v.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function profileRoleKeys(profile) {
+  const keys = [];
+  const add = v => { const s = String(v || '').trim(); if (s) keys.push(s.toLowerCase()); };
+  add(profile?.role);
+  add(profile?.license_type);
+  for (const r of parseRoleArray(profile?.roles)) add(r);
+  return [...new Set(keys)];
+}
+
+function formPermissionRoles(form, action) {
+  const perms = form && typeof form.permissions === 'object' && !Array.isArray(form.permissions) ? form.permissions : {};
+  const direct = parseRoleArray(perms[action]);
+  if (direct.length) return direct;
+  if (action === 'view') return parseRoleArray(form?.visible_roles || form?.visibleRoles);
+  return [];
+}
+
+function formAllowedForProfile(form, action, profile) {
+  if (isPlatformProfile(profile)) return true;
+  const required = formPermissionRoles(form, action);
+  if (!required.length) return true;
+  const roles = profileRoleKeys(profile);
+  return required.map(r => String(r).toLowerCase()).some(r => roles.includes(r));
+}
+
+async function readForm(req, env, formId) {
+  if (!formId) return null;
+  const rows = await serviceRest(`forms?id=eq.${encodeURIComponent(formId)}&environment_code=eq.${encodeURIComponent(env)}&select=*&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []);
+  return Array.isArray(rows) ? rows[0] : null;
+}
+
+async function assertFormPermission(req, env, formId, profile, action) {
+  const form = await readForm(req, env, formId);
+  if (form && !formAllowedForProfile(form, action, profile)) {
+    throw Object.assign(new Error(action === 'submit' ? 'Saisie/réservation refusée par les rôles du formulaire.' : 'Accès refusé par les rôles du formulaire.'), { status: 403 });
+  }
+}
+
 async function requireProfile(req) {
   const user = await getAuthUser(req);
   if (!user?.id) throw Object.assign(new Error('Authentification requise'), { status: 401 });
@@ -92,7 +140,7 @@ function buildAppointmentsPath(env, options = {}) {
   return `appointments?${p.toString()}`;
 }
 
-async function handleList(req, env, body) {
+async function handleList(req, env, body, profile) {
   const f = paramsFromFilters(body.filters);
   const options = {
     form_id: body.form_id || f.form_id,
@@ -105,15 +153,17 @@ async function handleList(req, env, body) {
     order: cleanString(body.order || 'date.asc,start_time.asc', 100),
     limit: body.limit || 100
   };
+  if (options.form_id) await assertFormPermission(req, env, options.form_id, profile, 'view');
   const rows = await serviceRest(buildAppointmentsPath(env, options), { method: 'GET', prefer: '', req });
   return { ok: true, success: true, environment_code: env, rows: Array.isArray(rows) ? rows : [] };
 }
 
-async function handleAvailability(req, env, body) {
+async function handleAvailability(req, env, body, profile) {
   const formId = cleanString(body.form_id || body.formId || '', 80);
   const fieldId = cleanString(body.field_id || body.fieldId || '', 120);
   const date = normalizeDate(body.date || '');
   if (!formId || !fieldId || !date) throw Object.assign(new Error('form_id, field_id et date requis.'), { status: 400 });
+  await assertFormPermission(req, env, formId, profile, 'submit');
 
   const select = 'id,form_id,field_id,response_id,date,start_time,end_time,status,parallel_slots,capacity_group,created_at';
   const rows = await serviceRest(buildAppointmentsPath(env, { form_id: formId, field_id: fieldId, date, select, limit: body.limit || 300 }), { method: 'GET', prefer: '', req });
@@ -155,8 +205,9 @@ function normalizeAppointmentRecord(record, env) {
   };
 }
 
-async function handleCreate(req, env, body) {
+async function handleCreate(req, env, body, profile) {
   const record = normalizeAppointmentRecord(body.record || body, env);
+  await assertFormPermission(req, env, record.form_id, profile, 'submit');
   const saved = await serviceRest('appointments?select=*', { method: 'POST', body: record, prefer: 'return=representation', req });
   const row = Array.isArray(saved) ? saved[0] : saved;
   return { ok: true, success: true, environment_code: env, row, rows: row ? [row] : [] };
@@ -173,11 +224,11 @@ module.exports = async function handler(req, res) {
     const env = sameEnv(profile, body.environment_code || body.env || profile.environment_code);
     const action = cleanString(body.action || 'list', 60);
 
-    if (action === 'list' || action === 'range') return json(res, 200, await handleList(req, env, body));
-    if (action === 'by_date') return json(res, 200, await handleList(req, env, { ...body, date: body.date, limit: body.limit || 100 }));
-    if (action === 'by_slot') return json(res, 200, await handleList(req, env, { ...body, date: body.date, start_time: body.start_time, limit: body.limit || 50 }));
-    if (action === 'availability') return json(res, 200, await handleAvailability(req, env, body));
-    if (action === 'create') return json(res, 200, await handleCreate(req, env, body));
+    if (action === 'list' || action === 'range') return json(res, 200, await handleList(req, env, body, profile));
+    if (action === 'by_date') return json(res, 200, await handleList(req, env, { ...body, date: body.date, limit: body.limit || 100 }, profile));
+    if (action === 'by_slot') return json(res, 200, await handleList(req, env, { ...body, date: body.date, start_time: body.start_time, limit: body.limit || 50 }, profile));
+    if (action === 'availability') return json(res, 200, await handleAvailability(req, env, body, profile));
+    if (action === 'create') return json(res, 200, await handleCreate(req, env, body, profile));
 
     return json(res, 400, { error: 'Action rendez-vous non autorisée' });
   } catch (err) {
