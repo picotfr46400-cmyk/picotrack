@@ -1,6 +1,6 @@
 // PicoTrack — API Vercel d'envoi d'e-mails via Resend
 // Sécurité V2 : endpoint authentifié, aucune clé Resend côté navigateur.
-const { json, setCors, requireAuth, readJsonBody } = require('./_server-supabase');
+const { json, setCors, getAuthUser, readJsonBody } = require('./_server-supabase');
 const DEFAULT_FROM = 'PicoTrack <notifications@noreply.picotrack.fr>';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function escapeHtml(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
@@ -17,7 +17,8 @@ module.exports=async function handler(req,res){
   const apiKey=process.env.RESEND_API_KEY;
   if(!apiKey)return json(res,500,{ok:false,error:'RESEND_API_KEY manquante dans Vercel'});
   try{
-    await requireAuth(req);
+    const user = await getAuthUser(req);
+    if (!user?.id) return json(res,401,{ok:false,error:'Authentification requise'});
     const body=await readJsonBody(req,9_000_000);
     const to=normalizeEmails(body.to), cc=normalizeEmails(body.cc), bcc=normalizeEmails(body.bcc), replyTo=normalizeEmails(body.replyTo||body.reply_to);
     const subject=String(body.subject||'').trim().slice(0,200);
