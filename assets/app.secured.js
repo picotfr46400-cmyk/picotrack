@@ -2049,3 +2049,281 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   }, true);
   console.info('[PicoTrack V63] Moteur actions service, contexte dossier, données liées et éditeur tables activés');
 })();
+
+/* PicoTrack V65 - Corrections moteur actions service + tables dynamiques
+   - Répare les boutons modifier/supprimer des tables sans onclick fragile.
+   - Action BDD : sources disponibles = formulaire initial + formulaires liés du dossier.
+   - Exécution action BDD non destructive avec résolution intelligente des formulaires/bases.
+   - Formulaire lié : rattachement dossier + historique + reprise des effets suivants.
+*/
+(function(){
+  'use strict';
+  function A(v){ return Array.isArray(v) ? v : []; }
+  function O(v){ return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+  function S(v){ return String(v == null ? '' : v); }
+  function E(v){
+    try { return (typeof h === 'function' ? h(v) : S(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})); }
+    catch(_) { return S(v); }
+  }
+  function norm(v){ return S(v).trim().toLowerCase(); }
+  function idEq(a,b){ return S(a) === S(b); }
+  function toastSafe(type,msg){ try { if(typeof toast === 'function') toast(type,msg); else console.log('[PicoTrack]', msg); } catch(_){} }
+  function forms(){ try { if(typeof FORMS_DATA !== 'undefined' && Array.isArray(FORMS_DATA)) return FORMS_DATA; } catch(_){} return Array.isArray(window.FORMS_DATA) ? window.FORMS_DATA : []; }
+  function dbs(){ try { if(typeof DATABASES_DATA !== 'undefined' && Array.isArray(DATABASES_DATA)) return DATABASES_DATA; } catch(_){} return Array.isArray(window.DATABASES_DATA) ? window.DATABASES_DATA : []; }
+  function submissions(){ try { if(typeof SUBMISSIONS_DATA !== 'undefined' && Array.isArray(SUBMISSIONS_DATA)) return SUBMISSIONS_DATA; } catch(_){} return Array.isArray(window.SUBMISSIONS_DATA) ? window.SUBMISSIONS_DATA : []; }
+  function instances(){ try { if(typeof SERVICE_INSTANCES_DATA !== 'undefined' && Array.isArray(SERVICE_INSTANCES_DATA)) return SERVICE_INSTANCES_DATA; } catch(_){} return Array.isArray(window.SERVICE_INSTANCES_DATA) ? window.SERVICE_INSTANCES_DATA : []; }
+  function services(){ try { if(typeof SERVICES_DATA !== 'undefined' && Array.isArray(SERVICES_DATA)) return SERVICES_DATA; } catch(_){} return Array.isArray(window.SERVICES_DATA) ? window.SERVICES_DATA : []; }
+  function actor(){ try { return (window.PT_CURRENT_USER && (window.PT_CURRENT_USER.label || window.PT_CURRENT_USER.email)) || 'Utilisateur'; } catch(_) { return 'Utilisateur'; } }
+  function nowLabel(){ return new Date().toLocaleString('fr-FR'); }
+  function formName(f){ return S(f && (f.nom || f.name || f.label || f.id)); }
+  function dbName(d){ return S(d && (d.nom || d.name || d.label || d.id)); }
+  function fieldsOf(form){ return A(form && form.fields).filter(function(f){ return f && ['separator','image','titre','title'].indexOf(S(f.type)) < 0; }); }
+  function findFormSmart(ref){
+    var r = S(ref); if(!r) return null;
+    return forms().find(function(f){ return idEq(f && f.id, r) || norm(formName(f)) === norm(r) || norm(f && f.key) === norm(r); }) || null;
+  }
+  function findDbSmart(ref){
+    var r = S(ref); if(!r) return null; if(r.indexOf('sdb_') === 0) r = r.slice(4);
+    return dbs().find(function(d){ return idEq(d && d.id, r) || norm(dbName(d)) === norm(r) || norm(d && d.key) === norm(r); }) || null;
+  }
+  function findInstance(id){ return instances().find(function(x){ return idEq(x && x.id, id); }) || null; }
+  function findService(id){ return services().find(function(x){ return idEq(x && x.id, id); }) || null; }
+  function findSubmissionById(id){ return submissions().find(function(s){ return idEq(s && s.id, id); }) || null; }
+  function primarySubmission(instance){ return findSubmissionById(instance && (instance.submissionId || instance.submission_id)); }
+  function linkedSubmissions(instance){
+    var instId = S(instance && instance.id);
+    var fromSubs = submissions().filter(function(s){ return S(s && (s.linkedInstanceId || s.linked_instance_id || s.service_instance_id)) === instId; });
+    var eventIds = A(instance && instance.events).map(function(ev){ return O(ev && ev.payload).submissionId; }).filter(Boolean);
+    var fromEvents = eventIds.map(findSubmissionById).filter(Boolean);
+    var seen = {};
+    return fromSubs.concat(fromEvents).filter(function(s){ var k = S(s && s.id); if(!k || seen[k]) return false; seen[k] = true; return true; })
+      .sort(function(a,b){ return new Date(b.date || b.created_at || 0) - new Date(a.date || a.created_at || 0); });
+  }
+  function latestLinkedSubmission(instance, formId){ return linkedSubmissions(instance).find(function(s){ return idEq(s && (s.formId || s.form_id), formId); }) || null; }
+  function columnListForTarget(target){
+    var d = findDbSmart(target);
+    if(d){
+      return A(d.columns || d.fields || d.schema).map(function(c,i){ c = typeof c === 'string' ? {id:c,nom:c} : O(c); var id = c.id || c.key || c.name || c.nom || ('col_'+i); return {id:id, nom:c.nom || c.label || c.name || id}; }).filter(function(c){ return c.id; });
+    }
+    var f = findFormSmart(target);
+    if(f) return fieldsOf(f).map(function(c){ return {id:c.id, nom:c.nom || c.label || c.name || c.id}; }).filter(function(c){ return c.id; });
+    return [];
+  }
+  function optionList(list, selected){ return A(list).map(function(x){ return '<option value="'+E(x.id)+'" '+(idEq(selected,x.id)?'selected':'')+'>'+E(x.nom || x.label || x.name || x.id)+'</option>'; }).join(''); }
+  function initialFormId(){ return (typeof svcBuilderFormId !== 'undefined' ? svcBuilderFormId : null) || (window.curService && (window.curService.formId || window.curService.form_id)); }
+  function initialFields(selected){ return optionList(columnListForTarget(initialFormId()), selected); }
+  function allFormOptions(selected){ return forms().filter(function(f){ return f && f.actif !== false && f.active !== false; }).map(function(f){ return '<option value="'+E(f.id)+'" '+(idEq(selected,f.id)?'selected':'')+'>'+E(formName(f))+'</option>'; }).join(''); }
+  function targetOptions(selected){
+    var autonomous = dbs().map(function(d){ return '<option value="sdb_'+E(d.id)+'" '+(S(selected)==='sdb_'+S(d.id)?'selected':'')+'>'+E(dbName(d))+'</option>'; }).join('') || '<option value="" disabled>Aucune table dynamique chargée</option>';
+    var linked = allFormOptions(selected) || '<option value="" disabled>Aucun formulaire chargé</option>';
+    return '<optgroup label="Tables dynamiques">'+autonomous+'</optgroup><optgroup label="Réponses de formulaires">'+linked+'</optgroup>';
+  }
+  function sourceTypeOptions(selected){
+    var opts = [
+      ['form_field','Champ du formulaire initial'],
+      ['linked_form_field','Champ d’un formulaire lié / complémentaire'],
+      ['fixed','Valeur fixe'],
+      ['current_status','Statut courant'],
+      ['target_status','Statut cible'],
+      ['current_user','Utilisateur connecté'],
+      ['today','Date du jour'],
+      ['now','Date + heure'],
+      ['service_ref','Référence demande']
+    ];
+    return opts.map(function(o){ return '<option value="'+o[0]+'" '+(S(selected || 'fixed') === o[0] ? 'selected' : '')+'>'+o[1]+'</option>'; }).join('');
+  }
+  function sourceControl(ai, ei, rowIndex, kind, item){
+    item = O(item); var fn = kind === 'criteria' ? 'updateMatchCriteria' : 'updateDbUpdate';
+    if(item.sourceType === 'fixed') return '<input class="ci" style="flex:1;font-size:11.5px" value="'+E(item.value || '')+'" placeholder="Valeur..." oninput="'+fn+'('+ai+','+ei+','+rowIndex+',\'value\',this.value)">';
+    if(item.sourceType === 'linked_form_field'){
+      var fields = item.sourceFormId ? columnListForTarget(item.sourceFormId) : [];
+      return '<div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:6px"><select class="ci" style="font-size:11.5px" onchange="'+fn+'('+ai+','+ei+','+rowIndex+',\'sourceFormId\',this.value)"><option value="">Formulaire lié</option>'+allFormOptions(item.sourceFormId)+'</select><select class="ci" style="font-size:11.5px" onchange="'+fn+'('+ai+','+ei+','+rowIndex+',\'sourceFieldId\',this.value)"><option value="">Champ lié</option>'+optionList(fields,item.sourceFieldId)+'</select></div>';
+    }
+    if(item.sourceType === 'form_field' || item.sourceType === 'source_field' || item.sourceType === 'current_field' || !item.sourceType){
+      return '<select class="ci" style="flex:1;font-size:11.5px" onchange="'+fn+'('+ai+','+ei+','+rowIndex+',\'sourceFieldId\',this.value)"><option value="">Champ formulaire initial</option>'+initialFields(item.sourceFieldId)+'</select>';
+    }
+    return '<input class="ci" style="flex:1;font-size:11.5px;background:#f8fafc;color:#64748b" value="Automatique" disabled>';
+  }
+
+  window.renderDbEffectHtml = function(ai, ei, effect){
+    effect = effect || {}; effect.config = O(effect.config);
+    var target = effect.config.formId || effect.config.databaseId || effect.config.targetId || '';
+    var columns = columnListForTarget(target);
+    var criteria = A(effect.config.matchCriteria);
+    var updates = A(effect.config.updates);
+    var html = '<div style="margin-top:6px;display:grid;gap:10px">';
+    html += '<div style="padding:10px 12px;border:1.5px solid #bfdbfe;background:#eff6ff;border-radius:10px;color:#1e3a8a;font-size:12px;line-height:1.45" data-pt-help="Choisis une table ou un formulaire, indique comment trouver la ligne, puis indique les colonnes à modifier. Les valeurs peuvent venir du formulaire initial ou des formulaires complémentaires déjà remplis dans ce dossier."><b>Principe :</b> 1) base cible, 2) critères de recherche, 3) modifications à appliquer.</div>';
+    html += '<div><div class="fl2" style="margin-bottom:4px">1. Base de données cible</div><select class="ci" onchange="updateEffect('+ai+','+ei+',\'formId\',this.value)"><option value="">— Choisir —</option>'+targetOptions(target)+'</select></div>';
+    if(!target){ html += '</div>'; return html; }
+    if(!columns.length) html += '<div style="padding:8px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;font-size:12px">Aucune colonne détectée pour cette cible. Vérifie que la table ou le formulaire existe et possède des colonnes/champs.</div>';
+    html += '<div><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">🔎 2. Critères pour identifier la ligne</div>';
+    if(!criteria.length) html += '<div style="font-size:12px;color:#64748b;padding:8px;border:1px dashed var(--bd);border-radius:8px;background:#fff">Aucun critère : ajoute au moins une condition pour éviter de modifier la mauvaise ligne.</div>';
+    criteria.forEach(function(c,i){ c = O(c); html += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:8px;padding:8px"><select class="ci" style="flex:1;font-size:11.5px" onchange="updateMatchCriteria('+ai+','+ei+','+i+',\'dbFieldId\',this.value)"><option value="">Colonne DB</option>'+optionList(columns,c.dbFieldId)+'</select><span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span><select class="ci" style="width:210px;font-size:11.5px" onchange="updateMatchCriteria('+ai+','+ei+','+i+',\'sourceType\',this.value)">'+sourceTypeOptions(c.sourceType || 'form_field')+'</select>'+sourceControl(ai,ei,i,'criteria',c)+'<button class="ic-btn" onclick="removeMatchCriteria('+ai+','+ei+','+i+')">✕</button></div>'; });
+    html += '<button style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--p);background:transparent;color:var(--p);font-size:12px;font-weight:800;cursor:pointer;font-family:inherit" onclick="addMatchCriteria('+ai+','+ei+')">＋ Ajouter un critère</button></div>';
+    html += '<div><div style="font-size:10px;font-weight:800;color:var(--tl);text-transform:uppercase;margin-bottom:6px">✏️ 3. Modifications à appliquer</div>';
+    if(!updates.length) html += '<div style="font-size:12px;color:#64748b;padding:8px;border:1px dashed var(--bd);border-radius:8px;background:#fff">Aucune modification configurée : ajoute au moins une colonne à mettre à jour.</div>';
+    updates.forEach(function(u,i){ u = O(u); html += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:8px;padding:8px"><select class="ci" style="flex:1;font-size:11.5px" onchange="updateDbUpdate('+ai+','+ei+','+i+',\'dbFieldId\',this.value)"><option value="">Colonne à modifier</option>'+optionList(columns,u.dbFieldId)+'</select><span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span><select class="ci" style="width:210px;font-size:11.5px" onchange="updateDbUpdate('+ai+','+ei+','+i+',\'sourceType\',this.value)">'+sourceTypeOptions(u.sourceType || 'fixed')+'</select>'+sourceControl(ai,ei,i,'update',u)+'<button class="ic-btn" onclick="removeDbUpdate('+ai+','+ei+','+i+')">✕</button></div>'; });
+    html += '<button style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--s);background:transparent;color:var(--s);font-size:12px;font-weight:800;cursor:pointer;font-family:inherit" onclick="addDbUpdate('+ai+','+ei+')">＋ Ajouter une modification</button></div></div>';
+    return html;
+  };
+  window.updateDbUpdate = function(ai,ei,ui,key,value){ var fx = A(A(svcBuilderActions)[ai] && svcBuilderActions[ai].effects)[ei]; if(!fx) return; fx.config = O(fx.config); fx.config.updates = A(fx.config.updates); var u = fx.config.updates[ui]; if(!u) return; u[key] = value; if(key === 'sourceType'){ delete u.value; delete u.sourceFieldId; delete u.sourceFormId; } renderSvcTab(); };
+  window.updateMatchCriteria = function(ai,ei,ci,key,value){ var fx = A(A(svcBuilderActions)[ai] && svcBuilderActions[ai].effects)[ei]; if(!fx) return; fx.config = O(fx.config); fx.config.matchCriteria = A(fx.config.matchCriteria); var c = fx.config.matchCriteria[ci]; if(!c) return; c[key] = value; if(key === 'sourceType'){ delete c.value; delete c.sourceFieldId; delete c.sourceFormId; } renderSvcTab(); };
+
+  function valueFromSource(src, instance, service, effect, item){
+    item = O(item); src = src || primarySubmission(instance);
+    var type = S(item.sourceType || item.type || 'fixed');
+    if(type === 'fixed') return item.value || '';
+    if(type === 'form_field' || type === 'source_field' || type === 'current_field') return src && src.values ? (src.values[item.sourceFieldId] ?? '') : '';
+    if(type === 'linked_form_field'){
+      var linked = latestLinkedSubmission(instance, item.sourceFormId || item.formId);
+      return linked && linked.values ? (linked.values[item.sourceFieldId] ?? '') : '';
+    }
+    if(type === 'current_status'){
+      var st = A(service && service.statuses).find(function(s){ return idEq(s && s.id, instance && instance.currentStatusId); });
+      return st ? (st.nom || st.name || st.id) : (instance && instance.currentStatusId) || '';
+    }
+    if(type === 'target_status'){
+      var target = O(effect && effect.config).targetStatusId;
+      var ts = A(service && service.statuses).find(function(s){ return idEq(s && s.id, target); });
+      return ts ? (ts.nom || ts.name || ts.id) : target || '';
+    }
+    if(type === 'current_user') return actor();
+    if(type === 'today') return new Date().toISOString().slice(0,10);
+    if(type === 'now') return new Date().toISOString();
+    if(type === 'service_ref') return (instance && (instance.reference || instance.ref || instance.id)) || '';
+    return item.value || '';
+  }
+  function matchRow(rowValues, criteria, sourceSubmission, instance, service, effect){
+    return A(criteria).every(function(c){ c = O(c); if(!c.dbFieldId) return true; return S(rowValues && rowValues[c.dbFieldId]) === S(valueFromSource(sourceSubmission, instance, service, effect, c)); });
+  }
+  async function persistSubmissionValues(row){ if(row && row.id && window.DB && typeof DB.save === 'function') await DB.save('submissions', { values: O(row.values) }, row.id).catch(function(e){ console.warn('[V65] save submission', e && e.message || e); }); }
+  async function persistDbRowValues(row){ if(row && row.id && window.DB && typeof DB.save === 'function') await DB.save('database_rows', { values: O(row.values) }, row.id).catch(function(e){ console.warn('[V65] save db row', e && e.message || e); }); }
+  async function persistInstance(instance){ if(instance && instance.id && window.DB && typeof DB.updateInstance === 'function' && typeof instanceToDb === 'function') await DB.updateInstance(instance.id, instanceToDb(instance, (typeof isPadMode === 'function' && isPadMode()) ? 'pad' : 'desktop')).catch(function(e){ console.warn('[V65] save instance', e && e.message || e); }); }
+  async function runUpdateDbRow(instance, service, action, effect){
+    var cfg = O(effect && effect.config), target = cfg.formId || cfg.databaseId || cfg.targetId;
+    if(!target){ toastSafe('e','⚠️ Base non configurée'); return false; }
+    var src = primarySubmission(instance);
+    var updates = A(cfg.updates); if(!updates.length){ toastSafe('w','⚠️ Aucune modification définie'); return false; }
+    var rows = [], label = '', persist = function(){};
+    var d = findDbSmart(target);
+    if(d){ label = dbName(d); rows = A(d.rows); persist = persistDbRowValues; }
+    else {
+      var f = findFormSmart(target); if(!f){ toastSafe('e','⚠️ Base introuvable'); return false; }
+      label = formName(f); rows = submissions().filter(function(s){ return idEq(s && (s.formId || s.form_id), f.id); }); persist = persistSubmissionValues;
+    }
+    var criteria = A(cfg.matchCriteria);
+    var candidates = criteria.length ? rows.filter(function(r){ return matchRow(O(r && r.values), criteria, src, instance, service, effect); }) : rows;
+    if(!candidates.length){ toastSafe('w','⚠️ Aucune ligne correspondante'); return false; }
+    for(var i=0;i<candidates.length;i++){
+      var row = candidates[i]; row.values = O(row.values);
+      updates.forEach(function(u){ u = O(u); if(!u.dbFieldId) return; row.values[u.dbFieldId] = valueFromSource(src, instance, service, effect, u); });
+      await persist(row);
+    }
+    instance.events = A(instance.events); instance.events.push({ id:Date.now(), type:'db_updated', actor:actor(), at:nowLabel(), payload:{ db:label, lignes:candidates.length, actionId:action && action.id } });
+    toastSafe('s','🗃 '+candidates.length+' ligne(s) mise(s) à jour dans '+label);
+    return true;
+  }
+  async function runEffects(instance, service, action, startIndex){
+    var effects = A(action && (action.effects || (action.type ? [{ type:action.type, config:action.config || {} }] : [])));
+    for(var idx=startIndex || 0; idx<effects.length; idx++){
+      var fx = O(effects[idx]); fx.config = O(fx.config);
+      if(fx.type === 'change_status'){
+        var target = fx.config.targetStatusId; var next = A(service.statuses).find(function(st){ return idEq(st && st.id, target); }); if(!next){ toastSafe('e','⚠️ Statut cible manquant'); return; }
+        var prev = A(service.statuses).find(function(st){ return idEq(st && st.id, instance.currentStatusId); }); instance.currentStatusId = next.id; instance.events = A(instance.events); instance.events.push({id:Date.now(), type:'status_changed', actor:actor(), at:nowLabel(), payload:{fromStatus:prev && prev.nom, toStatus:next.nom || next.id}}); toastSafe('s','🔄 → '+(next.nom || next.id));
+      } else if(fx.type === 'fill_form'){
+        var form = findFormSmart(fx.config.formId); if(!form){ toastSafe('e','⚠️ Formulaire introuvable'); return; }
+        window.PT65_PENDING_ACTION = { instanceId:instance.id, serviceId:service.id, actionId:action.id, nextIndex:idx+1 };
+        return openLinkedFormModalSafe(instance, service, action, form, fx.config || {});
+      } else if(fx.type === 'update_db_row'){
+        var ok = await runUpdateDbRow(instance, service, action, fx); if(!ok) return;
+      } else if(fx.type === 'comment'){
+        var input = document.getElementById('comment-input-'+instance.id), comment = input ? S(input.value).trim() : '';
+        if(!comment){ toastSafe('e','⚠️ Ce bouton requiert un commentaire'); if(input) input.focus(); return; }
+        instance.events = A(instance.events); instance.events.push({id:Date.now(), type:'commented', actor:actor(), at:nowLabel(), payload:{comment:comment}}); if(input) input.value=''; toastSafe('s','💬 Commentaire ajouté');
+      } else if(fx.type === 'assign'){
+        var to = prompt('Affecter à :'); if(!to) return; instance.assignedTo = to; instance.events = A(instance.events); instance.events.push({id:Date.now(), type:'assigned', actor:actor(), at:nowLabel(), payload:{toUser:to}}); toastSafe('s','👤 → '+to);
+      } else if(fx.type === 'send_email'){
+        if(typeof ptBuildServiceMailPayload === 'function' && typeof ptSendMail === 'function'){
+          var payload = ptBuildServiceMailPayload(instance, service, fx.config || {}); if(!payload.to || !payload.to.length){ toastSafe('e','📧 Email non envoyé : destinataire manquant'); return; }
+          try { await ptSendMail(payload); instance.events=A(instance.events); instance.events.push({id:Date.now(), type:'email_sent', actor:'PicoTrack', at:nowLabel(), payload:{to:payload.to, subject:payload.subject, status:'sent'}}); toastSafe('s','📧 Email envoyé'); } catch(e){ toastSafe('e','📧 Email non envoyé : '+(e && e.message || e)); return; }
+        } else { toastSafe('e','📧 Module mail indisponible'); return; }
+      } else {
+        toastSafe('i','ℹ️ Action '+S(fx.type || 'inconnue')+' prévue mais pas encore exécutée.');
+      }
+    }
+    await persistInstance(instance);
+    try {
+      if(document.getElementById('v-service-kanban') && document.getElementById('v-service-kanban').classList.contains('on') && typeof renderKanbanBoard === 'function') renderKanbanBoard(service, window.curKanbanGroupId);
+      else if(typeof renderInstanceDetail === 'function') renderInstanceDetail(instance, service);
+    } catch(e){ console.warn('[V65] refresh instance', e); }
+  }
+  window.executeAction = async function(instanceId, actionId){
+    var instance = findInstance(instanceId); if(!instance) return toastSafe('e','Dossier service introuvable');
+    var service = findService(instance.serviceId || instance.service_id); if(!service) return toastSafe('e','Service introuvable');
+    var action = A(service.actions).find(function(a){ return idEq(a && a.id, actionId); }); if(!action) return toastSafe('e','Action introuvable');
+    instance.events = A(instance.events);
+    return runEffects(instance, service, action, 0);
+  };
+
+  function prefillValues(instance, form, cfg){
+    var out = {}; var src = primarySubmission(instance); cfg = O(cfg);
+    A(cfg.prefill || cfg.prefillMappings || cfg.mappings).forEach(function(m){ m = O(m); var target = m.targetFieldId || m.to || m.fieldId; if(!target) return; out[target] = valueFromSource(src, instance, findService(instance && (instance.serviceId || instance.service_id)) || {}, {}, m); });
+    return out;
+  }
+  function openLinkedFormModalSafe(instance, service, action, form, cfg){
+    var old = document.getElementById('linked-form-modal'); if(old) old.remove();
+    var vals = prefillValues(instance, form, cfg);
+    var modal = document.createElement('div'); modal.id = 'linked-form-modal'; modal.dataset.instId = S(instance.id); modal.dataset.formId = S(form.id); modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:18px';
+    var fields = fieldsOf(form);
+    var body = fields.map(function(f){ var val = vals[f.id] || ''; return '<label style="display:block;margin-bottom:12px"><div style="font-size:12px;font-weight:800;color:#64748b;margin-bottom:5px">'+E(f.nom || f.label || f.name || f.id)+'</div><input class="ci" data-fid="'+E(f.id)+'" value="'+E(val)+'" style="width:100%"></label>'; }).join('') || '<div style="color:#64748b;text-align:center;padding:20px">Ce formulaire n’a pas de champ de saisie.</div>';
+    modal.innerHTML = '<div style="background:#fff;border-radius:16px;width:620px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.35)"><div style="padding:16px 20px;border-bottom:1.5px solid var(--bd);display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:15px;font-weight:900">'+E(formName(form))+'</div><div style="font-size:12px;color:#64748b">Formulaire lié au dossier service</div></div><button type="button" class="ic-btn" data-close-linked>✕</button></div><div style="flex:1;overflow:auto;padding:20px">'+body+'</div><div style="padding:14px 20px;border-top:1.5px solid var(--bd);display:flex;justify-content:flex-end;gap:8px"><button type="button" class="btn btn-sm" data-close-linked>Annuler</button><button type="button" class="btn bp btn-sm" data-submit-linked>✅ Valider</button></div></div>';
+    modal.addEventListener('click', function(ev){ if(ev.target && ev.target.hasAttribute('data-close-linked')) modal.remove(); if(ev.target && ev.target.hasAttribute('data-submit-linked')) window.submitLinkedForm(); });
+    document.body.appendChild(modal);
+  }
+  window.submitLinkedForm = async function(){
+    var modal = document.getElementById('linked-form-modal'); if(!modal) return;
+    var instance = findInstance(modal.dataset.instId); if(!instance) return toastSafe('e','Dossier service introuvable');
+    var service = findService(instance.serviceId || instance.service_id); var form = findFormSmart(modal.dataset.formId); if(!form) return toastSafe('e','Formulaire introuvable');
+    var values = {}; modal.querySelectorAll('[data-fid]').forEach(function(input){ values[input.dataset.fid] = input.value; });
+    var saved = null;
+    if(window.DB && typeof DB.save === 'function'){
+      try { saved = await DB.save('submissions', { form_id: form.id, values: values, device:'desktop', linked_instance_id: instance.id, service_instance_id: instance.id }, null); } catch(e){ console.warn('[V65] save linked form', e && e.message || e); }
+    }
+    var row = Array.isArray(saved) ? saved[0] : saved;
+    var id = (row && row.id) || Date.now();
+    var sub = { id:id, formId:form.id, form_id:form.id, formNom:formName(form), date:(row && (row.created_at || row.date)) || new Date().toISOString(), dateLabel:nowLabel(), utilisateur:actor(), values:values, linkedInstanceId:instance.id, linked_instance_id:instance.id, service_instance_id:instance.id };
+    var list = submissions(); if(!list.some(function(s){ return idEq(s && s.id, id); })) list.unshift(sub);
+    instance.events = A(instance.events); instance.events.push({ id:Date.now(), type:'form_filled', actor:actor(), at:nowLabel(), payload:{ formId:form.id, formNom:formName(form), submissionId:id, linked:true } });
+    await persistInstance(instance);
+    modal.remove(); toastSafe('s','✅ Formulaire lié enregistré');
+    var pending = window.PT65_PENDING_ACTION || window.PT63_PENDING_ACTION; window.PT65_PENDING_ACTION = null; window.PT63_PENDING_ACTION = null;
+    if(pending){ var svc = findService(pending.serviceId) || service; var action = A(svc && svc.actions).find(function(a){ return idEq(a && a.id, pending.actionId); }); if(action) return runEffects(instance, svc, action, pending.nextIndex || 0); }
+    try { if(typeof renderInstanceDetail === 'function') renderInstanceDetail(instance, service); } catch(_){}
+  };
+
+  function injectDbToolsSafe(db){
+    var wrap = document.getElementById('prod-db-table-wrap'); if(!wrap || !db) return;
+    var old = document.getElementById('pt65-db-tools'); if(old) old.remove();
+    var bar = document.createElement('div'); bar.id = 'pt65-db-tools'; bar.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:0 0 12px;position:relative;z-index:2';
+    var edit = document.createElement('button'); edit.className = 'btn btn-sm'; edit.type = 'button'; edit.textContent = '✏️ Modifier la table'; edit.setAttribute('data-pt-help','Modifier la structure de cette table : nom, couleur, ajout, renommage ou suppression de colonnes.');
+    edit.addEventListener('click', function(){ if(typeof createDatabaseModal === 'function') createDatabaseModal(db.id); else toastSafe('e','Éditeur de table indisponible'); });
+    var del = document.createElement('button'); del.className = 'btn btn-sm'; del.type = 'button'; del.textContent = '🗑 Supprimer la table'; del.style.borderColor = '#fecaca'; del.style.color = '#dc2626'; del.setAttribute('data-pt-help','Supprime cette table dynamique et ses lignes associées.');
+    del.addEventListener('click', function(){ window.deleteStandaloneDatabase(db.id); });
+    bar.appendChild(edit); bar.appendChild(del); wrap.insertBefore(bar, wrap.firstChild);
+  }
+  var prevRenderStandaloneDBTable = window.renderStandaloneDBTable;
+  window.renderStandaloneDBTable = function(db){ if(typeof prevRenderStandaloneDBTable === 'function') prevRenderStandaloneDBTable(db); injectDbToolsSafe(db); };
+  window.deleteStandaloneDatabase = async function(id){
+    var db = findDbSmart(id); if(!db) return toastSafe('e','Base introuvable');
+    if(!confirm('Supprimer définitivement la table « '+dbName(db)+' » ?\n\nLes lignes associées seront supprimées aussi.')) return;
+    try{
+      if(window.DB && typeof DB.remove === 'function'){
+        for(var i=0;i<A(db.rows).length;i++){ if(db.rows[i].id) await DB.remove('database_rows', db.rows[i].id).catch(function(e){ console.warn('[V65] delete db row', e && e.message || e); }); }
+        await DB.remove('databases', db.id);
+      }
+      var list = dbs(); var idx = list.findIndex(function(d){ return idEq(d && d.id, db.id); }); if(idx >= 0) list.splice(idx,1);
+      toastSafe('s','🗑 Table supprimée'); if(typeof goProDatabase === 'function') goProDatabase(); else if(typeof goStudioDatabase === 'function') goStudioDatabase();
+    } catch(e){ toastSafe('e','Erreur suppression table : '+(e && e.message || e)); }
+  };
+  console.info('[PicoTrack V65] Corrections actions service et tables dynamiques chargées');
+})();
