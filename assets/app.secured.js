@@ -2524,3 +2524,221 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   }catch(_){ }
   console.info('[PicoTrack V70] Toolbar table dynamique dédupliquée');
 })();
+
+
+/* PicoTrack V71 - Correctif production moteur actions service + historique lié
+   - Exécution réelle edit_form
+   - Historique : bouton Voir plus sur les formulaires remplis
+   - Sélecteur BDD : champs du formulaire initial + formulaires liés
+   - Nettoyage réel des toolbars dynamiques dupliquées
+*/
+(function(){
+  function A(v){ return Array.isArray(v) ? v : []; }
+  function O(v){ return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+  function S(v){ return String(v == null ? '' : v); }
+  function esc(v){ return S(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function idEq(a,b){ return S(a) === S(b); }
+  function toastV71(type,msg){ try{ if(typeof toast==='function') toast(type,msg); else if(typeof toastSafe==='function') toastSafe(type,msg); else console.log('[PicoTrack]',msg); }catch(_){ console.log('[PicoTrack]',msg); } }
+  function formsList(){ try{ return A(typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : window.FORMS_DATA); }catch(_){ return []; } }
+  function submissionsList(){ try{ return A(typeof SUBMISSIONS_DATA !== 'undefined' ? SUBMISSIONS_DATA : window.SUBMISSIONS_DATA); }catch(_){ return []; } }
+  function servicesList(){ try{ return A(typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : window.SERVICES_DATA); }catch(_){ return []; } }
+  function instancesList(){ try{ return A(typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : window.SERVICE_INSTANCES_DATA); }catch(_){ return []; } }
+  function fName(f){ return f && (f.nom || f.name || f.label || ('Formulaire '+(f.id||''))) || 'Formulaire'; }
+  function fieldLabel(f){ return f && (f.nom || f.label || f.name || f.id) || 'Champ'; }
+  function fieldsOfForm(f){ return A(f && (f.fields || f.champs || f.schema)).filter(function(x){ return x && !['separator','image','titre'].includes(S(x.type)); }); }
+  function findForm(id){ id=S(id).replace(/^form:/,''); return formsList().find(function(f){ return idEq(f && f.id,id) || idEq(f && f.nom,id) || idEq(f && f.name,id); }); }
+  function findSubmission(id){ return submissionsList().find(function(s){ return idEq(s && s.id,id); }); }
+  function normalizeSub(s){ s=O(s); if(!s.formId && s.form_id) s.formId=s.form_id; if(!s.values && s.data) s.values=s.data; return s; }
+  function findInstance(id){ return instancesList().find(function(x){ return idEq(x && x.id,id) || idEq(x && x.reference,id) || idEq(x && x.ref,id); }); }
+  function findService(id){ return servicesList().find(function(x){ return idEq(x && x.id,id); }); }
+  function primarySubmission(instance){ if(!instance) return null; return normalizeSub(findSubmission(instance.submissionId || instance.submission_id)); }
+  function linkedSubmissions(instance){
+    if(!instance) return [];
+    var instId=S(instance.id), out=[], seen={};
+    function add(s){ s=normalizeSub(s); if(!s || !s.id || seen[S(s.id)]) return; seen[S(s.id)]=1; out.push(s); }
+    submissionsList().forEach(function(s){
+      if(S(s && (s.linkedInstanceId || s.linked_instance_id || s.serviceInstanceId || s.service_instance_id))===instId) add(s);
+    });
+    A(instance.events).forEach(function(ev){ var p=O(ev && ev.payload); if(p.submissionId) add(findSubmission(p.submissionId)); });
+    return out.sort(function(a,b){ return new Date(b.date || b.created_at || 0) - new Date(a.date || a.created_at || 0); });
+  }
+  function availableSourceForms(instance, service){
+    var map={};
+    function add(f,tag){ if(f && f.id && !map[S(f.id)]) map[S(f.id)]={form:f, tag:tag||''}; }
+    add(findForm(service && (service.formId || service.form_id)), 'formulaire initial');
+    add(findForm(instance && (instance.formId || instance.form_id)), 'formulaire initial');
+    linkedSubmissions(instance).forEach(function(s){ add(findForm(s.formId || s.form_id), 'formulaire lié'); });
+    formsList().forEach(function(f){ if(f && f.id && map[S(f.id)]) return; });
+    return Object.keys(map).map(function(k){ return map[k]; });
+  }
+  function allFieldOptions(selected, instance, service){
+    var items=availableSourceForms(instance, service);
+    var html='';
+    items.forEach(function(it){
+      var f=it.form, group=esc(fName(f)+(it.tag?' — '+it.tag:''));
+      var opts=fieldsOfForm(f).map(function(field){
+        var val=S(f.id)+'::'+S(field.id);
+        return '<option value="'+esc(val)+'" '+(S(selected)===val || S(selected)===S(field.id) ? 'selected' : '')+'>'+esc(fieldLabel(field))+'</option>';
+      }).join('');
+      if(opts) html+='<optgroup label="'+group+'">'+opts+'</optgroup>';
+    });
+    if(!html){
+      formsList().forEach(function(f){
+        var opts=fieldsOfForm(f).map(function(field){ var val=S(f.id)+'::'+S(field.id); return '<option value="'+esc(val)+'" '+(S(selected)===val?'selected':'')+'>'+esc(fieldLabel(field))+'</option>'; }).join('');
+        if(opts) html+='<optgroup label="'+esc(fName(f))+'">'+opts+'</optgroup>';
+      });
+    }
+    return html;
+  }
+  function currentEditorContext(){
+    var service = null;
+    try{ service = (typeof curService !== 'undefined' && curService) ? curService : null; }catch(_){ }
+    if(!service){
+      var title=(document.querySelector('#tb-t')||{}).textContent || '';
+      service=servicesList().find(function(sv){ return title && S(sv.nom||sv.name)===S(title); }) || servicesList()[0];
+    }
+    var instance=null;
+    try{ instance = (typeof curInstanceId !== 'undefined' && curInstanceId) ? findInstance(curInstanceId) : null; }catch(_){ }
+    if(!instance && service){ instance=instancesList().find(function(i){ return idEq(i && i.serviceId, service.id); }); }
+    return {service:service, instance:instance};
+  }
+
+  // 1) Nettoyage réel des toolbars dupliquées dans Données
+  function toolbarContainer(btn){
+    var el=btn;
+    for(var i=0;i<6 && el;i++,el=el.parentElement){
+      var txt=(el.textContent||'').trim();
+      if(txt.indexOf('Modifier la table')>=0 && txt.indexOf('Supprimer la table')>=0) return el;
+    }
+    return btn.parentElement;
+  }
+  function cleanupTableToolbarsV71(){
+    try{
+      var buttons=[].slice.call(document.querySelectorAll('button')).filter(function(b){ return /Modifier la table/i.test(b.textContent||''); });
+      var groups=[];
+      buttons.forEach(function(b){ var c=toolbarContainer(b); if(c && groups.indexOf(c)<0) groups.push(c); });
+      if(groups.length>1){
+        groups.forEach(function(g,idx){ if(idx>0 && g && g.parentNode) g.parentNode.removeChild(g); });
+      }
+    }catch(e){ console.warn('[V71] cleanup toolbars', e); }
+  }
+  var oldRdb = window.renderStandaloneDBTable;
+  if(typeof oldRdb === 'function'){
+    window.renderStandaloneDBTable = function(db){ var res = oldRdb.apply(this, arguments); setTimeout(cleanupTableToolbarsV71,0); setTimeout(cleanupTableToolbarsV71,80); return res; };
+  }
+  document.addEventListener('DOMContentLoaded', function(){ setTimeout(cleanupTableToolbarsV71,100); });
+  document.addEventListener('click', function(){ setTimeout(cleanupTableToolbarsV71,20); }, true);
+  try{ new MutationObserver(function(){ cleanupTableToolbarsV71(); }).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){ }
+
+  // 2) Sélecteur BDD : tous les champs connus du dossier dans les actions
+  var oldUpdateDbUpdate = window.updateDbUpdate;
+  window.updateDbUpdate = function(ai,ei,rowIndex,key,value){
+    if(key==='sourceFieldId' && S(value).indexOf('::')>0){
+      var p=S(value).split('::');
+      try{
+        var item = (((svcBuilderActions||[])[ai]||{}).effects||[])[ei].config.updates[rowIndex];
+        if(item){ item.sourceType = 'linked_form_field'; item.sourceFormId=p[0]; item.sourceFieldId=p.slice(1).join('::'); }
+        if(typeof renderSvcTab==='function') renderSvcTab();
+        return;
+      }catch(e){ console.warn('[V71] updateDbUpdate composite', e); }
+    }
+    if(typeof oldUpdateDbUpdate==='function') return oldUpdateDbUpdate.apply(this, arguments);
+  };
+  var oldUpdateMatchCriteria = window.updateMatchCriteria;
+  window.updateMatchCriteria = function(ai,ei,rowIndex,key,value){
+    if(key==='sourceFieldId' && S(value).indexOf('::')>0){
+      var p=S(value).split('::');
+      try{
+        var item = (((svcBuilderActions||[])[ai]||{}).effects||[])[ei].config.matchCriteria[rowIndex];
+        if(item){ item.sourceType = 'linked_form_field'; item.sourceFormId=p[0]; item.sourceFieldId=p.slice(1).join('::'); }
+        if(typeof renderSvcTab==='function') renderSvcTab();
+        return;
+      }catch(e){ console.warn('[V71] updateMatchCriteria composite', e); }
+    }
+    if(typeof oldUpdateMatchCriteria==='function') return oldUpdateMatchCriteria.apply(this, arguments);
+  };
+  var oldRenderDbEffectHtml = window.renderDbEffectHtml;
+  if(typeof oldRenderDbEffectHtml==='function'){
+    window.renderDbEffectHtml = function(ai,ei,effect){
+      var html=oldRenderDbEffectHtml.apply(this, arguments);
+      var ctx=currentEditorContext();
+      // remplace les listes "Champ formulaire initial" par une liste groupée dossier complet
+      var grouped=allFieldOptions('', ctx.instance, ctx.service);
+      if(grouped){
+        html = html.replace(/<option value="">Champ formulaire initial<\/option>(?:<option[\s\S]*?<\/option>|<optgroup[\s\S]*?<\/optgroup>)*/g, '<option value="">Champ du dossier</option>'+grouped);
+        html = html.replace(/Champ formulaire initial/g, 'Champ du dossier');
+      }
+      return html;
+    };
+  }
+
+  // 3) Exécuter edit_form : ouvre le formulaire configuré, prérempli si possible
+  var oldExecuteAction = window.executeAction;
+  window.executeAction = async function(instanceId, actionId){
+    var instance=findInstance(instanceId); var service=instance?findService(instance.serviceId):null;
+    var action=service?A(service.actions).find(function(a){ return idEq(a && a.id, actionId); }):null;
+    var effects=A(action && (action.effects && action.effects.length ? action.effects : (action.type?[{type:action.type, config:action.config||{}}]:[])));
+    var fx=effects.find(function(x){ return ['edit_form','fill_form','open_form'].indexOf(S(x && x.type))>=0; });
+    if(fx && S(fx.type)==='edit_form'){
+      var formId=O(fx.config).formId || O(action.config).formId || service.formId || service.form_id || instance.formId || instance.form_id;
+      var form=findForm(formId);
+      if(!form) return toastV71('e','⚠️ Formulaire introuvable');
+      if(typeof window.openLinkedFormModal==='function'){
+        return window.openLinkedFormModal(instance, service, action, form);
+      }
+    }
+    if(typeof oldExecuteAction==='function') return oldExecuteAction.apply(this, arguments);
+  };
+
+  // 4) Historique : Voir plus sur les formulaires remplis
+  window.ptShowLinkedSubmission = function(submissionId){
+    var sub=normalizeSub(findSubmission(submissionId));
+    if(!sub){ toastV71('e','Réponse formulaire introuvable'); return; }
+    var form=findForm(sub.formId || sub.form_id);
+    var fields=fieldsOfForm(form);
+    var values=O(sub.values || sub.data);
+    var rows=(fields.length?fields:Object.keys(values).map(function(k){return {id:k,nom:k};})).map(function(f){
+      var v=values[f.id];
+      if(v && typeof v==='object'){
+        if(v.start || v.end || v.date) v=[v.date, v.start, v.end].filter(Boolean).join(' ');
+        else v=JSON.stringify(v);
+      }
+      return '<tr><td style="padding:9px 10px;border-bottom:1px solid #eef2f7;color:#64748b;font-weight:700;width:38%">'+esc(fieldLabel(f))+'</td><td style="padding:9px 10px;border-bottom:1px solid #eef2f7;color:#0f172a;font-weight:700">'+esc(v==null||v===''?'—':v)+'</td></tr>';
+    }).join('');
+    var old=document.getElementById('pt-submission-viewer'); if(old) old.remove();
+    var modal=document.createElement('div'); modal.id='pt-submission-viewer';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1300;display:flex;align-items:center;justify-content:center;padding:22px';
+    modal.innerHTML='<div style="background:#fff;border-radius:16px;width:min(760px,96vw);max-height:86vh;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.25);display:flex;flex-direction:column"><div style="padding:16px 20px;border-bottom:1.5px solid var(--bd);display:flex;align-items:center;gap:12px"><div style="flex:1"><div style="font-size:18px;font-weight:900;color:#0f172a">'+esc(fName(form))+'</div><div style="font-size:12px;color:#64748b;margin-top:2px">Réponse liée au dossier service</div></div><button class="btn btn-sm" onclick="document.getElementById(\'pt-submission-viewer\').remove()">Fermer</button></div><div style="padding:18px;overflow:auto"><table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">'+(rows||'<tr><td style="padding:18px;color:#64748b">Aucune donnée</td></tr>')+'</table></div></div>';
+    document.body.appendChild(modal);
+  };
+  function currentDisplayedInstance(){
+    var title=(document.querySelector('#tb-t')||{}).textContent || (document.querySelector('h1')||{}).textContent || '';
+    var ref=(title.match(/SVC[-–][A-Z0-9-]+/i)||[])[0] || '';
+    return instancesList().find(function(i){ return ref && (S(i.reference||i.ref||i.id).indexOf(ref)>=0 || S(i.id)===ref); }) || instancesList().slice().sort(function(a,b){ return new Date(b.createdAt||b.created_at||0)-new Date(a.createdAt||a.created_at||0); })[0];
+  }
+  function injectHistoryButtons(){
+    try{
+      var inst=currentDisplayedInstance(); if(!inst) return;
+      var events=A(inst.events).slice().reverse().filter(function(ev){ return S(ev && ev.type)==='form_filled' && O(ev.payload).submissionId; });
+      if(!events.length) return;
+      var cards=[].slice.call(document.querySelectorAll('div')).filter(function(d){ return (d.textContent||'').indexOf('Formulaire rempli')>=0 && !d.querySelector('.pt-v71-see-more'); });
+      var used=0;
+      cards.forEach(function(card){
+        if(used>=events.length) return;
+        var ev=events[used++], sid=O(ev.payload).submissionId;
+        var btn=document.createElement('button'); btn.className='pt-v71-see-more btn btn-sm'; btn.textContent='Voir plus'; btn.style.cssText='margin-top:8px;padding:5px 10px;font-size:11.5px;border-radius:9px'; btn.dataset.sid=sid;
+        btn.onclick=function(e){ e.stopPropagation(); window.ptShowLinkedSubmission(this.dataset.sid); };
+        card.appendChild(btn);
+      });
+    }catch(e){ console.warn('[V71] history buttons', e); }
+  }
+  var oldRID = window.renderInstanceDetail;
+  if(typeof oldRID==='function'){
+    window.renderInstanceDetail = function(){ var r=oldRID.apply(this, arguments); setTimeout(injectHistoryButtons,50); return r; };
+  }
+  document.addEventListener('DOMContentLoaded', function(){ setTimeout(injectHistoryButtons,300); });
+  document.addEventListener('click', function(){ setTimeout(injectHistoryButtons,120); }, true);
+  try{ new MutationObserver(function(){ injectHistoryButtons(); }).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){ }
+
+  console.info('[PicoTrack V71] Actions service et historique liés stabilisés');
+})();
