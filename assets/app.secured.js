@@ -2742,3 +2742,167 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
 
   console.info('[PicoTrack V71] Actions service et historique liés stabilisés');
 })();
+
+/* PicoTrack V72 - Historique service production fix
+   - un seul bouton Voir plus uniquement sur les événements Formulaire rempli
+   - chargement de la soumission exacte par id avant affichage
+   - valeurs réelles affichées même si la liste locale ne contient que les résumés
+*/
+(function(){
+  function A(v){ return Array.isArray(v) ? v : []; }
+  function O(v){ return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+  function S(v){ return String(v == null ? '' : v); }
+  function E(v){ return S(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function idEq(a,b){ return S(a) === S(b); }
+  function toastV72(type,msg){ try{ if(typeof toast==='function') toast(type,msg); else if(typeof toastSafe==='function') toastSafe(type,msg); else console.log('[PicoTrack]',msg); }catch(_){ console.log('[PicoTrack]',msg); } }
+  function formsList(){ try{ return A(typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : window.FORMS_DATA); }catch(_){ return []; } }
+  function submissionsList(){ try{ return A(typeof SUBMISSIONS_DATA !== 'undefined' ? SUBMISSIONS_DATA : window.SUBMISSIONS_DATA); }catch(_){ return []; } }
+  function instancesList(){ try{ return A(typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : window.SERVICE_INSTANCES_DATA); }catch(_){ return []; } }
+  function fName(f){ return f && (f.nom || f.name || f.label || ('Formulaire '+(f.id||''))) || 'Formulaire'; }
+  function fieldLabel(f){ return f && (f.nom || f.label || f.name || f.id) || 'Champ'; }
+  function fieldsOfForm(f){ return A(f && (f.fields || f.champs || f.schema)).filter(function(x){ return x && !['separator','image','titre'].includes(S(x.type)); }); }
+  function findForm(id){ id=S(id).replace(/^form:/,''); return formsList().find(function(f){ return idEq(f && f.id,id) || idEq(f && f.nom,id) || idEq(f && f.name,id); }); }
+  function normalizeSub(s){
+    s=O(s);
+    if(!s.formId && s.form_id) s.formId=s.form_id;
+    if(!s.form_id && s.formId) s.form_id=s.formId;
+    if(!s.values){
+      if(s.data) s.values=s.data;
+      else if(s.answers) s.values=s.answers;
+      else if(s.payload) s.values=s.payload;
+      else if(s.response_json) s.values=s.response_json;
+      else if(s.data_json) s.values=s.data_json;
+    }
+    if(typeof s.values === 'string'){
+      try{ s.values=JSON.parse(s.values); }catch(_){ }
+    }
+    return s;
+  }
+  function findSubmission(id){ return normalizeSub(submissionsList().find(function(s){ return idEq(s && s.id,id); })); }
+  async function loadSubmission(id){
+    var local=findSubmission(id);
+    var hasValues=local && Object.keys(O(local.values)).length;
+    if(hasValues) return local;
+    try{
+      if(window.DB && typeof DB.getSubmissionById === 'function'){
+        var full=await DB.getSubmissionById(id);
+        if(full){
+          full=normalizeSub(full);
+          try{
+            var list=submissionsList();
+            var idx=list.findIndex(function(s){ return idEq(s && s.id,id); });
+            if(idx>=0) list[idx]=Object.assign({}, list[idx], full); else list.unshift(full);
+          }catch(_){ }
+          return full;
+        }
+      }
+    }catch(e){ console.warn('[V72] getSubmissionById', e && e.message || e); }
+    return local;
+  }
+  function rawValues(sub){
+    sub=normalizeSub(sub);
+    var v=O(sub.values || sub.data || sub.answers || sub.payload || sub.response_json || sub.data_json);
+    if(v.values && typeof v.values === 'object') v=O(v.values);
+    return v;
+  }
+  function valueForField(values, field){
+    values=O(values); field=O(field);
+    var keys=[field.id, field.key, field.nom, field.name, field.label].map(S).filter(Boolean);
+    for(var i=0;i<keys.length;i++){
+      if(Object.prototype.hasOwnProperty.call(values, keys[i])) return values[keys[i]];
+    }
+    var lower={}; Object.keys(values).forEach(function(k){ lower[S(k).toLowerCase()]=values[k]; });
+    for(var j=0;j<keys.length;j++){
+      var lk=keys[j].toLowerCase();
+      if(Object.prototype.hasOwnProperty.call(lower, lk)) return lower[lk];
+    }
+    return undefined;
+  }
+  function displayValue(v){
+    if(v == null || v === '') return '—';
+    if(Array.isArray(v)) return v.map(displayValue).join(', ');
+    if(typeof v === 'object'){
+      if(v.date || v.start || v.end) return [v.date, v.start, v.end].filter(Boolean).join(' ');
+      if(v.label || v.name || v.nom || v.value) return S(v.label || v.name || v.nom || v.value);
+      try{ return JSON.stringify(v); }catch(_){ return '—'; }
+    }
+    return S(v);
+  }
+  window.ptShowLinkedSubmission = async function(submissionId){
+    var sub=await loadSubmission(submissionId);
+    if(!sub || !sub.id){ toastV72('e','Réponse formulaire introuvable'); return; }
+    sub=normalizeSub(sub);
+    var form=findForm(sub.formId || sub.form_id);
+    var values=rawValues(sub);
+    var fields=fieldsOfForm(form);
+    var rows='';
+    if(fields.length){
+      rows=fields.map(function(f){
+        return '<tr><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#64748b;font-weight:800;width:38%">'+E(fieldLabel(f))+'</td><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#0f172a;font-weight:800">'+E(displayValue(valueForField(values,f)))+'</td></tr>';
+      }).join('');
+    }else{
+      rows=Object.keys(values).map(function(k){
+        return '<tr><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#64748b;font-weight:800;width:38%">'+E(k)+'</td><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#0f172a;font-weight:800">'+E(displayValue(values[k]))+'</td></tr>';
+      }).join('');
+    }
+    if(!rows) rows='<tr><td style="padding:18px;color:#64748b">Aucune donnée enregistrée pour cette réponse.</td></tr>';
+    var old=document.getElementById('pt-submission-viewer'); if(old) old.remove();
+    var modal=document.createElement('div'); modal.id='pt-submission-viewer';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1300;display:flex;align-items:center;justify-content:center;padding:22px';
+    modal.innerHTML='<div style="background:#fff;border-radius:16px;width:min(760px,96vw);max-height:86vh;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.25);display:flex;flex-direction:column"><div style="padding:16px 20px;border-bottom:1.5px solid var(--bd);display:flex;align-items:center;gap:12px"><div style="flex:1"><div style="font-size:18px;font-weight:900;color:#0f172a">'+E(fName(form))+'</div><div style="font-size:12px;color:#64748b;margin-top:2px">Réponse liée au dossier service</div></div><button class="btn btn-sm" id="pt-close-submission-viewer">Fermer</button></div><div style="padding:18px;overflow:auto"><table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">'+rows+'</table></div></div>';
+    document.body.appendChild(modal);
+    document.getElementById('pt-close-submission-viewer').onclick=function(){ modal.remove(); };
+    modal.addEventListener('click',function(e){ if(e.target===modal) modal.remove(); });
+  };
+  function currentDisplayedInstance(){
+    var txt=[(document.querySelector('#tb-t')||{}).textContent,(document.querySelector('h1')||{}).textContent,document.body.textContent].join(' ');
+    var ref=(txt.match(/SVC[-–][A-Z0-9-]+/i)||[])[0] || '';
+    if(ref){
+      var found=instancesList().find(function(i){ return S(i && (i.reference || i.ref || i.code || i.id)).indexOf(ref)>=0; });
+      if(found) return found;
+    }
+    return instancesList().slice().sort(function(a,b){ return new Date(b.createdAt||b.created_at||0)-new Date(a.createdAt||a.created_at||0); })[0];
+  }
+  function removeBadButtons(){
+    document.querySelectorAll('.pt-v71-see-more,.pt-v72-see-more').forEach(function(b){ b.remove(); });
+  }
+  function historyContainer(){
+    var nodes=[].slice.call(document.querySelectorAll('div,section,aside'));
+    var candidates=nodes.filter(function(n){ return /^\s*HISTORIQUE\b/i.test(n.textContent||'') && (n.textContent||'').indexOf('Formulaire rempli')>=0; });
+    candidates.sort(function(a,b){ return (a.textContent||'').length-(b.textContent||'').length; });
+    return candidates[0] || null;
+  }
+  function findEventCard(root, index){
+    var labels=[].slice.call(root.querySelectorAll('div,span,strong,b,h1,h2,h3,h4,p')).filter(function(n){ return /^\s*Formulaire rempli\s*$/i.test(n.textContent||''); });
+    var label=labels[index]; if(!label) return null;
+    var card=label;
+    for(var i=0;i<6 && card && card!==root;i++){
+      var txt=card.textContent||'';
+      if(txt.indexOf('Formulaire rempli')>=0 && txt.length<450) return card;
+      card=card.parentElement;
+    }
+    return label.parentElement || label;
+  }
+  function injectHistoryButtonsV72(){
+    try{
+      removeBadButtons();
+      var inst=currentDisplayedInstance(); if(!inst) return;
+      var events=A(inst.events).slice().reverse().filter(function(ev){ return S(ev && ev.type)==='form_filled' && O(ev.payload).submissionId; });
+      if(!events.length) return;
+      var root=historyContainer(); if(!root) return;
+      events.forEach(function(ev,idx){
+        var card=findEventCard(root,idx); if(!card) return;
+        var btn=document.createElement('button'); btn.className='pt-v72-see-more btn btn-sm'; btn.textContent='Voir plus'; btn.style.cssText='margin-top:8px;padding:5px 10px;font-size:11.5px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center'; btn.dataset.sid=O(ev.payload).submissionId;
+        btn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); window.ptShowLinkedSubmission(this.dataset.sid); };
+        card.appendChild(btn);
+      });
+    }catch(e){ console.warn('[V72] history buttons', e); }
+  }
+  var style=document.createElement('style'); style.textContent='.pt-v71-see-more{display:none!important}.pt-v72-see-more+.pt-v72-see-more{display:none!important}'; document.head.appendChild(style);
+  var oldRID=window.renderInstanceDetail;
+  if(typeof oldRID==='function') window.renderInstanceDetail=function(){ var r=oldRID.apply(this,arguments); setTimeout(injectHistoryButtonsV72,80); return r; };
+  document.addEventListener('DOMContentLoaded',function(){ setTimeout(injectHistoryButtonsV72,350); });
+  document.addEventListener('click',function(){ setTimeout(injectHistoryButtonsV72,120); },true);
+  try{ new MutationObserver(function(){ clearTimeout(window.__ptV72HistTimer); window.__ptV72HistTimer=setTimeout(injectHistoryButtonsV72,120); }).observe(document.body||document.documentElement,{childList:true,subtree:true}); }catch(_){ }
+  console.info('[PicoTrack V72] Historique service : voir plus unique + données réelles');
+})();
