@@ -2467,3 +2467,139 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
 
   console.info('[PicoTrack V67] Actions BDD stabilisées : champs dossier complets, tables propres, objets lisibles');
 })();
+
+/* PicoTrack PROD FIX - moteur workflow/table propre
+   Objectif : supprimer les rendus doublons et rendre le sélecteur BDD exploitable avec tous les formulaires.
+*/
+(function(){
+  'use strict';
+  function S(v){ return String(v == null ? '' : v); }
+  function A(v){ return Array.isArray(v) ? v : []; }
+  function O(v){ return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+  function esc(v){
+    return S(v).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
+  }
+  function idEq(a,b){ return S(a) === S(b); }
+  function getForms(){ try { return A(typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : window.FORMS_DATA); } catch(_) { return A(window.FORMS_DATA); } }
+  function getDbs(){ try { return A(typeof DATABASES_DATA !== 'undefined' ? DATABASES_DATA : window.DATABASES_DATA); } catch(_) { return A(window.DATABASES_DATA); } }
+  function getActions(){ try { return A(svcBuilderActions); } catch(_) { return []; } }
+  function getCurrentService(){ try { return window.curService || (typeof curService !== 'undefined' ? curService : null); } catch(_) { return window.curService || null; } }
+  function formName(f){ return S(f && (f.nom || f.name || f.label || ('Formulaire '+f.id))); }
+  function fieldsOf(f){
+    var fs = A(f && (f.fields || f.champs));
+    return fs.map(function(x,i){ x=O(x); return { id:S(x.id || x.key || x.name || ('field_'+i)), label:S(x.nom || x.label || x.name || x.id || ('Champ '+(i+1))) }; });
+  }
+  function dbName(db){ return S(db && (db.nom || db.name || db.label || ('Table '+db.id))); }
+  function dbColumns(db){ return A(db && db.columns).map(function(c,i){ c=O(c); return { id:S(c.id || c.key || c.name || ('col_'+i)), label:S(c.nom || c.label || c.name || c.id || ('Colonne '+(i+1))) }; }); }
+  function opt(list, selected){ return A(list).map(function(x){ return '<option value="'+esc(x.id)+'" '+(idEq(x.id,selected)?'selected':'')+'>'+esc(x.label)+'</option>'; }).join(''); }
+  function targetOptions(selected){
+    var autonomous = getDbs().filter(function(db){ return !db.form_id && !db.formId; }).map(function(db){ return '<option value="'+esc(db.id)+'" '+(idEq(db.id,selected)?'selected':'')+'>'+esc(dbName(db))+'</option>'; }).join('') || '<option disabled>Aucune base autonome</option>';
+    var linked = getForms().map(function(f){ return '<option value="'+esc(f.id)+'" '+(idEq(f.id,selected)?'selected':'')+'>'+esc(formName(f))+'</option>'; }).join('') || '<option disabled>Aucun formulaire chargé</option>';
+    return '<optgroup label="Bases autonomes">'+autonomous+'</optgroup><optgroup label="Liées aux formulaires">'+linked+'</optgroup>';
+  }
+  function findTarget(id){
+    var db = getDbs().find(function(d){ return idEq(d.id,id); }); if(db) return { type:'db', item:db, columns:dbColumns(db) };
+    var f = getForms().find(function(x){ return idEq(x.id,id); }); if(f) return { type:'form', item:f, columns:fieldsOf(f) };
+    return { type:'none', item:null, columns:[] };
+  }
+  function sourceTypeOptions(selected){
+    var vals=[['fixed','Valeur fixe'],['form_field','Champ formulaire / dossier'],['current_user','Utilisateur connecté'],['current_date','Date du jour'],['current_time','Heure du jour'],['current_status','Statut courant'],['instance_id','ID dossier']];
+    return vals.map(function(v){ return '<option value="'+v[0]+'" '+(v[0]===selected?'selected':'')+'>'+esc(v[1])+'</option>'; }).join('');
+  }
+  function serviceLinkedFormIds(){
+    var ids=[], seen={};
+    var svc=getCurrentService();
+    function add(x){ x=S(x); if(x && !seen[x]){ seen[x]=1; ids.push(x); } }
+    add(svc && (svc.form_id || svc.formId));
+    A(svc && svc.actions).forEach(function(action){ A(action && action.effects).forEach(function(fx){ fx=O(fx); var cfg=O(fx.config); if(fx.type==='fill_form') add(cfg.formId || cfg.form_id || cfg.targetFormId); }); });
+    getActions().forEach(function(action){ A(action && action.effects).forEach(function(fx){ fx=O(fx); var cfg=O(fx.config); if(fx.type==='fill_form') add(cfg.formId || cfg.form_id || cfg.targetFormId); }); });
+    return ids;
+  }
+  function fieldSourceOptions(item){
+    item=O(item);
+    var selected = item.sourceType === 'linked_form_field' ? ('linked:'+S(item.sourceFormId)+':'+S(item.sourceFieldId)) : ('initial:'+S(item.sourceFieldId || ''));
+    var html = '<option value="">— Choisir un champ —</option>';
+    var used={}, linkedIds=serviceLinkedFormIds();
+    function addFormGroup(f, label){
+      if(!f || used[S(f.id)]) return; used[S(f.id)] = true;
+      var fields=fieldsOf(f); if(!fields.length) return;
+      html += '<optgroup label="'+esc(label)+' — '+esc(formName(f))+'">';
+      fields.forEach(function(ff){ var val = label === 'Formulaire initial' ? ('initial:'+ff.id) : ('linked:'+S(f.id)+':'+ff.id); html += '<option value="'+esc(val)+'" '+(selected===val?'selected':'')+'>'+esc(ff.label)+'</option>'; });
+      html += '</optgroup>';
+    }
+    var forms=getForms();
+    var initial = linkedIds[0] ? forms.find(function(f){ return idEq(f.id, linkedIds[0]); }) : null;
+    if(initial) addFormGroup(initial, 'Formulaire initial');
+    linkedIds.slice(1).forEach(function(id){ addFormGroup(forms.find(function(f){ return idEq(f.id,id); }), 'Formulaire lié'); });
+    forms.forEach(function(f){ addFormGroup(f, 'Autre formulaire disponible'); });
+    return html;
+  }
+  function sourceControl(ai,ei,rowIndex,kind,item){
+    item=O(item); var fn = kind === 'criteria' ? 'updateMatchCriteria' : 'updateDbUpdate';
+    if(item.sourceType === 'fixed') return '<input class="ci" style="flex:1;font-size:11.5px" value="'+esc(item.value || '')+'" placeholder="Valeur..." oninput="'+fn+'('+ai+','+ei+','+rowIndex+',\'value\',this.value)">';
+    if(item.sourceType === 'form_field' || item.sourceType === 'linked_form_field' || item.sourceType === 'source_field' || item.sourceType === 'current_field'){
+      return '<select class="ci" style="flex:1;font-size:11.5px" onchange="ptSetWorkflowFieldSource('+ai+','+ei+','+rowIndex+',\''+kind+'\',this.value)">'+fieldSourceOptions(item)+'</select>';
+    }
+    return '<input class="ci" style="flex:1;font-size:11.5px" value="'+esc(item.value || '')+'" disabled placeholder="Valeur automatique">';
+  }
+  window.ptSetWorkflowFieldSource = function(ai,ei,rowIndex,kind,value){
+    var fx = A(A(getActions()[ai] && getActions()[ai].effects))[ei]; if(!fx) return;
+    fx.config=O(fx.config);
+    var listName = kind === 'criteria' ? 'matchCriteria' : 'updates';
+    fx.config[listName] = A(fx.config[listName]);
+    var item = fx.config[listName][rowIndex]; if(!item) return;
+    var parts=S(value).split(':');
+    if(parts[0] === 'linked') { item.sourceType='linked_form_field'; item.sourceFormId=parts[1] || ''; item.sourceFieldId=parts.slice(2).join(':') || ''; }
+    else { item.sourceType='form_field'; item.sourceFormId=''; item.sourceFieldId=parts.slice(1).join(':') || ''; }
+    if(typeof renderSvcTab === 'function') renderSvcTab();
+  };
+  var oldUpdateEffect = window.updateEffect;
+  window.updateEffect = function(ai,ei,key,value){
+    if(typeof oldUpdateEffect === 'function') oldUpdateEffect.apply(this, arguments);
+    try {
+      var fx = A(A(getActions()[ai] && getActions()[ai].effects))[ei];
+      if(fx && fx.type === 'update_db_row' && (key === 'formId' || key === 'databaseId' || key === 'targetId')) {
+        fx.config=O(fx.config); fx.config.formId=value; fx.config.databaseId=value; fx.config.targetId=value;
+      }
+    } catch(_) {}
+  };
+  window.renderUpdateDbRowConfig = function(ai, ei, effect){
+    effect=effect || {}; effect.config=O(effect.config);
+    var target = effect.config.databaseId || effect.config.formId || effect.config.targetId || '';
+    var targetData = findTarget(target), columns = targetData.columns;
+    var criteria = A(effect.config.matchCriteria), updates = A(effect.config.updates);
+    var html = '<div style="margin-top:8px;display:grid;gap:10px">';
+    html += '<div style="padding:10px 12px;border:1.5px solid #bfdbfe;background:#eff6ff;border-radius:10px;color:#1e3a8a;font-size:12px;line-height:1.45"><b>Principe :</b> PicoTrack cherche la ligne avec les critères, puis applique les modifications. Les valeurs peuvent venir du formulaire initial, des formulaires liés au dossier, de l’utilisateur ou de la date système.</div>';
+    html += '<div><div class="fl2" style="margin-bottom:4px">1. Base de données cible</div><select class="ci" onchange="updateEffect('+ai+','+ei+',\'formId\',this.value)"><option value="">— Choisir —</option>'+targetOptions(target)+'</select></div>';
+    if(!target){ html += '</div>'; return html; }
+    if(!columns.length) html += '<div style="padding:8px;border-radius:8px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:12px">Aucune colonne détectée pour cette cible.</div>';
+    html += '<div><div class="fl2" style="margin-bottom:4px">🔎 2. Critères pour identifier la ligne</div>';
+    if(!criteria.length) html += '<div style="padding:8px;border:1px dashed var(--bd);border-radius:8px;color:var(--tl);font-size:12px">Aucun critère configuré.</div>';
+    criteria.forEach(function(c,i){ c=O(c); html += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:8px;padding:8px"><select class="ci" style="flex:1;font-size:11.5px" onchange="updateMatchCriteria('+ai+','+ei+','+i+',\'dbFieldId\',this.value)"><option value="">Colonne DB</option>'+opt(columns,c.dbFieldId)+'</select><span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span><select class="ci" style="width:210px;font-size:11.5px" onchange="updateMatchCriteria('+ai+','+ei+','+i+',\'sourceType\',this.value)">'+sourceTypeOptions(c.sourceType || 'form_field')+'</select>'+sourceControl(ai,ei,i,'criteria',c)+'<button type="button" class="ic-btn" onclick="removeMatchCriteria('+ai+','+ei+','+i+')">✕</button></div>'; });
+    html += '<button type="button" style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--p);background:transparent;color:var(--p);font-size:12px;font-weight:800;cursor:pointer;font-family:inherit" onclick="addMatchCriteria('+ai+','+ei+')">＋ Ajouter un critère</button></div>';
+    html += '<div><div class="fl2" style="margin-bottom:4px">✏️ 3. Modifications à appliquer</div>';
+    if(!updates.length) html += '<div style="padding:8px;border:1px dashed var(--bd);border-radius:8px;color:var(--tl);font-size:12px">Aucune modification configurée : ajoute une colonne à mettre à jour.</div>';
+    updates.forEach(function(u,i){ u=O(u); html += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:8px;padding:8px"><select class="ci" style="flex:1;font-size:11.5px" onchange="updateDbUpdate('+ai+','+ei+','+i+',\'dbFieldId\',this.value)"><option value="">Colonne à modifier</option>'+opt(columns,u.dbFieldId)+'</select><span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span><select class="ci" style="width:210px;font-size:11.5px" onchange="updateDbUpdate('+ai+','+ei+','+i+',\'sourceType\',this.value)">'+sourceTypeOptions(u.sourceType || 'fixed')+'</select>'+sourceControl(ai,ei,i,'update',u)+'<button type="button" class="ic-btn" onclick="removeDbUpdate('+ai+','+ei+','+i+')">✕</button></div>'; });
+    html += '<button type="button" style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--s);background:transparent;color:var(--s);font-size:12px;font-weight:800;cursor:pointer;font-family:inherit" onclick="addDbUpdate('+ai+','+ei+')">＋ Ajouter une modification</button></div></div>';
+    return html;
+  };
+  function cleanDbToolbar(){
+    var root = document.getElementById('prod-db-table-wrap') || document.querySelector('#v-prod-database.on, #v-database.on, #app') || document.body;
+    if(!root) return;
+    var buttons = A(root.querySelectorAll('button'));
+    var editButtons = buttons.filter(function(b){ return /Modifier la table/.test(S(b.textContent)); });
+    var delButtons = buttons.filter(function(b){ return /Supprimer la table/.test(S(b.textContent)); });
+    editButtons.slice(1).forEach(function(b){ var p=b.parentElement; b.remove(); if(p && !p.querySelector('button') && p.children.length===0) p.remove(); });
+    delButtons.slice(1).forEach(function(b){ var p=b.parentElement; b.remove(); if(p && !p.querySelector('button') && p.children.length===0) p.remove(); });
+  }
+  var prevRenderStandaloneDBTable = window.renderStandaloneDBTable;
+  window.renderStandaloneDBTable = function(db){
+    if(typeof prevRenderStandaloneDBTable === 'function') prevRenderStandaloneDBTable(db);
+    setTimeout(cleanDbToolbar, 0);
+  };
+  var observer = new MutationObserver(function(){ cleanDbToolbar(); });
+  try { observer.observe(document.body, {childList:true, subtree:true}); } catch(_) {}
+  document.addEventListener('click', function(ev){ setTimeout(cleanDbToolbar,0); }, true);
+  setTimeout(cleanDbToolbar, 500);
+  console.info('[PicoTrack PROD] Workflow/Data engine nettoyé : une seule toolbar table + champs tous formulaires disponibles');
+})();
