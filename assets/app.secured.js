@@ -2000,46 +2000,6 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
     return runServiceEffects(instance, service, action, pending.nextIndex||0);
   };
 
-  /* Editeur de données dynamique : boutons modifier/supprimer + persistance lignes */
-  var oldRenderStandaloneDBTable = window.renderStandaloneDBTable;
-  window.renderStandaloneDBTable = function(db){
-    if(typeof oldRenderStandaloneDBTable === 'function') oldRenderStandaloneDBTable(db);
-    injectDbTools(db);
-  };
-  function injectDbTools(db){
-    var wrap=document.getElementById('prod-db-table-wrap'); if(!wrap||!db) return;
-    if(document.getElementById('pt63-db-tools-'+db.id)) return;
-    var bar=document.createElement('div'); bar.id='pt63-db-tools-'+db.id;
-    bar.style.cssText='display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:0 0 12px;position:relative;z-index:2';
-    bar.innerHTML='<button class="btn btn-sm" data-pt-help="Modifier la structure de cette table : nom, couleur, ajout, renommage ou suppression de colonnes." onclick="createDatabaseModal('+JSON.stringify(db.id)+')">✏️ Modifier la table</button><button class="btn btn-sm" style="border-color:#fecaca;color:#dc2626" data-pt-help="Supprime cette table dynamique et ses lignes associées. Action réservée aux rôles autorisés." onclick="deleteStandaloneDatabase('+JSON.stringify(db.id)+')">🗑 Supprimer la table</button>';
-    wrap.insertBefore(bar, wrap.firstChild);
-  }
-  window.deleteStandaloneDatabase = async function(id){
-    var db=findDbSmart(id); if(!db) return toastSafe('e','Base introuvable');
-    if(!confirm('Supprimer définitivement la table « '+dbName(db)+' » ?\n\nLes lignes associées seront supprimées aussi si les droits serveur le permettent.')) return;
-    try{
-      var rows=A(db.rows);
-      if(window.DB && typeof DB.remove==='function'){
-        for(var i=0;i<rows.length;i++){ if(rows[i].id) await DB.remove('database_rows', rows[i].id).catch(function(e){ console.warn('[V63] delete row', e&&e.message||e); }); }
-        await DB.remove('databases', db.id);
-      }
-      if(typeof DATABASES_DATA!=='undefined' && Array.isArray(DATABASES_DATA)){
-        var idx=DATABASES_DATA.findIndex(function(d){return idEq(d.id,db.id);}); if(idx>=0) DATABASES_DATA.splice(idx,1);
-      }
-      toastSafe('s','🗑 Table supprimée');
-      if(typeof goProDatabase==='function') goProDatabase(); else if(typeof goStudioDatabase==='function') goStudioDatabase();
-    }catch(e){ toastSafe('e','Erreur suppression table : '+(e&&e.message||e)); }
-  };
-  var oldDeleteStandaloneRow = window.deleteStandaloneRow;
-  window.deleteStandaloneRow = async function(dbId,rowId){
-    var db=findDbSmart(dbId); if(!db) return;
-    if(!confirm('Supprimer cette ligne ?')) return;
-    try{ if(window.DB && typeof DB.remove==='function') await DB.remove('database_rows', rowId); } catch(e){ console.warn('[V63] suppression ligne serveur', e&&e.message||e); }
-    db.rows=A(db.rows).filter(function(r){return !idEq(r.id,rowId);});
-    if(typeof renderStandaloneDBTable==='function') renderStandaloneDBTable(db);
-    toastSafe('s','🗑 Ligne supprimée');
-  };
-
   /* Mode aide : descriptions métier pour les actions. */
   document.addEventListener('mouseover', function(ev){
     var el=ev.target && ev.target.closest ? ev.target.closest('select[data-pt-action-help], [data-pt-help]') : null;
@@ -2301,31 +2261,6 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
     try { if(typeof renderInstanceDetail === 'function') renderInstanceDetail(instance, service); } catch(_){}
   };
 
-  function injectDbToolsSafe(db){
-    var wrap = document.getElementById('prod-db-table-wrap'); if(!wrap || !db) return;
-    var old = document.getElementById('pt65-db-tools'); if(old) old.remove();
-    var bar = document.createElement('div'); bar.id = 'pt65-db-tools'; bar.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:0 0 12px;position:relative;z-index:2';
-    var edit = document.createElement('button'); edit.className = 'btn btn-sm'; edit.type = 'button'; edit.textContent = '✏️ Modifier la table'; edit.setAttribute('data-pt-help','Modifier la structure de cette table : nom, couleur, ajout, renommage ou suppression de colonnes.');
-    edit.addEventListener('click', function(){ if(typeof createDatabaseModal === 'function') createDatabaseModal(db.id); else toastSafe('e','Éditeur de table indisponible'); });
-    var del = document.createElement('button'); del.className = 'btn btn-sm'; del.type = 'button'; del.textContent = '🗑 Supprimer la table'; del.style.borderColor = '#fecaca'; del.style.color = '#dc2626'; del.setAttribute('data-pt-help','Supprime cette table dynamique et ses lignes associées.');
-    del.addEventListener('click', function(){ window.deleteStandaloneDatabase(db.id); });
-    bar.appendChild(edit); bar.appendChild(del); wrap.insertBefore(bar, wrap.firstChild);
-  }
-  var prevRenderStandaloneDBTable = window.renderStandaloneDBTable;
-  window.renderStandaloneDBTable = function(db){ if(typeof prevRenderStandaloneDBTable === 'function') prevRenderStandaloneDBTable(db); injectDbToolsSafe(db); };
-  window.deleteStandaloneDatabase = async function(id){
-    var db = findDbSmart(id); if(!db) return toastSafe('e','Base introuvable');
-    if(!confirm('Supprimer définitivement la table « '+dbName(db)+' » ?\n\nLes lignes associées seront supprimées aussi.')) return;
-    try{
-      if(window.DB && typeof DB.remove === 'function'){
-        for(var i=0;i<A(db.rows).length;i++){ if(db.rows[i].id) await DB.remove('database_rows', db.rows[i].id).catch(function(e){ console.warn('[V65] delete db row', e && e.message || e); }); }
-        await DB.remove('databases', db.id);
-      }
-      var list = dbs(); var idx = list.findIndex(function(d){ return idEq(d && d.id, db.id); }); if(idx >= 0) list.splice(idx,1);
-      toastSafe('s','🗑 Table supprimée'); if(typeof goProDatabase === 'function') goProDatabase(); else if(typeof goStudioDatabase === 'function') goStudioDatabase();
-    } catch(e){ toastSafe('e','Erreur suppression table : '+(e && e.message || e)); }
-  };
-  console.info('[PicoTrack V65] Corrections actions service et tables dynamiques chargées');
 })();
 
 /* PicoTrack V67 - Stabilisation production actions BDD + contexte formulaires liés
@@ -2444,16 +2379,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
     if(!rows.length) return '<div style="text-align:center;padding:50px;color:var(--tl);border:2px dashed var(--bd);border-radius:12px"><div style="font-size:28px;opacity:.3;margin-bottom:8px">🗃</div>Aucune ligne — cliquez sur "+ Ligne"</div>';
     return '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);overflow:auto"><table style="width:100%;border-collapse:collapse;min-width:600px"><thead style="background:var(--bg)"><tr><th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd);white-space:nowrap">#</th><th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd);white-space:nowrap">Date</th><th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Source</th>'+cols.map(function(c){return '<th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd);white-space:nowrap">'+esc(c.nom||c.name||c.id)+'</th>';}).join('')+'<th style="border-bottom:1.5px solid var(--bd);width:40px"></th></tr></thead><tbody>'+rows.map(function(r,i){ r=O(r); var src = S(r.source).indexOf('manual')>=0 ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#f1f5f9;color:var(--tl)">Manuel</span>' : '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:'+color+'18;color:'+color+'">Formulaire</span>'; return '<tr style="border-bottom:1px solid var(--bg)"><td style="padding:9px 14px;font-size:12px;color:var(--tl)">'+(i+1)+'</td><td style="padding:9px 14px;font-size:12px;color:var(--tl);white-space:nowrap">'+esc(r.dateLabel||r.created_at||r.date||'')+'</td><td style="padding:9px 14px">'+src+'</td>'+cols.map(function(c){ var val=prettyValue(O(r.values)[c.id]); return '<td style="padding:9px 14px;font-size:13px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(val)+'">'+esc(val)+'</td>'; }).join('')+'<td style="padding:9px 14px;text-align:center"><button type="button" data-pt-delete-row="'+esc(r.id)+'" data-pt-db="'+esc(db.id)+'" style="border:none;background:none;cursor:pointer;color:var(--tl);font-size:13px;opacity:.4">🗑</button></td></tr>'; }).join('')+'</tbody></table></div>';
   };
-  function injectSingleDbTools(db){
-    var wrap=document.getElementById('prod-db-table-wrap'); if(!wrap||!db) return;
-    A(wrap.querySelectorAll('#pt63-db-tools-'+CSS.escape(S(db.id))+', #pt65-db-tools, #pt67-db-tools, [data-pt-db-tools]')).forEach(function(e){ e.remove(); });
-    var bar=document.createElement('div'); bar.id='pt67-db-tools'; bar.setAttribute('data-pt-db-tools','1'); bar.style.cssText='display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:0 0 12px;position:relative;z-index:2';
-    var edit=document.createElement('button'); edit.type='button'; edit.className='btn btn-sm'; edit.textContent='✏️ Modifier la table'; edit.onclick=function(){ if(typeof createDatabaseModal==='function') createDatabaseModal(db.id); else toastSafe('e','Éditeur table indisponible'); };
-    var del=document.createElement('button'); del.type='button'; del.className='btn btn-sm'; del.textContent='🗑 Supprimer la table'; del.style.borderColor='#fecaca'; del.style.color='#dc2626'; del.onclick=function(){ if(typeof window.deleteStandaloneDatabase==='function') window.deleteStandaloneDatabase(db.id); };
-    bar.appendChild(edit); bar.appendChild(del); wrap.insertBefore(bar, wrap.firstChild);
-  }
-  var prevRenderStandalone = window.renderStandaloneDBTable;
-  window.renderStandaloneDBTable = function(db){ if(typeof prevRenderStandalone==='function') prevRenderStandalone(db); injectSingleDbTools(db); };
+
 
   document.addEventListener('click', function(ev){
     var btn=ev.target && ev.target.closest ? ev.target.closest('[onclick]') : null; if(!btn) return;
@@ -2583,23 +2509,122 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
     html += '<button type="button" style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--s);background:transparent;color:var(--s);font-size:12px;font-weight:800;cursor:pointer;font-family:inherit" onclick="addDbUpdate('+ai+','+ei+')">＋ Ajouter une modification</button></div></div>';
     return html;
   };
-  function cleanDbToolbar(){
-    var root = document.getElementById('prod-db-table-wrap') || document.querySelector('#v-prod-database.on, #v-database.on, #app') || document.body;
-    if(!root) return;
-    var buttons = A(root.querySelectorAll('button'));
-    var editButtons = buttons.filter(function(b){ return /Modifier la table/.test(S(b.textContent)); });
-    var delButtons = buttons.filter(function(b){ return /Supprimer la table/.test(S(b.textContent)); });
-    editButtons.slice(1).forEach(function(b){ var p=b.parentElement; b.remove(); if(p && !p.querySelector('button') && p.children.length===0) p.remove(); });
-    delButtons.slice(1).forEach(function(b){ var p=b.parentElement; b.remove(); if(p && !p.querySelector('button') && p.children.length===0) p.remove(); });
+})();
+
+
+/* PicoTrack PROD CLEAN - moteur table dynamique unique
+   - Supprime la cause des toolbars multiples en retirant toutes les anciennes injections.
+   - Réinjecte une seule barre Modifier/Supprimer après rendu.
+   - Garde le nom fixe app.secured.js.
+*/
+(function(){
+  'use strict';
+  function S(v){ return String(v == null ? '' : v); }
+  function A(v){ return Array.isArray(v) ? v : []; }
+  function toastSafe(type,msg){ try { if(typeof toast === 'function') toast(type,msg); else console.log('[PicoTrack]', msg); } catch(_){} }
+  function findDb(id){
+    try { if(typeof DATABASES_DATA !== 'undefined' && Array.isArray(DATABASES_DATA)){ var d=DATABASES_DATA.find(function(x){ return S(x && x.id)===S(id); }); if(d) return d; } } catch(_){}
+    try { if(Array.isArray(window.DATABASES_DATA)){ return window.DATABASES_DATA.find(function(x){ return S(x && x.id)===S(id); }); } } catch(_){}
+    return null;
   }
-  var prevRenderStandaloneDBTable = window.renderStandaloneDBTable;
-  window.renderStandaloneDBTable = function(db){
-    if(typeof prevRenderStandaloneDBTable === 'function') prevRenderStandaloneDBTable(db);
-    setTimeout(cleanDbToolbar, 0);
+  function dbName(db){ return S((db && (db.nom || db.name || db.label || db.title)) || 'table'); }
+  function removeNode(n){ try { if(n && n.parentNode) n.parentNode.removeChild(n); } catch(_){} }
+  function removeOldToolbars(){
+    var selectors = [
+      '[id^="pt63-db-tools-"]',
+      '#pt65-db-tools',
+      '#pt67-db-tools',
+      '#pt-data-table-tools',
+      '[data-pt-db-tools]',
+      '[data-pt-db-toolbar]'
+    ];
+    selectors.forEach(function(sel){ A(document.querySelectorAll(sel)).forEach(removeNode); });
+
+    // Sécurité : si une ancienne version a injecté les boutons sans identifiant stable,
+    // on retire uniquement les petits conteneurs composés des deux actions de table.
+    var buttons = A(document.querySelectorAll('button'));
+    buttons.forEach(function(btn){
+      var txt = S(btn.textContent).trim();
+      if(txt !== '✏️ Modifier la table' && txt !== '🗑 Supprimer la table') return;
+      var parent = btn.parentElement;
+      if(!parent || parent.id === 'pt-data-table-tools') return;
+      var pt = S(parent.textContent);
+      var hasEdit = pt.indexOf('Modifier la table') >= 0;
+      var hasDel = pt.indexOf('Supprimer la table') >= 0;
+      if(hasEdit || hasDel){
+        // Les toolbars historiques sont des divs flex en haut de la table.
+        // On évite de supprimer un gros écran par accident.
+        var rect = parent.getBoundingClientRect ? parent.getBoundingClientRect() : {height:0,width:0};
+        if(parent.children.length <= 4 && (rect.height < 80 || parent.style.display === 'flex')) removeNode(parent);
+        else removeNode(btn);
+      }
+    });
+  }
+  function injectToolbar(db){
+    var wrap = document.getElementById('prod-db-table-wrap');
+    if(!wrap || !db) return;
+    removeOldToolbars();
+    var bar = document.createElement('div');
+    bar.id = 'pt-data-table-tools';
+    bar.setAttribute('data-pt-db-toolbar','1');
+    bar.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:0 0 12px;position:relative;z-index:2;flex-wrap:wrap';
+    var edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'btn btn-sm';
+    edit.textContent = '✏️ Modifier la table';
+    edit.setAttribute('data-pt-help','Modifier la structure de cette table : nom, couleur, ajout, renommage ou suppression de colonnes.');
+    edit.addEventListener('click', function(ev){
+      ev.preventDefault(); ev.stopPropagation();
+      if(typeof createDatabaseModal === 'function') createDatabaseModal(db.id);
+      else toastSafe('e','Éditeur table indisponible');
+    });
+    var del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn btn-sm';
+    del.textContent = '🗑 Supprimer la table';
+    del.style.borderColor = '#fecaca';
+    del.style.color = '#dc2626';
+    del.setAttribute('data-pt-help','Supprime cette table dynamique et ses lignes associées.');
+    del.addEventListener('click', function(ev){
+      ev.preventDefault(); ev.stopPropagation();
+      if(typeof window.deleteStandaloneDatabase === 'function') window.deleteStandaloneDatabase(db.id);
+      else toastSafe('e','Suppression table indisponible');
+    });
+    bar.appendChild(edit); bar.appendChild(del);
+    wrap.insertBefore(bar, wrap.firstChild);
+  }
+  window.deleteStandaloneDatabase = async function(id){
+    var db = findDb(id);
+    if(!db) return toastSafe('e','Base introuvable');
+    if(!confirm('Supprimer définitivement la table « '+dbName(db)+' » ?\n\nLes lignes associées seront supprimées aussi.')) return;
+    try{
+      if(window.DB && typeof DB.remove === 'function'){
+        var rows = A(db.rows);
+        for(var i=0;i<rows.length;i++){
+          if(rows[i] && rows[i].id) await DB.remove('database_rows', rows[i].id).catch(function(e){ console.warn('[PicoTrack] suppression ligne table', e && e.message || e); });
+        }
+        await DB.remove('databases', db.id);
+      }
+      try {
+        var list = (typeof DATABASES_DATA !== 'undefined' && Array.isArray(DATABASES_DATA)) ? DATABASES_DATA : window.DATABASES_DATA;
+        if(Array.isArray(list)){ var idx=list.findIndex(function(d){ return S(d && d.id)===S(db.id); }); if(idx>=0) list.splice(idx,1); }
+      } catch(_){}
+      toastSafe('s','🗑 Table supprimée');
+      if(typeof goProDatabase === 'function') goProDatabase();
+      else if(typeof goStudioDatabase === 'function') goStudioDatabase();
+    } catch(e){ toastSafe('e','Erreur suppression table : '+(e && e.message || e)); }
   };
-  var observer = new MutationObserver(function(){ cleanDbToolbar(); });
-  try { observer.observe(document.body, {childList:true, subtree:true}); } catch(_) {}
-  document.addEventListener('click', function(ev){ setTimeout(cleanDbToolbar,0); }, true);
-  setTimeout(cleanDbToolbar, 500);
-  console.info('[PicoTrack PROD] Workflow/Data engine nettoyé : une seule toolbar table + champs tous formulaires disponibles');
+
+  var previousRenderStandaloneDBTable = window.renderStandaloneDBTable;
+  window.renderStandaloneDBTable = function(db){
+    if(typeof previousRenderStandaloneDBTable === 'function') previousRenderStandaloneDBTable(db);
+    removeOldToolbars();
+    injectToolbar(db);
+  };
+
+  document.addEventListener('click', function(){ setTimeout(removeOldToolbars, 0); }, true);
+  var mo = new MutationObserver(function(){ removeOldToolbars(); });
+  try { mo.observe(document.body, {childList:true, subtree:true}); } catch(_){}
+  setTimeout(removeOldToolbars, 250);
+  console.info('[PicoTrack PROD CLEAN] Toolbar table dynamique unique active');
 })();
