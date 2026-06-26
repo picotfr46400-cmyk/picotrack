@@ -2327,3 +2327,143 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   };
   console.info('[PicoTrack V65] Corrections actions service et tables dynamiques chargées');
 })();
+
+/* PicoTrack V67 - Stabilisation production actions BDD + contexte formulaires liés
+   - Un seul rendu des outils de table dynamique.
+   - Affichage lisible des objets en base dynamique.
+   - Sélecteur de champs dossier : formulaire initial + formulaires liés + tous formulaires disponibles.
+   - Les choix composites sont sauvegardés en sourceType/sourceFormId/sourceFieldId pour l'exécution.
+   - Interception des anciens onclick fragiles executeAction/addComment avant exécution inline.
+*/
+(function(){
+  'use strict';
+  function A(v){ return Array.isArray(v) ? v : []; }
+  function O(v){ return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+  function S(v){ return String(v == null ? '' : v); }
+  function esc(v){ try { return (typeof h === 'function' ? h(v) : S(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})); } catch(_){ return S(v); } }
+  function idEq(a,b){ return S(a) === S(b); }
+  function norm(v){ return S(v).trim().toLowerCase(); }
+  function toastSafe(type,msg){ try { if(typeof toast === 'function') toast(type,msg); else console.log('[PicoTrack]',msg); } catch(_){} }
+  function getForms(){ try { if(typeof FORMS_DATA !== 'undefined' && Array.isArray(FORMS_DATA)) return FORMS_DATA; } catch(_){} return A(window.FORMS_DATA); }
+  function getDbs(){ try { if(typeof DATABASES_DATA !== 'undefined' && Array.isArray(DATABASES_DATA)) return DATABASES_DATA; } catch(_){} return A(window.DATABASES_DATA); }
+  function getServices(){ try { if(typeof SERVICES_DATA !== 'undefined' && Array.isArray(SERVICES_DATA)) return SERVICES_DATA; } catch(_){} return A(window.SERVICES_DATA); }
+  function getSubs(){ try { if(typeof SUBMISSIONS_DATA !== 'undefined' && Array.isArray(SUBMISSIONS_DATA)) return SUBMISSIONS_DATA; } catch(_){} return A(window.SUBMISSIONS_DATA); }
+  function getInstances(){ try { if(typeof SERVICE_INSTANCES_DATA !== 'undefined' && Array.isArray(SERVICE_INSTANCES_DATA)) return SERVICE_INSTANCES_DATA; } catch(_){} return A(window.SERVICE_INSTANCES_DATA); }
+  function formName(f){ return S(f && (f.nom || f.name || f.label || f.id)); }
+  function dbName(d){ return S(d && (d.nom || d.name || d.label || d.id)); }
+  function fieldsOf(form){ return A(form && form.fields).filter(function(f){ return f && ['separator','image','titre','title','html'].indexOf(S(f.type)) < 0; }); }
+  function serviceFormId(){ try { return (typeof svcBuilderFormId !== 'undefined' && svcBuilderFormId) || (window.curService && (window.curService.formId || window.curService.form_id)); } catch(_) { return window.curService && (window.curService.formId || window.curService.form_id); } }
+  function currentService(){ try { return window.curService || (typeof curService !== 'undefined' ? curService : null); } catch(_) { return window.curService || null; } }
+  function findForm(ref){ var r=S(ref); if(!r) return null; return getForms().find(function(f){ return idEq(f && f.id,r) || norm(formName(f))===norm(r); }) || null; }
+  function findDb(ref){ var r=S(ref); if(r.indexOf('sdb_')===0) r=r.slice(4); if(!r) return null; return getDbs().find(function(d){ return idEq(d && d.id,r) || norm(dbName(d))===norm(r); }) || null; }
+  function colListForTarget(target){
+    var d=findDb(target); if(d) return A(d.columns || d.fields || d.schema).map(function(c,i){ c=typeof c==='string'?{id:c,nom:c}:O(c); var id=c.id||c.key||c.name||c.nom||('col_'+i); return {id:id, nom:c.nom||c.label||c.name||id}; });
+    var f=findForm(target); if(f) return fieldsOf(f).map(function(c){ return {id:c.id, nom:c.nom||c.label||c.name||c.id}; });
+    return [];
+  }
+  function optList(list, selected){ return A(list).map(function(x){ return '<option value="'+esc(x.id)+'" '+(idEq(selected,x.id)?'selected':'')+'>'+esc(x.nom||x.label||x.id)+'</option>'; }).join(''); }
+  function targetOptions(selected){
+    var autonomous = getDbs().map(function(d){ var val='sdb_'+S(d.id); return '<option value="'+esc(val)+'" '+(S(selected)===val||idEq(selected,d.id)?'selected':'')+'>'+esc(dbName(d))+'</option>'; }).join('');
+    var linked = getForms().filter(function(f){return f && f.actif !== false;}).map(function(f){ return '<option value="'+esc(f.id)+'" '+(idEq(selected,f.id)?'selected':'')+'>'+esc(formName(f))+'</option>'; }).join('');
+    return '<optgroup label="Bases autonomes">'+autonomous+'</optgroup><optgroup label="Liées aux formulaires">'+linked+'</optgroup>';
+  }
+  function fieldSourceOptions(item){
+    item=O(item); var selected = item.sourceType==='linked_form_field' ? ('linked:'+S(item.sourceFormId)+':'+S(item.sourceFieldId)) : ('initial:'+S(item.sourceFieldId||''));
+    var primaryId = serviceFormId(); var html=''; var seen={};
+    var primary=findForm(primaryId);
+    if(primary){
+      html += '<optgroup label="Formulaire initial — '+esc(formName(primary))+'">' + fieldsOf(primary).map(function(f){ var val='initial:'+S(f.id); return '<option value="'+esc(val)+'" '+(selected===val?'selected':'')+'>'+esc(f.nom||f.label||f.name||f.id)+'</option>'; }).join('') + '</optgroup>';
+      seen[S(primary.id)] = true;
+    }
+    var svc=currentService(); var linkedIds=[];
+    A(svc && svc.actions).forEach(function(a){ A(a && a.effects).forEach(function(fx){ var cfg=O(fx && fx.config); var fid=cfg.formId || cfg.form_id || cfg.targetFormId; if((fx && fx.type)==='fill_form' && fid) linkedIds.push(S(fid)); }); });
+    linkedIds.forEach(function(fid){ var f=findForm(fid); if(!f || seen[S(f.id)]) return; seen[S(f.id)] = true; html += '<optgroup label="Formulaire lié — '+esc(formName(f))+'">' + fieldsOf(f).map(function(ff){ var val='linked:'+S(f.id)+':'+S(ff.id); return '<option value="'+esc(val)+'" '+(selected===val?'selected':'')+'>'+esc(ff.nom||ff.label||ff.name||ff.id)+'</option>'; }).join('') + '</optgroup>'; });
+    var rest = getForms().filter(function(f){ return f && f.actif !== false && !seen[S(f.id)]; });
+    if(rest.length){ html += '<optgroup label="Autres formulaires disponibles">' + rest.map(function(f){ return fieldsOf(f).map(function(ff){ var val='linked:'+S(f.id)+':'+S(ff.id); return '<option value="'+esc(val)+'" '+(selected===val?'selected':'')+'>'+esc(formName(f)+' / '+(ff.nom||ff.label||ff.name||ff.id))+'</option>'; }).join(''); }).join('') + '</optgroup>'; }
+    return html || '<option value="">Aucun champ disponible</option>';
+  }
+  function sourceTypeOptions(selected){
+    var opts=[['form_field','Champ du dossier'],['fixed','Valeur fixe'],['current_status','Statut courant'],['target_status','Statut cible'],['current_user','Utilisateur connecté'],['today','Date du jour'],['now','Date + heure'],['service_ref','Référence demande']];
+    return opts.map(function(o){ return '<option value="'+o[0]+'" '+(S(selected||'fixed')===o[0]?'selected':'')+'>'+o[1]+'</option>'; }).join('');
+  }
+  function sourceControl(ai,ei,rowIndex,kind,item){
+    item=O(item); var fn = kind==='criteria' ? 'pt67SetCriteriaField' : 'pt67SetUpdateField'; var type=S(item.sourceType||'fixed');
+    if(type==='fixed') return '<input class="ci" style="flex:1;font-size:11.5px" value="'+esc(item.value||'')+'" placeholder="Valeur..." oninput="'+(kind==='criteria'?'updateMatchCriteria':'updateDbUpdate')+'('+ai+','+ei+','+rowIndex+',\'value\',this.value)">';
+    if(type==='form_field' || type==='linked_form_field' || type==='source_field' || type==='current_field'){
+      return '<select class="ci" style="flex:1;font-size:11.5px" onchange="'+fn+'('+ai+','+ei+','+rowIndex+',this.value)"><option value="">Champ du dossier...</option>'+fieldSourceOptions(item)+'</select>';
+    }
+    return '<input class="ci" style="flex:1;font-size:11.5px;background:#f8fafc;color:#64748b" value="Automatique" disabled>';
+  }
+  function setItemSource(item, encoded){
+    item=O(item); var parts=S(encoded).split(':');
+    delete item.value; delete item.sourceFormId; delete item.formId;
+    if(parts[0]==='linked') { item.sourceType='linked_form_field'; item.sourceFormId=parts[1]||''; item.sourceFieldId=parts.slice(2).join(':')||''; }
+    else { item.sourceType='form_field'; item.sourceFieldId=parts.slice(1).join(':')||''; }
+    return item;
+  }
+  window.pt67SetCriteriaField = function(ai,ei,ci,encoded){ try { var fx=A(A(svcBuilderActions)[ai] && svcBuilderActions[ai].effects)[ei]; if(!fx) return; fx.config=O(fx.config); fx.config.matchCriteria=A(fx.config.matchCriteria); fx.config.matchCriteria[ci]=setItemSource(O(fx.config.matchCriteria[ci]),encoded); renderSvcTab(); } catch(e){ console.warn('[V67] criteria field',e); } };
+  window.pt67SetUpdateField = function(ai,ei,ui,encoded){ try { var fx=A(A(svcBuilderActions)[ai] && svcBuilderActions[ai].effects)[ei]; if(!fx) return; fx.config=O(fx.config); fx.config.updates=A(fx.config.updates); fx.config.updates[ui]=setItemSource(O(fx.config.updates[ui]),encoded); renderSvcTab(); } catch(e){ console.warn('[V67] update field',e); } };
+
+  window.renderDbEffectHtml = function(ai, ei, effect){
+    effect=effect||{}; effect.config=O(effect.config); var target=effect.config.formId || effect.config.databaseId || effect.config.targetId || '';
+    var columns=colListForTarget(target); var criteria=A(effect.config.matchCriteria); var updates=A(effect.config.updates);
+    var html='<div style="margin-top:6px;display:grid;gap:10px">';
+    html+='<div style="padding:10px 12px;border:1.5px solid #bfdbfe;background:#eff6ff;border-radius:10px;color:#1e3a8a;font-size:12px;line-height:1.45" data-pt-help="PicoTrack cherche une ligne dans la base cible avec les critères, puis applique les modifications. Les valeurs peuvent venir du formulaire initial ou des formulaires liés au dossier."><b>Principe :</b> choisir la base, identifier la ligne, puis appliquer les nouvelles valeurs.</div>';
+    html+='<div><div class="fl2" style="margin-bottom:4px">1. Base de données cible</div><select class="ci" onchange="updateEffect('+ai+','+ei+',\'formId\',this.value)"><option value="">— Choisir —</option>'+targetOptions(target)+'</select></div>';
+    if(!target){ html+='</div>'; return html; }
+    if(!columns.length) html+='<div style="padding:8px;border-radius:8px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:12px">Aucune colonne trouvée pour cette base.</div>';
+    html+='<div><div class="fl2" style="margin-bottom:4px">🔎 2. Critères pour identifier la ligne</div>';
+    if(!criteria.length) html+='<div style="padding:8px;border:1px dashed var(--bd);border-radius:8px;color:var(--tl);font-size:12px">Aucun critère : toutes les lignes correspondantes pourront être modifiées.</div>';
+    criteria.forEach(function(c,i){ c=O(c); html+='<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:8px;padding:8px"><select class="ci" style="flex:1;font-size:11.5px" onchange="updateMatchCriteria('+ai+','+ei+','+i+',\'dbFieldId\',this.value)"><option value="">Colonne DB</option>'+optList(columns,c.dbFieldId)+'</select><span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span><select class="ci" style="width:210px;font-size:11.5px" onchange="updateMatchCriteria('+ai+','+ei+','+i+',\'sourceType\',this.value)">'+sourceTypeOptions(c.sourceType||'form_field')+'</select>'+sourceControl(ai,ei,i,'criteria',c)+'<button class="ic-btn" onclick="removeMatchCriteria('+ai+','+ei+','+i+')">✕</button></div>'; });
+    html+='<button style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--p);background:transparent;color:var(--p);font-size:12px;font-weight:800;cursor:pointer;font-family:inherit" onclick="addMatchCriteria('+ai+','+ei+')">＋ Ajouter un critère</button></div>';
+    html+='<div><div class="fl2" style="margin-bottom:4px">✏️ 3. Modifications à appliquer</div>';
+    if(!updates.length) html+='<div style="padding:8px;border:1px dashed var(--bd);border-radius:8px;color:var(--tl);font-size:12px">Aucune modification configurée : ajoute au moins une colonne à mettre à jour.</div>';
+    updates.forEach(function(u,i){ u=O(u); html+='<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;background:#f8fafc;border-radius:8px;padding:8px"><select class="ci" style="flex:1;font-size:11.5px" onchange="updateDbUpdate('+ai+','+ei+','+i+',\'dbFieldId\',this.value)"><option value="">Colonne à modifier</option>'+optList(columns,u.dbFieldId)+'</select><span style="font-size:11px;color:var(--tl);flex-shrink:0">=</span><select class="ci" style="width:210px;font-size:11.5px" onchange="updateDbUpdate('+ai+','+ei+','+i+',\'sourceType\',this.value)">'+sourceTypeOptions(u.sourceType||'fixed')+'</select>'+sourceControl(ai,ei,i,'update',u)+'<button class="ic-btn" onclick="removeDbUpdate('+ai+','+ei+','+i+')">✕</button></div>'; });
+    html+='<button style="width:100%;padding:6px;border-radius:7px;border:1.5px dashed var(--s);background:transparent;color:var(--s);font-size:12px;font-weight:800;cursor:pointer;font-family:inherit" onclick="addDbUpdate('+ai+','+ei+')">＋ Ajouter une modification</button></div></div>';
+    return html;
+  };
+
+  function prettyValue(v){
+    if(v == null || v === '') return '—';
+    if(Array.isArray(v)) return v.map(prettyValue).join(', ');
+    if(typeof v === 'object'){
+      if(v.label || v.value) return S(v.label || v.value);
+      var date = v.date || v.day || v.selectedDate || v.appointment_date;
+      var start = v.start || v.start_time || v.startTime || v.time;
+      var end = v.end || v.end_time || v.endTime;
+      var parts=[]; if(date) parts.push(S(date)); if(start || end) parts.push((start?S(start).slice(0,5):'')+(end?' - '+S(end).slice(0,5):''));
+      if(parts.length) return parts.join(' • ');
+      if(v.name) return S(v.name);
+      try { return JSON.stringify(v); } catch(_) { return '—'; }
+    }
+    return S(v);
+  }
+  var oldRenderSDB = window._renderSDBTable;
+  window._renderSDBTable = function(db, rows){
+    db=O(db); rows=A(rows); var color=db.couleur||'#3b82f6'; var cols=A(db.columns);
+    if(!rows.length) return '<div style="text-align:center;padding:50px;color:var(--tl);border:2px dashed var(--bd);border-radius:12px"><div style="font-size:28px;opacity:.3;margin-bottom:8px">🗃</div>Aucune ligne — cliquez sur "+ Ligne"</div>';
+    return '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);overflow:auto"><table style="width:100%;border-collapse:collapse;min-width:600px"><thead style="background:var(--bg)"><tr><th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd);white-space:nowrap">#</th><th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd);white-space:nowrap">Date</th><th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd)">Source</th>'+cols.map(function(c){return '<th style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--tl);text-align:left;border-bottom:1.5px solid var(--bd);white-space:nowrap">'+esc(c.nom||c.name||c.id)+'</th>';}).join('')+'<th style="border-bottom:1.5px solid var(--bd);width:40px"></th></tr></thead><tbody>'+rows.map(function(r,i){ r=O(r); var src = S(r.source).indexOf('manual')>=0 ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#f1f5f9;color:var(--tl)">Manuel</span>' : '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:'+color+'18;color:'+color+'">Formulaire</span>'; return '<tr style="border-bottom:1px solid var(--bg)"><td style="padding:9px 14px;font-size:12px;color:var(--tl)">'+(i+1)+'</td><td style="padding:9px 14px;font-size:12px;color:var(--tl);white-space:nowrap">'+esc(r.dateLabel||r.created_at||r.date||'')+'</td><td style="padding:9px 14px">'+src+'</td>'+cols.map(function(c){ var val=prettyValue(O(r.values)[c.id]); return '<td style="padding:9px 14px;font-size:13px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(val)+'">'+esc(val)+'</td>'; }).join('')+'<td style="padding:9px 14px;text-align:center"><button type="button" data-pt-delete-row="'+esc(r.id)+'" data-pt-db="'+esc(db.id)+'" style="border:none;background:none;cursor:pointer;color:var(--tl);font-size:13px;opacity:.4">🗑</button></td></tr>'; }).join('')+'</tbody></table></div>';
+  };
+  function injectSingleDbTools(db){
+    var wrap=document.getElementById('prod-db-table-wrap'); if(!wrap||!db) return;
+    A(wrap.querySelectorAll('#pt63-db-tools-'+CSS.escape(S(db.id))+', #pt65-db-tools, #pt67-db-tools, [data-pt-db-tools]')).forEach(function(e){ e.remove(); });
+    var bar=document.createElement('div'); bar.id='pt67-db-tools'; bar.setAttribute('data-pt-db-tools','1'); bar.style.cssText='display:flex;gap:8px;justify-content:flex-end;align-items:center;margin:0 0 12px;position:relative;z-index:2';
+    var edit=document.createElement('button'); edit.type='button'; edit.className='btn btn-sm'; edit.textContent='✏️ Modifier la table'; edit.onclick=function(){ if(typeof createDatabaseModal==='function') createDatabaseModal(db.id); else toastSafe('e','Éditeur table indisponible'); };
+    var del=document.createElement('button'); del.type='button'; del.className='btn btn-sm'; del.textContent='🗑 Supprimer la table'; del.style.borderColor='#fecaca'; del.style.color='#dc2626'; del.onclick=function(){ if(typeof window.deleteStandaloneDatabase==='function') window.deleteStandaloneDatabase(db.id); };
+    bar.appendChild(edit); bar.appendChild(del); wrap.insertBefore(bar, wrap.firstChild);
+  }
+  var prevRenderStandalone = window.renderStandaloneDBTable;
+  window.renderStandaloneDBTable = function(db){ if(typeof prevRenderStandalone==='function') prevRenderStandalone(db); injectSingleDbTools(db); };
+
+  document.addEventListener('click', function(ev){
+    var btn=ev.target && ev.target.closest ? ev.target.closest('[onclick]') : null; if(!btn) return;
+    var code=S(btn.getAttribute('onclick'));
+    var m=code.match(/^executeAction\(([^,]+),\s*['\"]([^'\"]+)['\"]\)/);
+    if(m){ ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation(); var inst=S(m[1]).replace(/^['\"]|['\"]$/g,''); if(typeof window.executeAction==='function') window.executeAction(inst,m[2]); return false; }
+    var c=code.match(/^addComment\(([^)]+)\)/);
+    if(c){ ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation(); var id=S(c[1]).replace(/^['\"]|['\"]$/g,''); if(typeof window.addComment==='function') window.addComment(id); return false; }
+  }, true);
+  document.addEventListener('click', function(ev){ var b=ev.target && ev.target.closest ? ev.target.closest('[data-pt-delete-row]') : null; if(!b) return; ev.preventDefault(); var db=b.getAttribute('data-pt-db'), row=b.getAttribute('data-pt-delete-row'); if(typeof window.deleteStandaloneRow==='function') window.deleteStandaloneRow(db,row); }, true);
+
+  console.info('[PicoTrack V67] Actions BDD stabilisées : champs dossier complets, tables propres, objets lisibles');
+})();
