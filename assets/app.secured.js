@@ -3049,3 +3049,130 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   try{ new MutationObserver(function(){ clearTimeout(window.__ptV73Hist); window.__ptV73Hist=setTimeout(inject,120); }).observe(document.body||document.documentElement,{childList:true,subtree:true}); }catch(_){ }
   console.info('[PicoTrack V73] Historique Voir plus cliquable et données fiables');
 })();
+
+/* PicoTrack V74 - Stabilisation prod moteur service/historique/BDD
+   - Liaison fiable instance <-> soumission liée
+   - Voir plus basé sur payload complet si la soumission serveur est indisponible
+   - Résolution robuste des bases dynamiques par id, nom, label ou fallback unique
+   - Exécution des effets service sans dépendre des anciennes fonctions partielles
+*/
+(function(){
+  function A(v){ return Array.isArray(v) ? v : []; }
+  function O(v){ return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+  function S(v){ return String(v == null ? '' : v); }
+  function N(v){ return S(v).trim().toLowerCase(); }
+  function esc(v){ return S(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function idEq(a,b){ return S(a) === S(b); }
+  function toastSafe(t,m){ try{ if(typeof toast==='function') toast(t,m); else console.log('[PicoTrack]',m); }catch(_){} }
+  function nowIso(){ return new Date().toISOString(); }
+  function nowLabel(){ try{return new Date().toLocaleString('fr-FR');}catch(_){return nowIso();} }
+  function actor(){ try{return (window.PT_CURRENT_USER&&(PT_CURRENT_USER.name||PT_CURRENT_USER.nom||PT_CURRENT_USER.email))||'PicoTrack';}catch(_){return 'PicoTrack';} }
+  function arrFrom(name){ try{ if(typeof window[name] !== 'undefined' && Array.isArray(window[name])) return window[name]; }catch(_){} try{ return eval('typeof '+name+'!=="undefined" && Array.isArray('+name+') ? '+name+' : []'); }catch(_){ return []; } }
+  function forms(){ return arrFrom('FORMS_DATA'); }
+  function services(){ return arrFrom('SERVICES_DATA'); }
+  function instances(){ return arrFrom('SERVICE_INSTANCES_DATA'); }
+  function submissions(){ return arrFrom('SUBMISSIONS_DATA'); }
+  function dbs(){ return arrFrom('DATABASES_DATA').concat(Array.isArray(window.databases)?window.databases:[]).filter(Boolean); }
+  function formName(f){ return S(f&&(f.nom||f.name||f.label||f.title||f.id)); }
+  function dbName(d){ return S(d&&(d.nom||d.name||d.label||d.title||d.id)); }
+  function fieldsOf(f){ return A(f&&(f.fields||f.champs||f.schema)).filter(function(x){return x && ['separator','image','titre','title','html'].indexOf(S(x.type))<0;}); }
+  function fieldId(f){ return S(f&&(f.id||f.key||f.name||f.nom||f.label)); }
+  function fieldLabel(f){ return S(f&&(f.nom||f.label||f.name||f.key||f.id))||'Champ'; }
+  function findService(id){ return services().find(function(s){ return idEq(s&&(s.id||s.service_id),id)||N(s&&(s.nom||s.name||s.label))===N(id); })||null; }
+  function findInstance(id){ return instances().find(function(i){ return idEq(i&&(i.id||i.instance_id),id)||idEq(i&&(i.reference||i.ref||i.code),id); })||null; }
+  function findForm(id){ id=S(id).replace(/^form:/,''); return forms().find(function(f){ return idEq(f&&(f.id||f.form_id),id)||N(formName(f))===N(id); })||null; }
+  function dbColumns(d){ return A(d&&(d.columns||d.fields||d.schema)).map(function(c,i){ if(typeof c==='string') c={id:c,nom:c}; c=O(c); var id=S(c.id||c.key||c.name||c.nom||c.label||('col_'+i)); return {id:id, nom:S(c.nom||c.label||c.name||id)}; }); }
+  function getDbRows(d){ if(!d) return []; if(Array.isArray(d.rows)) return d.rows; if(Array.isArray(d.data)) return d.data; if(Array.isArray(d.lignes)) return d.lignes; try{ if(typeof DB_DATA!=='undefined' && DB_DATA){ return A(DB_DATA[d.id]||DB_DATA[S(d.id)]||DB_DATA[dbName(d)]); } }catch(_){} return []; }
+  function findDb(ref, cfg){
+    var tries=[]; [ref, O(cfg).databaseId, O(cfg).database_id, O(cfg).dbId, O(cfg).db_id, O(cfg).targetId, O(cfg).target_id, O(cfg).targetDatabaseId, O(cfg).tableId, O(cfg).table_id, O(cfg).formId, O(cfg).form_id, O(cfg).targetName, O(cfg).targetLabel, O(cfg).databaseName, O(cfg).label, O(cfg).name].forEach(function(x){ x=S(x); if(x && tries.indexOf(x)<0) tries.push(x); if(x.indexOf('sdb_')===0) tries.push(x.slice(4)); });
+    var list=dbs();
+    for(var i=0;i<tries.length;i++){
+      var r=tries[i];
+      var d=list.find(function(x){ return idEq(x&&(x.id||x.database_id),r)||N(dbName(x))===N(r)||N(x&&(x.code||x.slug))===N(r); });
+      if(d) return d;
+    }
+    // fallback contrôlé : si une seule base existe et que la config ne résout rien, on l'utilise pour éviter un blocage en prod.
+    var unique=list.filter(function(x){ return x && (x.id||dbName(x)); });
+    if(unique.length===1) return unique[0];
+    return null;
+  }
+  function normalizeSub(s){ s=O(s); var v=s.values||s.data||s.answers||s.payload||s.response_json||s.data_json||s.form_data||s.formData||{}; if(typeof v==='string'){try{v=JSON.parse(v);}catch(_){}} if(v&&typeof v==='object'&&v.values) v=v.values; return Object.assign({},s,{id:s.id||s.submission_id||s.submissionId, formId:s.formId||s.form_id||s.form, form_id:s.form_id||s.formId||s.form, values:O(v)}); }
+  function upsertSub(sub){ sub=normalizeSub(sub); if(!sub.id) return sub; var list=submissions(); var i=list.findIndex(function(x){return idEq(x&&(x.id||x.submission_id||x.submissionId),sub.id);}); if(i>=0) list[i]=Object.assign({},list[i],sub); else list.unshift(sub); return sub; }
+  function submissionById(id){ return normalizeSub(submissions().find(function(s){return idEq(s&&(s.id||s.submission_id||s.submissionId),id);})||{}); }
+  async function loadSubmission(id){
+    var local=submissionById(id); if(local.id && Object.keys(O(local.values)).length) return local;
+    try{ if(window.DB&&typeof DB.getSubmissionById==='function'){ var row=await DB.getSubmissionById(id); if(row) return upsertSub(row); } }catch(e){ console.warn('[V74] getSubmissionById',e&&e.message||e); }
+    return local;
+  }
+  function primarySubmission(inst){ inst=O(inst); var sid=inst.submissionId||inst.submission_id; var s=sid?submissionById(sid):null; if(s&&s.id) return s; var byInstance=submissions().find(function(x){return idEq(x&&(x.service_instance_id||x.linked_instance_id||x.instance_id),inst.id);}); return byInstance?normalizeSub(byInstance):{id:'',formId:inst.formId||inst.form_id,values:O(inst.values)}; }
+  function linkedSubmissions(inst){
+    inst=O(inst); var out=[]; var seen={};
+    A(inst.events).forEach(function(ev){ var p=O(ev&&ev.payload); var sid=S(p.submissionId||p.submission_id); if(sid&&!seen[sid]){ seen[sid]=true; var s=submissionById(sid); if(!s.id&&p.submission) s=normalizeSub(p.submission); if(!s.id) s=normalizeSub({id:sid,form_id:p.formId||p.form_id,values:p.values||p.formValues||p.formData||p.form_data}); out.push(s); } });
+    submissions().forEach(function(s){ s=normalizeSub(s); if((idEq(s.service_instance_id,inst.id)||idEq(s.linked_instance_id,inst.id)||idEq(s.instance_id,inst.id))&&!seen[S(s.id)]){seen[S(s.id)]=true;out.push(s);} });
+    return out;
+  }
+  function latestLinkedSubmission(inst, formId){ var list=linkedSubmissions(inst).filter(function(s){return !formId||idEq(s.formId||s.form_id,formId);}); return list.sort(function(a,b){return new Date(b.created_at||b.date||0)-new Date(a.created_at||a.date||0);})[0]||null; }
+  function readValue(values, field){ values=O(values); var keys=[field, O(field).id, O(field).key, O(field).name, O(field).nom, O(field).label].map(S).filter(Boolean); for(var i=0;i<keys.length;i++){ if(Object.prototype.hasOwnProperty.call(values,keys[i])) return values[keys[i]]; } var low={}; Object.keys(values).forEach(function(k){low[N(k)]=values[k];}); for(var j=0;j<keys.length;j++){ if(Object.prototype.hasOwnProperty.call(low,N(keys[j]))) return low[N(keys[j])]; } return undefined; }
+  function display(v){ if(v==null||v==='') return '—'; if(Array.isArray(v)) return v.map(display).join(', '); if(typeof v==='object'){ if(v.date||v.start_time||v.start||v.end_time||v.end) return [v.date,v.start_time||v.start,v.end_time||v.end].filter(Boolean).join(' '); if(v.label||v.name||v.nom||v.value) return S(v.label||v.name||v.nom||v.value); try{return JSON.stringify(v);}catch(_){return '—';} } return S(v); }
+  function sourceValue(item, inst, service, effect){
+    item=O(item); var type=S(item.sourceType||item.type||'fixed'); var fid=item.sourceFieldId||item.fieldId||item.valueFieldId;
+    if(type==='fixed') return item.value||'';
+    if(type==='linked_form_field'||S(fid).indexOf('linked:')===0){ var parts=S(fid).split(':'); var formId=item.sourceFormId||parts[1]; var field=parts.length>2?parts.slice(2).join(':'):fid; var sub=latestLinkedSubmission(inst,formId); return sub?readValue(sub.values,field):''; }
+    if(type==='form_field'||type==='source_field'||type==='current_field'){ var sub=primarySubmission(inst); return sub?readValue(sub.values,fid):''; }
+    if(type==='current_status'){ var st=A(service&&service.statuses).find(function(x){return idEq(x&&x.id,inst&&inst.currentStatusId);}); return st?(st.nom||st.name||st.id):(inst&&inst.currentStatusId)||''; }
+    if(type==='target_status'){ var target=O(effect&&effect.config).targetStatusId; var ts=A(service&&service.statuses).find(function(x){return idEq(x&&x.id,target);}); return ts?(ts.nom||ts.name||ts.id):target||''; }
+    if(type==='current_user') return actor(); if(type==='today') return nowIso().slice(0,10); if(type==='now') return nowIso(); if(type==='service_ref') return (inst&&(inst.reference||inst.ref||inst.code||inst.id))||'';
+    return item.value||'';
+  }
+  function matchRow(rowValues, criteria, inst, service, effect){ return A(criteria).every(function(c){ c=O(c); if(!c.dbFieldId) return true; return S(readValue(rowValues,c.dbFieldId))===S(sourceValue(c,inst,service,effect)); }); }
+  async function saveDbRow(row){ if(row&&row.id&&window.DB&&typeof DB.save==='function') await DB.save('database_rows',{values:O(row.values)},row.id).catch(function(e){console.warn('[V74] save row',e&&e.message||e);}); }
+  async function saveInstance(inst){ try{ if(inst&&inst.id&&window.DB&&typeof DB.updateInstance==='function'&&typeof instanceToDb==='function') await DB.updateInstance(inst.id,instanceToDb(inst,(typeof isPadMode==='function'&&isPadMode())?'pad':'desktop')); }catch(e){console.warn('[V74] save instance',e&&e.message||e);} }
+  async function runUpdateDbRow(inst, service, action, effect){
+    effect=O(effect); var cfg=O(effect.config); var db=findDb(null,cfg); if(!db){ toastSafe('e','⚠️ Base introuvable : '+S(cfg.databaseId||cfg.formId||cfg.targetId||cfg.databaseName||cfg.targetName||'cible vide')); return false; }
+    var rows=getDbRows(db); var updates=A(cfg.updates); if(!updates.length){toastSafe('w','⚠️ Aucune modification définie');return false;}
+    var criteria=A(cfg.matchCriteria); var candidates=criteria.length?rows.filter(function(r){return matchRow(O(r&&r.values),criteria,inst,service,effect);}):rows;
+    if(!candidates.length){ toastSafe('w','⚠️ Aucune ligne correspondante dans '+dbName(db)); return false; }
+    for(var i=0;i<candidates.length;i++){ var row=candidates[i]; row.values=O(row.values); updates.forEach(function(u){u=O(u); if(!u.dbFieldId)return; row.values[u.dbFieldId]=sourceValue(u,inst,service,effect);}); await saveDbRow(row); }
+    inst.events=A(inst.events); inst.events.push({id:Date.now(),type:'db_updated',actor:actor(),at:nowLabel(),payload:{databaseId:db.id,db:dbName(db),lignes:candidates.length,actionId:action&&action.id}});
+    toastSafe('s','🗃 '+candidates.length+' ligne(s) mise(s) à jour dans '+dbName(db)); return true;
+  }
+  function formInputHtml(f,val){ var id=fieldId(f); var label=fieldLabel(f); if(S(f.type)==='textarea') return '<label style="display:block;margin-bottom:12px"><div style="font-size:12px;font-weight:800;color:#64748b;margin-bottom:5px">'+esc(label)+'</div><textarea class="ci" data-fid="'+esc(id)+'" style="width:100%;min-height:80px">'+esc(val||'')+'</textarea></label>'; return '<label style="display:block;margin-bottom:12px"><div style="font-size:12px;font-weight:800;color:#64748b;margin-bottom:5px">'+esc(label)+'</div><input class="ci" data-fid="'+esc(id)+'" value="'+esc(display(val)==='—'?'':display(val))+'" style="width:100%"></label>'; }
+  function prefill(inst, form, cfg){ var out={}; A(O(cfg).prefill||O(cfg).prefillMappings||O(cfg).mappings).forEach(function(m){m=O(m); var to=m.targetFieldId||m.to||m.fieldId; if(to) out[to]=sourceValue(m,inst,findService(inst.serviceId||inst.service_id)||{},{});}); return out; }
+  window.openLinkedFormModal=function(inst, service, action, form, cfg){
+    var old=document.getElementById('linked-form-modal'); if(old) old.remove(); cfg=cfg||{}; var vals=prefill(inst,form,cfg); var modal=document.createElement('div'); modal.id='linked-form-modal'; modal.dataset.instId=S(inst.id); modal.dataset.serviceId=S(service&&service.id); modal.dataset.actionId=S(action&&action.id); modal.dataset.formId=S(form&&form.id); modal.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:30000;display:flex;align-items:center;justify-content:center;padding:18px';
+    var body=fieldsOf(form).map(function(f){return formInputHtml(f,vals[fieldId(f)]);}).join('')||'<div style="color:#64748b;text-align:center;padding:20px">Ce formulaire n’a pas de champ de saisie.</div>';
+    modal.innerHTML='<div style="background:#fff;border-radius:16px;width:680px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.35)"><div style="padding:16px 20px;border-bottom:1.5px solid var(--bd,#e2e8f0);display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:16px;font-weight:900">'+esc(formName(form))+'</div><div style="font-size:12px;color:#64748b">Formulaire lié au dossier service</div></div><button type="button" class="btn btn-sm" data-close-linked>Fermer</button></div><div style="flex:1;overflow:auto;padding:20px">'+body+'</div><div style="padding:14px 20px;border-top:1.5px solid var(--bd,#e2e8f0);display:flex;justify-content:flex-end;gap:8px"><button type="button" class="btn btn-sm" data-close-linked>Annuler</button><button type="button" class="btn bp btn-sm" data-submit-linked>✅ Valider</button></div></div>';
+    modal.addEventListener('click',function(e){ if(e.target&&e.target.hasAttribute('data-close-linked')) modal.remove(); if(e.target&&e.target.hasAttribute('data-submit-linked')) window.submitLinkedForm(); }); document.body.appendChild(modal);
+  };
+  window.submitLinkedForm=async function(){
+    var modal=document.getElementById('linked-form-modal'); if(!modal) return; var inst=findInstance(modal.dataset.instId); if(!inst) return toastSafe('e','Dossier service introuvable'); var service=findService(inst.serviceId||inst.service_id||modal.dataset.serviceId); var action=service?A(service.actions).find(function(a){return idEq(a&&a.id,modal.dataset.actionId||O(window.PT74_PENDING).actionId);}):null; var form=findForm(modal.dataset.formId); if(!form) return toastSafe('e','Formulaire introuvable');
+    var values={}; modal.querySelectorAll('[data-fid]').forEach(function(input){ values[input.dataset.fid]=input.value; });
+    var saved=null; try{ if(window.DB&&typeof DB.createSubmission==='function') saved=await DB.createSubmission(form.id,values,{device:'desktop',linked_instance_id:inst.id,service_instance_id:inst.id,linked_service_id:service&&service.id}); else if(window.DB&&typeof DB.save==='function') saved=await DB.save('submissions',{form_id:form.id,values:values,device:'desktop',linked_instance_id:inst.id,service_instance_id:inst.id},null); }catch(e){ console.warn('[V74] save linked form',e&&e.message||e); }
+    var row=Array.isArray(saved)?saved[0]:saved; var sub=upsertSub({id:(row&&row.id)||Date.now(),form_id:form.id,formId:form.id,values:values,created_at:(row&&(row.created_at||row.date))||nowIso(),date:(row&&(row.created_at||row.date))||nowIso(),utilisateur:actor(),linked_instance_id:inst.id,service_instance_id:inst.id});
+    inst.events=A(inst.events); inst.events.push({id:Date.now(),type:'form_filled',actor:actor(),at:nowLabel(),payload:{formId:form.id,form_id:form.id,formNom:formName(form),submissionId:sub.id,submission_id:sub.id,values:values,submission:sub,linked:true}}); await saveInstance(inst); modal.remove(); toastSafe('s','✅ Formulaire lié enregistré');
+    var pending=window.PT74_PENDING||window.PT65_PENDING_ACTION||window.PT63_PENDING_ACTION; window.PT74_PENDING=null; window.PT65_PENDING_ACTION=null; window.PT63_PENDING_ACTION=null;
+    if(pending){ var svc=findService(pending.serviceId)||service; var act=A(svc&&svc.actions).find(function(a){return idEq(a&&a.id,pending.actionId);})||action; if(act) return runActionEffects(inst,svc,act,pending.nextIndex||0); }
+    try{ if(typeof renderInstanceDetail==='function') renderInstanceDetail(inst,service); }catch(_){ }
+  };
+  async function runActionEffects(inst, service, action, start){
+    var effects=A(action&&(action.effects&&action.effects.length?action.effects:(action.type?[{type:action.type,config:action.config||{}}]:[])));
+    for(var i=start||0;i<effects.length;i++){ var fx=O(effects[i]); fx.config=O(fx.config); var type=S(fx.type||action.type);
+      if(type==='fill_form'||type==='edit_form'||type==='open_form'){ var form=findForm(fx.config.formId||fx.config.form_id||fx.config.targetFormId||O(action.config).formId||service.formId||service.form_id); if(!form){toastSafe('e','⚠️ Formulaire introuvable');return;} window.PT74_PENDING={instanceId:inst.id,serviceId:service&&service.id,actionId:action&&action.id,nextIndex:i+1}; return window.openLinkedFormModal(inst,service,action,form,fx.config); }
+      if(type==='update_db_row'){ var ok=await runUpdateDbRow(inst,service,action,fx); if(!ok) return; continue; }
+      if(type==='change_status'){ var target=fx.config.targetStatusId||fx.config.statusId||fx.config.to; var next=A(service&&service.statuses).find(function(st){return idEq(st&&st.id,target)||N(st&&(st.nom||st.name))===N(target);}); if(!next){toastSafe('e','⚠️ Statut cible manquant');return;} var prev=A(service.statuses).find(function(st){return idEq(st&&st.id,inst.currentStatusId);}); inst.currentStatusId=next.id; inst.events=A(inst.events); inst.events.push({id:Date.now(),type:'status_changed',actor:actor(),at:nowLabel(),payload:{fromStatus:prev&&(prev.nom||prev.name),toStatus:next.nom||next.name||next.id}}); toastSafe('s','🔄 → '+(next.nom||next.name||next.id)); continue; }
+      if(type==='comment'){ var inp=document.getElementById('comment-input-'+inst.id), c=inp?S(inp.value).trim():''; if(!c){toastSafe('e','⚠️ Ce bouton requiert un commentaire');return;} inst.events=A(inst.events); inst.events.push({id:Date.now(),type:'commented',actor:actor(),at:nowLabel(),payload:{comment:c}}); if(inp) inp.value=''; toastSafe('s','💬 Commentaire ajouté'); continue; }
+      if(type==='assign'){ var to=prompt('Affecter à :'); if(!to)return; inst.assignedTo=to; inst.events=A(inst.events); inst.events.push({id:Date.now(),type:'assigned',actor:actor(),at:nowLabel(),payload:{toUser:to}}); toastSafe('s','👤 → '+to); continue; }
+      toastSafe('i','ℹ️ Action '+type+' prévue mais pas encore exécutée.');
+    }
+    await saveInstance(inst); try{ if(typeof renderInstanceDetail==='function') renderInstanceDetail(inst,service); }catch(_){ }
+  }
+  window.executeAction=async function(instanceId,actionId){ var inst=findInstance(instanceId); if(!inst)return toastSafe('e','Dossier service introuvable'); var service=findService(inst.serviceId||inst.service_id); if(!service)return toastSafe('e','Service introuvable'); var action=A(service.actions).find(function(a){return idEq(a&&a.id,actionId)||N(a&&a.nom)===N(actionId);}); if(!action)return toastSafe('e','Action introuvable'); inst.events=A(inst.events); return runActionEffects(inst,service,action,0); };
+  window.ptShowLinkedSubmission=async function(submissionId){ var sub=await loadSubmission(submissionId); if(!sub||!sub.id){ // fallback payload via historique courant
+      var found=null; instances().some(function(inst){return A(inst.events).some(function(ev){var p=O(ev&&ev.payload); if(idEq(p.submissionId||p.submission_id,submissionId)){found=normalizeSub(p.submission||{id:submissionId,form_id:p.formId||p.form_id,values:p.values||p.formData||p.form_data}); return true;} return false;});}); if(found) sub=found; }
+    if(!sub||!sub.id){toastSafe('e','Réponse formulaire introuvable');return;} var form=findForm(sub.formId||sub.form_id); var values=O(sub.values); var rows=''; var flds=fieldsOf(form); if(flds.length){ rows=flds.map(function(f){return '<tr><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#64748b;font-weight:800;width:38%">'+esc(fieldLabel(f))+'</td><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#0f172a;font-weight:800">'+esc(display(readValue(values,f)))+'</td></tr>';}).join(''); } else { rows=Object.keys(values).map(function(k){return '<tr><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#64748b;font-weight:800;width:38%">'+esc(k)+'</td><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#0f172a;font-weight:800">'+esc(display(values[k]))+'</td></tr>';}).join(''); }
+    if(!rows) rows='<tr><td style="padding:18px;color:#64748b">Aucune donnée enregistrée pour cette réponse.</td></tr>'; var old=document.getElementById('pt-submission-viewer'); if(old) old.remove(); var modal=document.createElement('div'); modal.id='pt-submission-viewer'; modal.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:30000;display:flex;align-items:center;justify-content:center;padding:22px'; modal.innerHTML='<div style="background:#fff;border-radius:16px;width:min(820px,96vw);max-height:86vh;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.25);display:flex;flex-direction:column"><div style="padding:16px 20px;border-bottom:1.5px solid #e2e8f0;display:flex;align-items:center;gap:12px"><div style="flex:1"><div style="font-size:18px;font-weight:900;color:#0f172a">'+esc(formName(form))+'</div><div style="font-size:12px;color:#64748b;margin-top:2px">Réponse liée au dossier service</div></div><button class="btn btn-sm" data-close-viewer>Fermer</button></div><div style="padding:18px;overflow:auto"><table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">'+rows+'</table></div></div>'; modal.addEventListener('click',function(e){if(e.target===modal||e.target.hasAttribute('data-close-viewer'))modal.remove();}); document.body.appendChild(modal); };
+  function cleanHistoryButtons(){ document.querySelectorAll('.pt-v71-see-more,.pt-v72-see-more').forEach(function(b){b.remove();}); }
+  document.addEventListener('click',function(e){ var b=e.target&&e.target.closest&&e.target.closest('.pt-v73-see-more,[data-sid]'); if(!b)return; var sid=b.dataset&&b.dataset.sid; if(!sid)return; e.preventDefault(); e.stopPropagation(); window.ptShowLinkedSubmission(sid); },true);
+  setInterval(cleanHistoryButtons,1000);
+  console.info('[PicoTrack V74] Moteur service/historique/BDD stabilisé');
+})();
