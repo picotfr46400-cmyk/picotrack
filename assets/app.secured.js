@@ -2906,3 +2906,146 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   try{ new MutationObserver(function(){ clearTimeout(window.__ptV72HistTimer); window.__ptV72HistTimer=setTimeout(injectHistoryButtonsV72,120); }).observe(document.body||document.documentElement,{childList:true,subtree:true}); }catch(_){ }
   console.info('[PicoTrack V72] Historique service : voir plus unique + données réelles');
 })();
+
+
+/* PicoTrack V73 - Historique service : clic Voir plus fiable + valeurs robustes
+   Objectif production : un seul bouton Voir plus, branché en délégation, lecture de la soumission exacte.
+*/
+(function(){
+  function A(v){ return Array.isArray(v) ? v : []; }
+  function O(v){ return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+  function S(v){ return String(v == null ? '' : v); }
+  function E(v){ return S(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function idEq(a,b){ return S(a) === S(b); }
+  function list(name, fallback){ try{ var v = (typeof window[name] !== 'undefined') ? window[name] : fallback; return Array.isArray(v)?v:[]; }catch(_){ return []; } }
+  function forms(){ try{ return Array.isArray(FORMS_DATA)?FORMS_DATA:list('FORMS_DATA',[]); }catch(_){ return list('FORMS_DATA',[]); } }
+  function submissions(){ try{ return Array.isArray(SUBMISSIONS_DATA)?SUBMISSIONS_DATA:list('SUBMISSIONS_DATA',[]); }catch(_){ return list('SUBMISSIONS_DATA',[]); } }
+  function instances(){ try{ return Array.isArray(SERVICE_INSTANCES_DATA)?SERVICE_INSTANCES_DATA:list('SERVICE_INSTANCES_DATA',[]); }catch(_){ return list('SERVICE_INSTANCES_DATA',[]); } }
+  function normSub(s){
+    s=O(s);
+    var copy=Object.assign({},s);
+    copy.id = copy.id || copy.submission_id || copy.submissionId;
+    copy.formId = copy.formId || copy.form_id || copy.form;
+    copy.form_id = copy.form_id || copy.formId;
+    var vals = copy.values;
+    if(vals == null) vals = copy.data || copy.answers || copy.payload || copy.response_json || copy.data_json || copy.form_data || copy.formData;
+    if(typeof vals === 'string'){ try{ vals=JSON.parse(vals); }catch(_){ } }
+    if(vals && typeof vals === 'object' && vals.values && typeof vals.values === 'object') vals=vals.values;
+    copy.values = O(vals);
+    return copy;
+  }
+  function findSubLocal(id){ return normSub(submissions().find(function(s){ return idEq(s && (s.id||s.submission_id||s.submissionId), id); })); }
+  async function loadSub(id){
+    var local=findSubLocal(id);
+    if(local && local.id && Object.keys(O(local.values)).length) return local;
+    try{
+      if(window.DB && typeof window.DB.getSubmissionById === 'function'){
+        var full=await window.DB.getSubmissionById(id);
+        if(full){
+          full=normSub(full);
+          var arr=submissions();
+          var idx=arr.findIndex(function(s){ return idEq(s && (s.id||s.submission_id||s.submissionId), id); });
+          if(idx>=0) arr[idx]=Object.assign({}, arr[idx], full); else arr.unshift(full);
+          return full;
+        }
+      }
+    }catch(e){ console.warn('[PicoTrack V73] lecture soumission', e && (e.message||e)); }
+    return local;
+  }
+  function findForm(id){
+    id=S(id).replace(/^form:/,'');
+    return forms().find(function(f){ return idEq(f && f.id,id) || idEq(f && f.form_id,id) || idEq(f && f.nom,id) || idEq(f && f.name,id) || idEq(f && f.label,id); }) || null;
+  }
+  function fieldsOf(form){ return A(form && (form.fields || form.champs || form.schema)).filter(function(f){ return f && !['separator','image','titre'].includes(S(f.type)); }); }
+  function fieldName(f){ return S(f && (f.nom || f.label || f.name || f.key || f.id)) || 'Champ'; }
+  function formName(f){ return S(f && (f.nom || f.name || f.label)) || 'Formulaire'; }
+  function readValue(values, f){
+    values=O(values); f=O(f);
+    var keys=[f.id,f.key,f.name,f.nom,f.label].map(S).filter(Boolean);
+    for(var i=0;i<keys.length;i++){ if(Object.prototype.hasOwnProperty.call(values, keys[i])) return values[keys[i]]; }
+    var low={}; Object.keys(values).forEach(function(k){ low[S(k).toLowerCase().trim()]=values[k]; });
+    for(var j=0;j<keys.length;j++){ var lk=keys[j].toLowerCase().trim(); if(Object.prototype.hasOwnProperty.call(low, lk)) return low[lk]; }
+    return undefined;
+  }
+  function display(v){
+    if(v == null || v === '') return '—';
+    if(Array.isArray(v)) return v.map(display).join(', ');
+    if(typeof v === 'object'){
+      if(v.date || v.start_time || v.start || v.end_time || v.end) return [v.date, v.start_time||v.start, v.end_time||v.end].filter(Boolean).join(' ');
+      if(v.label || v.name || v.nom || v.value) return S(v.label || v.name || v.nom || v.value);
+      try{ return JSON.stringify(v); }catch(_){ return '—'; }
+    }
+    return S(v);
+  }
+  window.__ptV73PayloadBySubmission = window.__ptV73PayloadBySubmission || {};
+  window.ptShowLinkedSubmission = async function(submissionId){
+    var sub=await loadSub(submissionId);
+    var extra=O(window.__ptV73PayloadBySubmission[S(submissionId)]);
+    if((!sub || !sub.id) && extra.submission){ sub=normSub(extra.submission); }
+    if(!sub || !sub.id){ if(typeof toast==='function') toast('e','Réponse formulaire introuvable'); else alert('Réponse formulaire introuvable'); return; }
+    var form=findForm(sub.formId || sub.form_id || extra.formId || extra.form_id);
+    var values=Object.assign({}, O(extra.values || extra.formData || extra.form_data), O(sub.values));
+    var fields=fieldsOf(form);
+    var rows='';
+    if(fields.length){
+      rows=fields.map(function(f){ var val=readValue(values,f); return '<tr><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#64748b;font-weight:800;width:38%">'+E(fieldName(f))+'</td><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#0f172a;font-weight:800">'+E(display(val))+'</td></tr>'; }).join('');
+    }else{
+      rows=Object.keys(values).map(function(k){ return '<tr><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#64748b;font-weight:800;width:38%">'+E(k)+'</td><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#0f172a;font-weight:800">'+E(display(values[k]))+'</td></tr>'; }).join('');
+    }
+    if(!rows) rows='<tr><td style="padding:18px;color:#64748b">Aucune donnée enregistrée pour cette réponse.</td></tr>';
+    var old=document.getElementById('pt-submission-viewer'); if(old) old.remove();
+    var modal=document.createElement('div'); modal.id='pt-submission-viewer';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:30000;display:flex;align-items:center;justify-content:center;padding:22px';
+    modal.innerHTML='<div style="background:#fff;border-radius:16px;width:min(820px,96vw);max-height:86vh;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.25);display:flex;flex-direction:column"><div style="padding:16px 20px;border-bottom:1.5px solid var(--bd,#e2e8f0);display:flex;align-items:center;gap:12px"><div style="flex:1"><div style="font-size:18px;font-weight:900;color:#0f172a">'+E(formName(form))+'</div><div style="font-size:12px;color:#64748b;margin-top:2px">Réponse liée au dossier service</div></div><button class="btn btn-sm" id="pt-close-submission-viewer">Fermer</button></div><div style="padding:18px;overflow:auto"><table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">'+rows+'</table></div></div>';
+    document.body.appendChild(modal);
+    document.getElementById('pt-close-submission-viewer').addEventListener('click',function(){ modal.remove(); });
+    modal.addEventListener('click',function(e){ if(e.target===modal) modal.remove(); });
+  };
+  function currentInstance(){
+    var txt=[(document.querySelector('#tb-t')||{}).textContent,(document.querySelector('h1')||{}).textContent,document.body.textContent].join(' ');
+    var ref=(txt.match(/SVC[-–][A-Z0-9-]+/i)||[])[0] || '';
+    if(ref){ var x=instances().find(function(i){ return S(i && (i.reference||i.ref||i.code||i.id)).indexOf(ref)>=0; }); if(x) return x; }
+    return instances().slice().sort(function(a,b){ return new Date(b.createdAt||b.created_at||0)-new Date(a.createdAt||a.created_at||0); })[0];
+  }
+  function histRoot(){
+    var nodes=[].slice.call(document.querySelectorAll('div,section,aside'));
+    var roots=nodes.filter(function(n){ var tx=S(n.textContent); return /^\s*HISTORIQUE\b/i.test(tx) && tx.indexOf('Formulaire rempli')>=0; });
+    roots.sort(function(a,b){ return S(a.textContent).length-S(b.textContent).length; });
+    return roots[0] || null;
+  }
+  function eventCards(root){
+    if(!root) return [];
+    var labels=[].slice.call(root.querySelectorAll('div,span,strong,b,h1,h2,h3,h4,p')).filter(function(n){ return /^\s*Formulaire rempli\s*$/i.test(S(n.textContent)); });
+    return labels.map(function(label){
+      var card=label;
+      for(var i=0;i<7 && card && card!==root;i++){
+        var tx=S(card.textContent);
+        if(tx.indexOf('Formulaire rempli')>=0 && tx.length<650) return card;
+        card=card.parentElement;
+      }
+      return label.parentElement || label;
+    });
+  }
+  function inject(){
+    try{
+      document.querySelectorAll('.pt-v71-see-more,.pt-v72-see-more,.pt-v73-see-more').forEach(function(b){ b.remove(); });
+      var inst=currentInstance(); if(!inst) return;
+      var evs=A(inst.events).slice().reverse().filter(function(ev){ var p=O(ev && ev.payload); return S(ev && ev.type)==='form_filled' && (p.submissionId || p.submission_id); });
+      var root=histRoot(); if(!root || !evs.length) return;
+      var cards=eventCards(root);
+      evs.forEach(function(ev,idx){ var p=O(ev.payload), sid=S(p.submissionId || p.submission_id); var card=cards[idx]; if(!card || !sid) return; window.__ptV73PayloadBySubmission[sid]=p; var btn=document.createElement('button'); btn.type='button'; btn.className='pt-v73-see-more btn btn-sm'; btn.textContent='Voir plus'; btn.dataset.sid=sid; btn.style.cssText='margin-top:8px;padding:5px 10px;font-size:11.5px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center'; card.appendChild(btn); });
+    }catch(e){ console.warn('[PicoTrack V73] historique', e && (e.message||e)); }
+  }
+  document.addEventListener('click',function(e){
+    var btn=e.target && e.target.closest && e.target.closest('.pt-v73-see-more,.pt-v72-see-more,.pt-v71-see-more');
+    if(!btn) return;
+    e.preventDefault(); e.stopPropagation();
+    var sid=btn.dataset && btn.dataset.sid;
+    if(sid) window.ptShowLinkedSubmission(sid);
+  },true);
+  var css=document.createElement('style'); css.textContent='.pt-v71-see-more,.pt-v72-see-more{display:none!important}.pt-v73-see-more+.pt-v73-see-more{display:none!important}'; document.head.appendChild(css);
+  var old=window.renderInstanceDetail; if(typeof old==='function') window.renderInstanceDetail=function(){ var r=old.apply(this,arguments); setTimeout(inject,80); return r; };
+  document.addEventListener('DOMContentLoaded',function(){ setTimeout(inject,350); });
+  try{ new MutationObserver(function(){ clearTimeout(window.__ptV73Hist); window.__ptV73Hist=setTimeout(inject,120); }).observe(document.body||document.documentElement,{childList:true,subtree:true}); }catch(_){ }
+  console.info('[PicoTrack V73] Historique Voir plus cliquable et données fiables');
+})();
