@@ -2508,9 +2508,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   if(typeof previousGoProDatabase === 'function'){
     window.goProDatabase = function(){
       var result = previousGoProDatabase.apply(this, arguments);
-      if(typeof cleanupTableToolbarsV71==='function') cleanupTableToolbarsV71();
-      setTimeout(cleanupTableToolbars, 0);
-      setTimeout(cleanupTableToolbars, 80);
+      if(typeof cleanupTableToolbarsV71==='function'){ setTimeout(cleanupTableToolbarsV71, 0); setTimeout(cleanupTableToolbarsV71, 80); }
       return result;
     };
   }
