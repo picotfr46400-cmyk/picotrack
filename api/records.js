@@ -458,7 +458,7 @@ async function handleSave(req, body) {
     if (service) assertRecordAllowed('services', service, 'create', profile, 'Création de demande refusée par les rôles du service.');
   }
 
-  if (!id && ['forms','submissions','services','service_instances'].includes(entity)) delete record.id;
+  if (!id) delete record.id;
 
   const method = id ? 'PATCH' : 'POST';
   const path = id ? `${entity}?id=eq.${encodeURIComponent(id)}` : entity;
