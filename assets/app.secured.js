@@ -2888,12 +2888,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
     }catch(e){ console.warn('[V72] history buttons', e); }
   }
   var style=document.createElement('style'); style.textContent='.pt-v71-see-more{display:none!important}.pt-v72-see-more+.pt-v72-see-more{display:none!important}'; document.head.appendChild(style);
-  var oldRID=window.renderInstanceDetail;
-  if(typeof oldRID==='function') window.renderInstanceDetail=function(){ var r=oldRID.apply(this,arguments); setTimeout(injectHistoryButtonsV72,80); return r; };
-  document.addEventListener('DOMContentLoaded',function(){ setTimeout(injectHistoryButtonsV72,350); });
-  document.addEventListener('click',function(){ setTimeout(injectHistoryButtonsV72,120); },true);
-  try{ new MutationObserver(function(){ clearTimeout(window.__ptV72HistTimer); window.__ptV72HistTimer=setTimeout(injectHistoryButtonsV72,120); }).observe(document.body||document.documentElement,{childList:true,subtree:true}); }catch(_){ }
-  console.info('[PicoTrack V72] Historique service : voir plus unique + données réelles');
+  console.info('[PicoTrack V72] désactivé : remplacé par V73 (injectHistoryButtonsV72 ne se déclenche plus)');
 })();
 
 
