@@ -486,7 +486,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   window.addEventListener("load",lockClientAdmin);
   document.addEventListener("click",function(){setTimeout(lockClientAdmin,80)});
   document.addEventListener("input",function(){setTimeout(lockClientAdmin,80)});
-  setInterval(lockClientAdmin,1200);
+  setInterval(lockClientAdmin,3000);
 })();
 
 (function(){function addReadonlyOption(){try{document.querySelectorAll("select").forEach(function(sel){var id=String(sel.name||sel.id||"").toLowerCase();if(id.indexOf("license")<0&&id.indexOf("type")<0)return;var has=false;Array.from(sel.options||[]).forEach(function(o){if(String(o.value).toLowerCase()==="readonly")has=true;});if(!has){var opt=document.createElement("option");opt.value="readonly";opt.textContent="Lecture seule";sel.appendChild(opt);}});}catch(e){}}window.addEventListener("load",addReadonlyOption);document.addEventListener("click",function(){setTimeout(addReadonlyOption,100)});setInterval(addReadonlyOption,1500);})();
@@ -2468,12 +2468,9 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   console.info('[PicoTrack V67] Actions BDD stabilisées : champs dossier complets, tables propres, objets lisibles');
 })();
 
-/* PicoTrack V70 - Correction production : toolbar table dynamique unique */
+/* PicoTrack V70 supprimé le 2026 — remplacé par V71 (cleanupTableToolbarsV71) */
 (function(){
-  function txt(el){ return String((el && el.textContent) || '').replace(/\s+/g,' ').trim(); }
-  function hasText(el, needle){ return txt(el).indexOf(needle) >= 0; }
-  function unique(arr){ return Array.from(new Set(arr.filter(Boolean))); }
-  function cleanupTableToolbars(){
+  function __dead_cleanupTableToolbars_unused(){
     try{
       var scope = document.getElementById('v-prod-db') || document.getElementById('prod-db-table-wrap') || document.body;
       if(!scope) return;
@@ -2495,9 +2492,10 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
       if(groups.length <= 1){ if(groups[0]) groups[0].setAttribute('data-pt-db-tools','1'); return; }
       groups[0].setAttribute('data-pt-db-tools','1');
       for(var i=1;i<groups.length;i++) groups[i].remove();
-    }catch(e){ console.warn('[PicoTrack V70] cleanup toolbar table', e && e.message || e); }
+    }catch(e){}
   }
-  var previousRenderStandaloneDBTable = window.renderStandaloneDBTable;
+  /* var previousRenderStandaloneDBTable = window.renderStandaloneDBTable; -- ligne suivante neutralisée */
+  var previousRenderStandaloneDBTable = null;
   if(typeof previousRenderStandaloneDBTable === 'function'){
     window.renderStandaloneDBTable = function(db){
       var result = previousRenderStandaloneDBTable.apply(this, arguments);
@@ -2516,12 +2514,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
       return result;
     };
   }
-  document.addEventListener('DOMContentLoaded', function(){ setTimeout(cleanupTableToolbars, 120); });
-  document.addEventListener('click', function(){ setTimeout(cleanupTableToolbars, 0); }, true);
-  try{
-    var obs = new MutationObserver(function(){ cleanupTableToolbars(); });
-    obs.observe(document.documentElement, {childList:true, subtree:true});
-  }catch(_){ }
+  // V70 désactivé : doublon de V71 (cleanupTableToolbarsV71), évite un 2e scan DOM à chaque mutation
   console.info('[PicoTrack V70] Toolbar table dynamique dédupliquée');
 })();
 
@@ -2628,7 +2621,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   }
   document.addEventListener('DOMContentLoaded', function(){ setTimeout(cleanupTableToolbarsV71,100); });
   document.addEventListener('click', function(){ setTimeout(cleanupTableToolbarsV71,20); }, true);
-  try{ new MutationObserver(function(){ cleanupTableToolbarsV71(); }).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){ }
+  try{ new MutationObserver(function(){ clearTimeout(window.__ptV71TbTimer); window.__ptV71TbTimer=setTimeout(cleanupTableToolbarsV71,80); }).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){ }
 
   // 2) Sélecteur BDD : tous les champs connus du dossier dans les actions
   var oldUpdateDbUpdate = window.updateDbUpdate;
@@ -2736,9 +2729,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   if(typeof oldRID==='function'){
     window.renderInstanceDetail = function(){ var r=oldRID.apply(this, arguments); setTimeout(injectHistoryButtons,50); return r; };
   }
-  document.addEventListener('DOMContentLoaded', function(){ setTimeout(injectHistoryButtons,300); });
-  document.addEventListener('click', function(){ setTimeout(injectHistoryButtons,120); }, true);
-  try{ new MutationObserver(function(){ injectHistoryButtons(); }).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){ }
+ // V71 injectHistoryButtons désactivé : remplacé par V73 (.pt-v71-see-more est masqué en CSS, donc ce code ne servait plus à rien)
 
   console.info('[PicoTrack V71] Actions service et historique liés stabilisés');
 })();
