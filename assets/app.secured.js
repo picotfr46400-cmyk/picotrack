@@ -2494,16 +2494,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
       for(var i=1;i<groups.length;i++) groups[i].remove();
     }catch(e){}
   }
-  /* var previousRenderStandaloneDBTable = window.renderStandaloneDBTable; -- ligne suivante neutralisée */
-  var previousRenderStandaloneDBTable = null;
-  if(typeof previousRenderStandaloneDBTable === 'function'){
-    window.renderStandaloneDBTable = function(db){
-      var result = previousRenderStandaloneDBTable.apply(this, arguments);
-      if(typeof cleanupTableToolbarsV71==='function') cleanupTableToolbarsV71();
-      setTimeout(cleanupTableToolbars, 0);
-      return result;
-    };
-  }
+  // bloc renderStandaloneDBTable V70 supprimé : était déjà mort (previousRenderStandaloneDBTable=null)
   var previousGoProDatabase = window.goProDatabase;
   if(typeof previousGoProDatabase === 'function'){
     window.goProDatabase = function(){
@@ -3155,8 +3146,8 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
       var found=null; instances().some(function(inst){return A(inst.events).some(function(ev){var p=O(ev&&ev.payload); if(idEq(p.submissionId||p.submission_id,submissionId)){found=normalizeSub(p.submission||{id:submissionId,form_id:p.formId||p.form_id,values:p.values||p.formData||p.form_data}); return true;} return false;});}); if(found) sub=found; }
     if(!sub||!sub.id){toastSafe('e','Réponse formulaire introuvable');return;} var form=findForm(sub.formId||sub.form_id); var values=O(sub.values); var rows=''; var flds=fieldsOf(form); if(flds.length){ rows=flds.map(function(f){return '<tr><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#64748b;font-weight:800;width:38%">'+esc(fieldLabel(f))+'</td><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#0f172a;font-weight:800">'+esc(display(readValue(values,f)))+'</td></tr>';}).join(''); } else { rows=Object.keys(values).map(function(k){return '<tr><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#64748b;font-weight:800;width:38%">'+esc(k)+'</td><td style="padding:10px 12px;border-bottom:1px solid #eef2f7;color:#0f172a;font-weight:800">'+esc(display(values[k]))+'</td></tr>';}).join(''); }
     if(!rows) rows='<tr><td style="padding:18px;color:#64748b">Aucune donnée enregistrée pour cette réponse.</td></tr>'; var old=document.getElementById('pt-submission-viewer'); if(old) old.remove(); var modal=document.createElement('div'); modal.id='pt-submission-viewer'; modal.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:30000;display:flex;align-items:center;justify-content:center;padding:22px'; modal.innerHTML='<div style="background:#fff;border-radius:16px;width:min(820px,96vw);max-height:86vh;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.25);display:flex;flex-direction:column"><div style="padding:16px 20px;border-bottom:1.5px solid #e2e8f0;display:flex;align-items:center;gap:12px"><div style="flex:1"><div style="font-size:18px;font-weight:900;color:#0f172a">'+esc(formName(form))+'</div><div style="font-size:12px;color:#64748b;margin-top:2px">Réponse liée au dossier service</div></div><button class="btn btn-sm" data-close-viewer>Fermer</button></div><div style="padding:18px;overflow:auto"><table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">'+rows+'</table></div></div>'; modal.addEventListener('click',function(e){if(e.target===modal||e.target.hasAttribute('data-close-viewer'))modal.remove();}); document.body.appendChild(modal); };
-  function cleanHistoryButtons(){ document.querySelectorAll('.pt-v71-see-more,.pt-v72-see-more').forEach(function(b){b.remove();}); }
+  // cleanHistoryButtons désactivé : V71/V72 ne créent plus de boutons, plus besoin de nettoyage
   document.addEventListener('click',function(e){ var b=e.target&&e.target.closest&&e.target.closest('.pt-v73-see-more,[data-sid]'); if(!b)return; var sid=b.dataset&&b.dataset.sid; if(!sid)return; e.preventDefault(); e.stopPropagation(); window.ptShowLinkedSubmission(sid); },true);
-  setInterval(cleanHistoryButtons,1000);
+  // setInterval(cleanHistoryButtons,1000); // désactivé, inutile désormais
   console.info('[PicoTrack V74] Moteur service/historique/BDD stabilisé');
 })();
