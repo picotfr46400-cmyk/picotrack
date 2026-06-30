@@ -2499,7 +2499,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   if(typeof previousRenderStandaloneDBTable === 'function'){
     window.renderStandaloneDBTable = function(db){
       var result = previousRenderStandaloneDBTable.apply(this, arguments);
-      cleanupTableToolbars();
+      if(typeof cleanupTableToolbarsV71==='function') cleanupTableToolbarsV71();
       setTimeout(cleanupTableToolbars, 0);
       return result;
     };
@@ -2508,7 +2508,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
   if(typeof previousGoProDatabase === 'function'){
     window.goProDatabase = function(){
       var result = previousGoProDatabase.apply(this, arguments);
-      cleanupTableToolbars();
+      if(typeof cleanupTableToolbarsV71==='function') cleanupTableToolbarsV71();
       setTimeout(cleanupTableToolbars, 0);
       setTimeout(cleanupTableToolbars, 80);
       return result;
