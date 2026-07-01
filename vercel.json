@@ -8,6 +8,15 @@
   },
   "headers": [
     {
+      "source": "/public.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    },
+    {
       "source": "/api/(.*)",
       "headers": [
         {
@@ -94,6 +103,14 @@
     {
       "source": "/api/(.*)",
       "destination": "/api/$1"
+    },
+    {
+      "source": "/public",
+      "destination": "/public.html"
+    },
+    {
+      "source": "/public/",
+      "destination": "/public.html"
     },
     {
       "source": "/(.*)",
