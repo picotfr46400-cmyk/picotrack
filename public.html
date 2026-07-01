@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#059669">
+<title>Portail public — PicoTrack</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:#f8fafc;color:#0f172a;min-height:100vh}
+  .header{background:#fff;border-bottom:1.5px solid #e2e8f0;padding:16px 24px;display:flex;align-items:center;gap:12px}
+  .header img{height:36px}
+  .header-title{font-size:15px;font-weight:800;color:#0f172a}
+  .header-sub{font-size:11px;color:#64748b;margin-top:1px}
+  .container{max-width:680px;margin:0 auto;padding:32px 20px}
+  .forms-list{display:flex;flex-direction:column;gap:12px;margin-top:8px}
+  .form-card{background:#fff;border:1.5px solid #e2e8f0;border-radius:14px;padding:18px 20px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:14px}
+  .form-card:hover{border-color:var(--accent,#059669);box-shadow:0 4px 16px rgba(0,0,0,.08);transform:translateY(-1px)}
+  .form-icon{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;flex-shrink:0}
+  .form-info{flex:1}
+  .form-name{font-size:14px;font-weight:700;color:#0f172a}
+  .form-desc{font-size:12px;color:#64748b;margin-top:2px}
+  .form-arrow{color:#94a3b8;font-size:18px}
+  .saisie-wrap{background:#fff;border-radius:14px;border:1.5px solid #e2e8f0;padding:24px}
+  .saisie-header{display:flex;align-items:center;gap:12px;margin-bottom:20px;padding-bottom:16px;border-bottom:2px solid #f1f5f9}
+  .saisie-bar{width:5px;height:40px;border-radius:3px;flex-shrink:0}
+  .saisie-title{font-size:16px;font-weight:800}
+  .saisie-desc{font-size:12px;color:#64748b;margin-top:2px}
+  .ap-field{margin-bottom:16px}
+  .ap-label{font-size:12.5px;font-weight:600;color:#0f172a;margin-bottom:6px;display:block}
+  .ap-input{width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 13px;font-family:inherit;font-size:13px;outline:none;transition:border-color .15s;background:#f8fafc}
+  .ap-input:focus{border-color:var(--accent,#059669);background:#fff}
+  textarea.ap-input{height:82px;resize:vertical}
+  .btn-submit{width:100%;padding:12px;border-radius:10px;border:none;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;transition:opacity .15s;margin-top:8px}
+  .btn-submit:hover{opacity:.85}
+  .btn-back{background:none;border:1.5px solid #e2e8f0;border-radius:8px;padding:8px 16px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;color:#64748b;margin-bottom:20px;display:flex;align-items:center;gap:6px}
+  .btn-back:hover{background:#f8fafc}
+  .success-wrap{text-align:center;padding:40px 20px}
+  .success-icon{font-size:48px;margin-bottom:16px}
+  .success-title{font-size:18px;font-weight:800;margin-bottom:8px;color:#059669}
+  .success-sub{font-size:13px;color:#64748b;margin-bottom:24px}
+  .loading{text-align:center;padding:60px;color:#64748b}
+  .empty{text-align:center;padding:60px;color:#64748b}
+  .empty-icon{font-size:40px;margin-bottom:12px;opacity:.3}
+  .req{color:#ef4444}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;z-index:9999;transition:opacity .3s}
+  .checkbox-label{display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:8px;background:#f8fafc;font-size:13px;user-select:none}
+  .select-input{width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 13px;font-family:inherit;font-size:13px;background:#f8fafc;outline:none;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <div class="header-title">Portail de saisie</div>
+    <div class="header-sub">Powered by PicoTrack</div>
+  </div>
+</div>
+
+<div class="container">
+  <div id="app-root"><div class="loading">⏳ Chargement des formulaires...</div></div>
+</div>
+
+<script>
+const API = '/api/records';
+let FORMS = [];
+let VALUES = {};
+let CURRENT_FORM = null;
+let ENV_CODE = '';
+
+async function apiPost(body) {
+  const r = await fetch(API, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  return r.json();
+}
+
+function h(str) {
+  return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function toast(msg) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(()=>{el.style.opacity='0'; setTimeout(()=>el.remove(),300)}, 2800);
+}
+
+// Charger les formulaires publics
+async function loadForms() {
+  try {
+    // Détecter l'environnement depuis le sous-domaine ou path
+    const host = window.location.hostname;
+    const sub = host.split('.')[0];
+    ENV_CODE = sub.toUpperCase();
+    
+    const data = await apiPost({action:'initial_load', environment_code: ENV_CODE});
+    const allForms = (data.forms||[]).map(f=>({
+      id: f.id,
+      nom: f.nom||f.name||'Formulaire',
+      desc: f.description||f.desc||'',
+      couleur: f.couleur||'#059669',
+      fields: Array.isArray(f.fields)?f.fields:[],
+      portail_public: f.portail_public||false,
+      actif: f.actif!==false,
+      published: f.published!==false
+    }));
+    FORMS = allForms.filter(f => f.portail_public && f.actif);
+    renderList();
+  } catch(e) {
+    console.error(e);
+    document.getElementById('app-root').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div>Impossible de charger les formulaires.</div></div>';
+  }
+}
+
+function renderList() {
+  const root = document.getElementById('app-root');
+  if (!FORMS.length) {
+    root.innerHTML = '<div class="empty"><div class="empty-icon">📋</div><div style="font-weight:700;margin-bottom:6px">Aucun formulaire disponible</div><div style="font-size:12px">Aucun formulaire n\'est actuellement publié sur ce portail.</div></div>';
+    return;
+  }
+  root.innerHTML = `
+    <div style="margin-bottom:24px">
+      <div style="font-size:20px;font-weight:800;margin-bottom:4px">Formulaires disponibles</div>
+      <div style="font-size:13px;color:#64748b">${FORMS.length} formulaire${FORMS.length>1?'s':''} disponible${FORMS.length>1?'s':''}</div>
+    </div>
+    <div class="forms-list">
+      ${FORMS.map(f=>{
+        const initials = (f.nom||'F').slice(0,2).toUpperCase();
+        return `<div class="form-card" onclick="openForm('${f.id}')" style="--accent:${f.couleur}">
+          <div class="form-icon" style="background:${f.couleur}22;color:${f.couleur}">${initials}</div>
+          <div class="form-info">
+            <div class="form-name">${h(f.nom)}</div>
+            ${f.desc?`<div class="form-desc">${h(f.desc)}</div>`:''}
+          </div>
+          <div class="form-arrow">›</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+function openForm(id) {
+  CURRENT_FORM = FORMS.find(f=>String(f.id)===String(id));
+  if (!CURRENT_FORM) return;
+  VALUES = {};
+  // Initialiser les valeurs par défaut
+  (CURRENT_FORM.fields||[]).forEach(f=>{
+    if(f.defaultValue!==undefined) VALUES[f.id] = f.defaultValue;
+  });
+  renderSaisie();
+}
+
+function renderSaisie() {
+  const f = CURRENT_FORM;
+  const n = f.couleur||'#059669';
+  const fields = (f.fields||[]).filter(fld => !['separator','image','titre'].includes(fld.type) || ['separator','image','titre'].includes(fld.type));
+  
+  let fieldsHtml = '';
+  fields.forEach(fld => {
+    const label = !['separator','image','titre'].includes(fld.type) 
+      ? `<label class="ap-label">${h(fld.nom||fld.label||'')}${fld.obligatoire?'<span class="req"> *</span>':''}</label>`
+      : '';
+    
+    let input = '';
+    switch(fld.type) {
+      case 'text':
+        input = `<input class="ap-input" placeholder="${h(fld.placeholder||'Saisir...')}" value="${h(VALUES[fld.id]||'')}" oninput="setValue('${fld.id}',this.value)" onfocus="this.style.borderColor='${n}'" onblur="this.style.borderColor='#e2e8f0'">`;
+        break;
+      case 'textarea':
+        input = `<textarea class="ap-input" placeholder="Saisir..." oninput="setValue('${fld.id}',this.value)" onfocus="this.style.borderColor='${n}'" onblur="this.style.borderColor='#e2e8f0'">${h(VALUES[fld.id]||'')}</textarea>`;
+        break;
+      case 'number':
+        input = `<input type="number" class="ap-input" value="${VALUES[fld.id]||0}" step="${fld.pas||1}" oninput="setValue('${fld.id}',+this.value)" onfocus="this.style.borderColor='${n}'" onblur="this.style.borderColor='#e2e8f0'">`;
+        break;
+      case 'checkbox':
+        const checked = VALUES[fld.id]===true;
+        input = `<label class="checkbox-label" id="cbl_${fld.id}" style="border-color:${checked?n:'#e2e8f0'};background:${checked?n+'18':'#f8fafc'}">
+          <input type="checkbox" ${checked?'checked':''} onchange="setValue('${fld.id}',this.checked);updateCb('${fld.id}','${n}')" style="width:17px;height:17px;accent-color:${n};cursor:pointer">
+          <span>Cocher si applicable</span>
+        </label>`;
+        break;
+      case 'select':
+        input = `<select class="select-input" onchange="setValue('${fld.id}',this.value)" onfocus="this.style.borderColor='${n}'" onblur="this.style.borderColor='#e2e8f0'">
+          <option value="">— Sélectionner —</option>
+          ${(fld.valeurs||[]).map(v=>`<option ${VALUES[fld.id]===v?'selected':''}>${h(v)}</option>`).join('')}
+        </select>`;
+        break;
+      case 'multiselect':
+        const sel = Array.isArray(VALUES[fld.id])?VALUES[fld.id]:[];
+        input = `<div style="display:flex;flex-wrap:wrap;gap:8px" id="ms_${fld.id}">
+          ${(fld.valeurs||[]).map(v=>{
+            const on = sel.includes(v);
+            return `<label style="display:flex;align-items:center;gap:6px;padding:7px 14px;border:1.5px solid ${on?n:'#e2e8f0'};border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;background:${on?n+'18':'#f8fafc'};color:${on?n:'#475569'}">
+              <input type="checkbox" ${on?'checked':''} onchange="setMulti('${fld.id}','${v.replace(/'/g,"\\'")}',this.checked)" style="display:none">${on?'✓ ':''}${h(v)}</label>`;
+          }).join('')}
+        </div>`;
+        break;
+      case 'date':
+        input = `<input type="date" class="ap-input" style="width:200px" value="${VALUES[fld.id]||''}" onchange="setValue('${fld.id}',this.value)" onfocus="this.style.borderColor='${n}'" onblur="this.style.borderColor='#e2e8f0'">`;
+        break;
+      case 'heure':
+        input = `<input type="time" class="ap-input" style="width:160px" value="${VALUES[fld.id]||''}" onchange="setValue('${fld.id}',this.value)" onfocus="this.style.borderColor='${n}'" onblur="this.style.borderColor='#e2e8f0'">`;
+        break;
+      case 'datetime':
+        input = `<input type="datetime-local" class="ap-input" value="${VALUES[fld.id]||''}" onchange="setValue('${fld.id}',this.value)" onfocus="this.style.borderColor='${n}'" onblur="this.style.borderColor='#e2e8f0'">`;
+        break;
+      case 'photo':
+        input = `<label style="border:2px dashed #e2e8f0;border-radius:10px;padding:20px;text-align:center;color:#64748b;font-size:13px;background:#f8fafc;display:block;cursor:pointer">
+          📷 Prendre / importer une photo
+          <input type="file" accept="image/*" capture="environment" onchange="handleFile('${fld.id}',this,true)" style="display:none">
+          <div id="fn_${fld.id}" style="margin-top:8px;font-size:12px;font-weight:700;color:#0f172a"></div>
+        </label>`;
+        break;
+      case 'file':
+        input = `<label style="border:2px dashed #e2e8f0;border-radius:10px;padding:20px;text-align:center;color:#64748b;font-size:13px;background:#f8fafc;display:block;cursor:pointer">
+          📎 Insérer un fichier
+          <input type="file" multiple onchange="handleFile('${fld.id}',this,false)" style="display:none">
+          <div id="fn_${fld.id}" style="margin-top:8px;font-size:12px;font-weight:700;color:#0f172a"></div>
+        </label>`;
+        break;
+      case 'titre':
+        input = `<div style="font-size:15px;font-weight:800;border-bottom:2px solid #f1f5f9;padding-bottom:8px;color:#0f172a">${h(fld.nom)}</div>`;
+        break;
+      case 'separator':
+        input = `<hr style="border:none;border-top:1.5px solid #f1f5f9;margin:4px 0">`;
+        break;
+      default:
+        input = `<input class="ap-input" placeholder="Saisir..." oninput="setValue('${fld.id}',this.value)" onfocus="this.style.borderColor='${n}'" onblur="this.style.borderColor='#e2e8f0'">`;
+    }
+    
+    fieldsHtml += `<div class="ap-field">${label}${input}</div>`;
+  });
+
+  document.getElementById('app-root').innerHTML = `
+    <button class="btn-back" onclick="renderList()">← Retour</button>
+    <div class="saisie-wrap">
+      <div class="saisie-header">
+        <div class="saisie-bar" style="background:${n}"></div>
+        <div>
+          <div class="saisie-title">${h(f.nom)}</div>
+          ${f.desc?`<div class="saisie-desc">${h(f.desc)}</div>`:''}
+        </div>
+      </div>
+      ${fieldsHtml}
+      <button class="btn-submit" style="background:${n};color:#fff" onclick="submitForm()">✅ Valider</button>
+    </div>`;
+  window.scrollTo(0,0);
+}
+
+function setValue(id, val) { VALUES[id] = val; }
+
+function updateCb(id, color) {
+  const el = document.getElementById('cbl_'+id);
+  if (!el) return;
+  const checked = el.querySelector('input').checked;
+  el.style.borderColor = checked?color:'#e2e8f0';
+  el.style.background = checked?color+'18':'#f8fafc';
+}
+
+function setMulti(id, val, checked) {
+  if (!Array.isArray(VALUES[id])) VALUES[id] = [];
+  checked ? VALUES[id].push(val) : (VALUES[id] = VALUES[id].filter(v=>v!==val));
+}
+
+function handleFile(id, input, single) {
+  const files = Array.from(input.files||[]);
+  if (!files.length) return;
+  const fn = document.getElementById('fn_'+id);
+  if (fn) fn.textContent = files.map(f=>f.name).join(', ');
+  const readers = files.map(f => new Promise(res=>{
+    const r = new FileReader();
+    r.onload = e => res({name:f.name, size:f.size, type:f.type, dataUrl:e.target.result});
+    r.readAsDataURL(f);
+  }));
+  Promise.all(readers).then(results => {
+    VALUES[id] = single ? results[0] : {files: results};
+  });
+}
+
+async function submitForm() {
+  const f = CURRENT_FORM;
+  // Validation des champs obligatoires
+  const missing = (f.fields||[]).filter(fld => {
+    if (!fld.obligatoire) return false;
+    const v = VALUES[fld.id];
+    return v===undefined||v===''||v===false||(Array.isArray(v)&&!v.length);
+  });
+  if (missing.length) {
+    toast('⚠️ '+missing.length+' champ(s) obligatoire(s) manquant(s)');
+    return;
+  }
+  
+  const btn = document.querySelector('.btn-submit');
+  if (btn) { btn.disabled=true; btn.textContent='⏳ Envoi...'; }
+  
+  try {
+    await apiPost({
+      action: 'save',
+      entity: 'submissions',
+      record: {
+        form_id: String(f.id),
+        values: VALUES,
+        environment_code: ENV_CODE,
+        source: 'portail_public',
+        utilisateur: 'Portail public',
+        date: new Date().toISOString()
+      }
+    });
+    renderSuccess();
+  } catch(e) {
+    console.error(e);
+    toast('❌ Erreur lors de l\'envoi. Réessayez.');
+    if (btn) { btn.disabled=false; btn.textContent='✅ Valider'; }
+  }
+}
+
+function renderSuccess() {
+  const f = CURRENT_FORM;
+  const n = f.couleur||'#059669';
+  document.getElementById('app-root').innerHTML = `
+    <div class="success-wrap">
+      <div class="success-icon">✅</div>
+      <div class="success-title">Saisie enregistrée !</div>
+      <div class="success-sub">Merci, votre saisie a bien été prise en compte.</div>
+      <button onclick="openForm('${f.id}')" style="background:${n};color:#fff;border:none;padding:12px 24px;border-radius:10px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer">
+        + Nouvelle saisie
+      </button>
+    </div>`;
+  window.scrollTo(0,0);
+  // Reset auto après 3s
+  setTimeout(()=>openForm(f.id), 3000);
+}
+
+// Init
+loadForms();
+</script>
+</body>
+</html>
