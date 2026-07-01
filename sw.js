@@ -1,4 +1,4 @@
-const CACHE='picotrack-v39-client-global-split-v28';
+const CACHE='picotrack-v40-client-global-split-v28';
 self.addEventListener('install',event=>self.skipWaiting());
 self.addEventListener('activate',event=>event.waitUntil(
   caches.keys().then(keys=>Promise.all(keys.map(key=>caches.delete(key)))).then(()=>self.clients.claim())
