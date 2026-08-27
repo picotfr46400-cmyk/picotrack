@@ -349,7 +349,7 @@ async function saveEnvironmentLicenseLimits(req, record, profile) {
 
 async function userRest(req, path, { method='GET', body, prefer='return=representation' } = {}) {
   const { url, anonKey } = getSupabaseConfig(req);
-  if (!url || !anonKey) throw Object.assign(new Error('Configuration Supabase serveur manquante'), { status: 500 });
+  if (!url || !anonKey) throw Object.assign(new Error('Aucune base Supabase dédiée pour ce domaine'), { status: 500 });
   const token = bearer(req);
   const r = await fetch(`${url}/rest/v1/${path}`, {
     method,

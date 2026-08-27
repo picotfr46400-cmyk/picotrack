@@ -60,7 +60,7 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
 
   const { url, anonKey } = getSupabaseConfig(req);
-  if (!url || !anonKey) return json(res, 500, { error: 'Configuration Supabase serveur manquante' });
+  if (!url || !anonKey) return json(res, 500, { error: 'Aucune base Supabase dédiée pour ce domaine' });
 
   try {
     const body = await readJsonBody(req, 200000);
