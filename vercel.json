@@ -42,6 +42,24 @@
       ]
     },
     {
+      "source": "/public",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    },
+    {
+      "source": "/public/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    },
+    {
       "source": "/(.*)",
       "headers": [
         {
@@ -54,7 +72,7 @@
         },
         {
           "key": "Permissions-Policy",
-          "value": "camera=(), microphone=(), geolocation=()"
+          "value": "camera=(self), microphone=(self), geolocation=(self)"
         },
         {
           "key": "Content-Security-Policy",
@@ -106,14 +124,18 @@
     },
     {
       "source": "/public",
-      "destination": "/public.html"
+      "destination": "/public/index.html"
     },
     {
       "source": "/public/",
-      "destination": "/public.html"
+      "destination": "/public/index.html"
     },
     {
-      "source": "/(.*)",
+      "source": "/public.html",
+      "destination": "/public/index.html"
+    },
+    {
+      "source": "/((?!api(?:/|$)|assets(?:/|$)|icons(?:/|$)|public(?:\\.html)?(?:/|$)|sw\\.js$|manifest\\.json$|style\\.css$).*)",
       "destination": "/index.html"
     }
   ],
