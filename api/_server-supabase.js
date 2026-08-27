@@ -44,10 +44,27 @@ function prefixForHost(host){
   if(!isReservedSubdomain(label))return sanitizeClientCode(label);
   return 'PROD';
 }
-function configFromPrefixedEnv(host){const p=prefixForHost(host);const anonKey=pick(`${p}_SUPABASE_ANON_KEY`,`PICOTRACK_${p}_SUPABASE_ANON_KEY`,`${p}_VITE_SUPABASE_ANON_KEY`);const serviceRole=pick(`${p}_SUPABASE_SERVICE_ROLE_KEY`,`PICOTRACK_${p}_SUPABASE_SERVICE_ROLE_KEY`,`${p}_SERVICE_ROLE_KEY`);const url=normalizeSupabaseUrl(pick(`${p}_SUPABASE_URL`,`PICOTRACK_${p}_SUPABASE_URL`,`${p}_URL_SUPABASE_VITE`,`${p}_VITE_SUPABASE_URL`)||deriveSupabaseUrlFromAnonKey(anonKey));return {host,clientCode:p.toLowerCase(),environmentCode:p,url,anonKey,serviceRole}}
-function legacyConfig(host){const anonKey=pick('VITE_SUPABASE_ANON_KEY','SUPABASE_ANON_KEY','SUPABASE_ANON_PUBLIC_KEY','NEXT_PUBLIC_SUPABASE_ANON_KEY');const serviceRole=pick('SUPABASE_SERVICE_ROLE_KEY','SUPABASE_SERVICE_KEY','SERVICE_ROLE_KEY','SUPABASE_SERVICE_ROLE');const url=normalizeSupabaseUrl(pick('URL_SUPABASE_VITE','VITE_SUPABASE_URL','SUPABASE_URL','NEXT_PUBLIC_SUPABASE_URL','PICOTRACK_SUPABASE_URL')||deriveSupabaseUrlFromAnonKey(anonKey));return {host,clientCode:pick('PICOTRACK_CLIENT_CODE','CODE_CLIENT_PICOTRACK')||prefixForHost(host).toLowerCase(),environmentCode:pick('PICOTRACK_ENVIRONMENT_CODE','PICOTRACK_ENVIRONNEMENT_CODE')||prefixForHost(host),url,anonKey,serviceRole}}
-function getSupabaseConfig(req){const host=requestHost(req);const fromJson=matchConfigFromJson(host);if(fromJson&&(fromJson.url||fromJson.anonKey||fromJson.serviceRole))return fromJson;const pref=configFromPrefixedEnv(host);if(pref.url||pref.anonKey||pref.serviceRole)return pref;return legacyConfig(host)}
-function publicRuntimeConfig(req){const cfg=getSupabaseConfig(req);return {host:cfg.host,clientCode:cfg.clientCode||prefixForHost(cfg.host).toLowerCase(),environmentCode:String(cfg.environmentCode||prefixForHost(cfg.host)).toUpperCase(),configured:!!(cfg.url&&cfg.anonKey),serviceConfigured:!!(cfg.url&&cfg.serviceRole)}}
+function isLocalDevHost(host){
+  const h=cleanHost(host);
+  return !h||h==='localhost'||h.startsWith('localhost.')||h.startsWith('127.0.0.1')||h.startsWith('0.0.0.0');
+}
+// Host-first tenant. PICOTRACK_ENVIRONMENT_CODE / PICOTRACK_CLIENT_CODE are local/missing-Host fallback only — never for apex, www, vercel.app, or unknown public hosts.
+function resolveTenantFromHost(host){
+  const environmentCode=prefixForHost(host);
+  const fromHost={environmentCode,clientCode:environmentCode.toLowerCase()};
+  if(!isLocalDevHost(host))return fromHost;
+  const envCode=pick('PICOTRACK_ENVIRONMENT_CODE','PICOTRACK_ENVIRONNEMENT_CODE');
+  const envClient=pick('PICOTRACK_CLIENT_CODE','CODE_CLIENT_PICOTRACK');
+  return {environmentCode:envCode||fromHost.environmentCode,clientCode:String(envClient||fromHost.clientCode).toLowerCase()};
+}
+function withHostTenant(cfg,host){
+  const tenant=resolveTenantFromHost(host);
+  return Object.assign({},cfg||{},{host:cleanHost(host),clientCode:tenant.clientCode,environmentCode:tenant.environmentCode});
+}
+function configFromPrefixedEnv(host){const p=prefixForHost(host);const anonKey=pick(`${p}_SUPABASE_ANON_KEY`,`PICOTRACK_${p}_SUPABASE_ANON_KEY`,`${p}_VITE_SUPABASE_ANON_KEY`);const serviceRole=pick(`${p}_SUPABASE_SERVICE_ROLE_KEY`,`PICOTRACK_${p}_SUPABASE_SERVICE_ROLE_KEY`,`${p}_SERVICE_ROLE_KEY`);const url=normalizeSupabaseUrl(pick(`${p}_SUPABASE_URL`,`PICOTRACK_${p}_SUPABASE_URL`,`${p}_URL_SUPABASE_VITE`,`${p}_VITE_SUPABASE_URL`)||deriveSupabaseUrlFromAnonKey(anonKey));return withHostTenant({url,anonKey,serviceRole},host)}
+function legacyConfig(host){const anonKey=pick('VITE_SUPABASE_ANON_KEY','SUPABASE_ANON_KEY','SUPABASE_ANON_PUBLIC_KEY','NEXT_PUBLIC_SUPABASE_ANON_KEY');const serviceRole=pick('SUPABASE_SERVICE_ROLE_KEY','SUPABASE_SERVICE_KEY','SERVICE_ROLE_KEY','SUPABASE_SERVICE_ROLE');const url=normalizeSupabaseUrl(pick('URL_SUPABASE_VITE','VITE_SUPABASE_URL','SUPABASE_URL','NEXT_PUBLIC_SUPABASE_URL','PICOTRACK_SUPABASE_URL')||deriveSupabaseUrlFromAnonKey(anonKey));return withHostTenant({url,anonKey,serviceRole},host)}
+function getSupabaseConfig(req){const host=requestHost(req);const fromJson=matchConfigFromJson(host);if(fromJson&&(fromJson.url||fromJson.anonKey||fromJson.serviceRole))return withHostTenant(fromJson,host);const pref=configFromPrefixedEnv(host);if(pref.url||pref.anonKey||pref.serviceRole)return pref;return legacyConfig(host)}
+function publicRuntimeConfig(req){const cfg=getSupabaseConfig(req);const tenant=resolveTenantFromHost(cfg.host);return {host:cfg.host,clientCode:tenant.clientCode,environmentCode:String(tenant.environmentCode).toUpperCase(),configured:!!(cfg.url&&cfg.anonKey),serviceConfigured:!!(cfg.url&&cfg.serviceRole)}}
 const SECURITY_HEADERS={
   'X-Content-Type-Options':'nosniff',
   'Referrer-Policy':'strict-origin-when-cross-origin',
@@ -92,4 +109,4 @@ async function serviceRest(path,{method='GET',body,prefer='return=representation
 async function getUserProfile(userId,req){const rows=await serviceRest(`user_profiles?id=eq.${encodeURIComponent(userId)}&select=id,email,role,roles,environment_code,active,license_type,tenant_id,resolved_permissions&limit=1`,{method:'GET',prefer:'',req});return Array.isArray(rows)?rows[0]:null}
 function isAdminProfile(profile){const role=String(profile?.role||'').toLowerCase();const roles=Array.isArray(profile?.roles)?profile.roles.map(r=>String(r).toLowerCase()):[];const perms=profile?.resolved_permissions||{};return profile?.active!==false&&(role==='super_admin'||role==='admin'||role==='client_admin'||role==='environment_admin'||role==='platform_admin'||roles.includes('super_admin')||roles.includes('admin')||roles.includes('client_admin')||roles.includes('environment_admin')||perms.manage_users===true||perms.manage_global_licenses===true||perms.platform_admin===true)}
 async function requireAdmin(req){const user=await requireAuth(req);const profile=await getUserProfile(user.id,req);if(!isAdminProfile(profile)){const err=new Error('Droits administrateur requis');err.status=403;throw err;}return {user,profile}}
-module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession};
+module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost};
