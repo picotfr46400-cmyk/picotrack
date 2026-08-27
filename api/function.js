@@ -114,7 +114,7 @@ async function inviteAuthUser(url, serviceRole, payload) {
 
 async function upsertUserProfile(url, serviceRole, authUser, payload) {
   if (!authUser?.id) throw new Error('Compte Auth créé mais ID utilisateur introuvable.');
-  const environmentCode = normalizeEnvironmentCode(payload.environment_code || 'EFC');
+  const environmentCode = normalizeEnvironmentCode(payload.environment_code || 'DEMO');
   const email = normalizeEmail(payload.email || authUser.email);
   const profile = {
     id: authUser.id,
@@ -147,7 +147,7 @@ async function upsertUserProfile(url, serviceRole, authUser, payload) {
 
 async function insertLicenseBestEffort(url, serviceRole, payload) {
   const body = {
-    environment_code: normalizeEnvironmentCode(payload.environment_code || 'EFC'),
+    environment_code: normalizeEnvironmentCode(payload.environment_code || 'DEMO'),
     license_key: cleanString(payload.license_key || ''),
     license_type: cleanString(payload.license_type || 'supervision'),
     label: cleanString(payload.label || ''),
