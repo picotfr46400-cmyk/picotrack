@@ -188,7 +188,7 @@ module.exports = async function handler(req, res) {
 
   try {
     const { url, serviceRole } = getSupabaseConfig(req);
-    if (!url || !serviceRole) return json(res, 500, { error: 'Configuration Supabase serveur manquante' });
+    if (!url || !serviceRole) return json(res, 500, { error: 'Aucune base Supabase dédiée pour ce domaine' });
     const body = await readBody(req);
     const action = cleanString(body.action || 'summary', 60);
     if (action === 'summary') return json(res, 200, await handleSummary(req, body));

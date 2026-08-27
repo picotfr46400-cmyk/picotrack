@@ -6,11 +6,25 @@ function cleanHost(value){return String(value||'').toLowerCase().replace(/^https
 function requestHost(req){return cleanHost(req?.headers?.['x-forwarded-host']||req?.headers?.host||process.env.VERCEL_URL||'')}
 function parseConfigJson(){const raw=pick('PICOTRACK_CONFIG_JSON','PICOTRACK_CLIENTS_JSON','PICOTRACK_SUPABASE_CONFIG_JSON');if(!raw)return null;try{return JSON.parse(raw)}catch(e){return null}}
 function normalizeConfigEntry(entry, host){if(!entry||typeof entry!=='object')return null;const anonKey=String(entry.supabaseAnonKey||entry.anonKey||entry.anon_key||entry.SUPABASE_ANON_KEY||'').trim();const serviceRole=String(entry.supabaseServiceRoleKey||entry.serviceRoleKey||entry.serviceRole||entry.service_role_key||entry.SUPABASE_SERVICE_ROLE_KEY||'').trim();const url=normalizeSupabaseUrl(entry.supabaseUrl||entry.url||entry.SUPABASE_URL||deriveSupabaseUrlFromAnonKey(anonKey));return {host,clientCode:String(entry.clientCode||entry.client||entry.code||'').trim(),environmentCode:String(entry.environmentCode||entry.environment||entry.env||'').trim(),url,anonKey,serviceRole}}
+function jsonHostMatches(pattern, host){
+  const h=cleanHost(host);
+  const p=cleanHost(pattern);
+  if(!p||!h)return false;
+  if(p===h)return true;
+  if(!p.startsWith('*.'))return false;
+  const suffix=p.slice(1);
+  if(!suffix||!h.endsWith(suffix))return false;
+  const label=h.slice(0, Math.max(0, h.length-suffix.length));
+  if(!label||label.includes('.'))return false;
+  if(isReservedSubdomain(label))return false;
+  if(h==='picotrack.fr'||h==='www.picotrack.fr')return false;
+  return true;
+}
 function matchConfigFromJson(host){const cfg=parseConfigJson();if(!cfg)return null;const h=cleanHost(host);const candidates=[h,h.replace(/^www\./,'')].filter(Boolean);
-  if(Array.isArray(cfg)){for(const entry of cfg){const hosts=[entry?.host,entry?.domain,entry?.hostname,...(Array.isArray(entry?.hosts)?entry.hosts:[])].map(cleanHost).filter(Boolean);if(hosts.some(x=>candidates.includes(x)|| (x.startsWith('*.')&&h.endsWith(x.slice(1)))))return normalizeConfigEntry(entry,h)}}
+  if(Array.isArray(cfg)){for(const entry of cfg){const hosts=[entry?.host,entry?.domain,entry?.hostname,...(Array.isArray(entry?.hosts)?entry.hosts:[])].map(cleanHost).filter(Boolean);if(hosts.some(x=>candidates.includes(x)||jsonHostMatches(x,h)))return normalizeConfigEntry(entry,h)}}
   if(typeof cfg==='object'){
     for(const key of candidates){if(cfg[key])return normalizeConfigEntry(cfg[key],h)}
-    for(const [key,entry] of Object.entries(cfg)){const k=cleanHost(key);if(k.startsWith('*.')&&h.endsWith(k.slice(1)))return normalizeConfigEntry(entry,h)}
+    for(const [key,entry] of Object.entries(cfg)){if(jsonHostMatches(key,h))return normalizeConfigEntry(entry,h)}
   }
   return null
 }
@@ -62,9 +76,63 @@ function withHostTenant(cfg,host){
   return Object.assign({},cfg||{},{host:cleanHost(host),clientCode:tenant.clientCode,environmentCode:tenant.environmentCode});
 }
 function configFromPrefixedEnv(host){const p=prefixForHost(host);const anonKey=pick(`${p}_SUPABASE_ANON_KEY`,`PICOTRACK_${p}_SUPABASE_ANON_KEY`,`${p}_VITE_SUPABASE_ANON_KEY`);const serviceRole=pick(`${p}_SUPABASE_SERVICE_ROLE_KEY`,`PICOTRACK_${p}_SUPABASE_SERVICE_ROLE_KEY`,`${p}_SERVICE_ROLE_KEY`);const url=normalizeSupabaseUrl(pick(`${p}_SUPABASE_URL`,`PICOTRACK_${p}_SUPABASE_URL`,`${p}_URL_SUPABASE_VITE`,`${p}_VITE_SUPABASE_URL`)||deriveSupabaseUrlFromAnonKey(anonKey));return withHostTenant({url,anonKey,serviceRole},host)}
-function legacyConfig(host){const anonKey=pick('VITE_SUPABASE_ANON_KEY','SUPABASE_ANON_KEY','SUPABASE_ANON_PUBLIC_KEY','NEXT_PUBLIC_SUPABASE_ANON_KEY');const serviceRole=pick('SUPABASE_SERVICE_ROLE_KEY','SUPABASE_SERVICE_KEY','SERVICE_ROLE_KEY','SUPABASE_SERVICE_ROLE');const url=normalizeSupabaseUrl(pick('URL_SUPABASE_VITE','VITE_SUPABASE_URL','SUPABASE_URL','NEXT_PUBLIC_SUPABASE_URL','PICOTRACK_SUPABASE_URL')||deriveSupabaseUrlFromAnonKey(anonKey));return withHostTenant({url,anonKey,serviceRole},host)}
-function getSupabaseConfig(req){const host=requestHost(req);const fromJson=matchConfigFromJson(host);if(fromJson&&(fromJson.url||fromJson.anonKey||fromJson.serviceRole))return withHostTenant(fromJson,host);const pref=configFromPrefixedEnv(host);if(pref.url||pref.anonKey||pref.serviceRole)return pref;return legacyConfig(host)}
-function publicRuntimeConfig(req){const cfg=getSupabaseConfig(req);const tenant=resolveTenantFromHost(cfg.host);return {host:cfg.host,clientCode:tenant.clientCode,environmentCode:String(tenant.environmentCode).toUpperCase(),configured:!!(cfg.url&&cfg.anonKey),serviceConfigured:!!(cfg.url&&cfg.serviceRole)}}
+function legacyRawKeys(){const anonKey=pick('VITE_SUPABASE_ANON_KEY','SUPABASE_ANON_KEY','SUPABASE_ANON_PUBLIC_KEY','NEXT_PUBLIC_SUPABASE_ANON_KEY');const serviceRole=pick('SUPABASE_SERVICE_ROLE_KEY','SUPABASE_SERVICE_KEY','SERVICE_ROLE_KEY','SUPABASE_SERVICE_ROLE');const url=normalizeSupabaseUrl(pick('URL_SUPABASE_VITE','VITE_SUPABASE_URL','SUPABASE_URL','NEXT_PUBLIC_SUPABASE_URL','PICOTRACK_SUPABASE_URL')||deriveSupabaseUrlFromAnonKey(anonKey));return {url,anonKey,serviceRole}}
+function legacyConfig(host){return withHostTenant(legacyRawKeys(),host)}
+function unconfiguredConfig(host){return withHostTenant({url:'',anonKey:'',serviceRole:''},host)}
+const KNOWN_EFC_PROJECT_REF='jcanufkmcslxwmheqccp';
+const MISSING_TENANT_DB='Aucune base Supabase dédiée pour ce domaine';
+function isEfcCanonicalHost(host){return cleanHost(host)==='efc.picotrack.fr'}
+function allowsLegacySupabaseFallback(host){
+  const h=cleanHost(host);
+  if(isEfcCanonicalHost(h))return true;
+  return h==='localhost'||h.startsWith('localhost.')||h.startsWith('127.0.0.1')||h.startsWith('0.0.0.0');
+}
+function supabaseProjectRef(url,anonKey){
+  const resolved=normalizeSupabaseUrl(url)||deriveSupabaseUrlFromAnonKey(anonKey);
+  const fromUrl=String(resolved||'').match(/^https:\/\/([a-z0-9-]+)\.supabase\.co(?:\/|$)/i);
+  if(fromUrl)return fromUrl[1].toLowerCase();
+  try{
+    const parts=String(anonKey||'').split('.');
+    if(parts.length>=2){
+      const payload=JSON.parse(base64UrlDecode(parts[1])||'{}');
+      const ref=String(payload.ref||'').trim().toLowerCase();
+      if(ref)return ref;
+    }
+  }catch(_){}
+  return '';
+}
+function isEfcProjectConfig(cfg){
+  const ref=supabaseProjectRef(cfg&&cfg.url,cfg&&cfg.anonKey);
+  if(!ref)return false;
+  if(ref===KNOWN_EFC_PROJECT_REF)return true;
+  const legacyRef=supabaseProjectRef(legacyRawKeys().url,legacyRawKeys().anonKey);
+  return !!legacyRef&&ref===legacyRef;
+}
+function hasSupabaseKeys(cfg){return !!(cfg&&(cfg.url||cfg.anonKey||cfg.serviceRole))}
+function rejectEfcLeak(cfg,host){
+  if(allowsLegacySupabaseFallback(host))return cfg;
+  if(hasSupabaseKeys(cfg)&&isEfcProjectConfig(cfg))return unconfiguredConfig(host);
+  return cfg;
+}
+function getSupabaseConfig(req){
+  const host=requestHost(req);
+  const fromJson=matchConfigFromJson(host);
+  if(fromJson&&hasSupabaseKeys(fromJson))return rejectEfcLeak(withHostTenant(fromJson,host),host);
+  const pref=configFromPrefixedEnv(host);
+  if(hasSupabaseKeys(pref))return rejectEfcLeak(pref,host);
+  if(allowsLegacySupabaseFallback(host))return legacyConfig(host);
+  return unconfiguredConfig(host);
+}
+function missingTenantDbError(){return Object.assign(new Error(MISSING_TENANT_DB),{status:500,code:'SUPABASE_NOT_CONFIGURED'})}
+function publicRuntimeConfig(req){
+  const cfg=getSupabaseConfig(req);
+  const tenant=resolveTenantFromHost(cfg.host);
+  const configured=!!(cfg.url&&cfg.anonKey);
+  const serviceConfigured=!!(cfg.url&&cfg.serviceRole);
+  const out={host:cfg.host,clientCode:tenant.clientCode,environmentCode:String(tenant.environmentCode).toUpperCase(),configured,serviceConfigured};
+  if(!configured)out.error=MISSING_TENANT_DB;
+  return out;
+}
 const SECURITY_HEADERS={
   'X-Content-Type-Options':'nosniff',
   'Referrer-Policy':'strict-origin-when-cross-origin',
@@ -79,7 +147,7 @@ function allowedOrigin(req){const origin=String(req.headers.origin||'');const ho
 function setCors(req,res,methods='POST, OPTIONS'){applySecurityHeaders(res);res.setHeader('Access-Control-Allow-Origin',allowedOrigin(req));res.setHeader('Vary','Origin');res.setHeader('Access-Control-Allow-Methods',methods);res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');}
 function bearer(req){return String(req.headers.authorization||'').replace(/^Bearer\s+/i,'').trim()}
 async function readJsonBody(req,limit=1000000){if(req.body&&typeof req.body==='object')return req.body;if(typeof req.body==='string'){try{return JSON.parse(req.body||'{}')}catch{return{}}}return await new Promise((resolve,reject)=>{let raw='';req.on('data',c=>{raw+=c;if(raw.length>limit)reject(Object.assign(new Error('Payload trop volumineux'),{status:413}))});req.on('end',()=>{try{resolve(raw?JSON.parse(raw):{})}catch{resolve({})}});req.on('error',reject)})}
-async function getAuthUser(req){const {url,anonKey}=getSupabaseConfig(req);const token=bearer(req);if(!url||!anonKey||!token)return null;const r=await fetch(`${url}/auth/v1/user`,{headers:{apikey:anonKey,Authorization:`Bearer ${token}`}});if(!r.ok)return null;return await r.json().catch(()=>null)}
+async function getAuthUser(req){const {url,anonKey}=getSupabaseConfig(req);if(!url||!anonKey)throw missingTenantDbError();const token=bearer(req);if(!token)return null;const r=await fetch(`${url}/auth/v1/user`,{headers:{apikey:anonKey,Authorization:`Bearer ${token}`}});if(!r.ok)return null;return await r.json().catch(()=>null)}
 function normalizeEnvironmentCode(value){return String(value||'DEMO').trim().toUpperCase()||'DEMO'}
 function isPlatformProfile(profile){
   const role=String(profile?.role||'').toLowerCase();
@@ -105,8 +173,8 @@ async function validateActiveDeviceSession(req,user,profile){
   return true;
 }
 async function requireAuth(req){const user=await getAuthUser(req);if(!user?.id){const err=new Error('Authentification requise');err.status=401;throw err;}const profile=await getUserProfile(user.id,req).catch(()=>null);await validateActiveDeviceSession(req,user,profile);return user}
-async function serviceRest(path,{method='GET',body,prefer='return=representation',req}={}){const {url,serviceRole}=getSupabaseConfig(req);if(!url||!serviceRole)throw Object.assign(new Error('Configuration service Supabase manquante pour ce domaine'),{status:500});const r=await fetch(`${url}/rest/v1/${path}`,{method,headers:{apikey:serviceRole,Authorization:`Bearer ${serviceRole}`,'Content-Type':'application/json',Prefer:prefer},body:body===undefined?undefined:JSON.stringify(body)});const text=await r.text();let payload=null;try{payload=text?JSON.parse(text):null}catch{payload={message:text}};if(!r.ok){const err=new Error(payload?.message||payload?.error||text||`Supabase ${r.status}`);err.status=r.status;err.payload=payload;throw err;}return payload||[]}
+async function serviceRest(path,{method='GET',body,prefer='return=representation',req}={}){const {url,serviceRole}=getSupabaseConfig(req);if(!url||!serviceRole)throw missingTenantDbError();const r=await fetch(`${url}/rest/v1/${path}`,{method,headers:{apikey:serviceRole,Authorization:`Bearer ${serviceRole}`,'Content-Type':'application/json',Prefer:prefer},body:body===undefined?undefined:JSON.stringify(body)});const text=await r.text();let payload=null;try{payload=text?JSON.parse(text):null}catch{payload={message:text}};if(!r.ok){const err=new Error(payload?.message||payload?.error||text||`Supabase ${r.status}`);err.status=r.status;err.payload=payload;throw err;}return payload||[]}
 async function getUserProfile(userId,req){const rows=await serviceRest(`user_profiles?id=eq.${encodeURIComponent(userId)}&select=id,email,role,roles,environment_code,active,license_type,tenant_id,resolved_permissions&limit=1`,{method:'GET',prefer:'',req});return Array.isArray(rows)?rows[0]:null}
 function isAdminProfile(profile){const role=String(profile?.role||'').toLowerCase();const roles=Array.isArray(profile?.roles)?profile.roles.map(r=>String(r).toLowerCase()):[];const perms=profile?.resolved_permissions||{};return profile?.active!==false&&(role==='super_admin'||role==='admin'||role==='client_admin'||role==='environment_admin'||role==='platform_admin'||roles.includes('super_admin')||roles.includes('admin')||roles.includes('client_admin')||roles.includes('environment_admin')||perms.manage_users===true||perms.manage_global_licenses===true||perms.platform_admin===true)}
 async function requireAdmin(req){const user=await requireAuth(req);const profile=await getUserProfile(user.id,req);if(!isAdminProfile(profile)){const err=new Error('Droits administrateur requis');err.status=403;throw err;}return {user,profile}}
-module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost};
+module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost,allowsLegacySupabaseFallback,isEfcCanonicalHost,MISSING_TENANT_DB};

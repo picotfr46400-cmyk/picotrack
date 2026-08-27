@@ -67,6 +67,6 @@ module.exports = async function handler(req, res) {
     await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}`, { method:'PATCH', body:{ last_seen:new Date().toISOString() } }).catch(()=>null);
     return sendJson(res, 200, { ok:true, synced:results.length, results });
   } catch (err) {
-    return sendJson(res, 401, { ok:false, error:err.message || 'Synchronisation PAD refusée' });
+    return sendJson(res, err.status && err.status >= 400 ? err.status : 401, { ok:false, error:err.message || 'Synchronisation PAD refusée' });
   }
 };
