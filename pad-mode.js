@@ -38,7 +38,7 @@ function initPadMode() {
     const link = document.createElement('link');
     link.id = 'pad-css';
     link.rel = 'stylesheet';
-    link.href = 'pad.css';
+    link.href = '/pad.css';
     document.head.appendChild(link);
   }
   // Ajouter classe sur body pour les règles CSS
@@ -239,10 +239,143 @@ function applyPadEnvironment(cfg) {
 // ─── QR Code Scanner ──────────────────────────────────────────
 
 function startQRScan() {
-  // On utilise jsQR (à charger) ou l'API native Android
-  // Implémentation Phase 2 avec jsQR.js
-  // Format QR attendu : picotrack://connect?env=EDF-BLAYAIS&token=XXXX
-  alert('Scanner QR → disponible Phase 2\n\nPour l\'instant, entrez le code manuellement.');
+  if (typeof window.ptStartQRScan === 'function') return window.ptStartQRScan();
+  return _ptStartQRScanNative();
+}
+
+function _ptStopQRScan() {
+  const state = window.__ptQrScan;
+  if (!state) return;
+  try { if (state.raf) cancelAnimationFrame(state.raf); } catch (_) {}
+  try { if (state.timer) clearInterval(state.timer); } catch (_) {}
+  try { (state.stream && state.stream.getTracks() || []).forEach(t => t.stop()); } catch (_) {}
+  if (state.overlay && state.overlay.parentNode) state.overlay.parentNode.removeChild(state.overlay);
+  window.__ptQrScan = null;
+}
+
+function _ptApplyQRPayload(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return;
+  let env = '', token = '', login = '';
+  try {
+    const normalized = /^picotrack:/i.test(text)
+      ? text.replace(/^picotrack:/i, 'https://picotrack.local')
+      : text;
+    if (/^https?:\/\//i.test(normalized) || normalized.includes('://')) {
+      const u = new URL(normalized);
+      env = u.searchParams.get('env') || u.searchParams.get('environment') || u.searchParams.get('code') || '';
+      token = u.searchParams.get('token') || u.searchParams.get('pass') || '';
+      login = u.searchParams.get('login') || u.searchParams.get('user') || u.searchParams.get('id') || '';
+    }
+  } catch (_) {}
+  if (!env && /^[A-Z0-9][A-Z0-9_-]{1,31}$/i.test(text)) env = text;
+  const envEl = document.getElementById('pad-env-code');
+  const loginEl = document.getElementById('pad-login-id');
+  const passEl = document.getElementById('pad-login-pass');
+  if (envEl && env) {
+    envEl.value = String(env).toUpperCase();
+    if (loginEl && login) loginEl.value = login;
+    if (passEl && token) passEl.value = token;
+    if (typeof padCodeChanged === 'function') padCodeChanged(envEl.value);
+  }
+  if (/^\d+$/.test(text) && typeof padOpenForm === 'function') {
+    try { padOpenForm(text); } catch (_) {}
+  }
+  const out = document.getElementById('pt-qr-result');
+  if (out) out.textContent = 'Lu : ' + text.slice(0, 180);
+  if (typeof toast === 'function') toast('s', 'QR lu');
+}
+
+async function _ptDetectBarcode(source) {
+  if (typeof BarcodeDetector !== 'function') return '';
+  const detector = window.__ptBarcodeDetector || new BarcodeDetector({
+    formats: ['qr_code', 'aztec', 'data_matrix', 'code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e']
+  });
+  window.__ptBarcodeDetector = detector;
+  const codes = await detector.detect(source);
+  const first = (codes || []).find(c => c && (c.rawValue || c.rawValue === '')) || codes && codes[0];
+  return first && first.rawValue ? String(first.rawValue) : '';
+}
+
+async function _ptStartQRScanNative() {
+  _ptStopQRScan();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('Caméra indisponible sur cet appareil.');
+    return;
+  }
+  const overlay = document.createElement('div');
+  overlay.id = 'pt-qr-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:#0f172a;z-index:100000;display:flex;flex-direction:column;align-items:stretch';
+  overlay.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;color:#fff;font-weight:800;font-family:inherit">
+      <span>Scanner QR / code-barres</span>
+      <button type="button" id="pt-qr-close" style="border:0;background:#334155;color:#fff;border-radius:8px;padding:8px 12px;font-weight:800;cursor:pointer">Fermer</button>
+    </div>
+    <video id="pt-qr-video" playsinline autoplay muted style="flex:1;width:100%;object-fit:cover;background:#000"></video>
+    <div id="pt-qr-result" style="padding:12px 16px;color:#94a3b8;font-size:13px;font-family:inherit">Pointez un QR PicoTrack…</div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#pt-qr-close').onclick = _ptStopQRScan;
+  const video = overlay.querySelector('#pt-qr-video');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+  } catch (e) {
+    overlay.remove();
+    alert('Accès caméra refusé ou indisponible.');
+    return;
+  }
+  video.srcObject = stream;
+  try { await video.play(); } catch (_) {}
+  const state = { overlay, stream, raf: 0, timer: 0, busy: false };
+  window.__ptQrScan = state;
+
+  const tick = async () => {
+    if (!window.__ptQrScan || window.__ptQrScan !== state) return;
+    if (state.busy || video.readyState < 2) {
+      state.raf = requestAnimationFrame(tick);
+      return;
+    }
+    state.busy = true;
+    try {
+      const value = await _ptDetectBarcode(video);
+      if (value) {
+        _ptStopQRScan();
+        _ptApplyQRPayload(value);
+        return;
+      }
+    } catch (_) {}
+    state.busy = false;
+    state.raf = requestAnimationFrame(tick);
+  };
+
+  if (typeof BarcodeDetector === 'function') {
+    state.raf = requestAnimationFrame(tick);
+  } else {
+    const result = overlay.querySelector('#pt-qr-result');
+    if (result) result.textContent = 'API BarcodeDetector absente : capturez une photo du QR.';
+    const capture = document.createElement('input');
+    capture.type = 'file';
+    capture.accept = 'image/*';
+    capture.capture = 'environment';
+    capture.style.cssText = 'margin:0 16px 16px;color:#fff';
+    overlay.appendChild(capture);
+    capture.onchange = async () => {
+      const file = capture.files && capture.files[0];
+      if (!file) return;
+      try {
+        const bmp = await createImageBitmap(file);
+        const value = await _ptDetectBarcode(bmp);
+        try { bmp.close && bmp.close(); } catch (_) {}
+        if (value) { _ptStopQRScan(); _ptApplyQRPayload(value); }
+        else if (result) result.textContent = 'Aucun code lu sur cette image.';
+      } catch (_) {
+        if (result) result.textContent = 'Lecture image impossible.';
+      }
+    };
+  }
 }
 
 // ─── Interface PAD Home (après connexion) ─────────────────────
@@ -681,6 +814,7 @@ function padGoScanner(){
         <h1>Scanner</h1>
         <p>Lecture QR / code-barres.</p>
         <button onclick="startQRScan()">Démarrer le scan</button>
+        <div id="pt-qr-result" style="margin-top:10px;font-size:12px;color:#64748b"></div>
         <button class="ghost" onclick="padShowFormPicker()">Choisir un formulaire</button>
       </div>
     </div>`;
