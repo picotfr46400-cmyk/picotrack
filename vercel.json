@@ -135,7 +135,7 @@
       "destination": "/public/index.html"
     },
     {
-      "source": "/((?!api(?:/|$)|assets(?:/|$)|icons(?:/|$)|public(?:\\.html)?(?:/|$)|sw\\.js$|manifest\\.json$|style\\.css$).*)",
+      "source": "/((?!api(?:/|$)|assets(?:/|$)|icons(?:/|$)|public(?:\\.html)?(?:/|$)|sw\\.js$|manifest\\.json$|style\\.css$|pad\\.css$|pad-mode\\.js$).*)",
       "destination": "/index.html"
     }
   ],

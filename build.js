@@ -3,7 +3,7 @@ const path = require('path');
 const out = 'public';
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
-const rootFiles = ['index.html','style.css','logo-picotrack.png','manifest.json','favicon.ico','sw.js','robots.txt','security.txt','BUILD_INFO.json'];
+const rootFiles = ['index.html','style.css','pad.css','pad-mode.js','logo-picotrack.png','manifest.json','favicon.ico','sw.js','robots.txt','security.txt','BUILD_INFO.json'];
 for (const f of rootFiles) if (fs.existsSync(f)) fs.copyFileSync(f, path.join(out, f));
 if (!fs.existsSync('public.html')) throw new Error('public.html manquant : le portail public doit être publié');
 fs.copyFileSync('public.html', path.join(out, 'public.html'));
