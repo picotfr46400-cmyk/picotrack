@@ -1,4 +1,5 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
+const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -410,6 +411,9 @@ async function handleList(req, body) {
   if (Array.isArray(rows) && (entity === 'forms' || entity === 'services')) {
     return rows.filter(row => recordAllowedForProfile(entity, row, 'view', profile));
   }
+  if (Array.isArray(rows) && entity === 'databases') {
+    return rows.filter(row => String(row?.nom || '') !== INTEGRATIONS_NAME);
+  }
   return rows;
 }
 
@@ -420,6 +424,10 @@ async function handleSave(req, body) {
   const profile = await getUserProfile(user.id, req).catch(() => null);
   const source = body.record || body.body;
   const record = normalizeRecord(source, entity);
+
+  if (entity === 'databases' && String(record.nom || '') === INTEGRATIONS_NAME) {
+    throw Object.assign(new Error('Ressource interne non modifiable via records.'), { status: 403 });
+  }
 
   // Contexte serveur : le navigateur ne décide pas seul du tenant/env.
   if (profile?.tenant_id && ['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits'].includes(entity)) {
@@ -436,6 +444,13 @@ async function handleSave(req, body) {
 
   const id = String(body.id || '').trim();
   const env = record.environment_code || effectiveEnvironmentCode(profile, body.environment_code);
+
+  if (entity === 'databases' && id) {
+    const existing = await readOneById(req, 'databases', id, env).catch(() => null);
+    if (existing && String(existing.nom || '') === INTEGRATIONS_NAME) {
+      throw Object.assign(new Error('Ressource interne non modifiable via records.'), { status: 403 });
+    }
+  }
 
   if (entity === 'forms' && id) {
     const existing = await readOneById(req, 'forms', id, env);
@@ -492,6 +507,12 @@ async function handleDelete(req, body) {
     const existing = await readOneById(req, entity, id, profileEnv || body.environment_code);
     if (existing) assertRecordAllowed(entity, existing, 'delete', profile, `Suppression ${entity === 'forms' ? 'du formulaire' : 'du service'} refusée par les rôles.`);
   }
+  if (entity === 'databases') {
+    const existing = await readOneById(req, 'databases', id, profileEnv || body.environment_code).catch(() => null);
+    if (existing && String(existing.nom || '') === INTEGRATIONS_NAME) {
+      throw Object.assign(new Error('Ressource interne non supprimable via records.'), { status: 403 });
+    }
+  }
 
   // Suppression métier d'un formulaire : on nettoie d'abord les soumissions liées
   // pour éviter les blocages de contrainte et les données orphelines.
@@ -543,7 +564,7 @@ async function handleInitialLoad(req, body) {
 
   if (scope === 'databases') {
     const databases = await serviceRead(req, buildReadPath('databases', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.limit, 300) }));
-    return { environment_code: env, scope: 'databases', databases };
+    return { environment_code: env, scope: 'databases', databases: stripInternalDatabases(databases) };
   }
 
   // Mode complet conservé pour compatibilité ou diagnostic.
@@ -555,7 +576,12 @@ async function handleInitialLoad(req, body) {
     serviceRead(req, buildReadPath('databases', { filters: envFilter, select: '*', limit: cleanLimit(body.databases_limit, 300) }))
   ]);
 
-  return { environment_code: env, scope: 'full', forms, services, submissions, serviceInstances, databases };
+  return { environment_code: env, scope: 'full', forms, services, submissions, serviceInstances, databases: stripInternalDatabases(databases) };
+}
+
+function stripInternalDatabases(rows) {
+  if (!Array.isArray(rows)) return rows;
+  return rows.filter(row => String(row?.nom || '') !== INTEGRATIONS_NAME);
 }
 
 async function handleCurrentProfile(req) {
@@ -601,12 +627,22 @@ module.exports = async function handler(req, res) {
       case 'delete':
         result = await handleDelete(req, body);
         break;
+      case 'integrations_load':
+      case 'integrations_save':
+      case 'integrations_create_key':
+      case 'integrations_test_webhook':
+      case 'integrations_dispatch': {
+        const user = await requireAuth(req);
+        const profile = await getUserProfile(user.id, req).catch(() => null);
+        result = await handleIntegrations(req, body, profile);
+        break;
+      }
       default:
         return json(res, 400, { error: 'Action non autorisée' });
     }
 
     return json(res, 200, result);
   } catch (err) {
-    return json(res, err.status || 500, { error: err.message || 'Erreur API records' });
+    return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}) });
   }
 };
