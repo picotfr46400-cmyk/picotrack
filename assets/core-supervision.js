@@ -32,6 +32,10 @@
     return Promise.reject(new Error('API client indisponible'));
   }
 
+  function integrationsPost(action, extra) {
+    return apiPost('/api/records', Object.assign({ action: action, environment_code: envCode() }, extra || {}));
+  }
+
   function canImportForms() {
     try {
       if (typeof canWrite === 'function') return canWrite('forms_admin');
@@ -484,11 +488,9 @@
 
   async function fireWebhook(url, event, data) {
     if (!url) throw new Error('URL webhook manquante');
-    var res = await apiPost('/api/integrations', {
-      action: 'dispatch',
+    var res = await integrationsPost('integrations_dispatch', {
       url: url,
       event: event,
-      environment_code: envCode(),
       data: data || {}
     });
     if (!res || res.ok === false) throw new Error((res && res.error) || 'POST webhook échoué');
@@ -742,7 +744,7 @@
   async function loadIntegrations() {
     stripDemoApiConfig();
     try {
-      var data = await apiPost('/api/integrations', { action: 'load', environment_code: envCode() });
+      var data = await integrationsPost('integrations_load');
       if (!data || data.ok === false) throw new Error((data && data.error) || 'Chargement intégrations impossible');
       window.API_CONFIG.keys = mapLoadedKeys(data.keys);
       window.API_CONFIG.webhooks = Array.isArray(data.webhooks) ? data.webhooks : [];
@@ -759,9 +761,7 @@
   async function persistIntegrations() {
     if (!window.API_CONFIG || !window.API_CONFIG.__ptLoaded) return null;
     var cfg = window.API_CONFIG;
-    return apiPost('/api/integrations', {
-      action: 'save',
-      environment_code: envCode(),
+    return integrationsPost('integrations_save', {
       config: { keys: cfg.keys || [], webhooks: cfg.webhooks || [] }
     });
   }
@@ -770,7 +770,7 @@
     var name = prompt('Nom de la clé (ex: Intégration ERP) :');
     if (!name) return;
     try {
-      var data = await apiPost('/api/integrations', { action: 'create_key', name: name, environment_code: envCode() });
+      var data = await integrationsPost('integrations_create_key', { name: name });
       if (!data || !data.ok) throw new Error((data && data.error) || 'Création refusée');
       window.API_CONFIG.keys = data.keys || [];
       window.API_CONFIG.webhooks = data.webhooks || window.API_CONFIG.webhooks || [];
@@ -788,11 +788,9 @@
     var hook = (window.API_CONFIG && window.API_CONFIG.webhooks || [])[index];
     if (!hook || !hook.url) return toast('e', 'URL webhook manquante.');
     try {
-      var data = await apiPost('/api/integrations', {
-        action: 'test_webhook',
+      var data = await integrationsPost('integrations_test_webhook', {
         url: hook.url,
         event: 'webhook.test',
-        environment_code: envCode(),
         data: { name: hook.name, events: hook.events || [] }
       });
       if (data && Array.isArray(data.logs)) window.API_CONFIG.logs = data.logs;
@@ -814,7 +812,7 @@
       if (!el) return;
       var note = document.createElement('div');
       note.style.cssText = 'max-width:800px;margin:0 auto 16px;background:#fffbeb;border:1.5px solid #fde68a;border-radius:12px;padding:14px 16px;color:#92400e;font-size:13px;line-height:1.45';
-      note.innerHTML = '<b>Documentation réelle (pas une API publique v1).</b> Les appels métier passent par <code>/api/records</code>, <code>/api/auth</code>, <code>/api/users</code>, <code>/api/appointments</code> et <code>/api/integrations</code>, authentifiés Bearer. Le catalogue ci-dessous est indicatif : aucun HTTP 200 n’est simulé.';
+      note.innerHTML = '<b>Documentation réelle (pas une API publique v1).</b> Les appels métier passent par <code>/api/records</code>, <code>/api/auth</code>, <code>/api/users</code> et <code>/api/appointments</code>, authentifiés Bearer. Clés et webhooks : actions <code>integrations_*</code> de <code>/api/records</code>. Le catalogue ci-dessous est indicatif : aucun HTTP 200 n’est simulé.';
       el.insertBefore(note, el.firstChild);
     };
     window.renderApiEndpoints.__ptCore = true;

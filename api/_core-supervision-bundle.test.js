@@ -14,8 +14,8 @@ test('hotfix saisie: case groupe conserve un break valide', () => {
 
 test('cache-buster et overlay core-supervision sont branchés', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /app\.secured\.js\?v=20260916a/);
-  assert.match(html, /core-supervision\.js\?v=20260916a/);
+  assert.match(html, /app\.secured\.js\?v=20260916b/);
+  assert.match(html, /core-supervision\.js\?v=20260916b/);
   assert.equal(html.includes('20260827d'), false);
 });
 
@@ -27,4 +27,17 @@ test('Importer / filtres / étiquette ne sont plus des no-op dans le bundle', ()
   assert.match(bundle, /id="exec-responsable"/);
   assert.match(bundle, /Impression navigateur/);
   assert.equal(bundle.includes('"Disponible","goAutomations()","Configurer"'), false);
+});
+
+test('intégrations restent dans /api/records (limite Hobby 12 fonctions)', () => {
+  const apiDir = path.join(__dirname);
+  const serverless = fs.readdirSync(apiDir).filter((name) => name.endsWith('.js') && !name.startsWith('_') && !name.endsWith('.test.js'));
+  assert.equal(serverless.includes('integrations.js'), false);
+  assert.ok(serverless.length <= 12, 'trop de fonctions serverless: ' + serverless.join(','));
+  const records = fs.readFileSync(path.join(apiDir, 'records.js'), 'utf8');
+  assert.match(records, /integrations_load/);
+  assert.match(records, /handleIntegrations/);
+  const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
+  assert.match(overlay, /integrationsPost\('integrations_test_webhook'/);
+  assert.equal(overlay.includes("apiPost('/api/integrations'"), false);
 });
