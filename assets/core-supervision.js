@@ -27,6 +27,191 @@
       .replace(/"/g, '&quot;');
   }
 
+  var PLANNING_TTL_MS = 45000;
+  var USERS_SUMMARY_TTL_MS = 60000;
+  window.PT_NAV_TTL = { planning: PLANNING_TTL_MS, usersSummary: USERS_SUMMARY_TTL_MS };
+  window.__ptNavDirty = window.__ptNavDirty || {};
+  window.__ptNavPainted = window.__ptNavPainted || {};
+  var usersSummaryCache = { at: 0, users: null, env: '' };
+  var instMapCache = { fp: '', map: null };
+  var subCountCache = { fp: '', map: null };
+  var lastNavEnv = '';
+
+  function listFp(list) {
+    list = list || [];
+    var n = list.length;
+    var a = n ? String(list[0] && (list[0].id || list[0].nom || '') || '') : '';
+    var b = n ? String(list[n - 1] && (list[n - 1].id || list[n - 1].nom || '') || '') : '';
+    var extra = 0;
+    for (var i = 0; i < n; i++) extra += Number(list[i] && (list[i].resp || list[i].updatedAt || 0) || 0) || 0;
+    return n + ':' + a + ':' + b + ':' + extra;
+  }
+
+  function dataList(name) {
+    try {
+      if (name === 'forms') return typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : [];
+      if (name === 'services') return typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : [];
+      if (name === 'instances') return typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : [];
+      if (name === 'submissions') return typeof SUBMISSIONS_DATA !== 'undefined' ? SUBMISSIONS_DATA : [];
+      if (name === 'filtered') return typeof filtered !== 'undefined' ? filtered : (typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : []);
+    } catch (_) {}
+    return [];
+  }
+
+  window.ptNavMarkDirty = function (keys) {
+    if (keys === 'all' || keys == null) {
+      Object.keys(window.__ptNavPainted).forEach(function (k) { window.__ptNavDirty[k] = true; });
+      ['goDashboard', 'renderDashboard', 'renderTable', 'renderProdForms', 'renderUsersList', 'renderServices', 'goServices', 'goProdServices', 'goPlanning', 'renderPlanning', 'goWorkflows', 'goAutomations'].forEach(function (k) {
+        window.__ptNavDirty[k] = true;
+      });
+      window._ptPlanningCache = null;
+      window._ptPlanningLoadedAt = 0;
+      window._ptPlanningCacheRange = '';
+      usersSummaryCache = { at: 0, users: null, env: '' };
+      instMapCache = { fp: '', map: null };
+      subCountCache = { fp: '', map: null };
+      window.__ptCoreServicesLoaded = false;
+      window.__ptInstancesLoaded = false;
+      return;
+    }
+    (Array.isArray(keys) ? keys : [keys]).forEach(function (k) { window.__ptNavDirty[k] = true; });
+  };
+
+  window.ptNavShouldSkip = function (name, root, fp) {
+    if (window.__ptNavDirty && window.__ptNavDirty[name]) return false;
+    if (!root || !root.childElementCount) return false;
+    var head = String(root.textContent || '').replace(/\s+/g, ' ').slice(0, 90);
+    if (/Chargement/.test(head)) return false;
+    return !!(window.__ptNavPainted && window.__ptNavPainted[name] === fp);
+  };
+
+  function markPainted(name, fp) {
+    window.__ptNavPainted[name] = fp;
+    if (window.__ptNavDirty) window.__ptNavDirty[name] = false;
+  }
+
+  function syncEnvCache() {
+    var env = envCode();
+    if (lastNavEnv && lastNavEnv !== env) window.ptNavMarkDirty('all');
+    lastNavEnv = env;
+    return env;
+  }
+
+  function navChrome(spec) {
+    spec = spec || {};
+    try {
+      if (spec.url && typeof ptSyncUrl === 'function') ptSyncUrl(spec.url);
+    } catch (_) {}
+    try {
+      if (spec.navId) {
+        if (typeof ptSetNav === 'function') ptSetNav(spec.navId);
+        else {
+          document.querySelectorAll('.sb-i').forEach(function (el) { el.classList.remove('on'); });
+          var nav = document.getElementById(spec.navId);
+          if (nav) nav.classList.add('on');
+        }
+      }
+    } catch (_) {}
+    try {
+      if (spec.viewId && typeof show === 'function') show(spec.viewId);
+    } catch (_) {}
+    try {
+      if (spec.title && typeof ptSetTitle === 'function') ptSetTitle(spec.title, spec.crumb || spec.title);
+      else {
+        if (spec.title) {
+          var tb = document.getElementById('tb-t');
+          if (tb) tb.textContent = spec.title;
+        }
+        if (spec.crumb) {
+          var bc = document.getElementById('breadcrumb');
+          if (bc) bc.innerHTML = '<span style="color:var(--tl)">▶ ' + spec.crumb + '</span>';
+        }
+      }
+    } catch (_) {}
+  }
+
+  function instancesByService() {
+    var list = dataList('instances');
+    var fp = listFp(list);
+    if (instMapCache.map && instMapCache.fp === fp) return instMapCache.map;
+    var map = {};
+    for (var i = 0; i < list.length; i++) {
+      var id = String(list[i] && (list[i].serviceId || list[i].service_id) || '');
+      (map[id] || (map[id] = [])).push(list[i]);
+    }
+    instMapCache = { fp: fp, map: map };
+    return map;
+  }
+
+  function submissionsByForm() {
+    var list = dataList('submissions');
+    var fp = listFp(list);
+    if (subCountCache.map && subCountCache.fp === fp) return subCountCache.map;
+    var map = {};
+    for (var i = 0; i < list.length; i++) {
+      var id = String(list[i] && (list[i].formId || list[i].form_id) || '');
+      map[id] = (map[id] || 0) + 1;
+    }
+    subCountCache = { fp: fp, map: map };
+    return map;
+  }
+
+  function planningRangeKey() {
+    try {
+      var range = typeof ptPlanningRange === 'function' ? ptPlanningRange() : null;
+      var from = range && typeof ptDateISO === 'function' ? ptDateISO(range.from) : String(range && range.from || '');
+      var to = range && typeof ptDateISO === 'function' ? ptDateISO(range.to) : String(range && range.to || '');
+      return from + '|' + to;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function planningPaintFp() {
+    var view = '', ff = '', sf = '', st = '';
+    try { view = String(typeof ptPlanningView !== 'undefined' ? ptPlanningView : ''); } catch (_) {}
+    try { ff = String(typeof ptPlanningFormFilter !== 'undefined' ? ptPlanningFormFilter : ''); } catch (_) {}
+    try { sf = String(typeof ptPlanningServiceFilter !== 'undefined' ? ptPlanningServiceFilter : ''); } catch (_) {}
+    try { st = String(typeof ptPlanningStatusFilter !== 'undefined' ? ptPlanningStatusFilter : ''); } catch (_) {}
+    return [view, ff, sf, st, (window._ptPlanningCache || []).length, window._ptPlanningCacheRange || planningRangeKey(), window._ptPlanningLoadedAt || 0].join('|');
+  }
+
+  function planningCacheFresh() {
+    if (!window._ptPlanningLoadedAt || !Array.isArray(window._ptPlanningCache)) return false;
+    if (Date.now() - window._ptPlanningLoadedAt >= PLANNING_TTL_MS) return false;
+    var range = planningRangeKey();
+    if (window._ptPlanningCacheRange && range && window._ptPlanningCacheRange !== range) return false;
+    return true;
+  }
+
+  function prodServicesFp() {
+    return [
+      listFp(dataList('services')),
+      listFp(dataList('instances')),
+      String(window._prodServicesAssignee || 'all'),
+      String(window._prodServicesPriority || 'all'),
+      String(window._prodServicesQuery || ''),
+      JSON.stringify(window._prodServicesExtra || {}),
+      String(window._prodServicesViewMode || '')
+    ].join('|');
+  }
+
+  function wrapPainter(name, getRoot, fpFn) {
+    var orig = window[name];
+    if (typeof orig !== 'function' || orig.__ptNav) return;
+    window[name] = function () {
+      syncEnvCache();
+      var force = arguments[0] === true;
+      var root = getRoot.apply(this, arguments);
+      var fp = fpFn.apply(this, arguments);
+      if (!force && window.ptNavShouldSkip(name, root, fp)) return;
+      var ret = orig.apply(this, arguments);
+      Promise.resolve(ret).then(function () { markPainted(name, fp); });
+      return ret;
+    };
+    window[name].__ptNav = true;
+  }
+
   function apiPost(path, body) {
     if (typeof _apiPost === 'function') return _apiPost(path, body);
     return Promise.reject(new Error('API client indisponible'));
@@ -256,12 +441,12 @@
     var out = (list || (typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : [])).slice();
     var assignee = String(window._prodServicesAssignee || 'all');
     var extra = window._prodServicesExtra || { sla: 'all', waiting: false, unassigned: false };
+    var byService = instancesByService();
     if (assignee && assignee !== 'all') {
-      var instances = typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : [];
       out = out.filter(function (svc) {
-        var names = instances.filter(function (inst) {
-          return String(inst.serviceId || inst.service_id) === String(svc.id);
-        }).map(function (inst) { return String(inst.assignedTo || inst.assigned_to || '').toLowerCase(); }).filter(Boolean);
+        var names = (byService[String(svc.id)] || []).map(function (inst) {
+          return String(inst.assignedTo || inst.assigned_to || '').toLowerCase();
+        }).filter(Boolean);
         if (assignee === 'unassigned') return !names.length;
         return names.some(function (n) { return n.indexOf(assignee.toLowerCase()) >= 0; });
       });
@@ -270,10 +455,9 @@
       out = out.filter(function (svc) { return _svcServiceStats(svc).waiting > 0; });
     }
     if (extra.unassigned) {
-      var inst2 = typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : [];
       out = out.filter(function (svc) {
-        return !inst2.some(function (inst) {
-          return String(inst.serviceId || inst.service_id) === String(svc.id) && (inst.assignedTo || inst.assigned_to);
+        return !(byService[String(svc.id)] || []).some(function (inst) {
+          return inst.assignedTo || inst.assigned_to;
         });
       });
     }
@@ -288,9 +472,12 @@
     if (!sel) return;
     var current = sel.value || window._prodServicesAssignee || 'all';
     var names = {};
-    (typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : []).forEach(function (inst) {
-      var n = String(inst.assignedTo || inst.assigned_to || '').trim();
-      if (n) names[n] = true;
+    var map = instancesByService();
+    Object.keys(map).forEach(function (sid) {
+      (map[sid] || []).forEach(function (inst) {
+        var n = String(inst.assignedTo || inst.assigned_to || '').trim();
+        if (n) names[n] = true;
+      });
     });
     var opts = ['<option value="all">Responsable</option>', '<option value="unassigned">Non assigné</option>'];
     Object.keys(names).sort().forEach(function (n) {
@@ -369,13 +556,23 @@
     if (window.goProdServices && window.goProdServices.__ptCore) return;
     var orig = window.goProdServices;
     if (typeof orig !== 'function') return;
+    wrapProdServices();
     window.goProdServices = function () {
+      wrapProdServices();
+      syncEnvCache();
+      var root = document.getElementById('v-prod-services-list');
+      var fp = prodServicesFp();
+      if (window.ptNavShouldSkip('goProdServices', root, fp) && root && root.querySelector('#prod-services-grid')) {
+        navChrome({ url: '/services', navId: 'sb-prod-services', viewId: 'v-prod-services-list', title: 'Centre d’exécution', crumb: 'Production / Centre d’exécution' });
+        wireExecToolbar();
+        return;
+      }
       var ret = orig.apply(this, arguments);
       Promise.resolve(ret).then(function () {
         wireExecToolbar();
         wrapProdServices();
         populateResponsableSelect();
-        if (typeof renderProdServices === 'function') renderProdServices();
+        markPainted('goProdServices', prodServicesFp());
       });
       return ret;
     };
@@ -717,16 +914,25 @@
       var services = typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : [];
       var instances = typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : [];
       var users = { total: 0, pad: 0, supervision: 0 };
+      var env = envCode();
+      var now = Date.now();
+      if (usersSummaryCache.users && usersSummaryCache.env === env && now - usersSummaryCache.at < USERS_SUMMARY_TTL_MS) {
+        users = usersSummaryCache.users;
+      } else {
+        try {
+          var summary = await apiPost('/api/users', { action: 'summary', environment_code: env });
+          users = (summary && summary.counts) || users;
+          usersSummaryCache = { at: now, users: users, env: env };
+        } catch (_) {}
+      }
       try {
-        var summary = await apiPost('/api/users', { action: 'summary', environment_code: envCode() });
-        users = (summary && summary.counts) || users;
-      } catch (_) {}
-      try {
-        if (typeof loadFromSupabase === 'function' && !window.__ptCoreServicesLoaded) {
-          await loadFromSupabase({ scope: 'services' }).catch(function () {});
+        if (!services.length && typeof ptEnsureServicesLoaded === 'function' && !window.__ptCoreServicesLoaded) {
+          await ptEnsureServicesLoaded(false);
           window.__ptCoreServicesLoaded = true;
           services = typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : services;
           instances = typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : instances;
+        } else {
+          window.__ptCoreServicesLoaded = true;
         }
       } catch (_) {}
       if (!forms.length) {
@@ -751,16 +957,19 @@
   };
 
   function wrapDashboard() {
-    ['goDashboard', 'renderDashboard'].forEach(function (name) {
-      var orig = window[name];
-      if (typeof orig !== 'function' || orig.__ptCore) return;
-      window[name] = function () {
-        var ret = orig.apply(this, arguments);
-        Promise.resolve(ret).then(function () { return window.ptFillLiveKpis(); });
-        return ret;
-      };
-      window[name].__ptCore = true;
+    wrapPainter('renderDashboard', function () {
+      return document.getElementById('dashboard-wrap');
+    }, function () {
+      return listFp(dataList('forms')) + '|' + listFp(dataList('services')) + '|' + envCode();
     });
+    var orig = window.goDashboard;
+    if (typeof orig !== 'function' || orig.__ptCore) return;
+    window.goDashboard = function () {
+      var ret = orig.apply(this, arguments);
+      Promise.resolve(ret).then(function () { return window.ptFillLiveKpis(); });
+      return ret;
+    };
+    window.goDashboard.__ptCore = true;
   }
 
   function notInternalDb(row) {
@@ -777,34 +986,52 @@
     } catch (_) {}
   }
 
+  function automationsFp() {
+    var raw = '';
+    try { raw = localStorage.getItem('pt_mail_history') || '[]'; } catch (_) { raw = '[]'; }
+    return raw.length + ':' + raw.slice(0, 24);
+  }
+
+  function paintAutomationBadges() {
+    try {
+      document.querySelectorAll('#automations-wrap .v4-module-card').forEach(function (card) {
+        var title = (card.querySelector('h3') || {}).textContent || '';
+        var badge = card.querySelector('.v4-module-top span');
+        if (!badge) return;
+        if (/étiquette/i.test(title)) {
+          badge.textContent = 'Impression navigateur';
+          badge.style.background = '#ecfdf5';
+          badge.style.color = '#047857';
+        }
+        if (/pdf/i.test(title)) {
+          badge.textContent = 'PDF saisie';
+          badge.style.background = '#ecfdf5';
+          badge.style.color = '#047857';
+        }
+        if (/webhook|api/i.test(title)) {
+          badge.textContent = 'POST sortant';
+          badge.style.background = '#ecfdf5';
+          badge.style.color = '#047857';
+        }
+      });
+    } catch (_) {}
+  }
+
   function wrapAutomations() {
     if (window.goAutomations && window.goAutomations.__ptCore) return;
     var orig = window.goAutomations;
     if (typeof orig !== 'function') return;
     window.goAutomations = function () {
+      syncEnvCache();
+      var root = document.getElementById('automations-wrap');
+      var fp = automationsFp();
+      if (window.ptNavShouldSkip('goAutomations', root, fp)) {
+        navChrome({ url: '/automations', navId: 'sb-automations', viewId: 'v-automations', title: 'Automatisations', crumb: 'Studio / Automatisations' });
+        return;
+      }
       var ret = orig.apply(this, arguments);
-      try {
-        document.querySelectorAll('#automations-wrap .v4-module-card').forEach(function (card) {
-          var title = (card.querySelector('h3') || {}).textContent || '';
-          var badge = card.querySelector('.v4-module-top span');
-          if (!badge) return;
-          if (/étiquette/i.test(title)) {
-            badge.textContent = 'Impression navigateur';
-            badge.style.background = '#ecfdf5';
-            badge.style.color = '#047857';
-          }
-          if (/pdf/i.test(title)) {
-            badge.textContent = 'PDF saisie';
-            badge.style.background = '#ecfdf5';
-            badge.style.color = '#047857';
-          }
-          if (/webhook|api/i.test(title)) {
-            badge.textContent = 'POST sortant';
-            badge.style.background = '#ecfdf5';
-            badge.style.color = '#047857';
-          }
-        });
-      } catch (_) {}
+      paintAutomationBadges();
+      markPainted('goAutomations', fp);
       return ret;
     };
     window.goAutomations.__ptCore = true;
@@ -973,6 +1200,264 @@
     }, true);
   }
 
+  function wrapSvcStatsMaps() {
+    var orig = window._svcServiceStats;
+    if (typeof orig !== 'function' || orig.__ptNav) return;
+    window._svcServiceStats = function (svc) {
+      var byService = instancesByService();
+      var t = byService[String(svc && svc.id)] || [];
+      var statuses = (svc && svc.statuses) || [];
+      var terminal = statuses.filter(function (st) { return st && st.type === 'terminal'; }).map(function (st) { return st.id; });
+      var active = t.filter(function (inst) { return terminal.indexOf(inst.currentStatusId) < 0; });
+      var parseMs = typeof _svcParseDateMs === 'function' ? _svcParseDateMs : function () { return 0; };
+      var urgent = active.filter(function (inst) { return Date.now() - parseMs(inst.createdAt) > 864e5; }).length;
+      var waiting = active.filter(function (inst) {
+        var st = statuses.find(function (s) { return s.id === inst.currentStatusId; });
+        return String((st && st.nom) || '').toLowerCase().indexOf('attente') >= 0;
+      }).length;
+      var sla = t.length ? Math.max(40, Math.min(99, Math.round((t.length - urgent) / t.length * 100))) : 100;
+      var last = t.slice().sort(function (a, b) { return parseMs(b.createdAt) - parseMs(a.createdAt); })[0];
+      return { all: t, active: active, closed: t.length - active.length, urgent: urgent, waiting: waiting, sla: sla, last: last };
+    };
+    window._svcServiceStats.__ptNav = true;
+  }
+
+  function wrapRenderProdFormsCounts() {
+    var orig = window.renderProdForms;
+    if (typeof orig !== 'function' || orig.__ptNavCounts) return;
+    window.renderProdForms = function (list) {
+      var counts = submissionsByForm();
+      var tagged = (list || []).map(function (form) {
+        if (!form) return form;
+        form.resp = counts[String(form.id)] || form.resp || 0;
+        return form;
+      });
+      return orig.call(this, tagged);
+    };
+    window.renderProdForms.__ptNavCounts = true;
+    window.renderProdForms.__ptNav = true;
+  }
+
+  function paintPlanningFromCache(el, rows) {
+    var t = rows || [];
+    window._ptPlanningCache = t;
+    try { ptPlanningRowsCache = t; } catch (_) {}
+    var n = typeof ptApplyPlanningFilters === 'function' ? ptApplyPlanningFilters(t) : t;
+    var i = typeof ptGroupSlots === 'function' ? ptGroupSlots(n) : [];
+    try { ptPlanningGroupsCache = i; } catch (_) {}
+    var o = n.length;
+    var a = i.length;
+    var r = i.filter(function (g) { return g.count >= g.max; }).length;
+    var s = i.reduce(function (acc, g) { return acc + g.max; }, 0);
+    var l = { totalRdv: o, totalSlots: a, saturated: r, load: s ? Math.round(o / s * 100) : 0 };
+    var view = '';
+    try { view = String(typeof ptPlanningView !== 'undefined' ? ptPlanningView : ''); } catch (_) {}
+    var d;
+    if (view === 'day' && typeof ptRenderDay === 'function') d = ptRenderDay(i);
+    else if (view === 'month' && typeof ptRenderMonth === 'function') d = ptRenderMonth(i);
+    else if (view === 'year' && typeof ptRenderYear === 'function') d = ptRenderYear(i);
+    else if (view === 'capacity' && typeof ptRenderCapacity === 'function') d = ptRenderCapacity(i);
+    else if (typeof ptRenderWeek === 'function') d = ptRenderWeek(i, t);
+    else d = '';
+    if (typeof ptPlanningShell === 'function') el.innerHTML = ptPlanningShell(d, l);
+    markPainted('renderPlanning', planningPaintFp());
+  }
+
+  function wrapPlanningCache() {
+    var origLoad = window.ptLoadPlanningAppointments;
+    if (typeof origLoad === 'function' && !origLoad.__ptNav) {
+      window.ptLoadPlanningAppointments = async function () {
+        if (planningCacheFresh()) return window._ptPlanningCache;
+        var rows = await origLoad.apply(this, arguments);
+        window._ptPlanningCache = rows || [];
+        window._ptPlanningLoadedAt = Date.now();
+        window._ptPlanningCacheRange = planningRangeKey();
+        return window._ptPlanningCache;
+      };
+      window.ptLoadPlanningAppointments.__ptNav = true;
+      window.ptFetchAppointments = window.ptLoadPlanningAppointments;
+    }
+    var origRender = window.renderPlanning;
+    if (typeof origRender === 'function' && !origRender.__ptNav) {
+      window.renderPlanning = async function () {
+        syncEnvCache();
+        var el = document.getElementById('planning-wrap');
+        if (!el) return origRender.apply(this, arguments);
+        var fp = planningPaintFp();
+        if (planningCacheFresh() && window.ptNavShouldSkip('renderPlanning', el, fp)) return;
+        if (planningCacheFresh() && typeof ptPlanningShell === 'function') {
+          paintPlanningFromCache(el, window._ptPlanningCache);
+          return;
+        }
+        var ret = await origRender.apply(this, arguments);
+        window._ptPlanningCacheRange = planningRangeKey();
+        markPainted('renderPlanning', planningPaintFp());
+        return ret;
+      };
+      window.renderPlanning.__ptNav = true;
+    }
+  }
+
+  function wrapGoServices() {
+    var orig = window.goServices;
+    if (typeof orig !== 'function' || orig.__ptNav) return;
+    window.goServices = function () {
+      syncEnvCache();
+      var root = document.getElementById('services-grid');
+      var fp = listFp(dataList('services')) + '|' + listFp(dataList('instances'));
+      if (window.ptNavShouldSkip('goServices', root, fp)) {
+        document.querySelectorAll('.sb-i').forEach(function (el) { el.classList.remove('on'); });
+        var nav = document.getElementById('sb-workflows');
+        if (nav) nav.classList.add('on');
+        if (typeof show === 'function') show('v-services');
+        var tb = document.getElementById('tb-t');
+        if (tb) tb.textContent = 'Services';
+        var bc = document.getElementById('breadcrumb');
+        if (bc) bc.innerHTML = '<span style="color:var(--tl)">▶ Services</span>';
+        return;
+      }
+      var ret = orig.apply(this, arguments);
+      Promise.resolve(ret).then(function () {
+        markPainted('goServices', listFp(dataList('services')) + '|' + listFp(dataList('instances')));
+      });
+      return ret;
+    };
+    window.goServices.__ptNav = true;
+  }
+
+  function wrapGoWorkflows() {
+    var orig = window.goWorkflows;
+    if (typeof orig !== 'function' || orig.__ptNav) return;
+    window.goWorkflows = function () {
+      syncEnvCache();
+      var root = document.getElementById('workflows-wrap');
+      var fp = listFp(dataList('services')) + '|' + !!(window.PT_CACHE && window.PT_CACHE.servicesLoaded);
+      if (window.ptNavShouldSkip('goWorkflows', root, fp) && root && root.querySelector('.v4-panel')) {
+        navChrome({ url: '/workflows', navId: 'sb-workflows', viewId: 'v-workflows', title: 'Workflows', crumb: 'Studio / Workflows' });
+        return;
+      }
+      var ret = orig.apply(this, arguments);
+      Promise.resolve(ret).then(function () {
+        markPainted('goWorkflows', listFp(dataList('services')) + '|' + !!(window.PT_CACHE && window.PT_CACHE.servicesLoaded));
+      });
+      return ret;
+    };
+    window.goWorkflows.__ptNav = true;
+  }
+
+  function wrapNavPainters() {
+    wrapPainter('renderTable', function () {
+      return document.getElementById('table-body');
+    }, function () {
+      var page = typeof curPage !== 'undefined' ? curPage : 1;
+      var size = typeof pageSize !== 'undefined' ? pageSize : 10;
+      return listFp(dataList('filtered')) + '|p' + page + '|s' + size;
+    });
+    wrapPainter('renderProdForms', function () {
+      return document.getElementById('prod-forms-grid');
+    }, function (list) {
+      var q = '';
+      try { q = (document.getElementById('prod-search') || {}).value || ''; } catch (_) {}
+      return listFp(list || dataList('forms')) + '|' + q;
+    });
+    wrapPainter('renderUsersList', function () {
+      return document.getElementById('v-users');
+    }, function () {
+      var n = 0;
+      try { n = (typeof _licenseRows !== 'undefined' && _licenseRows) ? _licenseRows.length : 0; } catch (_) {}
+      var stale = !window._ptUsersLoadedAt || (Date.now() - window._ptUsersLoadedAt > 120000);
+      return n + '|' + (stale ? 'stale' : 'fresh') + '|' + envCode();
+    });
+    wrapPainter('renderServices', function () {
+      return document.getElementById('services-grid');
+    }, function (list) {
+      return listFp(list || dataList('services')) + '|' + listFp(dataList('instances'));
+    });
+  }
+
+  if (typeof window.ensureAllInstancesLoaded !== 'function') {
+    window.ensureAllInstancesLoaded = async function (limit) {
+      var list = dataList('instances');
+      if (window.__ptInstancesLoaded || (list && list.length)) {
+        window.__ptInstancesLoaded = true;
+        return list;
+      }
+      if (window.__ptInstancesLoading) return window.__ptInstancesLoading;
+      window.__ptInstancesLoading = (async function () {
+        try {
+          if (window.DB && typeof DB.list === 'function') {
+            var cap = Math.min(Math.max(Number(limit) || 200, 1), 500);
+            var rows = await DB.list('service_instances', { select: '*', limit: cap });
+            rows = Array.isArray(rows) ? rows : [];
+            if (typeof mapInstanceFromDb === 'function') {
+              rows = rows.map(function (row) {
+                try { return mapInstanceFromDb(row); } catch (_) { return row; }
+              });
+            }
+            if (typeof SERVICE_INSTANCES_DATA !== 'undefined' && Array.isArray(SERVICE_INSTANCES_DATA) && rows.length) {
+              var have = {};
+              SERVICE_INSTANCES_DATA.forEach(function (x) { have[String(x.id)] = true; });
+              rows.forEach(function (row) {
+                if (row && row.id && !have[String(row.id)]) SERVICE_INSTANCES_DATA.push(row);
+              });
+            }
+          }
+          window.__ptInstancesLoaded = true;
+          return dataList('instances');
+        } catch (err) {
+          console.warn('[PicoTrack] ensureAllInstancesLoaded', err);
+          window.__ptInstancesLoaded = true;
+          return dataList('instances');
+        } finally {
+          window.__ptInstancesLoading = null;
+        }
+      })();
+      return window.__ptInstancesLoading;
+    };
+  }
+
+  function wrapDbDirtyFlags() {
+    if (!window.DB || window.DB.__ptNavDirty) return;
+    var map = {
+      createForm: ['renderTable', 'renderDashboard', 'renderProdForms', 'goWorkflows'],
+      updateForm: ['renderTable', 'renderDashboard', 'renderProdForms'],
+      createSubmission: ['renderTable', 'renderProdForms', 'goProdServices', 'renderPlanning'],
+      createInstance: ['goServices', 'goProdServices', 'renderServices', 'renderDashboard'],
+      updateInstance: ['goServices', 'goProdServices', 'renderServices'],
+      createAppointment: ['renderPlanning', 'goPlanning'],
+      createService: ['goServices', 'goWorkflows', 'goProdServices', 'renderDashboard'],
+      updateService: ['goServices', 'goWorkflows', 'goProdServices']
+    };
+    Object.keys(map).forEach(function (fn) {
+      if (typeof window.DB[fn] !== 'function') return;
+      var orig = window.DB[fn].bind(window.DB);
+      window.DB[fn] = function () {
+        var ret = orig.apply(window.DB, arguments);
+        Promise.resolve(ret).then(function () {
+          window.ptNavMarkDirty(map[fn]);
+          instMapCache = { fp: '', map: null };
+          subCountCache = { fp: '', map: null };
+          if (fn === 'createAppointment') {
+            window._ptPlanningLoadedAt = 0;
+            window._ptPlanningCache = null;
+          }
+        });
+        return ret;
+      };
+    });
+    window.DB.__ptNavDirty = true;
+  }
+
+  function wrapNavCache() {
+    wrapNavPainters();
+    wrapRenderProdFormsCounts();
+    wrapSvcStatsMaps();
+    wrapGoServices();
+    wrapGoWorkflows();
+    wrapPlanningCache();
+    wrapDbDirtyFlags();
+  }
+
   function boot() {
     window._prodServicesAssignee = window._prodServicesAssignee || 'all';
     window._prodServicesExtra = window._prodServicesExtra || { sla: 'all', waiting: false, unassigned: false };
@@ -985,6 +1470,7 @@
     wrapAutomations();
     wrapApiConfig();
     wrapApiEndpoints();
+    wrapNavCache();
     wireImporterButton();
     hideInternalDatabases();
     if (ready) return;
