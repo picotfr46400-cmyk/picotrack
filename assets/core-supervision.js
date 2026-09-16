@@ -563,12 +563,30 @@
     }
   };
 
+  function looksLikeSubmission(obj) {
+    return !!(obj && typeof obj === 'object' && (Object.prototype.hasOwnProperty.call(obj, 'values') || obj.formId || obj.form_id || obj.dateLabel || obj.utilisateur));
+  }
+
+  function normalizeSubmission(form, second, third) {
+    if (looksLikeSubmission(second)) return second;
+    if (second && typeof second === 'object') {
+      return {
+        id: third || second.id || Date.now(),
+        values: second.values || second,
+        formId: (form && form.id) || second.formId,
+        dateLabel: new Date().toLocaleString('fr-FR')
+      };
+    }
+    return second;
+  }
+
   function wrapMailTrigger() {
     if (window._ptPrepareMailTrigger && window._ptPrepareMailTrigger.__ptCore) return;
     var orig = window._ptPrepareMailTrigger;
-    window._ptPrepareMailTrigger = function (form, sub) {
+    window._ptPrepareMailTrigger = function (form, second, third) {
+      var sub = normalizeSubmission(form, second, third);
       var ret;
-      if (typeof orig === 'function') ret = orig.apply(this, arguments);
+      if (typeof orig === 'function') ret = orig.call(this, form, sub);
       Promise.resolve(ret).then(function () { return window.ptRunSubmitTriggers(form, sub); }).catch(function (err) {
         console.warn('[PicoTrack] déclencheurs', err);
       });
@@ -577,23 +595,89 @@
     window._ptPrepareMailTrigger.__ptCore = true;
   }
 
+  function submissionFromInstance(instance, service) {
+    var values = (instance && (instance.formData || instance.form_data)) || {};
+    if (values && typeof values === 'object' && values.values) values = values.values;
+    return {
+      id: instance && (instance.submissionId || instance.submission_id || instance.id),
+      values: values,
+      dateLabel: (instance && (instance.updatedAt || instance.createdAt)) || new Date().toLocaleString('fr-FR'),
+      utilisateur: instance && (instance.assignedTo || instance.assigned_to || instance.createdBy || '')
+    };
+  }
+
+  function formFromContext(instance, service) {
+    var fid = (instance && (instance.formId || instance.form_id)) || (service && (service.formId || service.form_id));
+    if (fid && typeof FORMS_DATA !== 'undefined') {
+      var found = FORMS_DATA.find(function (f) { return String(f.id) === String(fid); });
+      if (found) return found;
+    }
+    return { nom: (service && (service.nom || service.name)) || 'Dossier', fields: [] };
+  }
+
+  window.ptRunWorkflowDeclaredAction = async function (fx, instance, service) {
+    var type = String((fx && (fx.type || fx.action)) || '').toLowerCase().replace(/-/g, '_');
+    var cfg = (fx && fx.config) || fx || {};
+    var form = formFromContext(instance, service);
+    var sub = submissionFromInstance(instance, service);
+    try {
+      if (type === 'print' || type === 'printlabel' || type === 'print_label') {
+        printLabel(form, sub, cfg);
+        return true;
+      }
+      if (type === 'export') {
+        var blob = new Blob([JSON.stringify({ service: service && (service.nom || service.id), instance: instance, submission: sub }, null, 2)], { type: 'application/json' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'dossier-' + (instance && instance.id || Date.now()) + '.json';
+        a.click();
+        toast('s', 'Export JSON téléchargé.');
+        return true;
+      }
+      if (type === 'webhook') {
+        var url = cfg.url || cfg.webhookUrl || cfg.endpoint || fx.url;
+        await fireWebhook(url, 'workflow.action', { instanceId: instance && instance.id, serviceId: service && service.id, values: sub.values });
+        toast('s', 'Webhook workflow envoyé.');
+        return true;
+      }
+      if (type === 'notif' || type === 'notification') {
+        var msg = cfg.message || fx.desc || ('Action dossier ' + ((service && service.nom) || ''));
+        toast('s', '🔔 ' + msg);
+        if (window.Notification && Notification.permission === 'granted') {
+          try { new Notification('PicoTrack', { body: msg }); } catch (_) {}
+        }
+        return true;
+      }
+      toast('i', 'Action « ' + type + ' » hors périmètre (non exécutée).');
+      return false;
+    } catch (err) {
+      toast('e', 'Action ' + type + ' : ' + (err.message || err));
+      return false;
+    }
+  };
+
   function wrapFormToDb() {
     if (window.formToDb && window.formToDb.__ptCore) return;
     var orig = window.formToDb;
     if (typeof orig !== 'function') return;
     window.formToDb = function (form) {
       var out = orig.apply(this, arguments) || {};
+      var base = {};
+      try {
+        if (form && form.triggers && typeof form.triggers === 'object' && Object.keys(form.triggers).length) base = form.triggers;
+        else if (typeof curForm !== 'undefined' && curForm && curForm.triggers) base = curForm.triggers;
+      } catch (_) {}
       var decl = [];
       try {
         if (typeof declItems !== 'undefined' && Array.isArray(declItems)) decl = declItems;
         else if (form && Array.isArray(form.declItems)) decl = form.declItems;
+        else if (Array.isArray(base.decl)) decl = base.decl;
         else if (out.triggers && Array.isArray(out.triggers.decl)) decl = out.triggers.decl;
       } catch (_) {}
-      out.triggers = Object.assign({}, out.triggers || {}, { decl: decl });
+      out.triggers = Object.assign({}, base, out.triggers || {}, { decl: decl });
       return out;
     };
     window.formToDb.__ptCore = true;
-    window.formToDb = window.formToDb;
   }
 
   function wrapOpenBuilder() {

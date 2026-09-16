@@ -2016,7 +2016,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
       } else if(fx.type==='update_db_row'){
         await ensureSources(); var ok=await runUpdateDbRow(instance, service, action, fx); if(!ok) return;
       } else {
-        toastSafe('i','ℹ️ Action '+S(fx.type||'inconnue')+' prévue mais pas encore exécutée.');
+        if(window.ptRunWorkflowDeclaredAction){await window.ptRunWorkflowDeclaredAction(fx,instance,service);}else toastSafe('i','ℹ️ Action '+S(fx.type||'inconnue')+' prévue mais pas encore exécutée.');
       }
     }
     await persistInstance(instance);
@@ -2295,7 +2295,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
           try { await ptSendMail(payload); instance.events=A(instance.events); instance.events.push({id:Date.now(), type:'email_sent', actor:'PicoTrack', at:nowLabel(), payload:{to:payload.to, subject:payload.subject, status:'sent'}}); toastSafe('s','📧 Email envoyé'); } catch(e){ toastSafe('e','📧 Email non envoyé : '+(e && e.message || e)); return; }
         } else { toastSafe('e','📧 Module mail indisponible'); return; }
       } else {
-        toastSafe('i','ℹ️ Action '+S(fx.type || 'inconnue')+' prévue mais pas encore exécutée.');
+        if(window.ptRunWorkflowDeclaredAction){await window.ptRunWorkflowDeclaredAction(fx,instance,service);}else toastSafe('i','ℹ️ Action '+S(fx.type || 'inconnue')+' prévue mais pas encore exécutée.');
       }
     }
     await persistInstance(instance);
@@ -3184,7 +3184,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
       if(type==='change_status'){ var target=fx.config.targetStatusId||fx.config.statusId||fx.config.to; var next=A(service&&service.statuses).find(function(st){return idEq(st&&st.id,target)||N(st&&(st.nom||st.name))===N(target);}); if(!next){toastSafe('e','⚠️ Statut cible manquant');return;} var prev=A(service.statuses).find(function(st){return idEq(st&&st.id,inst.currentStatusId);}); inst.currentStatusId=next.id; inst.events=A(inst.events); inst.events.push({id:Date.now(),type:'status_changed',actor:actor(),at:nowLabel(),payload:{fromStatus:prev&&(prev.nom||prev.name),toStatus:next.nom||next.name||next.id}}); toastSafe('s','🔄 → '+(next.nom||next.name||next.id)); continue; }
       if(type==='comment'){ var inp=document.getElementById('comment-input-'+inst.id), c=inp?S(inp.value).trim():''; if(!c){toastSafe('e','⚠️ Ce bouton requiert un commentaire');return;} inst.events=A(inst.events); inst.events.push({id:Date.now(),type:'commented',actor:actor(),at:nowLabel(),payload:{comment:c}}); if(inp) inp.value=''; toastSafe('s','💬 Commentaire ajouté'); continue; }
       if(type==='assign'){ var to=prompt('Affecter à :'); if(!to)return; inst.assignedTo=to; inst.events=A(inst.events); inst.events.push({id:Date.now(),type:'assigned',actor:actor(),at:nowLabel(),payload:{toUser:to}}); toastSafe('s','👤 → '+to); continue; }
-      toastSafe('i','ℹ️ Action '+type+' prévue mais pas encore exécutée.');
+      if(window.ptRunWorkflowDeclaredAction){await window.ptRunWorkflowDeclaredAction(fx,inst,service);}else toastSafe('i','ℹ️ Action '+type+' prévue mais pas encore exécutée.');
     }
     await saveInstance(inst); try{ if(typeof renderInstanceDetail==='function') renderInstanceDetail(inst,service); }catch(_){ }
   }

@@ -14,8 +14,8 @@ test('hotfix saisie: case groupe conserve un break valide', () => {
 
 test('cache-buster et overlay core-supervision sont branchés', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /app\.secured\.js\?v=20260916b/);
-  assert.match(html, /core-supervision\.js\?v=20260916b/);
+  assert.match(html, /app\.secured\.js\?v=20260916c/);
+  assert.match(html, /core-supervision\.js\?v=20260916c/);
   assert.equal(html.includes('20260827d'), false);
 });
 
@@ -40,4 +40,15 @@ test('intégrations restent dans /api/records (limite Hobby 12 fonctions)', () =
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   assert.match(overlay, /integrationsPost\('integrations_test_webhook'/);
   assert.equal(overlay.includes("apiPost('/api/integrations'"), false);
+});
+
+test('declItems / printLabel / workflow toast sont branchés', () => {
+  const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
+  assert.match(overlay, /triggers\.decl/);
+  assert.match(overlay, /ptRunSubmitTriggers/);
+  assert.match(overlay, /ptRunWorkflowDeclaredAction/);
+  assert.match(overlay, /normalizeSubmission/);
+  const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
+  assert.match(bundle, /ptRunWorkflowDeclaredAction/);
+  assert.equal((bundle.match(/ptRunWorkflowDeclaredAction/g) || []).length >= 3, true);
 });
