@@ -43,8 +43,33 @@
     var a = n ? String(list[0] && (list[0].id || list[0].nom || '') || '') : '';
     var b = n ? String(list[n - 1] && (list[n - 1].id || list[n - 1].nom || '') || '') : '';
     var extra = 0;
-    for (var i = 0; i < n; i++) extra += Number(list[i] && (list[i].resp || list[i].updatedAt || 0) || 0) || 0;
-    return n + ':' + a + ':' + b + ':' + extra;
+    var flags = 0;
+    for (var i = 0; i < n; i++) {
+      var row = list[i];
+      extra += Number(row && (row.resp || row.updatedAt || 0) || 0) || 0;
+      if (row) {
+        if (row.actif !== false) flags += i + 1;
+        if (row.published !== false) flags += (i + 1) * 10007;
+      }
+    }
+    return n + ':' + a + ':' + b + ':' + extra + ':' + flags;
+  }
+
+  function mergeFormResp(existing, counted) {
+    var a = Number(existing);
+    if (!isFinite(a) || a < 0) a = 0;
+    var b = Number(counted);
+    if (!isFinite(b) || b < 0) b = 0;
+    return Math.max(a, b);
+  }
+
+  window.ptNavListFp = listFp;
+  window.ptMergeFormResp = mergeFormResp;
+
+  function afterResolved(ret, onOk) {
+    Promise.resolve(ret).then(onOk).catch(function (err) {
+      try { console.warn('[PicoTrack] nav-cache', err); } catch (_) {}
+    });
   }
 
   function dataList(name) {
@@ -206,7 +231,7 @@
       var fp = fpFn.apply(this, arguments);
       if (!force && window.ptNavShouldSkip(name, root, fp)) return;
       var ret = orig.apply(this, arguments);
-      Promise.resolve(ret).then(function () { markPainted(name, fp); });
+      afterResolved(ret, function () { markPainted(name, fp); });
       return ret;
     };
     window[name].__ptNav = true;
@@ -568,7 +593,7 @@
         return;
       }
       var ret = orig.apply(this, arguments);
-      Promise.resolve(ret).then(function () {
+      afterResolved(ret, function () {
         wireExecToolbar();
         wrapProdServices();
         populateResponsableSelect();
@@ -966,7 +991,7 @@
     if (typeof orig !== 'function' || orig.__ptCore) return;
     window.goDashboard = function () {
       var ret = orig.apply(this, arguments);
-      Promise.resolve(ret).then(function () { return window.ptFillLiveKpis(); });
+      afterResolved(ret, function () { return window.ptFillLiveKpis(); });
       return ret;
     };
     window.goDashboard.__ptCore = true;
@@ -1222,6 +1247,28 @@
     window._svcServiceStats.__ptNav = true;
   }
 
+  function bumpProdFormCardCounts(list) {
+    var grid = document.getElementById('prod-forms-grid');
+    if (!grid) return;
+    (list || []).forEach(function (form) {
+      if (!form || form.id == null) return;
+      var floor = Number(form.resp) || 0;
+      if (!floor) return;
+      var click = 'openSubmissions(' + form.id + ')';
+      var card = grid.querySelector('[onclick="' + click + '"]');
+      if (!card) return;
+      var spans = card.querySelectorAll('span');
+      for (var i = 0; i < spans.length; i++) {
+        var text = String(spans[i].textContent || '');
+        var m = text.match(/^([\d\s\u00a0\u202f\.,]+)\s+r/i);
+        if (!m) continue;
+        var shown = Number(String(m[1]).replace(/[^\d]/g, '')) || 0;
+        if (floor > shown) spans[i].textContent = text.replace(m[1], floor.toLocaleString());
+        break;
+      }
+    });
+  }
+
   function wrapRenderProdFormsCounts() {
     var orig = window.renderProdForms;
     if (typeof orig !== 'function' || orig.__ptNavCounts) return;
@@ -1229,10 +1276,12 @@
       var counts = submissionsByForm();
       var tagged = (list || []).map(function (form) {
         if (!form) return form;
-        form.resp = counts[String(form.id)] || form.resp || 0;
+        form.resp = mergeFormResp(form.resp, counts[String(form.id)]);
         return form;
       });
-      return orig.call(this, tagged);
+      var ret = orig.call(this, tagged);
+      afterResolved(ret, function () { bumpProdFormCardCounts(tagged); });
+      return ret;
     };
     window.renderProdForms.__ptNavCounts = true;
     window.renderProdForms.__ptNav = true;
@@ -1317,7 +1366,7 @@
         return;
       }
       var ret = orig.apply(this, arguments);
-      Promise.resolve(ret).then(function () {
+      afterResolved(ret, function () {
         markPainted('goServices', listFp(dataList('services')) + '|' + listFp(dataList('instances')));
       });
       return ret;
@@ -1337,7 +1386,7 @@
         return;
       }
       var ret = orig.apply(this, arguments);
-      Promise.resolve(ret).then(function () {
+      afterResolved(ret, function () {
         markPainted('goWorkflows', listFp(dataList('services')) + '|' + !!(window.PT_CACHE && window.PT_CACHE.servicesLoaded));
       });
       return ret;
@@ -1433,7 +1482,7 @@
       var orig = window.DB[fn].bind(window.DB);
       window.DB[fn] = function () {
         var ret = orig.apply(window.DB, arguments);
-        Promise.resolve(ret).then(function () {
+        afterResolved(ret, function () {
           window.ptNavMarkDirty(map[fn]);
           instMapCache = { fp: '', map: null };
           subCountCache = { fp: '', map: null };
@@ -1448,6 +1497,16 @@
     window.DB.__ptNavDirty = true;
   }
 
+  function wrapToggleActive() {
+    var orig = window.toggleActive;
+    if (typeof orig !== 'function' || orig.__ptNav) return;
+    window.toggleActive = function () {
+      window.ptNavMarkDirty(['renderTable', 'renderProdForms', 'renderDashboard']);
+      return orig.apply(this, arguments);
+    };
+    window.toggleActive.__ptNav = true;
+  }
+
   function wrapNavCache() {
     wrapNavPainters();
     wrapRenderProdFormsCounts();
@@ -1456,6 +1515,7 @@
     wrapGoWorkflows();
     wrapPlanningCache();
     wrapDbDirtyFlags();
+    wrapToggleActive();
   }
 
   function boot() {

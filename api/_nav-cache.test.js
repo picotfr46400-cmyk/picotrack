@@ -8,13 +8,14 @@ const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision
 const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
 const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
 
-test('index.html : Babel absent, React conservé, cache-buster 20260916d', () => {
+test('index.html : Babel absent, React conservé, cache-buster 20261003a', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.match(html, /app\.secured\.js\?v=20260916d/);
-  assert.match(html, /core-supervision\.js\?v=20260916d/);
+  assert.match(html, /app\.secured\.js\?v=20261003a/);
+  assert.match(html, /core-supervision\.js\?v=20261003a/);
   assert.equal(html.includes('20260916c'), false);
+  assert.equal(html.includes('20260916d'), false);
 });
 
 test('hotfix saisie: case groupe inchangé dans le bundle', () => {
@@ -107,4 +108,78 @@ test('ptNavShouldSkip : skip seulement si painted + fp identique + pas dirty + p
   ctx.window.__ptNavDirty.dash = false;
   assert.equal(fn('dash', loading, 'a1'), false);
   assert.equal(fn('dash', { childElementCount: 0, textContent: '' }, 'a1'), false);
+});
+
+function extractFn(fromMarker, untilMarker) {
+  const start = overlay.indexOf(fromMarker);
+  const end = overlay.indexOf(untilMarker, start);
+  assert.ok(start >= 0 && end > start, 'extrait ' + fromMarker);
+  return new Function(overlay.slice(start, end) + '; return ' + fromMarker.replace(/^function\s+/, '').split('(')[0] + ';')();
+}
+
+test('Bug A : listFp change si actif/published bascule (même count / ids / resp)', () => {
+  const listFp = extractFn('function listFp', 'function mergeFormResp');
+  const rows = [
+    { id: 'f1', nom: 'Alpha', resp: 100, actif: true, published: true },
+    { id: 'f2', nom: 'Beta', resp: 2, actif: true, published: true }
+  ];
+  const before = listFp(rows);
+  assert.match(String(before), /:/);
+  rows[0].actif = false;
+  const afterToggle = listFp(rows);
+  assert.notEqual(afterToggle, before, 'toggle actif doit invalider le fingerprint');
+  rows[0].actif = true;
+  assert.equal(listFp(rows), before, 'rollback actif doit retrouver le fingerprint initial');
+  rows[1].published = false;
+  assert.notEqual(listFp(rows), before, 'toggle published doit invalider le fingerprint');
+});
+
+test('Bug A : renderTable n’est plus skip après toggle / rollback', () => {
+  const listFp = extractFn('function listFp', 'function mergeFormResp');
+  const start = overlay.indexOf('window.ptNavShouldSkip = function');
+  const end = overlay.indexOf('function markPainted', start);
+  const fnSrc = overlay.slice(start, end).replace('window.ptNavShouldSkip = function', 'function ptNavShouldSkip');
+  const ctx = { window: { __ptNavDirty: {}, __ptNavPainted: {} } };
+  const shouldSkip = new Function('window', fnSrc + '; return ptNavShouldSkip;')(ctx.window);
+  const painted = { childElementCount: 4, textContent: 'Alpha Oui 100' };
+  const rows = [{ id: 'f1', nom: 'Alpha', resp: 100, actif: true, published: true }];
+  const fpOn = listFp(rows) + '|p1|s10';
+  ctx.window.__ptNavPainted.renderTable = fpOn;
+  assert.equal(shouldSkip('renderTable', painted, fpOn), true);
+  rows[0].actif = false;
+  const fpOff = listFp(rows) + '|p1|s10';
+  assert.equal(shouldSkip('renderTable', painted, fpOff), false);
+  ctx.window.__ptNavPainted.renderTable = fpOff;
+  rows[0].actif = true;
+  assert.equal(shouldSkip('renderTable', painted, fpOn), false);
+  assert.match(overlay, /function wrapToggleActive/);
+  assert.match(overlay, /ptNavMarkDirty\(\['renderTable', 'renderProdForms', 'renderDashboard'\]\)/);
+});
+
+test('Bug B : mergeFormResp ne baisse jamais un compteur connu', () => {
+  const mergeFormResp = extractFn('function mergeFormResp', 'window.ptNavListFp');
+  assert.equal(mergeFormResp(100, 2), 100);
+  assert.equal(mergeFormResp(100, 0), 100);
+  assert.equal(mergeFormResp(100, undefined), 100);
+  assert.equal(mergeFormResp(2, 100), 100);
+  assert.equal(mergeFormResp(undefined, 5), 5);
+  assert.equal(mergeFormResp('100', 2), 100);
+  assert.equal(mergeFormResp(0, 0), 0);
+  const wrap = overlay.slice(overlay.indexOf('function wrapRenderProdFormsCounts'), overlay.indexOf('function paintPlanningFromCache'));
+  assert.match(wrap, /mergeFormResp\(/);
+  assert.equal(/form\.resp\s*=\s*counts/.test(wrap), false);
+  assert.match(overlay, /function bumpProdFormCardCounts/);
+});
+
+test('Promise.resolve(ret).then : afterResolved + .catch (pas de rejet non géré)', () => {
+  assert.match(overlay, /function afterResolved/);
+  assert.match(overlay, /Promise\.resolve\(ret\)\.then\(onOk\)\.catch/);
+  const lines = overlay.split('\n');
+  let bare = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes('Promise.resolve(ret).then')) continue;
+    const chunk = lines.slice(i, i + 8).join('\n');
+    if (!/\.catch\s*\(/.test(chunk)) bare += 1;
+  }
+  assert.equal(bare, 0, 'chaque Promise.resolve(ret).then doit avoir un .catch');
 });
