@@ -12,21 +12,29 @@ const OP_ALLOW = new Set(['eq','neq','gt','gte','lt','lte','like','ilike','is','
 const MAX_CLIENT_FILTERS = 19;
 const SYSTEM_ASSIGNABLE_ROLES = new Set(['supervision_user', 'pad_user', 'operator', 'operateur']);
 const BLOCKED_ROLE_NAMES = new Set(['admin', 'environment_admin', 'super_admin', 'client_admin', 'platform_admin']);
-const BLOCKED_ROLE_IDS = new Set(['00000000-0000-0000-0000-000000000001']);
+const BLOCKED_ROLE_IDS = new Set([
+  '00000000-0000-0000-0000-000000000001',
+  '00000000-0000-0000-0000-000000000002'
+]);
+const TENANT_TABLES = new Set([
+  'app_roles', 'user_profiles', 'appointments', 'databases', 'database_rows',
+  'services', 'service_instances', 'submissions', 'forms', 'environment_license_limits'
+]);
 
 const READ_COLUMNS = {
-  forms: ['id','nom','description','couleur','actif','modules','fields','created_at','updated_at','visible_roles','permissions','triggers','version','published','environment_code'],
-  submissions: ['id','form_id','values','device','created_at','updated_at','environment_code'],
-  services: ['id','nom','description','couleur','actif','statuses','actions','created_at','updated_at','form_id','id_pattern','flux','card_config','kanban_groups','permissions','environment_code'],
+  forms: ['id','nom','description','couleur','actif','modules','fields','created_at','visible_roles','triggers','version','published','environment_code','permissions'],
+  submissions: ['id','form_id','values','device','created_at','environment_code'],
+  services: ['id','nom','description','couleur','actif','statuses','actions','created_at','form_id','id_pattern','flux','card_config','kanban_groups','environment_code','permissions'],
   service_instances: ['id','service_id','ref','form_data','status_id','priority','events','device','created_at','updated_at','assigned_to','environment_code','created_by','current_status_id','reference','submission_id'],
-  appointments: ['id','form_id','field_id','response_id','title','customer_name','date','start_time','end_time','status','assigned_team','capacity_group','parallel_slots','created_at','updated_at','environment_code'],
-  user_profiles: ['id','email','role','roles','environment_code','active','created_at','updated_at','label','firstname','lastname','first_name','last_name','username','login_user','license_type','scope'],
-  licenses: ['id','environment_code','license_type','label','active','device_name','last_seen','created_at','updated_at','email','role','scope','roles','login_user','username'],
-  app_roles: ['id','name','description','permissions','active','created_at','updated_at','environment_code'],
-  databases: ['id','nom','description','actif','fields','columns','created_at','updated_at','environment_code'],
-  database_rows: ['id','database_id','values','created_at','updated_at','environment_code'],
-  mail_logs: ['id','status','subject','recipient','created_at','environment_code'],
-  environment_license_limits: ['id','environment_code','supervision_limit','pad_limit','lecture_limit','readonly_limit','max_supervision','max_pad','updated_at']
+  appointments: ['id','form_id','field_id','response_id','title','customer_name','date','start_time','end_time','status','assigned_team','capacity_group','created_at','updated_at','capacity_limit','parallel_slots','environment_code'],
+  user_profiles: ['id','email','role','environment_code','active','created_at','label','firstname','lastname','roles','scope','updated_at','login_user','first_name','last_name','username','license_type'],
+  licenses: ['id','environment_code','license_type','label','active','device_name','last_seen','created_at','email','role','scope','roles'],
+  app_roles: ['id','environment_code','name','permissions','active','created_at','description','updated_at'],
+  databases: ['id','environment_code','nom','couleur','type','columns','created_at','updated_at'],
+  database_rows: ['id','database_id','environment_code','source','form_id','submission_id','values','created_at'],
+  mail_logs: ['id','environment_code','source','source_id','recipient','subject','status','provider_id','error','created_at'],
+  environment_license_limits: ['id','environment_code','supervision_limit','pad_limit','lecture_limit','updated_at'],
+  tenants: ['id','nom','code','plan','actif','created_at','logo_url','couleur','max_supervision','max_pad']
 };
 
 const WRITE_COLUMNS = {
@@ -34,13 +42,13 @@ const WRITE_COLUMNS = {
   services: ['nom','description','couleur','actif','statuses','actions','form_id','id_pattern','flux','card_config','kanban_groups','permissions'],
   service_instances: ['service_id','ref','form_data','status_id','priority','events','device','assigned_to','created_by','current_status_id','reference','submission_id'],
   submissions: ['form_id','values','device'],
-  appointments: ['form_id','field_id','response_id','title','customer_name','date','start_time','end_time','status','assigned_team','capacity_group','parallel_slots'],
+  appointments: ['form_id','field_id','response_id','title','customer_name','date','start_time','end_time','status','assigned_team','capacity_group','capacity_limit','parallel_slots'],
   app_roles: ['name','description','permissions','active'],
   user_profiles: ['email','role','roles','active','label','firstname','lastname','first_name','last_name','username','login_user','license_type'],
-  licenses: ['email','role','roles','active','label','license_type','device_name','last_seen','login_user','username'],
-  databases: ['nom','description','actif','fields','columns'],
-  database_rows: ['database_id','values'],
-  mail_logs: ['status','subject','recipient']
+  licenses: ['email','role','roles','active','label','license_type','device_name','last_seen'],
+  databases: ['nom','couleur','type','columns'],
+  database_rows: ['database_id','source','form_id','submission_id','values'],
+  mail_logs: ['source','source_id','recipient','subject','status','provider_id','error']
 };
 
 function cleanEntity(value) {
@@ -49,8 +57,16 @@ function cleanEntity(value) {
 }
 
 function cleanSelect(value) {
-  const select = String(value || '*').trim();
-  if (!select || select.length > 600 || !SELECT_ALLOW.test(select)) return '*';
+  const select = String(value ?? '*').trim() || '*';
+  if (select.length > 600 || !SELECT_ALLOW.test(select)) {
+    throw Object.assign(new Error('Select refusé.'), { status: 403 });
+  }
+  if (select !== '*') {
+    const parts = select.split(',').map(part => part.trim()).filter(Boolean);
+    if (parts.some(part => part === '*' || part.includes('*'))) {
+      throw Object.assign(new Error('Select refusé.'), { status: 403 });
+    }
+  }
   return select;
 }
 
@@ -231,11 +247,12 @@ function normalizeRecord(record, entity = '') {
   delete out.password_hash;
   delete out.supa_key;
   delete out.supa_url;
+  delete out.session_token;
   return out;
 }
 
-const SENSITIVE_ROW_KEYS = ['password_hash', 'supa_key', 'supa_url'];
-const ALWAYS_SECRET_COLUMNS = ['password_hash', 'supa_key', 'supa_url'];
+const SENSITIVE_ROW_KEYS = ['password_hash', 'supa_key', 'supa_url', 'resolved_permissions', 'tenant_id', 'session_token'];
+const ALWAYS_SECRET_COLUMNS = ['password_hash', 'supa_key', 'supa_url', 'session_token'];
 const ACTIVATION_COLUMNS = ['license_key'];
 
 function redactRow(row, extraKeys = []) {
@@ -293,7 +310,20 @@ function assertSafeRead(profile, { select, filters, order, entity }) {
   if (!isPlatformLicenseManagerProfile(profile) && /[()]/.test(String(select || ''))) {
     throw Object.assign(new Error('Jointure interdite.'), { status: 403 });
   }
+  assertReadableSelect(select);
   if (!isPlatformLicenseManagerProfile(profile)) assertListedColumns(profile, entity, select, filters, order);
+}
+
+function assertReadableSelect(select) {
+  const raw = String(select ?? '').trim();
+  if (!raw || raw === '*') return;
+  if (raw.length > 600 || !SELECT_ALLOW.test(raw)) {
+    throw Object.assign(new Error('Select refusé.'), { status: 403 });
+  }
+  const parts = raw.split(',').map(part => part.trim()).filter(Boolean);
+  if (parts.some(part => part === '*' || part.includes('*'))) {
+    throw Object.assign(new Error('Select refusé.'), { status: 403 });
+  }
 }
 
 function canManageUsers(profile) {
@@ -326,7 +356,8 @@ function assertListedColumns(profile, entity, select, filters, order) {
   if (rawSelect && rawSelect !== '*') {
     for (const part of rawSelect.split(',')) {
       const column = normalizeColumnName(part.split('.')[0]);
-      if (!column || column === '*') continue;
+      if (!column) continue;
+      if (column === '*' || column.includes('*')) throw Object.assign(new Error('Select refusé.'), { status: 403 });
       if (!allowed.has(column)) throw Object.assign(new Error('Colonne non autorisée.'), { status: 403 });
     }
   }
@@ -365,12 +396,18 @@ function canonicalAssignableRole(value, catalog) {
   return '';
 }
 
+function isProtectedStoredRole(value) {
+  const token = normalizePrivilegeToken(value);
+  if (!token) return false;
+  return BLOCKED_ROLE_IDS.has(token) || BLOCKED_ROLE_NAMES.has(token);
+}
+
 function mergeAssignedRoles(existingValue, submittedValue, catalog) {
   const out = [];
   const seen = new Set();
   for (const token of parseRoleArray(existingValue)) {
     const cleaned = String(token ?? '').replace(/[\t\r\n\f\v]/g, '').trim();
-    if (!cleaned) continue;
+    if (!cleaned || !isProtectedStoredRole(cleaned)) continue;
     const key = cleaned.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -378,7 +415,7 @@ function mergeAssignedRoles(existingValue, submittedValue, catalog) {
   }
   for (const token of parseRoleArray(submittedValue)) {
     const allowed = canonicalAssignableRole(token, catalog);
-    if (!allowed) continue;
+    if (!allowed || isProtectedStoredRole(allowed)) continue;
     const key = allowed.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -453,10 +490,10 @@ function permissionFlag(profile, key) {
 
 function isPlatformAccount(profile) {
   if (!profile || typeof profile !== 'object') return false;
-  const role = String(profile.role || '').trim().toLowerCase();
-  const licenseType = String(profile.license_type || '').trim().toLowerCase();
-  const scope = String(profile.scope || '').trim().toLowerCase();
-  const env = String(profile.environment_code || '').trim().toUpperCase();
+  const role = normalizePrivilegeToken(profile.role);
+  const licenseType = normalizePrivilegeToken(profile.license_type);
+  const scope = normalizePrivilegeToken(profile.scope);
+  const env = String(profile.environment_code || '').replace(/[\t\r\n\f\v]/g, '').trim().toUpperCase();
   return role === 'super_admin'
     || role === 'platform_admin'
     || licenseType === 'super_admin'
@@ -724,8 +761,6 @@ async function handleList(req, body) {
     const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
     filters = cleanFilters(filtersWithoutClientEnvironment(filters));
     if (env && env !== 'GLOBAL') filters.push({ column: 'environment_code', op: 'eq', value: env });
-    const rawSelect = String(select || '*').trim();
-    if (!rawSelect || rawSelect === '*') select = [...readColumnsFor(entity, profile)].join(',');
   } else {
     filters = filters.slice(0, 20);
   }
@@ -748,11 +783,81 @@ async function handleList(req, body) {
   return rows;
 }
 
+function applyServerTenant(record, entity, profile) {
+  if (!record || typeof record !== 'object') return record;
+  if (!TENANT_TABLES.has(entity)) {
+    delete record.tenant_id;
+    return record;
+  }
+  if (profile?.tenant_id) record.tenant_id = profile.tenant_id;
+  else delete record.tenant_id;
+  return record;
+}
+
+const PASSTHROUGH_JSON_KEYS = new Set([
+  'values', 'fields', 'modules', 'permissions', 'form_data', 'events', 'columns',
+  'triggers', 'statuses', 'actions', 'flux', 'card_config', 'kanban_groups',
+  'visible_roles', 'roles'
+]);
+
+function readableColumnUniverse(profile) {
+  const names = new Set();
+  for (const cols of Object.values(READ_COLUMNS)) {
+    for (const col of cols) names.add(col);
+  }
+  if (canManageUsers(profile)) names.add('license_key');
+  return names;
+}
+
+function projectRecords(value, allowed, nestedAllowed) {
+  if (Array.isArray(value)) return value.map(item => projectRecords(item, allowed, nestedAllowed));
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!allowed.has(key)) continue;
+    if (PASSTHROUGH_JSON_KEYS.has(key) || item === null || typeof item !== 'object') {
+      out[key] = item;
+      continue;
+    }
+    out[key] = projectRecords(item, nestedAllowed, nestedAllowed);
+  }
+  return out;
+}
+
+function projectEntityRows(rows, entity, profile) {
+  if (!entity || !READ_COLUMNS[entity]) return rows;
+  return projectRecords(rows, readColumnsFor(entity, profile), readableColumnUniverse(profile));
+}
+
+function projectClientResult(action, body, result, profile) {
+  if (result == null) return result;
+  if (action === 'list' || action === 'save') {
+    return projectEntityRows(result, cleanEntity(body?.entity), profile);
+  }
+  if (action === 'current_profile') return projectEntityRows(result, 'user_profiles', profile);
+  if (action === 'initial_load' && result && typeof result === 'object' && !Array.isArray(result)) {
+    const out = { ...result };
+    const collections = {
+      forms: 'forms',
+      services: 'services',
+      submissions: 'submissions',
+      serviceInstances: 'service_instances',
+      databases: 'databases'
+    };
+    for (const [key, entity] of Object.entries(collections)) {
+      if (Array.isArray(out[key])) out[key] = projectEntityRows(out[key], entity, profile);
+    }
+    return out;
+  }
+  return result;
+}
+
 async function handleSave(req, body) {
   const entity = cleanEntity(body.entity);
   if (!entity) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
   const user = await requireAuth(req);
   const profile = await getUserProfile(user.id, req);
+  req.picoReaderProfile = profile;
   assertEntityWrite(entity, profile);
   const source = body.record || body.body;
   const record = normalizeRecord(source, entity);
@@ -762,10 +867,6 @@ async function handleSave(req, body) {
     throw Object.assign(new Error('Ressource interne non modifiable via records.'), { status: 403 });
   }
 
-  // Contexte serveur : le navigateur ne décide pas seul du tenant/env.
-  if (profile?.tenant_id && ['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits'].includes(entity)) {
-    record.tenant_id = profile.tenant_id;
-  }
   const entitiesWithEnvironmentCode = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
   if (entitiesWithEnvironmentCode.has(entity)) {
     record.environment_code = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, record.environment_code || body.environment_code), 'DEMO');
@@ -813,6 +914,7 @@ async function handleSave(req, body) {
       : null;
     demotePrivilegedFields(record, { catalog, existingRoles: existingRow?.roles, entity });
   }
+  applyServerTenant(record, entity, profile);
   if (id) await assertNotPlatformTarget(req, entity, id, profile);
   if (!id) delete record.id;
 
@@ -889,6 +991,7 @@ async function serviceRead(req, path) {
 async function handleInitialLoad(req, body) {
   const user = await requireAuth(req);
   const profile = await getUserProfile(user.id, req);
+  req.picoReaderProfile = profile;
   const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, body.environment_code || body.env), 'DEMO');
   const envFilter = [{ column: 'environment_code', op: 'eq', value: env }];
   const scope = String(body.scope || body.mode || 'forms').trim().toLowerCase();
@@ -941,6 +1044,8 @@ function stripInternalDatabases(rows) {
 
 async function handleCurrentProfile(req) {
   const user = await requireAuth(req);
+  const profile = await getUserProfile(user.id, req);
+  req.picoReaderProfile = profile;
   const rows = await userRest(req, buildReadPath('user_profiles', {
     filters: [{ column: 'id', op: 'eq', value: user.id }],
     select: '*',
@@ -997,6 +1102,7 @@ async function handler(req, res) {
         return json(res, 400, { error: 'Action non autorisée' });
     }
 
+    result = projectClientResult(action, body, result, req.picoReaderProfile);
     return json(res, 200, redactRecordsPayload(result, req.picoReaderProfile));
   } catch (err) {
     return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}) });
@@ -1009,4 +1115,6 @@ handler.demotePrivilegedFields = demotePrivilegedFields;
 handler.assertEntityWrite = assertEntityWrite;
 handler.effectiveEnvironmentCode = effectiveEnvironmentCode;
 handler.redactRecordsPayload = redactRecordsPayload;
+handler.READ_COLUMNS = READ_COLUMNS;
+handler.WRITE_COLUMNS = WRITE_COLUMNS;
 module.exports = handler;
