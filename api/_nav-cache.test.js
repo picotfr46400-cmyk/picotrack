@@ -222,8 +222,9 @@ test('Bug B complet : plancher resp par form.id, +1 submit/realtime, pas de chut
   assert.equal(other.resp, 100);
   assert.match(overlay, /function wrapRenderTableFloor/);
   assert.match(overlay, /function wrapSubmitSaisieResp/);
-  assert.match(overlay, /function wrapSubmissionsArray/);
   assert.match(overlay, /function wrapOnSyncSubmissions/);
+  assert.equal(overlay.includes('function wrapSubmissionsArray'), false);
+  assert.equal(overlay.includes('function noteNewSubmission'), false);
   assert.match(overlay, /applyRespFloorToList\(source\)/);
   const excel = overlay.slice(overlay.indexOf('window.exportExcel'), overlay.indexOf('function filterServicesForExec'));
   assert.match(excel, /applyRespFloorToForm/);
@@ -251,6 +252,71 @@ test('Planning : invalidation aussi sur update/delete RDV', () => {
   assert.equal(windowObj._ptPlanningCache, null);
   assert.equal(windowObj.__ptNavDirty.renderPlanning, true);
   assert.equal(windowObj.__ptNavDirty.goPlanning, true);
+});
+
+function makeRealtimeApi(form, submissions) {
+  const mergeFormResp = extractFn('function mergeFormResp', 'window.ptNavListFp');
+  const windowObj = { __ptRespFloor: {}, __ptNavDirty: {} };
+  windowObj.ptNavMarkDirty = function (keys) {
+    (Array.isArray(keys) ? keys : [keys]).forEach((k) => { windowObj.__ptNavDirty[k] = true; });
+  };
+  const forms = form ? [form] : [];
+  const floorSrc = overlay.slice(overlay.indexOf('function formKey'), overlay.indexOf('function respWord'));
+  const insertSrc = overlay.slice(overlay.indexOf('function submissionIdPresent'), overlay.indexOf('window.ptAfterSubmitSaisieRecord'));
+  const factory = new Function(
+    'window',
+    'mergeFormResp',
+    'dataList',
+    'SUBMISSIONS_DATA',
+    floorSrc + insertSrc + '; return { getRespFloor, raiseRespFloor, applyRespFloorToForm, bumpRespFloor, handleRealtimeSubmissionInsert, afterSubmitSaisieRecord };'
+  );
+  return factory(windowObj, mergeFormResp, (name) => (name === 'forms' ? forms : []), submissions);
+}
+
+test('deux ouvertures qui chargent 25 résumés ne changent pas resp', () => {
+  const form = { id: 2708, nom: 'Recette', resp: 100 };
+  const api = makeFloorApi(form);
+  api.applyRespFloorToForm(form);
+  const SUBMISSIONS_DATA = [];
+  function upsert(item) {
+    const idx = SUBMISSIONS_DATA.findIndex((x) => String(x.id) === String(item.id));
+    if (idx >= 0) SUBMISSIONS_DATA[idx] = Object.assign({}, SUBMISSIONS_DATA[idx], item);
+    else SUBMISSIONS_DATA.push(item);
+  }
+  function removeSummaries() {
+    for (let i = SUBMISSIONS_DATA.length - 1; i >= 0; i--) {
+      if (SUBMISSIONS_DATA[i]._summaryOnly) SUBMISSIONS_DATA.splice(i, 1);
+    }
+  }
+  function load25() {
+    removeSummaries();
+    for (let n = 1; n <= 25; n++) upsert({ id: 's' + n, formId: 2708, _summaryOnly: true });
+  }
+  load25();
+  assert.equal(form.resp, 100);
+  load25();
+  assert.equal(form.resp, 100, 'rechargement des 25 résumés _summaryOnly ne gonfle pas');
+  assert.equal(api.getRespFloor(2708), 100);
+  assert.equal(overlay.includes('SUBMISSIONS_DATA[method]'), false);
+  assert.equal(overlay.includes('news.forEach(noteNewSubmission)'), false);
+});
+
+test('INSERT realtime d’un id déjà présent ne fait pas +1', () => {
+  const form = { id: 'f1', nom: 'Alpha', resp: 100 };
+  const submissions = [{ id: 'sub-1', formId: 'f1' }];
+  const api = makeRealtimeApi(form, submissions);
+  api.applyRespFloorToForm(form);
+  assert.equal(api.getRespFloor('f1'), 100);
+  let handlerCalls = 0;
+  api.handleRealtimeSubmissionInsert('INSERT', { id: 'sub-1', form_id: 'f1' }, function () { handlerCalls += 1; });
+  assert.equal(handlerCalls, 1);
+  assert.equal(form.resp, 100);
+  assert.equal(api.getRespFloor('f1'), 100, 'id déjà présent : pas de +1');
+  api.handleRealtimeSubmissionInsert('INSERT', { id: 'sub-new', form_id: 'f1' }, function () {
+    submissions.push({ id: 'sub-new', formId: 'f1' });
+  });
+  assert.equal(form.resp, 101);
+  assert.equal(api.getRespFloor('f1'), 101);
 });
 
 test('Pluriel réponse / réponses selon le compteur', () => {

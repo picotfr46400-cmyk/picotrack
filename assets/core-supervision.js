@@ -1650,40 +1650,43 @@
     window._apiPost.__ptPlanningMut = true;
   }
 
-  function noteNewSubmission(item) {
-    if (!item) return;
-    var fid = item.formId || item.form_id;
-    if (fid == null) return;
-    var form = findFormById(fid);
-    if (form) raiseRespFloor(fid, form.resp);
-    bumpRespFloor(fid, 1);
-    applyRespFloorToForm(form || { id: fid, resp: getRespFloor(fid) });
+  function submissionIdPresent(id) {
+    if (id == null) return false;
+    try {
+      var list = typeof SUBMISSIONS_DATA !== 'undefined' ? SUBMISSIONS_DATA : [];
+      for (var i = 0; i < list.length; i++) {
+        if (list[i] && String(list[i].id) === String(id)) return true;
+      }
+    } catch (_) {}
+    return false;
   }
 
-  function wrapSubmissionsArray() {
-    try {
-      if (typeof SUBMISSIONS_DATA === 'undefined' || !Array.isArray(SUBMISSIONS_DATA) || SUBMISSIONS_DATA.__ptRespMut) return;
-      ['push', 'unshift'].forEach(function (method) {
-        var orig = SUBMISSIONS_DATA[method];
-        SUBMISSIONS_DATA[method] = function () {
-          var news = [];
-          for (var i = 0; i < arguments.length; i++) {
-            var item = arguments[i];
-            if (!item || item.id == null) continue;
-            var exists = false;
-            for (var j = 0; j < this.length; j++) {
-              if (this[j] && String(this[j].id) === String(item.id)) { exists = true; break; }
-            }
-            if (!exists) news.push(item);
-          }
-          var ret = orig.apply(this, arguments);
-          news.forEach(noteNewSubmission);
-          return ret;
-        };
-      });
-      SUBMISSIONS_DATA.__ptRespMut = true;
-    } catch (_) {}
+  function afterSubmitSaisieRecord(formId) {
+    if (formId == null) return getRespFloor(formId);
+    bumpRespFloor(formId, 1);
+    applyRespFloorToForm(findFormById(formId));
+    applyRespFloorToList(dataList('forms'));
+    return getRespFloor(formId);
   }
+
+  function handleRealtimeSubmissionInsert(event, row, origHandler, thisArg) {
+    var already = !!(event === 'INSERT' && row && submissionIdPresent(row.id));
+    var fid = row && (row.form_id || row.formId);
+    if (event === 'INSERT' && !already && fid != null) {
+      var form = findFormById(fid);
+      if (form) raiseRespFloor(fid, form.resp);
+    }
+    var ret;
+    if (typeof origHandler === 'function') ret = origHandler.call(thisArg, event, row);
+    if (event === 'INSERT' && !already && fid != null) {
+      bumpRespFloor(fid, 1);
+      applyRespFloorToForm(findFormById(fid));
+    }
+    return ret;
+  }
+
+  window.ptAfterSubmitSaisieRecord = afterSubmitSaisieRecord;
+  window.ptHandleRealtimeSubmissionInsert = handleRealtimeSubmissionInsert;
 
   function wrapSubmitSaisieResp() {
     var orig = window.submitSaisie;
@@ -1693,24 +1696,35 @@
       try { fid = typeof curSaisieFormId !== 'undefined' ? curSaisieFormId : null; } catch (_) {}
       var form = findFormById(fid);
       if (form) raiseRespFloor(form.id, form.resp);
-      var arrayWrapped = false;
-      try { arrayWrapped = !!(typeof SUBMISSIONS_DATA !== 'undefined' && SUBMISSIONS_DATA.__ptRespMut); } catch (_) {}
-      var ret = orig.apply(this, arguments);
-      var bumped = false;
-      function restore() {
-        if (!arrayWrapped && fid != null && !bumped) {
-          bumpRespFloor(fid, 1);
-          bumped = true;
+      var list;
+      try { list = SUBMISSIONS_DATA; } catch (_) {}
+      var origPush = list && list.push;
+      var hooked = false;
+      var done = false;
+      function afterSR() {
+        if (done || fid == null) return;
+        done = true;
+        afterSubmitSaisieRecord(fid);
+        if (list && origPush && hooked) {
+          list.push = origPush;
+          hooked = false;
         }
-        applyRespFloorToForm(findFormById(fid));
-        applyRespFloorToList(dataList('forms'));
       }
-      afterResolved(ret, function () {
-        restore();
-        setTimeout(restore, 0);
-        setTimeout(restore, 50);
-      });
-      setTimeout(restore, 0);
+      if (typeof origPush === 'function') {
+        list.push = function () {
+          var ret = origPush.apply(this, arguments);
+          Promise.resolve().then(afterSR);
+          return ret;
+        };
+        hooked = true;
+      }
+      var ret = orig.apply(this, arguments);
+      setTimeout(function () {
+        if (list && origPush && hooked) {
+          list.push = origPush;
+          hooked = false;
+        }
+      }, 20000);
       return ret;
     };
     window.submitSaisie.__ptRespFloor = true;
@@ -1722,16 +1736,7 @@
     window.onSync = function (entity, handler) {
       if (String(entity) === 'submissions' && typeof handler === 'function' && !handler.__ptRespFloor) {
         var wrapped = function (event, row) {
-          var fid = row && (row.form_id || row.formId);
-          if (event === 'INSERT' && fid != null) {
-            var form = findFormById(fid);
-            if (form) raiseRespFloor(fid, form.resp);
-          }
-          var ret = handler.apply(this, arguments);
-          if (event === 'INSERT' && fid != null) {
-            applyRespFloorToForm(findFormById(fid));
-          }
-          return ret;
+          return handleRealtimeSubmissionInsert(event, row, handler, this);
         };
         wrapped.__ptRespFloor = true;
         return orig.call(this, entity, wrapped);
@@ -1762,7 +1767,6 @@
     wrapDbDirtyFlags();
     wrapApiAppointmentMutations();
     wrapToggleActive();
-    wrapSubmissionsArray();
     wrapSubmitSaisieResp();
     wrapOnSyncSubmissions();
   }
