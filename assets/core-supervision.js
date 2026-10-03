@@ -49,6 +49,8 @@
       var s = document.createElement('script');
       s.src = src;
       s.async = true;
+      s.crossOrigin = 'anonymous';
+      if (src === XLSX_SRC) s.integrity = 'sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw';
       s.onload = function () { resolve(window.XLSX); };
       s.onerror = function () { reject(new Error('Impossible de charger SheetJS')); };
       document.head.appendChild(s);
