@@ -22,10 +22,9 @@ Tant que `/.well-known/assetlinks.json` n’est pas **déployé** sur l’hôte,
 
 ## Petit changement web
 
-- `.well-known/assetlinks.json` — package `fr.picotrack.efc.twa` + empreinte du certificat **debug** versionné. `build.js` copie déjà `.well-known` dans la sortie Vercel.
+- `.well-known/assetlinks.json` — package `fr.picotrack.efc.twa` et empreinte publique du certificat debug de confiance. `build.js` copie déjà `.well-known` dans la sortie Vercel. La clé privée n’est pas dans le dépôt.
 - `vercel.json` — `/.well-known/` n’est plus renvoyé vers `index.html`.
-- `pad-device.js` — le bouton Localisation écrivait en dur `GPS: 45.0473° N, 4.7277° E`. Il appelle maintenant le GPS de l’appareil. Le reste du formulaire ne change pas.
-- `index.html` charge ce script. Pas d’autre changement de navigation, d’API ou de tenant.
+- Le bouton Localisation n’écrit plus de position de démonstration. `assets/app.secured.js` appelle `ptCaptureGps`, et `pad-device.js` (chargé par `index.html`) lit `navigator.geolocation`. Le reste du formulaire ne change pas.
 
 ## Construire l’APK debug
 
@@ -44,6 +43,8 @@ mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
 Le script refuse tout ce qui n’est pas une origine `https` nue. Défaut : EFC.
 
+Sans les secrets debug, le script génère une clé jetable pour ce build seulement. L’APK s’installe, mais il ne correspond pas à `assetlinks.json`. Pour un APK aligné avec l’empreinte publiée, exportez les quatre variables d’environnement des secrets debug (voir ci-dessous) avant de lancer le script. Aucun mot de passe n’est écrit dans le dépôt.
+
 Autre client (un APK distinct, un autre `applicationId`) :
 
 ```bash
@@ -52,35 +53,38 @@ PAD_HOST=https://client.picotrack.fr ./mobile/build-apk.sh
 
 Puis ajouter, **sur l’hôte de ce client uniquement**, une entrée `assetlinks.json` pour le package affiché dans le log (`…twa`) et l’empreinte du certificat. Ne pas réutiliser le fichier EFC pour pointer vers une autre base.
 
-Certificat debug (public, sideload interne) :
-
-- fichier : `mobile/android/app/debug.keystore`
-- alias : `android`
-- mots de passe store et clé : `android`
-- SHA-256 : `AE:55:4F:10:82:EB:92:13:47:FC:52:9C:F6:86:47:E2:0E:48:D0:B2:21:81:B2:E9:AC:76:92:85:04:F8:1D:89`
-
-Ce trousseau est dans le dépôt pour que l’APK debug et `assetlinks.json` restent alignés. Ce n’est pas une clé de production.
-
 ## CI
 
 Workflow : `.github/workflows/pad-android-apk.yml`.
 
-À chaque pull request qui touche le PAD Android, le workflow construit l’APK debug (hôte EFC, sauf lancement manuel) et le publie en artefact `picotrack-pad-debug`.
+Il part sur une pull request **vers `v2`**, sur un push **vers `v2`**, ou en lancement manuel. Il publie l’artefact `picotrack-pad-debug` (hôte EFC, sauf saisie manuelle).
 
 Lancement manuel : Actions → PAD Android APK → Run workflow, champ origine.
 
-### APK release
+### Secrets à créer
 
-Produite seulement si les quatre secrets sont définis dans le dépôt GitHub. Aucune clé release n’est créée ici.
+Aucune valeur n’est versionnée. GitHub → Settings → Secrets and variables → Actions.
 
 | Secret | Contenu |
 | --- | --- |
+| `ANDROID_DEBUG_KEYSTORE_BASE64` | keystore debug encodé en base64 (`base64 -w0 debug.keystore`) |
+| `ANDROID_DEBUG_KEYSTORE_PASSWORD` | mot de passe du keystore debug |
+| `ANDROID_DEBUG_KEY_ALIAS` | alias de la clé debug |
+| `ANDROID_DEBUG_KEY_PASSWORD` | mot de passe de la clé debug |
 | `ANDROID_KEYSTORE_BASE64` | keystore release encodé en base64 (`base64 -w0 release.keystore`) |
-| `ANDROID_KEYSTORE_PASSWORD` | mot de passe du keystore |
-| `ANDROID_KEY_ALIAS` | alias de la clé |
-| `ANDROID_KEY_PASSWORD` | mot de passe de la clé |
+| `ANDROID_KEYSTORE_PASSWORD` | mot de passe du keystore release |
+| `ANDROID_KEY_ALIAS` | alias de la clé release |
+| `ANDROID_KEY_PASSWORD` | mot de passe de la clé release |
 
-Le log CI affiche le SHA-256 du certificat release. Il faut l’ajouter à `sha256_cert_fingerprints` (en plus de l’empreinte debug si les deux APK doivent ouvrir le site en plein écran) **avant** de distribuer la release. L’artefact s’appelle `picotrack-pad-release`.
+Les quatre secrets debug sont optionnels pour produire un APK. S’ils sont absents, CI génère une clé éphémère. Pour que le plein écran corresponde à `.well-known/assetlinks.json`, ces quatre secrets doivent être ceux de la clé dont l’empreinte est déjà dans ce fichier. L’empreinte publique se lit dans `assetlinks.json` ; elle n’est pas un secret.
+
+L’ancienne clé debug qui a été commitée n’est plus de confiance. Elle reste dans l’historique git ; ce dépôt ne la réécrit pas.
+
+### APK release
+
+Produite seulement si les quatre secrets release sont définis. Aucune clé release n’est créée ici.
+
+Le log CI affiche le SHA-256 du certificat release. Il faut l’ajouter à `sha256_cert_fingerprints` **avant** de distribuer la release. L’artefact s’appelle `picotrack-pad-release`.
 
 ## Installer sur un téléphone (sideload)
 
@@ -109,7 +113,7 @@ Caméra et GPS sont optionnels au niveau matériel : un appareil sans GPS s’in
 2. Connexion avec un identifiant PAD EFC. Fermer l’appli (et la relancer après un redémarrage) : la session `pt_pad` est encore là. Le jeton serveur expire au bout de 7 jours, il faudra alors se reconnecter.
 3. Photo : un champ Photo ouvre l’appareil photo arrière et la pièce jointe reste dans la saisie.
 4. Scanner : l’onglet Scanner démarre la caméra et lit un QR PicoTrack. Si `BarcodeDetector` manque, le repli « photo du QR » s’affiche — sur Chrome récent il ne doit pas apparaître.
-5. Localisation : le bouton Capturer demande la position et enregistre `GPS: <lat>, <lng> (±m)`, pas `45.0473° N, 4.7277° E`. Refuser la permission ne doit rien enregistrer.
+5. Localisation : le bouton Capturer demande la position et enregistre `GPS: <lat>, <lng> (±m)`. Refuser la permission ne doit rien enregistrer.
 6. Après déploiement de `assetlinks.json`, réinstaller ou vider les données Chrome de l’appli : la barre d’adresse disparaît. Vérification possible avec [l’outil Digital Asset Links](https://developers.google.com/digital-asset-links/tools/generator) sur `efc.picotrack.fr` et le package `fr.picotrack.efc.twa`.
 
 ## Limites
@@ -118,5 +122,5 @@ Caméra et GPS sont optionnels au niveau matériel : un appareil sans GPS s’in
 - Pas de mise à jour automatique hors Play : redistribuer l’APK pour changer le wrapper. Le site, lui, se met à jour sans nouvel APK.
 - Plein écran fiable seulement après déploiement des asset links. Avant ça, une barre d’adresse reste visible.
 - Le scan QR dépend de Chrome (ou équivalent), pas d’un décodeur embarqué.
-- Le certificat debug est public. Ne pas le considérer comme une frontière de sécurité. La clé release reste hors du dépôt.
+- La clé debug de confiance n’est pas dans le dépôt. L’ancienne clé commitée reste dans l’historique git et ne doit plus être utilisée. La clé release reste hors du dépôt.
 - Vider le stockage de l’application (écran « Gérer l’espace ») déconnecte le terminal.

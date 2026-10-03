@@ -8,6 +8,7 @@ on:
         required: false
         default: "https://efc.picotrack.fr"
   pull_request:
+    branches: [v2]
     paths:
       - "mobile/**"
       - ".github/workflows/pad-android-apk.yml"
@@ -16,8 +17,10 @@ on:
       - "index.html"
       - "build.js"
       - "vercel.json"
+      - "assets/app.secured.js"
+      - "app.secured-v45.js"
   push:
-    branches: [main]
+    branches: [v2]
     paths:
       - "mobile/**"
       - ".github/workflows/pad-android-apk.yml"
@@ -26,6 +29,11 @@ on:
       - "index.html"
       - "build.js"
       - "vercel.json"
+      - "assets/app.secured.js"
+      - "app.secured-v45.js"
+
+permissions:
+  contents: read
 
 jobs:
   apk:
@@ -60,6 +68,10 @@ jobs:
       - name: Configure tenant and build debug APK
         env:
           PAD_HOST: ${{ github.event.inputs.tenant_host || 'https://efc.picotrack.fr' }}
+          ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+          ANDROID_DEBUG_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_DEBUG_KEYSTORE_PASSWORD }}
+          ANDROID_DEBUG_KEY_ALIAS: ${{ secrets.ANDROID_DEBUG_KEY_ALIAS }}
+          ANDROID_DEBUG_KEY_PASSWORD: ${{ secrets.ANDROID_DEBUG_KEY_PASSWORD }}
         run: ./mobile/build-apk.sh
 
       - name: Upload debug APK

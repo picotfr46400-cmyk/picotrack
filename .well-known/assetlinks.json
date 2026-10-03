@@ -1,11 +1,13 @@
 [
   {
-    "relation": ["delegate_permission/common.handle_all_urls"],
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
     "target": {
       "namespace": "android_app",
       "package_name": "fr.picotrack.efc.twa",
       "sha256_cert_fingerprints": [
-        "AE:55:4F:10:82:EB:92:13:47:FC:52:9C:F6:86:47:E2:0E:48:D0:B2:21:81:B2:E9:AC:76:92:85:04:F8:1D:89"
+        "6E:0E:F1:53:5D:D0:BE:17:2C:EE:FF:DB:2C:30:BA:67:3A:CD:3D:BA:C7:99:94:BA:FF:E0:96:C4:BB:FA:D3:74"
       ]
     }
   }
