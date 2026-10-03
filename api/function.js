@@ -174,7 +174,8 @@ async function upsertUserProfile(url, serviceRole, authUser, payload, options = 
     profile.lastname = cleanString(payload.lastname || payload.last_name || '');
     profile.last_name = cleanString(payload.lastname || payload.last_name || '');
     profile.license_key = payload.license_key || null;
-    if (options.tenantId) profile.tenant_id = cleanString(options.tenantId, 80);
+    if (options.tenantId === null) profile.tenant_id = null;
+    else if (options.tenantId) profile.tenant_id = cleanString(options.tenantId, 80);
   } else {
     if (clientSent('username')) profile.username = cleanString(requested.username);
     if (clientSent('login_user')) profile.login_user = cleanString(requested.login_user);
@@ -283,10 +284,27 @@ function envCandidates(env) {
   return [...new Set([upper, raw, raw.toLowerCase()].filter(Boolean))];
 }
 
+function quotaReadError(err) {
+  const upstream = Number(err?.status);
+  const status = upstream >= 500 && upstream <= 599 ? upstream : 503;
+  return Object.assign(new Error('Lecture du quota indisponible.'), { status });
+}
+
+async function quotaRead(url, serviceRole, path) {
+  try {
+    const rows = await supabaseFetch(url, serviceRole, path, { method: 'GET' });
+    if (!Array.isArray(rows)) throw quotaReadError(null);
+    return rows;
+  } catch (err) {
+    if (err && err.message === 'Lecture du quota indisponible.') throw err;
+    throw quotaReadError(err);
+  }
+}
+
 async function getLicenseLimitsForEnvironment(url, serviceRole, environmentCode) {
   for (const env of envCandidates(environmentCode)) {
-    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit&limit=1`, { method: 'GET' }).catch(() => []);
-    if (Array.isArray(rows) && rows[0]) return rows[0];
+    const rows = await quotaRead(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,tenant_id&limit=1`);
+    if (rows[0]) return rows[0];
   }
   return null;
 }
@@ -313,29 +331,29 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
     return normalizeEmail(row?.email || '');
   }
 
-  // Schéma licenses : pas de login_user ni de username. Les sélectionner fait échouer
-  // la requête, le catch avale l'erreur, et les licences sans profil ne sont plus comptées.
+  // Schéma licenses : pas de login_user ni de username. Une licence dont l'e-mail
+  // correspond à un profil du même environnement (actif ou non) n'est pas une place de plus :
+  // la désactivation ne retire pas la ligne licenses.
   const licenseSelect = 'id,environment_code,license_key,license_type,active,email,role,scope,roles';
+  const profileSelect = 'id,email,role,license_type,roles,scope,resolved_permissions,active,environment_code';
 
   for (const env of envCandidates(environmentCode)) {
-    const profiles = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,login_user,username,role,license_type,roles,scope,resolved_permissions`, { method: 'GET' }).catch(() => []);
-    for (const row of Array.isArray(profiles) ? profiles : []) {
-      if (!row || isPlatform(row)) continue;
+    const profiles = await quotaRead(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=${profileSelect}`);
+    for (const row of profiles) {
+      if (!row) continue;
       const email = emailKey(row);
-      if (excludeId && String(row.id) === String(excludeId)) {
-        if (email) seenEmails.add(email);
-        continue;
-      }
-      const idKey = String(row.id || '').toLowerCase();
-      if ((idKey && seenProfiles.has(idKey)) || (email && seenEmails.has(email))) continue;
-      if (idKey) seenProfiles.add(idKey);
       if (email) seenEmails.add(email);
+      if (isPlatform(row) || row.active === false) continue;
+      if (excludeId && String(row.id) === String(excludeId)) continue;
+      const idKey = String(row.id || '').toLowerCase();
+      if (idKey && seenProfiles.has(idKey)) continue;
+      if (idKey) seenProfiles.add(idKey);
       if (rowType(row) === licenseType) total += 1;
     }
 
-    const licenses = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${licenseSelect}`, { method: 'GET' }).catch(() => []);
-    for (const row of Array.isArray(licenses) ? licenses : []) {
-      if (!row || isPlatform(row)) continue;
+    const licenses = await quotaRead(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${licenseSelect}`);
+    for (const row of licenses) {
+      if (!row || isPlatform(row) || row.active === false) continue;
       const email = emailKey(row);
       if (email && seenEmails.has(email)) continue;
       const licKey = String(row.license_key || row.id || '').toLowerCase();
@@ -346,6 +364,16 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
     }
   }
   return total;
+}
+
+function updateAddsActiveSeat(current, next) {
+  const willBeActive = next?.active !== false;
+  if (!willBeActive) return false;
+  const wasActive = current?.active !== false;
+  const prevType = normalizeLicenseType(current?.license_type);
+  const nextType = normalizeLicenseType(next?.license_type || current?.license_type);
+  if (!wasActive) return true;
+  return prevType !== nextType;
 }
 
 async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null) {
@@ -495,10 +523,9 @@ function preservedRoleList(existingValue) {
 function clampAssignedPrivileges(payload, requester, context = {}) {
   const next = Object.assign({}, payload || {});
   let rolesUnchanged = false;
-  if (Object.prototype.hasOwnProperty.call(next, 'roles') && (next.roles == null || typeof next.roles === 'string')) {
+  if (Object.prototype.hasOwnProperty.call(next, 'roles') && !Array.isArray(next.roles)) {
     rolesUnchanged = true;
-    const preserved = preservedRoleList(context.existingRoles);
-    if (Array.isArray(preserved)) next.roles = preserved;
+    if (Array.isArray(context.existingRoles)) next.roles = context.existingRoles.slice();
     else delete next.roles;
   }
   if (isPlatformOperatorProfile(requester)) return next;
@@ -720,6 +747,25 @@ async function handleListUsers(req, url, serviceRole, payload) {
   return { ok: true, success: true, environment_code: environmentCode, rows };
 }
 
+async function resolveCreateTenantId(url, serviceRole, environmentCode, requester) {
+  const env = normalizeEnvironmentCode(environmentCode);
+  const requesterEnv = profileEnvironmentCode(requester);
+  const ownTenant = cleanString(requester?.tenant_id || '', 80);
+  if (requesterEnv && requesterEnv === env) return ownTenant;
+  if (!isPlatformOperatorProfile(requester)) return ownTenant;
+  try {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=tenant_id&limit=50`, { method: 'GET' });
+    const found = (Array.isArray(rows) ? rows : []).map(row => cleanString(row?.tenant_id || '', 80)).find(Boolean);
+    if (found) return found;
+  } catch (_) {}
+  try {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=tenant_id&limit=1`, { method: 'GET' });
+    const found = cleanString((Array.isArray(rows) ? rows[0] : null)?.tenant_id || '', 80);
+    if (found) return found;
+  } catch (_) {}
+  return null;
+}
+
 async function handleCreateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const profile = await requireUserCreator(req, url, serviceRole);
@@ -728,7 +774,8 @@ async function handleCreateUser(req, url, serviceRole, payload) {
   const environmentCode = assertSameEnvironmentOrPlatform(profile, safePayload.environment_code || safePayload.active_env || profileEnvironmentCode(profile));
   const quota = await assertQuotaAvailable(url, serviceRole, { ...safePayload, environment_code: environmentCode }, null);
   const authUser = await createAuthUserWithPassword(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
-  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode }, { tenantId: profile?.tenant_id || '' });
+  const tenantId = await resolveCreateTenantId(url, serviceRole, quota.environmentCode, profile);
+  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode }, { tenantId });
   await insertLicenseBestEffort(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
   return { ok: true, success: true, mode: 'direct-create', quota, user: { id: authUser.id, email: authUser.email || payload.email }, profile: createdProfile };
 }
@@ -762,7 +809,7 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   const catalog = isPlatformOperatorProfile(profileRequester) ? [] : await loadActiveAppRoles(url, serviceRole, profileEnvironmentCode(profileRequester));
   const safePayload = clampAssignedPrivileges(payload, profileRequester, { catalog, existingRoles: current.roles });
   const merged = { ...current, ...safePayload, environment_code: safePayload.environment_code || current.environment_code, license_type: safePayload.license_type || current.license_type };
-  await assertQuotaAvailable(url, serviceRole, merged, id);
+  if (updateAddsActiveSeat(current, merged)) await assertQuotaAvailable(url, serviceRole, merged, id);
   await updateAuthUserPassword(url, serviceRole, id, payload);
   const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged, { partial: true, requested: payload });
   return { ok: true, success: true, mode: 'direct-update', profile };

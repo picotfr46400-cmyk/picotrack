@@ -408,10 +408,31 @@ test('handler : les rôles espacés et la chaîne postgres ne deviennent pas adm
     }, authHeaders());
     assert.equal(byRecords.status, 200, byRecords.payload.error || '');
     assert.equal(saved.role, 'supervision_user');
-    assert.deepEqual(saved.roles, []);
+    assert.equal(Object.prototype.hasOwnProperty.call(saved, 'roles'), false);
     assert.equal(JSON.stringify(saved).includes('{admin'), false);
     assert.equal(JSON.stringify(saved).includes('environment_admin'), false);
     assert.equal(JSON.stringify(saved).includes('client_admin'), false);
+
+    target.roles = ['pad_user', OPERATOR_ROLE, MANAGER_LEGACY];
+    saved = null;
+    const rolesObject = await callJson(records, {
+      action: 'save',
+      entity: 'user_profiles',
+      id: 'target-1',
+      record: { roles: { admin: true } }
+    }, authHeaders());
+    assert.equal(rolesObject.status, 200, rolesObject.payload.error || '');
+    assert.deepEqual(saved.roles, ['pad_user', OPERATOR_ROLE, MANAGER_LEGACY]);
+
+    saved = null;
+    const rolesCleared = await callJson(records, {
+      action: 'save',
+      entity: 'user_profiles',
+      id: 'target-1',
+      record: { roles: [] }
+    }, authHeaders());
+    assert.equal(rolesCleared.status, 200, rolesCleared.payload.error || '');
+    assert.deepEqual(saved.roles, [MANAGER_LEGACY]);
 
     saved = null;
     const appRole = await callJson(records, {
@@ -766,10 +787,14 @@ test('handler : un rôle objet ou texte n’ajoute rien, et 0002 déjà présent
       saved = null;
       const out = await callJson(functions, { functionName: 'update-user', payload: { id: 'target-1', ...payload } }, authHeaders());
       assert.equal(out.status, 200, out.payload.error || JSON.stringify(payload));
-      assert.equal(saved.roles.includes(MANAGER_LEGACY), true, JSON.stringify(saved.roles));
-      assert.equal(saved.roles.includes(''), false);
-      assert.equal(saved.roles.includes(ADMIN_ROLE), false);
-      assert.equal(saved.roles.some(role => /admin/i.test(role)), false, JSON.stringify(saved.roles));
+      if (Array.isArray(payload.roles)) {
+        assert.equal(saved.roles.includes(MANAGER_LEGACY), true, JSON.stringify(saved.roles));
+        assert.equal(saved.roles.includes(''), false);
+        assert.equal(saved.roles.includes(ADMIN_ROLE), false);
+        assert.equal(saved.roles.some(role => /admin/i.test(role)), false, JSON.stringify(saved.roles));
+      } else {
+        assert.deepEqual(saved.roles, [MANAGER_LEGACY, ''], JSON.stringify(payload));
+      }
     }
     assert.equal(saved.roles.includes('opérateur'), true, JSON.stringify(saved.roles));
     assert.equal(saved.roles.includes(MANAGER_ROLE), true);
@@ -1632,7 +1657,7 @@ test('handler : roles null ou texte laisse la liste inchangée', async () => {
         return null;
       }
     });
-    for (const roles of [null, 'pad_user', '["supervision_user"]', '']) {
+    for (const roles of [null, 'pad_user', '["supervision_user"]', '', { admin: true }, 3, true, false]) {
       saved = null;
       const out = await callJson(functions, { functionName: 'update-user', payload: { id: 'target-1', roles } }, authHeaders());
       assert.equal(out.status, 200, out.payload.error || JSON.stringify(roles));
@@ -1641,6 +1666,11 @@ test('handler : roles null ou texte laisse la liste inchangée', async () => {
     const replaced = await callJson(functions, { functionName: 'update-user', payload: { id: 'target-1', roles: ['supervision_user'] } }, authHeaders());
     assert.equal(replaced.status, 200, replaced.payload.error || '');
     assert.deepEqual(saved.roles, ['supervision_user']);
+
+    target.roles = ['pad_user', OPERATOR_ROLE, MANAGER_LEGACY];
+    const cleared = await callJson(functions, { functionName: 'update-user', payload: { id: 'target-1', roles: [] } }, authHeaders());
+    assert.equal(cleared.status, 200, cleared.payload.error || '');
+    assert.deepEqual(saved.roles, [MANAGER_LEGACY]);
   });
 });
 
@@ -1678,4 +1708,227 @@ test('handler : create-user pose tenant_id sur user_profiles depuis le profil ap
     assert.ok(license, 'licence non écrite');
     assert.equal(license.body.tenant_id, undefined);
   });
+});
+
+test('handler : créer un compte pile à la limite répond 403, la désactivation libère la place', async () => {
+  const requester = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  const alice = { id: 'alice-1', email: 'alice@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  const bob = { id: 'bob-1', email: 'bob@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  const profiles = [requester, alice, bob];
+  const licenseRows = [
+    { id: 'lic-bob', email: 'Bob@EFC.picotrack.fr', license_key: 'LK-BOB', license_type: 'supervision', role: 'supervision_user', environment_code: 'EFC', active: true }
+  ];
+  const limits = { environment_code: 'EFC', supervision_limit: 3, pad_limit: 10 };
+  await withSupabase(async () => {
+    const authPosts = [];
+    installActor(requester, {
+      onFetch(u, method, options) {
+        if (method === 'GET' && u.includes('user_profiles?id=eq.bob-1')) return jsonResponse(200, [bob]);
+        if (method === 'GET' && u.includes('/rest/v1/user_profiles?') && u.includes('environment_code=')) return jsonResponse(200, profiles);
+        if (method === 'GET' && u.includes('/rest/v1/licenses?') && u.includes('environment_code=')) return jsonResponse(200, licenseRows);
+        if (u.includes('environment_license_limits')) return jsonResponse(200, [limits]);
+        if (u.includes('/auth/v1/admin/users?page=')) return jsonResponse(200, { users: [] });
+        if (u.includes('/auth/v1/admin/users') && method === 'POST') {
+          authPosts.push(u);
+          return jsonResponse(200, { id: 'new-1', email: 'neo@efc.picotrack.fr' });
+        }
+        if (u.includes('/rest/v1/user_profiles') && method !== 'GET') {
+          const body = JSON.parse(options.body || '{}');
+          if (body.id === 'bob-1') bob.active = body.active !== false;
+          return jsonResponse(200, [body]);
+        }
+        if (u.includes('/rest/v1/licenses') && method === 'POST') return jsonResponse(200, []);
+        return null;
+      }
+    });
+    const blocked = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'neo@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neo' }
+    }, authHeaders());
+    assert.equal(blocked.status, 403, blocked.payload.error || '');
+    assert.match(blocked.payload.error || '', /\(3\/3\)/);
+    assert.equal(authPosts.length, 0);
+
+    const deactivated = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'bob-1', active: false }
+    }, authHeaders());
+    assert.equal(deactivated.status, 200, deactivated.payload.error || '');
+    assert.equal(bob.active, false);
+    assert.equal(licenseRows[0].active, true);
+
+    const created = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'neo@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neo' }
+    }, authHeaders());
+    assert.equal(created.status, 200, created.payload.error || '');
+    assert.equal(authPosts.length, 1);
+  });
+});
+
+test('handler : au-dessus du quota, seule une place active en plus est bloquée', async () => {
+  const requester = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  const alice = { id: 'alice-1', email: 'alice@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true, roles: ['pad_user'] };
+  const bob = { id: 'bob-1', email: 'bob@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  const pia = { id: 'pia-1', email: 'pia@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true, roles: ['pad_user'] };
+  const profiles = [requester, alice, bob, pia];
+  const limits = { environment_code: 'EFC', supervision_limit: 2, pad_limit: 1 };
+  await withSupabase(async () => {
+    const quotaReads = [];
+    let saved = null;
+    installActor(requester, {
+      onFetch(u, method, options) {
+        const quotaList = method === 'GET' && (
+          u.includes('environment_license_limits')
+          || (u.includes('/rest/v1/licenses?') && u.includes('environment_code='))
+          || (u.includes('/rest/v1/user_profiles?') && u.includes('environment_code=') && !u.includes('id=eq.'))
+        );
+        if (quotaList) quotaReads.push(u);
+        if (method === 'GET' && u.includes('user_profiles?id=eq.alice-1')) return jsonResponse(200, [alice]);
+        if (method === 'GET' && u.includes('user_profiles?id=eq.bob-1')) return jsonResponse(200, [bob]);
+        if (method === 'GET' && u.includes('/rest/v1/user_profiles?') && u.includes('environment_code=')) return jsonResponse(200, profiles);
+        if (method === 'GET' && u.includes('/rest/v1/licenses?') && u.includes('environment_code=')) return jsonResponse(200, []);
+        if (u.includes('environment_license_limits')) return jsonResponse(200, [limits]);
+        if (u.includes('/rest/v1/user_profiles') && method !== 'GET') {
+          saved = JSON.parse(options.body || '{}');
+          return jsonResponse(200, [saved]);
+        }
+        return null;
+      }
+    });
+
+    quotaReads.length = 0;
+    const rolesOnly = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'alice-1', roles: ['supervision_user'] }
+    }, authHeaders());
+    assert.equal(rolesOnly.status, 200, rolesOnly.payload.error || '');
+    assert.deepEqual(saved.roles, ['supervision_user']);
+    assert.equal(quotaReads.length, 0);
+
+    quotaReads.length = 0;
+    const renamed = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'alice-1', firstname: 'Alice' }
+    }, authHeaders());
+    assert.equal(renamed.status, 200, renamed.payload.error || '');
+    assert.equal(saved.firstname, 'Alice');
+    assert.equal(quotaReads.length, 0);
+
+    const padFull = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'alice-1', license_type: 'pad' }
+    }, authHeaders());
+    assert.equal(padFull.status, 403, padFull.payload.error || '');
+    assert.match(padFull.payload.error || '', /PAD/);
+
+    limits.pad_limit = 5;
+    const padRoom = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'alice-1', license_type: 'pad' }
+    }, authHeaders());
+    assert.equal(padRoom.status, 200, padRoom.payload.error || '');
+    assert.equal(saved.license_type, 'pad');
+
+    quotaReads.length = 0;
+    const deactivated = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'bob-1', active: false }
+    }, authHeaders());
+    assert.equal(deactivated.status, 200, deactivated.payload.error || '');
+    assert.equal(saved.active, false);
+    assert.equal(quotaReads.length, 0);
+    bob.active = false;
+
+    const reactivated = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'bob-1', active: true }
+    }, authHeaders());
+    assert.equal(reactivated.status, 403, reactivated.payload.error || '');
+    assert.match(reactivated.payload.error || '', /\(2\/2\)/);
+  });
+});
+
+test('handler : une lecture de quota en échec refuse la création', async () => {
+  const requester = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  for (const failing of ['profiles', 'licenses']) {
+    await withSupabase(async () => {
+      const authPosts = [];
+      installActor(requester, {
+        onFetch(u, method) {
+          if (method === 'GET' && u.includes('/rest/v1/user_profiles?') && u.includes('environment_code=')) {
+            if (failing === 'profiles') return jsonResponse(500, { message: 'db down' });
+            return jsonResponse(200, [requester]);
+          }
+          if (method === 'GET' && u.includes('/rest/v1/licenses?') && u.includes('environment_code=')) {
+            if (failing === 'licenses') return jsonResponse(500, { message: 'db down' });
+            return jsonResponse(200, []);
+          }
+          if (u.includes('environment_license_limits')) return jsonResponse(200, [{ environment_code: 'EFC', supervision_limit: 10, pad_limit: 10 }]);
+          if (u.includes('/auth/v1/admin/users') && method === 'POST') {
+            authPosts.push(u);
+            return jsonResponse(200, { id: 'new-1', email: 'neo@efc.picotrack.fr' });
+          }
+          if (u.includes('/auth/v1/admin/users?page=')) return jsonResponse(200, { users: [] });
+          return null;
+        }
+      });
+      const out = await callJson(functions, {
+        functionName: 'create-user',
+        payload: { email: 'neo@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neo' }
+      }, authHeaders());
+      assert.ok(out.status === 500 || out.status === 503, `${failing} ${out.status} ${out.payload.error || ''}`);
+      assert.match(out.payload.error || '', /quota/i);
+      assert.equal(authPosts.length, 0, failing);
+    });
+  }
+});
+
+test('handler : create-user plateforme dérive tenant_id de l’environnement cible', async () => {
+  const requester = {
+    id: 'plat-1', email: 'root@picotrack.fr', role: 'super_admin', license_type: 'super_admin',
+    scope: 'platform', environment_code: 'GLOBAL', active: true, tenant_id: 'ten-global',
+    resolved_permissions: { platform_admin: true }
+  };
+  const payload = {
+    email: 'nora@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision',
+    environment_code: 'EFC', firstname: 'Nora', tenant_id: 'spoof'
+  };
+  const cases = [
+    { profiles: [{ tenant_id: 'ten-efc' }], limitsTenant: 'ten-limits', expected: 'ten-efc' },
+    { profiles: [{ tenant_id: '' }, { tenant_id: null }], limitsTenant: 'ten-limits', expected: 'ten-limits' },
+    { profiles: [], limitsTenant: '', expected: null }
+  ];
+  for (const scenario of cases) {
+    await withSupabase(async () => {
+      const writes = [];
+      installActor(requester, {
+        onFetch(u, method, options) {
+          if (method === 'GET' && u.includes('/rest/v1/user_profiles?') && u.includes('select=tenant_id')) return jsonResponse(200, scenario.profiles);
+          if (method === 'GET' && u.includes('environment_license_limits') && u.includes('select=tenant_id')) {
+            return jsonResponse(200, scenario.limitsTenant ? [{ tenant_id: scenario.limitsTenant }] : []);
+          }
+          if (method === 'GET' && u.includes('/rest/v1/user_profiles?') && u.includes('environment_code=')) {
+            return jsonResponse(200, [{ id: 'efc-1', email: 'deja@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true }]);
+          }
+          if (method === 'GET' && u.includes('/rest/v1/licenses?')) return jsonResponse(200, []);
+          if (u.includes('/auth/v1/admin/users?page=')) return jsonResponse(200, { users: [] });
+          if (u.includes('/auth/v1/admin/users') && method === 'POST') return jsonResponse(200, { id: 'new-1', email: payload.email });
+          if (method !== 'GET' && options.body) {
+            writes.push({ url: u, body: JSON.parse(options.body) });
+            return jsonResponse(200, [{ id: 'new-1' }]);
+          }
+          return null;
+        }
+      });
+      const created = await callJson(functions, { functionName: 'create-user', payload }, authHeaders());
+      assert.equal(created.status, 200, created.payload.error || JSON.stringify(scenario));
+      const profile = writes.find(row => row.url.includes('/rest/v1/user_profiles'));
+      assert.ok(profile, 'profil non écrit');
+      assert.equal(profile.body.tenant_id, scenario.expected);
+      assert.equal(profile.body.environment_code, 'EFC');
+      assert.notEqual(profile.body.tenant_id, 'ten-global');
+      assert.notEqual(profile.body.tenant_id, 'spoof');
+    });
+  }
 });
