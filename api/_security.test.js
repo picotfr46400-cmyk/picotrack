@@ -78,8 +78,7 @@ test('identité et privilèges ne suivent pas les en-têtes client', () => {
   assert.equal(clamped.scope, 'environment');
   assert.equal(clamped.license_type, 'supervision');
   assert.equal(clamped.environment_code, 'EFC');
-  assert.equal(clamped.resolved_permissions.platform_admin, undefined);
-  assert.equal(clamped.resolved_permissions.manage_users, undefined);
+  assert.equal(clamped.resolved_permissions, undefined);
   const src = fs.readFileSync(path.join(__dirname, 'function.js'), 'utf8');
   const start = src.indexOf('async function getRequestUserProfile');
   const end = src.indexOf('function profileEnvironmentCode');
