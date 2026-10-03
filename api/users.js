@@ -41,19 +41,28 @@ function isPlatformRow(row) {
   return role === 'super_admin' || role === 'platform_admin' || scope === 'platform' || env === 'GLOBAL' || perms.platform_admin === true;
 }
 
-function normalizeUserRow(row, source, environmentCode) {
+function canReadLicenseKey(profile) {
+  if (!profile || profile.active === false) return false;
+  if (isPlatformProfile(profile)) return true;
+  const role = String(profile.role || '').toLowerCase();
+  const type = String(profile.license_type || '').toLowerCase();
+  const perms = safeObject(profile.resolved_permissions);
+  return role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user' || type === 'supervision' || perms.manage_users === true;
+}
+
+function normalizeUserRow(row, source, environmentCode, options = {}) {
   const roles = safeArray(row?.roles);
   const licenseType = normalizeLicenseType(row?.license_type, roles);
-  const label = cleanString(row?.label || [row?.firstname || row?.first_name || '', row?.lastname || row?.last_name || ''].join(' ').trim() || row?.email || row?.login_user || row?.username || row?.license_key || '');
   const email = normalizeEmail(row?.email || '');
-  return {
-    id: row?.id || row?.license_key || row?.email || row?.login_user || row?.username,
+  const label = cleanString(row?.label || [row?.firstname || row?.first_name || '', row?.lastname || row?.last_name || ''].join(' ').trim() || row?.email || row?.login_user || row?.username || '');
+  const normalized = {
+    id: row?.id || email || row?.login_user || row?.username,
     license_id: source === 'licenses' ? row?.id : row?.license_id || null,
     __source: source,
     environment_code: normalizeEnvironmentCode(row?.environment_code || environmentCode),
     email,
-    login_user: cleanString(row?.login_user || row?.username || row?.email || row?.license_key || ''),
-    username: cleanString(row?.username || row?.login_user || row?.email || row?.license_key || ''),
+    login_user: cleanString(row?.login_user || row?.username || row?.email || ''),
+    username: cleanString(row?.username || row?.login_user || row?.email || ''),
     label,
     firstname: cleanString(row?.firstname || row?.first_name || ''),
     lastname: cleanString(row?.lastname || row?.last_name || ''),
@@ -61,12 +70,13 @@ function normalizeUserRow(row, source, environmentCode) {
     roles,
     scope: cleanString(row?.scope || 'environment'),
     license_type: licenseType,
-    license_key: row?.license_key || null,
     active: row?.active !== false,
     created_at: row?.created_at || null,
-    updated_at: row?.updated_at || null,
-    resolved_permissions: safeObject(row?.resolved_permissions)
+    updated_at: row?.updated_at || null
   };
+  if (options.revealLicenseKey) normalized.license_key = row?.license_key || null;
+  if (options.revealPermissions) normalized.resolved_permissions = safeObject(row?.resolved_permissions);
+  return normalized;
 }
 
 function sameEnv(profile, environmentCode) {
@@ -122,12 +132,19 @@ async function handleSummary(req, body) {
   const environmentCode = sameEnv(profile, body.environment_code || body.env || profile.environment_code);
   const env = normalizeEnvironmentCode(environmentCode);
 
-  const profileSelect = 'id,email,role,roles,scope,environment_code,active,created_at,updated_at,label,firstname,lastname,first_name,last_name,login_user,username,license_type,license_key,resolved_permissions';
-  const licenseSelect = 'id,email,role,roles,scope,environment_code,active,created_at,label,license_type,license_key';
+  const revealLicenseKey = canReadLicenseKey(profile);
+  const revealPermissions = isPlatformProfile(profile);
+  let profileSelect = 'id,email,role,roles,scope,environment_code,active,created_at,updated_at,label,firstname,lastname,first_name,last_name,login_user,username,license_type';
+  let licenseSelect = 'id,email,role,roles,scope,environment_code,active,created_at,label,license_type';
+  if (revealLicenseKey) {
+    profileSelect += ',license_key';
+    licenseSelect += ',license_key';
+  }
+  if (revealPermissions) profileSelect += ',resolved_permissions';
   const roleSelect = 'id,name,description,permissions,active,created_at,updated_at,environment_code';
 
   const [limitsRows, profilesRows, licensesRows, rolesRows] = await Promise.all([
-    serviceRest(`environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,lecture_limit,readonly_limit&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []),
+    serviceRest(`environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,lecture_limit&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []),
     serviceRest(`user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${profileSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []),
     serviceRest(`licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${licenseSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []),
     serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=name.asc&limit=100`, { method: 'GET', prefer: '', req }).catch(() => [])
@@ -137,8 +154,8 @@ async function handleSummary(req, body) {
   const seen = new Set();
   function push(row, source) {
     if (!row || isPlatformRow(row)) return;
-    const normalized = normalizeUserRow(row, source, env);
-    const key = String(normalized.email || normalized.login_user || normalized.username || normalized.license_key || normalized.id || '').toLowerCase();
+    const normalized = normalizeUserRow(row, source, env, { revealLicenseKey, revealPermissions });
+    const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
     if (!key || seen.has(key)) return;
     seen.add(key);
     rows.push(normalized);

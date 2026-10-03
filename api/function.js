@@ -1,21 +1,25 @@
-const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, applySecurityHeaders } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
+
+const INTERNAL_FUNCTIONS = new Set([
+  'list-users',
+  'get-license-limits',
+  'update-license-limits',
+  'create-user',
+  'invite-user',
+  'update-user',
+  'delete-user'
+]);
+const EDGE_FUNCTIONS = new Set(['pad-sync']);
+
+function resolveFunctionRoute(name) {
+  const fn = String(name || '');
+  if (INTERNAL_FUNCTIONS.has(fn)) return 'internal';
+  if (EDGE_FUNCTIONS.has(fn)) return 'edge';
+  return 'deny';
+}
 
 function readBody(req) {
-  if (req.body && typeof req.body === 'object') return Promise.resolve(req.body);
-  if (typeof req.body === 'string') {
-    try { return Promise.resolve(JSON.parse(req.body || '{}')); } catch (_) { return Promise.resolve({}); }
-  }
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', chunk => {
-      raw += chunk;
-      if (raw.length > 1_000_000) reject(new Error('Payload trop volumineux'));
-    });
-    req.on('end', () => {
-      try { resolve(raw ? JSON.parse(raw) : {}); } catch (_) { resolve({}); }
-    });
-    req.on('error', reject);
-  });
+  return readJsonBody(req, 1_000_000);
 }
 
 function cleanString(value, max = 255) {
@@ -62,6 +66,35 @@ async function supabaseFetch(url, serviceRole, path, options = {}) {
     throw err;
   }
   return payload;
+}
+
+async function loadActiveAppRoles(url, serviceRole, environmentCode) {
+  const env = normalizeEnvironmentCode(environmentCode || '');
+  if (!env) return [];
+  const rows = await supabaseFetch(url, serviceRole, `/rest/v1/app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,name&limit=200`, { method: 'GET' }).catch(() => []);
+  return Array.isArray(rows) ? rows : [];
+}
+
+function unwrapAuthUser(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (payload.user && payload.user.id) return payload.user;
+  if (payload.id) return payload;
+  return null;
+}
+
+function authMetadataIsPlatform(authUser) {
+  if (!authUser) return false;
+  return [authUser.app_metadata, authUser.user_metadata].some(meta => meta && typeof meta === 'object' && isPlatformOperatorProfile(meta));
+}
+
+async function readAuthUser(url, serviceRole, id, email) {
+  if (id && isUuidLike(id)) {
+    const payload = await supabaseFetch(url, serviceRole, `/auth/v1/admin/users/${encodeURIComponent(id)}`, { method: 'GET' }).catch(() => null);
+    const user = unwrapAuthUser(payload);
+    if (user?.id) return user;
+  }
+  if (email) return findAuthUserByEmail(url, serviceRole, email).catch(() => null);
+  return null;
 }
 
 async function findAuthUserByEmail(url, serviceRole, email) {
@@ -112,18 +145,15 @@ async function inviteAuthUser(url, serviceRole, payload) {
   }
 }
 
-async function upsertUserProfile(url, serviceRole, authUser, payload) {
+async function upsertUserProfile(url, serviceRole, authUser, payload, options = {}) {
   if (!authUser?.id) throw new Error('Compte Auth créé mais ID utilisateur introuvable.');
+  const partial = options.partial === true;
   const environmentCode = normalizeEnvironmentCode(payload.environment_code || 'DEMO');
   const email = normalizeEmail(payload.email || authUser.email);
+  const sent = key => Object.prototype.hasOwnProperty.call(payload, key);
   const profile = {
     id: authUser.id,
     email,
-    label: cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim()),
-    firstname: cleanString(payload.firstname || payload.first_name || ''),
-    lastname: cleanString(payload.lastname || payload.last_name || ''),
-    first_name: cleanString(payload.firstname || payload.first_name || ''),
-    last_name: cleanString(payload.lastname || payload.last_name || ''),
     username: cleanString(payload.username || payload.login_user || email),
     login_user: cleanString(payload.login_user || payload.username || email),
     role: cleanString(payload.role || 'supervision_user'),
@@ -132,10 +162,25 @@ async function upsertUserProfile(url, serviceRole, authUser, payload) {
     environment_code: environmentCode,
     active: payload.active !== false,
     license_type: cleanString(payload.license_type || 'supervision'),
-    license_key: payload.license_key || null,
-    resolved_permissions: safeObject(payload.resolved_permissions),
     updated_at: new Date().toISOString()
   };
+  if (!partial || sent('label')) {
+    profile.label = cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim());
+  }
+  if (!partial || sent('firstname') || sent('first_name')) {
+    profile.firstname = cleanString(payload.firstname || payload.first_name || '');
+    profile.first_name = cleanString(payload.firstname || payload.first_name || '');
+  }
+  if (!partial || sent('lastname') || sent('last_name')) {
+    profile.lastname = cleanString(payload.lastname || payload.last_name || '');
+    profile.last_name = cleanString(payload.lastname || payload.last_name || '');
+  }
+  if (!partial || sent('license_key')) {
+    profile.license_key = payload.license_key || null;
+  }
+  if (payload.resolved_permissions && typeof payload.resolved_permissions === 'object' && !Array.isArray(payload.resolved_permissions)) {
+    profile.resolved_permissions = payload.resolved_permissions;
+  }
 
   const rows = await supabaseFetch(url, serviceRole, '/rest/v1/user_profiles?on_conflict=id', {
     method: 'POST',
@@ -213,7 +258,7 @@ async function updateAuthUserPassword(url, serviceRole, userId, payload) {
 }
 
 function normalizeLicenseType(value) {
-  const v = String(value || '').trim().toLowerCase();
+  const v = String(value || '').replace(/[\t\r\n\f\v]/g, '').trim().toLowerCase();
   if (['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator'].includes(v)) return 'pad';
   if (['readonly', 'read_only', 'lecture', 'lecture_seule', 'viewer', 'consultation'].includes(v)) return 'readonly';
   return 'supervision';
@@ -296,17 +341,22 @@ async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null)
 
 
 
+function permissionFlag(profile, key) {
+  return [profile?.resolved_permissions, profile?.permissions].some(source => source && typeof source === 'object' && !Array.isArray(source) && source[key] === true);
+}
+
 function isPlatformOperatorProfile(profile) {
-  const role = String(profile?.role || '').toLowerCase();
-  const licenseType = String(profile?.license_type || '').toLowerCase();
-  const env = String(profile?.environment_code || '').toUpperCase();
-  const perms = profile?.resolved_permissions || {};
+  const role = normalizePrivilegeToken(profile?.role);
+  const licenseType = normalizePrivilegeToken(profile?.license_type);
+  const scope = normalizePrivilegeToken(profile?.scope);
+  const env = String(profile?.environment_code || '').replace(/[\t\r\n\f\v]/g, '').trim().toUpperCase();
   return role === 'super_admin'
     || role === 'platform_admin'
     || licenseType === 'super_admin'
+    || scope === 'platform'
     || env === 'GLOBAL'
-    || perms.platform_admin === true
-    || perms.manage_global_licenses === true;
+    || permissionFlag(profile, 'platform_admin')
+    || permissionFlag(profile, 'manage_global_licenses');
 }
 
 function isClientAdminProfile(profile) {
@@ -331,31 +381,104 @@ function canCreateEnvironmentUser(profile) {
   return isPlatformOperatorProfile(profile) || isClientAdminProfile(profile);
 }
 
+function verifiedActor(user) {
+  if (!user || !user.id) return null;
+  return { id: String(user.id), email: String(user.email || '').trim().toLowerCase() };
+}
+
+const ASSIGNABLE_CLIENT_ROLES = new Set(['supervision_user', 'pad_user', 'operator', 'operateur']);
+const BLOCKED_ROLE_NAMES = new Set(['admin', 'environment_admin', 'super_admin', 'client_admin', 'platform_admin']);
+const BLOCKED_ROLE_IDS = new Set([
+  '00000000-0000-0000-0000-000000000001',
+  '00000000-0000-0000-0000-000000000002'
+]);
+
+function normalizePrivilegeToken(value) {
+  return String(value ?? '').replace(/[\t\r\n\f\v]/g, '').trim().toLowerCase().replace(/^[\s"'{}]+|[\s"'{}]+$/g, '').trim();
+}
+
+function parseSubmittedRoles(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  const trimmed = value.trim();
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (_) {}
+  }
+  if (!trimmed) return [];
+  return trimmed.split(',');
+}
+
+function canonicalAssignableRole(value, catalog) {
+  const token = normalizePrivilegeToken(value);
+  if (!token || BLOCKED_ROLE_NAMES.has(token) || BLOCKED_ROLE_IDS.has(token)) return '';
+  if (ASSIGNABLE_CLIENT_ROLES.has(token)) return token;
+  for (const row of Array.isArray(catalog) ? catalog : []) {
+    const id = normalizePrivilegeToken(row?.id);
+    const name = normalizePrivilegeToken(row?.name || row?.nom);
+    if (!id || BLOCKED_ROLE_IDS.has(id) || BLOCKED_ROLE_NAMES.has(name)) continue;
+    if (token === id) return String(row.id).replace(/[\t\r\n\f\v]/g, '').trim();
+    if (name && token === name) return name;
+  }
+  return '';
+}
+
+function isProtectedStoredRole(value) {
+  const token = normalizePrivilegeToken(value);
+  if (!token) return false;
+  return BLOCKED_ROLE_IDS.has(token) || BLOCKED_ROLE_NAMES.has(token);
+}
+
+function mergeAssignedRoles(existingValue, submittedValue, catalog) {
+  const out = [];
+  const seen = new Set();
+  for (const token of parseSubmittedRoles(existingValue)) {
+    const cleaned = String(token ?? '').replace(/[\t\r\n\f\v]/g, '').trim();
+    if (!cleaned || !isProtectedStoredRole(cleaned)) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  for (const token of parseSubmittedRoles(submittedValue)) {
+    const allowed = canonicalAssignableRole(token, catalog);
+    if (!allowed || isProtectedStoredRole(allowed)) continue;
+    const key = allowed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(allowed);
+  }
+  return out;
+}
+
+function clampAssignedPrivileges(payload, requester, context = {}) {
+  const next = Object.assign({}, payload || {});
+  if (isPlatformOperatorProfile(requester)) return next;
+  if (Object.prototype.hasOwnProperty.call(next, 'role')) {
+    const role = normalizePrivilegeToken(next.role);
+    next.role = ASSIGNABLE_CLIENT_ROLES.has(role) ? role : 'supervision_user';
+  }
+  if (Object.prototype.hasOwnProperty.call(next, 'roles')) {
+    next.roles = mergeAssignedRoles(context.existingRoles, next.roles, context.catalog || []);
+  }
+  next.scope = 'environment';
+  if (Object.prototype.hasOwnProperty.call(next, 'license_type')) {
+    next.license_type = normalizeLicenseType(next.license_type);
+  }
+  delete next.resolved_permissions;
+  delete next.password_hash;
+  delete next.tenant_id;
+  next.environment_code = profileEnvironmentCode(requester) || 'DEMO';
+  delete next.active_env;
+  return next;
+}
+
 async function getRequestUserProfile(req, url, serviceRole) {
-  const auth = String(req.headers.authorization || req.headers.Authorization || '');
-  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
-  const emailHeader = cleanString(req.headers['x-pt-user-email'] || req.headers['x-user-email'] || '');
-  const userIdHeader = cleanString(req.headers['x-pt-user-id'] || req.headers['x-user-id'] || '');
-
-  let userId = userIdHeader;
-  let email = normalizeEmail(emailHeader);
-
-  if (bearer && !userId && !email) {
-    const authUser = await supabaseFetch(url, serviceRole, `/auth/v1/user`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${bearer}` }
-    }).catch(() => null);
-    userId = cleanString(authUser?.id || '');
-    email = normalizeEmail(authUser?.email || '');
-  }
-
-  let rows = [];
-  if (userId) {
-    rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(userId)}&select=*`, { method: 'GET' }).catch(() => []);
-  }
-  if ((!Array.isArray(rows) || !rows.length) && email) {
-    rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?email=eq.${encodeURIComponent(email)}&select=*`, { method: 'GET' }).catch(() => []);
-  }
+  const actor = verifiedActor(await getAuthUser(req).catch(() => null));
+  if (!actor) return null;
+  const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(actor.id)}&select=*`, { method: 'GET' }).catch(() => []);
   return Array.isArray(rows) && rows.length ? rows[0] : null;
 }
 
@@ -457,7 +580,6 @@ async function handleUpdateLicenseLimits(req, url, serviceRole, payload) {
     environment_code: environmentCode,
     supervision_limit: supervisionLimit,
     pad_limit: padLimit,
-    readonly_limit: readonlyLimit,
     lecture_limit: readonlyLimit,
     updated_at: new Date().toISOString()
   };
@@ -481,6 +603,9 @@ async function handleUpdateLicenseLimits(req, url, serviceRole, payload) {
 async function handleListUsers(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const environmentCode = await getEffectiveEnvironmentCode(req, url, serviceRole, payload, true);
+  const requester = await getRequestUserProfile(req, url, serviceRole);
+  const showLicenseKey = isPlatformOperatorProfile(requester) || isClientAdminProfile(requester);
+  const showPermissions = isPlatformOperatorProfile(requester);
 
   function isPlatform(row) {
     const role = String(row?.role || '').toLowerCase();
@@ -495,15 +620,15 @@ async function handleListUsers(req, url, serviceRole, payload) {
   }
 
   function normalizeUserRow(row, source) {
-    const label = cleanString(row?.label || [row?.firstname || row?.first_name || '', row?.lastname || row?.last_name || ''].join(' ').trim() || row?.email || row?.login_user || row?.username || row?.license_key || '');
     const email = normalizeEmail(row?.email || '');
-    return {
-      id: row?.id || row?.license_key || row?.email || row?.login_user || row?.username,
+    const label = cleanString(row?.label || [row?.firstname || row?.first_name || '', row?.lastname || row?.last_name || ''].join(' ').trim() || row?.email || row?.login_user || row?.username || '');
+    const normalized = {
+      id: row?.id || email || row?.login_user || row?.username,
       __source: source,
       environment_code: row?.environment_code || environmentCode,
       email,
-      login_user: cleanString(row?.login_user || row?.username || row?.email || row?.license_key || ''),
-      username: cleanString(row?.username || row?.login_user || row?.email || row?.license_key || ''),
+      login_user: cleanString(row?.login_user || row?.username || row?.email || ''),
+      username: cleanString(row?.username || row?.login_user || row?.email || ''),
       label,
       firstname: cleanString(row?.firstname || row?.first_name || ''),
       lastname: cleanString(row?.lastname || row?.last_name || ''),
@@ -511,12 +636,13 @@ async function handleListUsers(req, url, serviceRole, payload) {
       roles: safeArray(row?.roles),
       scope: cleanString(row?.scope || 'environment'),
       license_type: normalizedType(row),
-      license_key: row?.license_key || null,
       active: row?.active !== false,
       created_at: row?.created_at || null,
-      updated_at: row?.updated_at || null,
-      resolved_permissions: safeObject(row?.resolved_permissions)
+      updated_at: row?.updated_at || null
     };
+    if (showLicenseKey) normalized.license_key = row?.license_key || null;
+    if (showPermissions) normalized.resolved_permissions = safeObject(row?.resolved_permissions);
+    return normalized;
   }
 
   const rows = [];
@@ -527,7 +653,7 @@ async function handleListUsers(req, url, serviceRole, payload) {
     for (const row of Array.isArray(profiles) ? profiles : []) {
       if (!row || isPlatform(row)) continue;
       const normalized = normalizeUserRow(row, 'user_profiles');
-      const key = String(normalized.email || normalized.login_user || normalized.username || normalized.license_key || normalized.id || '').toLowerCase();
+      const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
       if (!key || seen.has(key)) continue;
       seen.add(key);
       rows.push(normalized);
@@ -537,7 +663,7 @@ async function handleListUsers(req, url, serviceRole, payload) {
     for (const row of Array.isArray(licenses) ? licenses : []) {
       if (!row || isPlatform(row)) continue;
       const normalized = normalizeUserRow(row, 'licenses');
-      const key = String(normalized.email || normalized.login_user || normalized.username || normalized.license_key || normalized.id || '').toLowerCase();
+      const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
       if (!key || seen.has(key)) continue;
       seen.add(key);
       rows.push(normalized);
@@ -551,11 +677,13 @@ async function handleListUsers(req, url, serviceRole, payload) {
 async function handleCreateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const profile = await requireUserCreator(req, url, serviceRole);
-  const environmentCode = assertSameEnvironmentOrPlatform(profile, payload.environment_code || payload.active_env || profileEnvironmentCode(profile));
-  const quota = await assertQuotaAvailable(url, serviceRole, { ...payload, environment_code: environmentCode }, null);
-  const authUser = await createAuthUserWithPassword(url, serviceRole, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
-  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
-  await insertLicenseBestEffort(url, serviceRole, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  const catalog = isPlatformOperatorProfile(profile) ? [] : await loadActiveAppRoles(url, serviceRole, profileEnvironmentCode(profile));
+  const safePayload = clampAssignedPrivileges(payload, profile, { catalog, existingRoles: [] });
+  const environmentCode = assertSameEnvironmentOrPlatform(profile, safePayload.environment_code || safePayload.active_env || profileEnvironmentCode(profile));
+  const quota = await assertQuotaAvailable(url, serviceRole, { ...safePayload, environment_code: environmentCode }, null);
+  const authUser = await createAuthUserWithPassword(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  await insertLicenseBestEffort(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
   return { ok: true, success: true, mode: 'direct-create', quota, user: { id: authUser.id, email: authUser.email || payload.email }, profile: createdProfile };
 }
 
@@ -578,14 +706,19 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   const profileRequester = await requireUserCreator(req, url, serviceRole);
   const id = cleanString(payload.user_id || payload.id, 80);
   if (!id) throw Object.assign(new Error('ID utilisateur manquant.'), { status: 400 });
-  const currentRows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,email,environment_code,license_type&limit=1`, { method: 'GET' });
+  const currentRows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,email,environment_code,license_type,role,roles,scope,resolved_permissions,active&limit=1`, { method: 'GET' });
   const current = Array.isArray(currentRows) ? currentRows[0] : null;
   if (!current?.id) throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
   assertSameEnvironmentOrPlatform(profileRequester, current.environment_code);
-  const merged = { ...current, ...payload, environment_code: payload.environment_code || current.environment_code, license_type: payload.license_type || current.license_type };
+  if (!isPlatformOperatorProfile(profileRequester) && isPlatformOperatorProfile(current)) {
+    throw Object.assign(new Error('Modification d’un compte plateforme refusée.'), { status: 403 });
+  }
+  const catalog = isPlatformOperatorProfile(profileRequester) ? [] : await loadActiveAppRoles(url, serviceRole, profileEnvironmentCode(profileRequester));
+  const safePayload = clampAssignedPrivileges(payload, profileRequester, { catalog, existingRoles: current.roles });
+  const merged = { ...current, ...safePayload, environment_code: safePayload.environment_code || current.environment_code, license_type: safePayload.license_type || current.license_type };
   await assertQuotaAvailable(url, serviceRole, merged, id);
   await updateAuthUserPassword(url, serviceRole, id, payload);
-  const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged);
+  const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged, { partial: true });
   return { ok: true, success: true, mode: 'direct-update', profile };
 }
 
@@ -615,7 +748,7 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
   }
 
   const licenseIdToTry = rawLicenseId || (rawId && !isUuidLike(rawId) ? rawId : '');
-  if (!current && licenseIdToTry) {
+  if (licenseIdToTry) {
     const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseIdToTry)}&select=*&limit=1`, { method: 'GET' }).catch(() => []);
     licenseRow = Array.isArray(rows) ? rows[0] : null;
   }
@@ -634,19 +767,49 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
     }
   }
 
-  if (!current?.id && lookupEmail) {
-    const authUser = await findAuthUserByEmail(url, serviceRole, lookupEmail).catch(() => null);
-    if (authUser?.id) {
-      current = { id: authUser.id, email: lookupEmail, environment_code: lookupEnv };
-    }
+  const requesterEnv = profileEnvironmentCode(profileRequester);
+  const profileInEnv = !!(current?.id) && (
+    isPlatformOperatorProfile(profileRequester) || normalizeEnvironmentCode(current.environment_code) === requesterEnv
+  );
+  const authUser = await readAuthUser(url, serviceRole, current?.id || (isUuidLike(rawId) ? rawId : ''), lookupEmail);
+  if (!current?.id && authUser?.id && isPlatformOperatorProfile(profileRequester)) {
+    current = {
+      id: authUser.id,
+      email: normalizeEmail(authUser.email || lookupEmail),
+      environment_code: lookupEnv,
+      role: authUser.app_metadata?.role || authUser.user_metadata?.role || '',
+      license_type: authUser.app_metadata?.license_type || authUser.user_metadata?.license_type || ''
+    };
   }
 
-  if (!current?.id && !licenseRow?.id) {
+  if (!current?.id && !licenseRow?.id && !authUser?.id) {
     throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
   }
 
   const targetEnv = normalizeEnvironmentCode(current?.environment_code || licenseRow?.environment_code || lookupEnv);
-  assertSameEnvironmentOrPlatform(profileRequester, targetEnv);
+  if (profileInEnv || licenseRow?.id) assertSameEnvironmentOrPlatform(profileRequester, targetEnv);
+  if (!isPlatformOperatorProfile(profileRequester)) {
+    if (!profileInEnv) {
+      throw Object.assign(new Error('Profil introuvable dans cet environnement.'), { status: 403 });
+    }
+    if (!authUser?.id || authMetadataIsPlatform(authUser) || isPlatformOperatorProfile(current) || isPlatformOperatorProfile(licenseRow)) {
+      throw Object.assign(new Error('Suppression d’un compte plateforme refusée.'), { status: 403 });
+    }
+    if (licenseIdToTry) {
+      const licenseEnv = normalizeEnvironmentCode(licenseRow?.environment_code);
+      const targetEmail = normalizeEmail(current?.email || '');
+      const licenseEmail = normalizeEmail(licenseRow?.email || '');
+      if (!licenseRow?.id || licenseEnv !== requesterEnv || !targetEmail || licenseEmail !== targetEmail) {
+        throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
+      }
+    }
+  }
+
+  const deleteEmail = normalizeEmail(current?.email || '');
+  const deleteEnv = normalizeEnvironmentCode(current?.environment_code || licenseRow?.environment_code || '');
+  if (licenseRow?.id && !normalizeEnvironmentCode(licenseRow.environment_code)) {
+    throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
+  }
 
   if (current?.id) {
     await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(current.id)}`, {
@@ -660,12 +823,14 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
   }
 
   if (licenseRow?.id) {
-    await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseRow.id)}`, {
+    const licenseEnv = normalizeEnvironmentCode(licenseRow.environment_code);
+    if (!licenseEnv) throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
+    await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseRow.id)}&environment_code=eq.${encodeURIComponent(licenseEnv)}`, {
       method: 'DELETE',
       prefer: 'return=minimal'
     }).catch(() => null);
-  } else if (lookupEmail && targetEnv) {
-    await supabaseFetch(url, serviceRole, `/rest/v1/licenses?email=eq.${encodeURIComponent(lookupEmail)}&environment_code=eq.${encodeURIComponent(targetEnv)}`, {
+  } else if (deleteEmail && deleteEnv) {
+    await supabaseFetch(url, serviceRole, `/rest/v1/licenses?email=eq.${encodeURIComponent(deleteEmail)}&environment_code=eq.${encodeURIComponent(deleteEnv)}`, {
       method: 'DELETE',
       prefer: 'return=minimal'
     }).catch(() => null);
@@ -674,7 +839,7 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
   return { ok: true, success: true };
 }
 
-module.exports = async function handler(req, res) {
+async function handler(req, res) {
   setCors(req, res);
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
@@ -716,6 +881,7 @@ module.exports = async function handler(req, res) {
     }
 
     if (!functionName) return json(res, 400, { error: 'Fonction manquante' });
+    if (resolveFunctionRoute(functionName) !== 'edge') return json(res, 404, { error: 'Fonction inconnue' });
     await requireAuth(req);
     const token = bearer(req);
     const key = anonKey;
@@ -739,4 +905,9 @@ module.exports = async function handler(req, res) {
       error: err.message || 'Erreur fonction serveur'
     });
   }
-};
+}
+
+handler.resolveFunctionRoute = resolveFunctionRoute;
+handler.verifiedActor = verifiedActor;
+handler.clampAssignedPrivileges = clampAssignedPrivileges;
+module.exports = handler;

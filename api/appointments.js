@@ -1,4 +1,4 @@
-const { json, setCors, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
+const { json, setCors, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile, readJsonBody } = require('./_server-supabase');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
@@ -27,22 +27,14 @@ function isCanceled(row) {
   return ['cancelled', 'canceled', 'annule', 'annulé', 'deleted', 'void'].includes(status);
 }
 
-async function readBody(req) {
-  if (req.body && typeof req.body === 'object') return req.body;
-  if (typeof req.body === 'string') {
-    try { return JSON.parse(req.body || '{}'); } catch (_) { return {}; }
-  }
-  return await new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', chunk => {
-      raw += chunk;
-      if (raw.length > 500000) reject(Object.assign(new Error('Payload trop volumineux'), { status: 413 }));
-    });
-    req.on('end', () => {
-      try { resolve(raw ? JSON.parse(raw) : {}); } catch (_) { resolve({}); }
-    });
-    req.on('error', reject);
-  });
+function readBody(req) {
+  return readJsonBody(req, 500000);
+}
+
+function cleanSelect(value) {
+  const select = String(value || '*').trim();
+  if (!select || select.length > 400 || !/^[a-zA-Z0-9_.,*\s]+$/.test(select)) return '*';
+  return select;
 }
 
 function sameEnv(profile, requested) {
@@ -50,7 +42,7 @@ function sameEnv(profile, requested) {
   const reqEnv = normalizeEnvironmentCode(requested || '');
   if (isPlatformProfile(profile)) return reqEnv && reqEnv !== 'GLOBAL' && reqEnv !== '*' ? reqEnv : (profileEnv || 'DEMO');
   if (profileEnv && profileEnv !== 'GLOBAL' && profileEnv !== '*') return profileEnv;
-  return reqEnv || 'DEMO';
+  return 'DEMO';
 }
 
 function parseRoleArray(value) {
@@ -149,7 +141,7 @@ async function handleList(req, env, body, profile) {
     start_time: body.start_time || f.start_time,
     from: body.from || f.from,
     to: body.to || f.to,
-    select: cleanString(body.select || '*', 400),
+    select: cleanSelect(body.select || '*'),
     order: cleanString(body.order || 'date.asc,start_time.asc', 100),
     limit: body.limit || 100
   };

@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
-const { parseWebhookUrl, assertPublicWebhookUrl } = require('./_webhook-url');
+const { parseWebhookUrl, pinnedWebhookFetch } = require('./_webhook-url');
 
 const INTEGRATIONS_NAME = '__picotrack_integrations';
 const MAX_KEYS = 20;
@@ -23,7 +23,10 @@ function safeObject(value) {
 
 function envFrom(profile, requested) {
   const profileEnv = normalizeEnvironmentCode(profile?.environment_code || '');
-  if (!isPlatformProfile(profile) && profileEnv && profileEnv !== 'GLOBAL') return profileEnv;
+  if (!isPlatformProfile(profile)) {
+    if (profileEnv && profileEnv !== 'GLOBAL') return profileEnv;
+    return 'DEMO';
+  }
   const reqEnv = normalizeEnvironmentCode(requested || '');
   if (reqEnv && reqEnv !== 'GLOBAL' && reqEnv !== '*') return reqEnv;
   return profileEnv && profileEnv !== 'GLOBAL' ? profileEnv : 'DEMO';
@@ -125,14 +128,11 @@ function pushLog(config, entry) {
 }
 
 async function dispatchWebhook(url, payload, timeoutMs = 8000) {
-  const parsed = await assertPublicWebhookUrl(url);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const parsed = parseWebhookUrl(url);
   try {
-    const response = await fetch(parsed.toString(), {
+    const response = await pinnedWebhookFetch(parsed.toString(), {
       method: 'POST',
-      redirect: 'error',
-      signal: controller.signal,
+      timeoutMs,
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'PicoTrack-Webhook/1',
@@ -140,18 +140,16 @@ async function dispatchWebhook(url, payload, timeoutMs = 8000) {
       },
       body: JSON.stringify(payload)
     });
-    const text = await response.text().catch(() => '');
+    const ok = response.status >= 200 && response.status < 300;
     return {
-      ok: response.ok,
+      ok,
       status: response.status,
-      body: String(text || '').slice(0, 500)
+      body: String(response.body || '').slice(0, 500)
     };
   } catch (err) {
-    const aborted = err && (err.name === 'AbortError' || /aborted/i.test(err.message || ''));
-    const error = aborted ? 'Délai dépassé (8s).' : (err.message || 'Échec du POST webhook');
-    return { ok: false, status: 0, error };
-  } finally {
-    clearTimeout(timer);
+    const timedOut = err && (err.status === 504 || /délai/i.test(err.message || ''));
+    const error = timedOut ? 'Délai dépassé (8s).' : (err.message || 'Échec du POST webhook');
+    return { ok: false, status: err.status || 0, error };
   }
 }
 
