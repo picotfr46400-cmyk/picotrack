@@ -8,14 +8,15 @@ const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision
 const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
 const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
 
-test('index.html : Babel absent, React conservé, cache-buster 20261003a', () => {
+test('index.html : Babel absent, React conservé, cache-buster 20261003b', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.match(html, /app\.secured\.js\?v=20261003a/);
-  assert.match(html, /core-supervision\.js\?v=20261003a/);
+  assert.match(html, /app\.secured\.js\?v=20261003b/);
+  assert.match(html, /core-supervision\.js\?v=20261003b/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);
+  assert.equal(html.includes('20261003a'), false);
 });
 
 test('hotfix saisie: case groupe inchangé dans le bundle', () => {
@@ -182,4 +183,81 @@ test('Promise.resolve(ret).then : afterResolved + .catch (pas de rejet non gér�
     if (!/\.catch\s*\(/.test(chunk)) bare += 1;
   }
   assert.equal(bare, 0, 'chaque Promise.resolve(ret).then doit avoir un .catch');
+});
+
+function makeFloorApi(form) {
+  const mergeFormResp = extractFn('function mergeFormResp', 'window.ptNavListFp');
+  const windowObj = { __ptRespFloor: {}, __ptNavDirty: {} };
+  windowObj.ptNavMarkDirty = function (keys) {
+    (Array.isArray(keys) ? keys : [keys]).forEach((k) => { windowObj.__ptNavDirty[k] = true; });
+  };
+  const forms = form ? [form] : [];
+  const src = overlay.slice(overlay.indexOf('function formKey'), overlay.indexOf('function respWord'));
+  const factory = new Function(
+    'window',
+    'mergeFormResp',
+    'dataList',
+    src + '; return { getRespFloor, raiseRespFloor, applyRespFloorToForm, bumpRespFloor };'
+  );
+  return factory(windowObj, mergeFormResp, (name) => (name === 'forms' ? forms : []));
+}
+
+test('Bug B complet : plancher resp par form.id, +1 submit/realtime, pas de chute', () => {
+  const form = { id: 'f1', nom: 'Alpha', resp: 100 };
+  const api = makeFloorApi(form);
+  api.applyRespFloorToForm(form);
+  assert.equal(form.resp, 100);
+  assert.equal(api.getRespFloor('f1'), 100);
+  form.resp = 2;
+  assert.equal(form.resp, 100, 'assignation depuis SUBMISSIONS_DATA partiel ne baisse pas');
+  const afterSubmit = api.bumpRespFloor('f1', 1);
+  assert.equal(afterSubmit, 101);
+  assert.equal(form.resp, 101);
+  form.resp = 3;
+  assert.equal(form.resp, 101, 'submitSaisie / realtime filter.length ne casse plus le plancher');
+  const other = { id: 'f2', resp: 2 };
+  api.raiseRespFloor('f2', 100);
+  api.applyRespFloorToForm(other);
+  assert.equal(other.resp, 100);
+  assert.match(overlay, /function wrapRenderTableFloor/);
+  assert.match(overlay, /function wrapSubmitSaisieResp/);
+  assert.match(overlay, /function wrapSubmissionsArray/);
+  assert.match(overlay, /function wrapOnSyncSubmissions/);
+  assert.match(overlay, /applyRespFloorToList\(source\)/);
+  const excel = overlay.slice(overlay.indexOf('window.exportExcel'), overlay.indexOf('function filterServicesForExec'));
+  assert.match(excel, /applyRespFloorToForm/);
+  const tableWrap = overlay.slice(overlay.indexOf('function wrapRenderTableFloor'), overlay.indexOf('function wrapNavPainters'));
+  assert.match(tableWrap, /applyRespFloorToList\(dataList\('filtered'\)\)/);
+  const prod = overlay.slice(overlay.indexOf('function wrapRenderProdFormsCounts'), overlay.indexOf('function paintPlanningFromCache'));
+  assert.match(prod, /applyRespFloorToForm\(form\)/);
+});
+
+test('Planning : invalidation aussi sur update/delete RDV', () => {
+  assert.match(overlay, /function invalidatePlanningCache/);
+  assert.match(overlay, /updateAppointment: \['renderPlanning', 'goPlanning'\]/);
+  assert.match(overlay, /deleteAppointment: \['renderPlanning', 'goPlanning'\]/);
+  assert.match(overlay, /fn === 'createAppointment' \|\| fn === 'updateAppointment' \|\| fn === 'deleteAppointment'/);
+  assert.match(overlay, /String\(entity \|\| ''\) === 'appointments'/);
+  assert.match(overlay, /function wrapApiAppointmentMutations/);
+  const src = overlay.slice(overlay.indexOf('function invalidatePlanningCache'), overlay.indexOf('window.ptGetRespFloor'));
+  const windowObj = { _ptPlanningLoadedAt: 99, _ptPlanningCache: [1], _ptPlanningCacheRange: 'x', __ptNavDirty: {} };
+  windowObj.ptNavMarkDirty = function (keys) {
+    (Array.isArray(keys) ? keys : [keys]).forEach((k) => { windowObj.__ptNavDirty[k] = true; });
+  };
+  const invalidate = new Function('window', src + '; return invalidatePlanningCache;')(windowObj);
+  invalidate();
+  assert.equal(windowObj._ptPlanningLoadedAt, 0);
+  assert.equal(windowObj._ptPlanningCache, null);
+  assert.equal(windowObj.__ptNavDirty.renderPlanning, true);
+  assert.equal(windowObj.__ptNavDirty.goPlanning, true);
+});
+
+test('Pluriel réponse / réponses selon le compteur', () => {
+  const respWord = extractFn('function respWord', 'function respPhrase');
+  assert.equal(respWord(0), 'réponses');
+  assert.equal(respWord(1), 'réponse');
+  assert.equal(respWord(2), 'réponses');
+  assert.equal(respWord(100), 'réponses');
+  const bump = overlay.slice(overlay.indexOf('function bumpProdFormCardCounts'), overlay.indexOf('function wrapRenderProdFormsCounts'));
+  assert.match(bump, /respPhrase\(/);
 });

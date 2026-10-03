@@ -65,6 +65,7 @@
 
   window.ptNavListFp = listFp;
   window.ptMergeFormResp = mergeFormResp;
+  window.__ptRespFloor = window.__ptRespFloor || {};
 
   function afterResolved(ret, onOk) {
     Promise.resolve(ret).then(onOk).catch(function (err) {
@@ -97,10 +98,110 @@
       subCountCache = { fp: '', map: null };
       window.__ptCoreServicesLoaded = false;
       window.__ptInstancesLoaded = false;
+      window.__ptRespFloor = {};
       return;
     }
     (Array.isArray(keys) ? keys : [keys]).forEach(function (k) { window.__ptNavDirty[k] = true; });
   };
+
+  function formKey(id) {
+    return id == null ? '' : String(id);
+  }
+
+  function getRespFloor(id) {
+    var k = formKey(id);
+    if (!k) return 0;
+    return Number(window.__ptRespFloor[k]) || 0;
+  }
+
+  function raiseRespFloor(id, value) {
+    var k = formKey(id);
+    if (!k) return 0;
+    var next = mergeFormResp(getRespFloor(k), value);
+    window.__ptRespFloor[k] = next;
+    return next;
+  }
+
+  function findFormById(id) {
+    var k = formKey(id);
+    if (!k) return null;
+    var list = dataList('forms');
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && formKey(list[i].id) === k) return list[i];
+    }
+    return null;
+  }
+
+  function applyRespFloorToForm(form) {
+    if (!form || form.id == null) return form;
+    var merged = mergeFormResp(form.resp, getRespFloor(form.id));
+    raiseRespFloor(form.id, merged);
+    if (form.__ptRespLocked) {
+      try { form.resp = merged; } catch (_) {}
+      return form;
+    }
+    try {
+      var stored = merged;
+      Object.defineProperty(form, 'resp', {
+        configurable: true,
+        enumerable: true,
+        get: function () {
+          return mergeFormResp(stored, getRespFloor(form.id));
+        },
+        set: function (n) {
+          stored = mergeFormResp(stored, n);
+          stored = mergeFormResp(stored, getRespFloor(form.id));
+          raiseRespFloor(form.id, stored);
+        }
+      });
+      form.__ptRespLocked = true;
+    } catch (_) {
+      form.resp = merged;
+    }
+    return form;
+  }
+
+  function applyRespFloorToList(list) {
+    (list || []).forEach(applyRespFloorToForm);
+    return list;
+  }
+
+  function bumpRespFloor(id, delta) {
+    var k = formKey(id);
+    if (!k) return 0;
+    var form = findFormById(k);
+    if (form) raiseRespFloor(k, form.resp);
+    var d = Number(delta);
+    if (!isFinite(d) || d < 1) d = 1;
+    var next = getRespFloor(k) + d;
+    window.__ptRespFloor[k] = next;
+    if (form) applyRespFloorToForm(form);
+    window.ptNavMarkDirty(['renderTable', 'renderProdForms']);
+    return next;
+  }
+
+  function respWord(n) {
+    return Number(n) === 1 ? 'réponse' : 'réponses';
+  }
+
+  function respPhrase(n) {
+    n = Number(n) || 0;
+    return n.toLocaleString() + ' ' + respWord(n);
+  }
+
+  function invalidatePlanningCache() {
+    window._ptPlanningLoadedAt = 0;
+    window._ptPlanningCache = null;
+    window._ptPlanningCacheRange = '';
+    window.ptNavMarkDirty(['renderPlanning', 'goPlanning']);
+  }
+
+  window.ptGetRespFloor = getRespFloor;
+  window.ptRaiseRespFloor = raiseRespFloor;
+  window.ptBumpRespFloor = bumpRespFloor;
+  window.ptApplyRespFloorToForm = applyRespFloorToForm;
+  window.ptRespWord = respWord;
+  window.ptInvalidatePlanningCache = invalidatePlanningCache;
 
   window.ptNavShouldSkip = function (name, root, fp) {
     if (window.__ptNavDirty && window.__ptNavDirty[name]) return false;
@@ -440,7 +541,10 @@
   window.exportExcel = async function () {
     try {
       var XLSX = await ensureXlsx();
-      var rows = (typeof filtered !== 'undefined' ? filtered : (typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : [])).map(function (e) {
+      var source = typeof filtered !== 'undefined' ? filtered : (typeof FORMS_DATA !== 'undefined' ? FORMS_DATA : []);
+      applyRespFloorToList(source);
+      var rows = source.map(function (e) {
+        applyRespFloorToForm(e);
         return {
           Nom: e.nom || '',
           Description: e.desc || e.description || '',
@@ -1263,7 +1367,7 @@
         var m = text.match(/^([\d\s\u00a0\u202f\.,]+)\s+r/i);
         if (!m) continue;
         var shown = Number(String(m[1]).replace(/[^\d]/g, '')) || 0;
-        if (floor > shown) spans[i].textContent = text.replace(m[1], floor.toLocaleString());
+        spans[i].textContent = respPhrase(Math.max(floor, shown));
         break;
       }
     });
@@ -1277,6 +1381,7 @@
       var tagged = (list || []).map(function (form) {
         if (!form) return form;
         form.resp = mergeFormResp(form.resp, counts[String(form.id)]);
+        applyRespFloorToForm(form);
         return form;
       });
       var ret = orig.call(this, tagged);
@@ -1394,6 +1499,18 @@
     window.goWorkflows.__ptNav = true;
   }
 
+  function wrapRenderTableFloor() {
+    var orig = window.renderTable;
+    if (typeof orig !== 'function' || orig.__ptRespFloor) return;
+    window.renderTable = function () {
+      applyRespFloorToList(dataList('filtered'));
+      applyRespFloorToList(dataList('forms'));
+      return orig.apply(this, arguments);
+    };
+    window.renderTable.__ptRespFloor = true;
+    if (orig.__ptNav) window.renderTable.__ptNav = true;
+  }
+
   function wrapNavPainters() {
     wrapPainter('renderTable', function () {
       return document.getElementById('table-body');
@@ -1474,6 +1591,8 @@
       createInstance: ['goServices', 'goProdServices', 'renderServices', 'renderDashboard'],
       updateInstance: ['goServices', 'goProdServices', 'renderServices'],
       createAppointment: ['renderPlanning', 'goPlanning'],
+      updateAppointment: ['renderPlanning', 'goPlanning'],
+      deleteAppointment: ['renderPlanning', 'goPlanning'],
       createService: ['goServices', 'goWorkflows', 'goProdServices', 'renderDashboard'],
       updateService: ['goServices', 'goWorkflows', 'goProdServices']
     };
@@ -1486,15 +1605,140 @@
           window.ptNavMarkDirty(map[fn]);
           instMapCache = { fp: '', map: null };
           subCountCache = { fp: '', map: null };
-          if (fn === 'createAppointment') {
-            window._ptPlanningLoadedAt = 0;
-            window._ptPlanningCache = null;
+          if (fn === 'createAppointment' || fn === 'updateAppointment' || fn === 'deleteAppointment') {
+            invalidatePlanningCache();
           }
         });
         return ret;
       };
     });
+    if (!window.DB.__ptPlanningMut) {
+      if (typeof window.DB.save === 'function') {
+        var origSave = window.DB.save.bind(window.DB);
+        window.DB.save = function (entity, record, id) {
+          var ret = origSave.apply(window.DB, arguments);
+          if (String(entity || '') === 'appointments' && id) afterResolved(ret, invalidatePlanningCache);
+          return ret;
+        };
+      }
+      if (typeof window.DB.remove === 'function') {
+        var origRemove = window.DB.remove.bind(window.DB);
+        window.DB.remove = function (entity) {
+          var ret = origRemove.apply(window.DB, arguments);
+          if (String(entity || '') === 'appointments') afterResolved(ret, invalidatePlanningCache);
+          return ret;
+        };
+      }
+      window.DB.__ptPlanningMut = true;
+    }
     window.DB.__ptNavDirty = true;
+  }
+
+  function wrapApiAppointmentMutations() {
+    var orig = window._apiPost;
+    if (typeof orig !== 'function' || orig.__ptPlanningMut) return;
+    window._apiPost = function (path, body) {
+      var ret = orig.apply(this, arguments);
+      var p = String(path || '');
+      var action = String((body && body.action) || '');
+      var entity = String((body && body.entity) || '');
+      var apptApi = p.indexOf('/api/appointments') >= 0 && /^(create|update|delete|cancel|remove)$/.test(action);
+      var apptRec = p.indexOf('/api/records') >= 0 && entity === 'appointments' && /^(save|update|delete)$/.test(action);
+      if (apptApi || apptRec) afterResolved(ret, invalidatePlanningCache);
+      return ret;
+    };
+    window._apiPost.__ptPlanningMut = true;
+  }
+
+  function noteNewSubmission(item) {
+    if (!item) return;
+    var fid = item.formId || item.form_id;
+    if (fid == null) return;
+    var form = findFormById(fid);
+    if (form) raiseRespFloor(fid, form.resp);
+    bumpRespFloor(fid, 1);
+    applyRespFloorToForm(form || { id: fid, resp: getRespFloor(fid) });
+  }
+
+  function wrapSubmissionsArray() {
+    try {
+      if (typeof SUBMISSIONS_DATA === 'undefined' || !Array.isArray(SUBMISSIONS_DATA) || SUBMISSIONS_DATA.__ptRespMut) return;
+      ['push', 'unshift'].forEach(function (method) {
+        var orig = SUBMISSIONS_DATA[method];
+        SUBMISSIONS_DATA[method] = function () {
+          var news = [];
+          for (var i = 0; i < arguments.length; i++) {
+            var item = arguments[i];
+            if (!item || item.id == null) continue;
+            var exists = false;
+            for (var j = 0; j < this.length; j++) {
+              if (this[j] && String(this[j].id) === String(item.id)) { exists = true; break; }
+            }
+            if (!exists) news.push(item);
+          }
+          var ret = orig.apply(this, arguments);
+          news.forEach(noteNewSubmission);
+          return ret;
+        };
+      });
+      SUBMISSIONS_DATA.__ptRespMut = true;
+    } catch (_) {}
+  }
+
+  function wrapSubmitSaisieResp() {
+    var orig = window.submitSaisie;
+    if (typeof orig !== 'function' || orig.__ptRespFloor) return;
+    window.submitSaisie = function () {
+      var fid;
+      try { fid = typeof curSaisieFormId !== 'undefined' ? curSaisieFormId : null; } catch (_) {}
+      var form = findFormById(fid);
+      if (form) raiseRespFloor(form.id, form.resp);
+      var arrayWrapped = false;
+      try { arrayWrapped = !!(typeof SUBMISSIONS_DATA !== 'undefined' && SUBMISSIONS_DATA.__ptRespMut); } catch (_) {}
+      var ret = orig.apply(this, arguments);
+      var bumped = false;
+      function restore() {
+        if (!arrayWrapped && fid != null && !bumped) {
+          bumpRespFloor(fid, 1);
+          bumped = true;
+        }
+        applyRespFloorToForm(findFormById(fid));
+        applyRespFloorToList(dataList('forms'));
+      }
+      afterResolved(ret, function () {
+        restore();
+        setTimeout(restore, 0);
+        setTimeout(restore, 50);
+      });
+      setTimeout(restore, 0);
+      return ret;
+    };
+    window.submitSaisie.__ptRespFloor = true;
+  }
+
+  function wrapOnSyncSubmissions() {
+    var orig = window.onSync;
+    if (typeof orig !== 'function' || orig.__ptRespFloor) return;
+    window.onSync = function (entity, handler) {
+      if (String(entity) === 'submissions' && typeof handler === 'function' && !handler.__ptRespFloor) {
+        var wrapped = function (event, row) {
+          var fid = row && (row.form_id || row.formId);
+          if (event === 'INSERT' && fid != null) {
+            var form = findFormById(fid);
+            if (form) raiseRespFloor(fid, form.resp);
+          }
+          var ret = handler.apply(this, arguments);
+          if (event === 'INSERT' && fid != null) {
+            applyRespFloorToForm(findFormById(fid));
+          }
+          return ret;
+        };
+        wrapped.__ptRespFloor = true;
+        return orig.call(this, entity, wrapped);
+      }
+      return orig.apply(this, arguments);
+    };
+    window.onSync.__ptRespFloor = true;
   }
 
   function wrapToggleActive() {
@@ -1509,13 +1753,18 @@
 
   function wrapNavCache() {
     wrapNavPainters();
+    wrapRenderTableFloor();
     wrapRenderProdFormsCounts();
     wrapSvcStatsMaps();
     wrapGoServices();
     wrapGoWorkflows();
     wrapPlanningCache();
     wrapDbDirtyFlags();
+    wrapApiAppointmentMutations();
     wrapToggleActive();
+    wrapSubmissionsArray();
+    wrapSubmitSaisieResp();
+    wrapOnSyncSubmissions();
   }
 
   function boot() {
