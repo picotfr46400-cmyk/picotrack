@@ -2,6 +2,8 @@
 
 const net = require('net');
 const dns = require('dns').promises;
+const http = require('http');
+const https = require('https');
 
 const BLOCKED_HOSTS = new Set([
   'localhost',
@@ -133,8 +135,68 @@ async function assertPublicWebhookUrl(raw) {
   return parsed;
 }
 
+function pinnedWebhookFetch(rawUrl, { method = 'POST', headers = {}, body = '', timeoutMs = 8000 } = {}) {
+  return assertPublicWebhookUrl(rawUrl).then(async (parsed) => {
+    const host = parsed.hostname.replace(/^\[|\]$/g, '');
+    let address = host;
+    let family = net.isIP(host);
+    if (!family) {
+      const records = await dns.lookup(host, { all: true, verbatim: true });
+      if (!Array.isArray(records) || !records.length) {
+        const err = new Error('Hôte webhook introuvable.');
+        err.status = 400;
+        throw err;
+      }
+      for (const rec of records) {
+        if (isPrivateIp(rec.address)) {
+          const err = new Error('Résolution DNS vers une adresse privée refusée.');
+          err.status = 400;
+          throw err;
+        }
+      }
+      address = records[0].address;
+      family = net.isIP(address);
+    }
+    const payload = body == null ? '' : Buffer.from(String(body));
+    const lib = parsed.protocol === 'https:' ? https : http;
+    return await new Promise((resolve, reject) => {
+      const req = lib.request({
+        protocol: parsed.protocol,
+        host: address,
+        servername: host,
+        family: family || undefined,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        method,
+        path: `${parsed.pathname || '/'}${parsed.search || ''}`,
+        headers: Object.assign({}, headers, {
+          Host: parsed.host,
+          'Content-Length': payload.length
+        }),
+        timeout: timeoutMs
+      }, (res) => {
+        const chunks = [];
+        res.on('data', chunk => chunks.push(chunk));
+        res.on('end', () => resolve({
+          status: res.statusCode || 0,
+          body: Buffer.concat(chunks).toString('utf8')
+        }));
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        const err = new Error('Délai dépassé (8s).');
+        err.status = 504;
+        reject(err);
+      });
+      req.on('error', reject);
+      if (payload.length) req.write(payload);
+      req.end();
+    });
+  });
+}
+
 module.exports = {
   parseWebhookUrl,
   assertPublicWebhookUrl,
+  pinnedWebhookFetch,
   isPrivateIp
 };

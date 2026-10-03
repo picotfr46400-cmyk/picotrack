@@ -1,4 +1,5 @@
 const { sendJson, setCors, safeCode, safeLogin, safeHash, signPayload, sbRest } = require('./_pad-security');
+const { clientIp, takeAttempt } = require('./_server-supabase');
 
 module.exports = async function handler(req, res) {
   setCors(req, res);
@@ -14,6 +15,11 @@ module.exports = async function handler(req, res) {
     if (!environmentCode || !login || !passwordHash) {
       return sendJson(res, 400, { ok:false, error:'Code, identifiant et mot de passe obligatoires' });
     }
+    if (!/^[a-f0-9]{64}$/i.test(passwordHash)) {
+      return sendJson(res, 401, { ok:false, error:'Identifiants PAD invalides ou licence inactive' });
+    }
+    const attempt = takeAttempt(`pad:${clientIp(req)}:${environmentCode}:${login.toLowerCase()}`);
+    if (!attempt.allowed) return sendJson(res, 429, { ok:false, error:'Trop de tentatives. Réessayez plus tard.' });
 
     const q = [
       'licenses?select=id,email,label,role,roles,environment_code,license_type,active',
@@ -27,8 +33,10 @@ module.exports = async function handler(req, res) {
 
     const rows = await sbRest(req, q, { method:'GET', prefer:'' });
     if (!Array.isArray(rows) || !rows.length) {
+      attempt.fail();
       return sendJson(res, 401, { ok:false, error:'Identifiants PAD invalides ou licence inactive' });
     }
+    attempt.ok();
 
     const license = rows[0];
     await sbRest(req, `licenses?id=eq.${encodeURIComponent(license.id)}`, {
