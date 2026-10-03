@@ -298,17 +298,22 @@ async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null)
 
 
 
+function permissionFlag(profile, key) {
+  return [profile?.resolved_permissions, profile?.permissions].some(source => source && typeof source === 'object' && !Array.isArray(source) && source[key] === true);
+}
+
 function isPlatformOperatorProfile(profile) {
-  const role = String(profile?.role || '').toLowerCase();
-  const licenseType = String(profile?.license_type || '').toLowerCase();
-  const env = String(profile?.environment_code || '').toUpperCase();
-  const perms = profile?.resolved_permissions || {};
+  const role = String(profile?.role || '').trim().toLowerCase();
+  const licenseType = String(profile?.license_type || '').trim().toLowerCase();
+  const scope = String(profile?.scope || '').trim().toLowerCase();
+  const env = String(profile?.environment_code || '').trim().toUpperCase();
   return role === 'super_admin'
     || role === 'platform_admin'
     || licenseType === 'super_admin'
+    || scope === 'platform'
     || env === 'GLOBAL'
-    || perms.platform_admin === true
-    || perms.manage_global_licenses === true;
+    || permissionFlag(profile, 'platform_admin')
+    || permissionFlag(profile, 'manage_global_licenses');
 }
 
 function isClientAdminProfile(profile) {
@@ -338,14 +343,42 @@ function verifiedActor(user) {
   return { id: String(user.id), email: String(user.email || '').trim().toLowerCase() };
 }
 
+const ASSIGNABLE_CLIENT_ROLES = new Set(['supervision_user', 'pad_user', 'operator', 'operateur']);
+
+function normalizeRoleToken(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/^[\s"'{}]+|[\s"'{}]+$/g, '').trim();
+}
+
+function assignableRoleList(value) {
+  let tokens = [];
+  if (Array.isArray(value)) tokens = value;
+  else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) tokens = parsed;
+      } catch (_) {}
+    }
+    if (!tokens.length && trimmed) tokens = trimmed.split(',');
+  }
+  const out = [];
+  for (const token of tokens) {
+    const role = normalizeRoleToken(token);
+    if (ASSIGNABLE_CLIENT_ROLES.has(role) && !out.includes(role)) out.push(role);
+  }
+  return out;
+}
+
 function clampAssignedPrivileges(payload, requester) {
   const next = Object.assign({}, payload || {});
   if (isPlatformOperatorProfile(requester)) return next;
-  const blockedRoles = new Set(['super_admin', 'platform_admin', 'admin', 'environment_admin']);
-  const role = String(next.role || '').toLowerCase();
-  if (blockedRoles.has(role)) next.role = 'supervision_user';
-  if (Array.isArray(next.roles)) {
-    next.roles = next.roles.filter(item => !blockedRoles.has(String(item).toLowerCase()));
+  if (Object.prototype.hasOwnProperty.call(next, 'role')) {
+    const role = normalizeRoleToken(next.role);
+    next.role = ASSIGNABLE_CLIENT_ROLES.has(role) ? role : 'supervision_user';
+  }
+  if (Object.prototype.hasOwnProperty.call(next, 'roles')) {
+    next.roles = assignableRoleList(next.roles);
   }
   if (String(next.scope || '').toLowerCase() === 'platform') next.scope = 'environment';
   if (String(next.license_type || '').toLowerCase() === 'super_admin') next.license_type = 'supervision';
@@ -661,6 +694,9 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
 
   const targetEnv = normalizeEnvironmentCode(current?.environment_code || licenseRow?.environment_code || lookupEnv);
   assertSameEnvironmentOrPlatform(profileRequester, targetEnv);
+  if (!isPlatformOperatorProfile(profileRequester) && (isPlatformOperatorProfile(current) || isPlatformOperatorProfile(licenseRow))) {
+    throw Object.assign(new Error('Suppression d’un compte plateforme refusée.'), { status: 403 });
+  }
 
   if (current?.id) {
     await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(current.id)}`, {
