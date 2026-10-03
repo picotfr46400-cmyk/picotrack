@@ -1,4 +1,4 @@
-const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile, redactPayload } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 
 const ENTITIES = new Set([
@@ -6,7 +6,7 @@ const ENTITIES = new Set([
   'licenses', 'mail_logs', 'service_instances', 'services', 'submissions', 'user_profiles', 'app_roles', 'tenants'
 ]);
 
-const SELECT_ALLOW = /^[a-zA-Z0-9_.*,()\-\s]+$/;
+const SELECT_ALLOW = /^[a-zA-Z0-9_.,*\s]+$/;
 const COL_ALLOW = /^[a-zA-Z0-9_]+$/;
 const OP_ALLOW = new Set(['eq','neq','gt','gte','lt','lte','like','ilike','is','in','cs','cd','ov']);
 
@@ -195,7 +195,46 @@ function normalizeRecord(record, entity = '') {
     if (record.nom && !out.name) out.name = record.nom;
     if (record.desc && !out.description) out.description = record.desc;
   }
+  delete out.password_hash;
+  delete out.supa_key;
+  delete out.supa_url;
   return out;
+}
+
+function canManageUsers(profile) {
+  if (!profile || profile.active === false) return false;
+  if (isPlatformLicenseManagerProfile(profile)) return true;
+  const role = String(profile.role || '').toLowerCase();
+  const type = String(profile.license_type || '').toLowerCase();
+  const perms = profile.resolved_permissions || {};
+  return role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user' || type === 'supervision' || perms.manage_users === true;
+}
+
+function demotePrivilegedFields(record) {
+  const role = String(record.role || '').toLowerCase();
+  if (role === 'super_admin' || role === 'platform_admin') delete record.role;
+  if (Array.isArray(record.roles)) {
+    record.roles = record.roles.filter(item => !['super_admin', 'platform_admin'].includes(String(item).toLowerCase()));
+  }
+  if (String(record.scope || '').toLowerCase() === 'platform') record.scope = 'environment';
+  if (String(record.license_type || '').toLowerCase() === 'super_admin') delete record.license_type;
+  if (record.resolved_permissions && typeof record.resolved_permissions === 'object' && !Array.isArray(record.resolved_permissions)) {
+    delete record.resolved_permissions.platform_admin;
+    delete record.resolved_permissions.manage_global_licenses;
+  }
+  return record;
+}
+
+function assertEntityWrite(entity, profile) {
+  if (entity === 'tenants' || entity === 'environment_license_limits') {
+    if (!isPlatformLicenseManagerProfile(profile)) {
+      throw Object.assign(new Error('Action réservée au compte plateforme PicoTrack.'), { status: 403 });
+    }
+    return;
+  }
+  if ((entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles') && !canManageUsers(profile)) {
+    throw Object.assign(new Error('Droit insuffisant pour modifier cette ressource.'), { status: 403 });
+  }
 }
 
 
@@ -228,8 +267,9 @@ function normalizeEnvRecordValue(value, fallback = 'DEMO') {
 
 function effectiveEnvironmentCode(profile, requested) {
   const profileEnv = normalizeEnvCode(profile?.environment_code);
-  if (!isPlatformLicenseManagerProfile(profile) && profileEnv && profileEnv !== 'GLOBAL' && profileEnv !== '*') {
-    return profileEnv;
+  if (!isPlatformLicenseManagerProfile(profile)) {
+    if (profileEnv && profileEnv !== 'GLOBAL' && profileEnv !== '*') return profileEnv;
+    return 'DEMO';
   }
   const reqEnv = normalizeEnvCode(requested);
   if (reqEnv && reqEnv !== 'GLOBAL' && reqEnv !== '*') return reqEnv;
@@ -383,9 +423,15 @@ async function handleList(req, body) {
   // ou lentes selon l'écran. On applique ici un filtre environnement systématique
   // sans laisser le navigateur choisir librement le périmètre client.
   const user = await requireAuth(req);
-  const profile = await getUserProfile(user.id, req).catch(() => null);
+  const profile = await getUserProfile(user.id, req);
   const profileEnv = String(profile?.environment_code || '').trim().toUpperCase();
   const isPlatform = isPlatformLicenseManagerProfile(profile);
+  if (entity === 'tenants' && !isPlatform) {
+    throw Object.assign(new Error('Action réservée au compte plateforme PicoTrack.'), { status: 403 });
+  }
+  if (entity === 'licenses' && !canManageUsers(profile)) {
+    throw Object.assign(new Error('Droit insuffisant pour lire cette ressource.'), { status: 403 });
+  }
   const scopedEntities = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
 
   const requestFilters = Array.isArray(body.filters) ? body.filters.slice(0, 20) : [];
@@ -421,9 +467,13 @@ async function handleSave(req, body) {
   const entity = cleanEntity(body.entity);
   if (!entity) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
   const user = await requireAuth(req);
-  const profile = await getUserProfile(user.id, req).catch(() => null);
+  const profile = await getUserProfile(user.id, req);
+  assertEntityWrite(entity, profile);
   const source = body.record || body.body;
   const record = normalizeRecord(source, entity);
+  if (!isPlatformLicenseManagerProfile(profile) && (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles')) {
+    demotePrivilegedFields(record);
+  }
 
   if (entity === 'databases' && String(record.nom || '') === INTEGRATIONS_NAME) {
     throw Object.assign(new Error('Ressource interne non modifiable via records.'), { status: 403 });
@@ -476,7 +526,10 @@ async function handleSave(req, body) {
   if (!id) delete record.id;
 
   const method = id ? 'PATCH' : 'POST';
-  const path = id ? `${entity}?id=eq.${encodeURIComponent(id)}` : entity;
+  let path = id ? `${entity}?id=eq.${encodeURIComponent(id)}` : entity;
+  if (id && entitiesWithEnvironmentCode.has(entity) && !isPlatformLicenseManagerProfile(profile)) {
+    path += `&environment_code=eq.${encodeURIComponent(record.environment_code || env)}`;
+  }
 
   // Les écritures passent côté serveur avec clé service après authentification + whitelist + normalisation.
   // Cela évite les pertes silencieuses dues aux politiques RLS incomplètes, sans exposer la clé au navigateur.
@@ -489,7 +542,8 @@ async function handleDelete(req, body) {
   if (!entity || !id) throw Object.assign(new Error('Suppression invalide'), { status: 400 });
 
   const user = await requireAuth(req);
-  const profile = await getUserProfile(user.id, req).catch(() => null);
+  const profile = await getUserProfile(user.id, req);
+  assertEntityWrite(entity, profile);
   const profileEnv = String(profile?.environment_code || '').trim().toUpperCase();
   const isPlatform = isPlatformLicenseManagerProfile(profile);
 
@@ -497,8 +551,9 @@ async function handleDelete(req, body) {
 
   function scopedPath(table, extra = '') {
     let path = `${table}?id=eq.${encodeURIComponent(id)}${extra}`;
-    if (entitiesWithEnvironmentCode.has(table) && profileEnv && profileEnv !== 'GLOBAL' && !isPlatform) {
-      path += `&environment_code=eq.${encodeURIComponent(profileEnv)}`;
+    if (entitiesWithEnvironmentCode.has(table) && !isPlatform) {
+      const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
+      if (env && env !== 'GLOBAL') path += `&environment_code=eq.${encodeURIComponent(env)}`;
     }
     return path;
   }
@@ -518,8 +573,9 @@ async function handleDelete(req, body) {
   // pour éviter les blocages de contrainte et les données orphelines.
   if (entity === 'forms') {
     let subPath = `submissions?form_id=eq.${encodeURIComponent(id)}`;
-    if (profileEnv && profileEnv !== 'GLOBAL' && !isPlatform) {
-      subPath += `&environment_code=eq.${encodeURIComponent(profileEnv)}`;
+    if (!isPlatform) {
+      const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
+      if (env && env !== 'GLOBAL') subPath += `&environment_code=eq.${encodeURIComponent(env)}`;
     }
     await serviceRest(subPath, { method: 'DELETE', prefer: 'return=minimal', req }).catch(() => []);
   }
@@ -533,7 +589,7 @@ async function serviceRead(req, path) {
 
 async function handleInitialLoad(req, body) {
   const user = await requireAuth(req);
-  const profile = await getUserProfile(user.id, req).catch(() => null);
+  const profile = await getUserProfile(user.id, req);
   const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, body.environment_code || body.env), 'DEMO');
   const envFilter = [{ column: 'environment_code', op: 'eq', value: env }];
   const scope = String(body.scope || body.mode || 'forms').trim().toLowerCase();
@@ -633,7 +689,7 @@ module.exports = async function handler(req, res) {
       case 'integrations_test_webhook':
       case 'integrations_dispatch': {
         const user = await requireAuth(req);
-        const profile = await getUserProfile(user.id, req).catch(() => null);
+        const profile = await getUserProfile(user.id, req);
         result = await handleIntegrations(req, body, profile);
         break;
       }
@@ -641,7 +697,7 @@ module.exports = async function handler(req, res) {
         return json(res, 400, { error: 'Action non autorisée' });
     }
 
-    return json(res, 200, result);
+    return json(res, 200, redactPayload(result));
   } catch (err) {
     return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}) });
   }

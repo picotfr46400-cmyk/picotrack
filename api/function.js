@@ -1,21 +1,48 @@
-const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, applySecurityHeaders } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, bearer, requireAuth, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
 
 function readBody(req) {
-  if (req.body && typeof req.body === 'object') return Promise.resolve(req.body);
-  if (typeof req.body === 'string') {
-    try { return Promise.resolve(JSON.parse(req.body || '{}')); } catch (_) { return Promise.resolve({}); }
+  return readJsonBody(req, 1_000_000);
+}
+
+const INTERNAL_FUNCTIONS = new Set([
+  'list-users',
+  'get-license-limits',
+  'update-license-limits',
+  'create-user',
+  'invite-user',
+  'update-user',
+  'delete-user'
+]);
+const EDGE_FUNCTIONS = new Set(['pad-sync']);
+
+function resolveFunctionRoute(name) {
+  const fn = String(name || '');
+  if (INTERNAL_FUNCTIONS.has(fn)) return 'internal';
+  if (EDGE_FUNCTIONS.has(fn)) return 'edge';
+  return 'deny';
+}
+
+function verifiedActor(user) {
+  if (!user || !user.id) return null;
+  return { id: String(user.id), email: String(user.email || '').trim().toLowerCase() };
+}
+
+function clampAssignedPrivileges(payload, requester) {
+  const next = Object.assign({}, payload || {});
+  if (isPlatformOperatorProfile(requester)) return next;
+  const role = String(next.role || '').toLowerCase();
+  if (role === 'super_admin' || role === 'platform_admin') next.role = 'supervision_user';
+  if (Array.isArray(next.roles)) {
+    next.roles = next.roles.filter(item => !['super_admin', 'platform_admin'].includes(String(item).toLowerCase()));
   }
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', chunk => {
-      raw += chunk;
-      if (raw.length > 1_000_000) reject(new Error('Payload trop volumineux'));
-    });
-    req.on('end', () => {
-      try { resolve(raw ? JSON.parse(raw) : {}); } catch (_) { resolve({}); }
-    });
-    req.on('error', reject);
-  });
+  if (String(next.scope || '').toLowerCase() === 'platform') next.scope = 'environment';
+  if (String(next.license_type || '').toLowerCase() === 'super_admin') next.license_type = 'supervision';
+  const perms = Object.assign({}, next.resolved_permissions || {});
+  delete perms.platform_admin;
+  delete perms.manage_global_licenses;
+  next.resolved_permissions = perms;
+  if (String(next.environment_code || '').toUpperCase() === 'GLOBAL') delete next.environment_code;
+  return next;
 }
 
 function cleanString(value, max = 255) {
@@ -332,30 +359,9 @@ function canCreateEnvironmentUser(profile) {
 }
 
 async function getRequestUserProfile(req, url, serviceRole) {
-  const auth = String(req.headers.authorization || req.headers.Authorization || '');
-  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
-  const emailHeader = cleanString(req.headers['x-pt-user-email'] || req.headers['x-user-email'] || '');
-  const userIdHeader = cleanString(req.headers['x-pt-user-id'] || req.headers['x-user-id'] || '');
-
-  let userId = userIdHeader;
-  let email = normalizeEmail(emailHeader);
-
-  if (bearer && !userId && !email) {
-    const authUser = await supabaseFetch(url, serviceRole, `/auth/v1/user`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${bearer}` }
-    }).catch(() => null);
-    userId = cleanString(authUser?.id || '');
-    email = normalizeEmail(authUser?.email || '');
-  }
-
-  let rows = [];
-  if (userId) {
-    rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(userId)}&select=*`, { method: 'GET' }).catch(() => []);
-  }
-  if ((!Array.isArray(rows) || !rows.length) && email) {
-    rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?email=eq.${encodeURIComponent(email)}&select=*`, { method: 'GET' }).catch(() => []);
-  }
+  const actor = verifiedActor(await getAuthUser(req).catch(() => null));
+  if (!actor) return null;
+  const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(actor.id)}&select=*`, { method: 'GET' }).catch(() => []);
   return Array.isArray(rows) && rows.length ? rows[0] : null;
 }
 
@@ -551,11 +557,12 @@ async function handleListUsers(req, url, serviceRole, payload) {
 async function handleCreateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const profile = await requireUserCreator(req, url, serviceRole);
-  const environmentCode = assertSameEnvironmentOrPlatform(profile, payload.environment_code || payload.active_env || profileEnvironmentCode(profile));
-  const quota = await assertQuotaAvailable(url, serviceRole, { ...payload, environment_code: environmentCode }, null);
-  const authUser = await createAuthUserWithPassword(url, serviceRole, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
-  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
-  await insertLicenseBestEffort(url, serviceRole, { ...payload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  const safePayload = clampAssignedPrivileges(payload, profile);
+  const environmentCode = assertSameEnvironmentOrPlatform(profile, safePayload.environment_code || safePayload.active_env || profileEnvironmentCode(profile));
+  const quota = await assertQuotaAvailable(url, serviceRole, { ...safePayload, environment_code: environmentCode }, null);
+  const authUser = await createAuthUserWithPassword(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  await insertLicenseBestEffort(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
   return { ok: true, success: true, mode: 'direct-create', quota, user: { id: authUser.id, email: authUser.email || payload.email }, profile: createdProfile };
 }
 
@@ -582,7 +589,8 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   const current = Array.isArray(currentRows) ? currentRows[0] : null;
   if (!current?.id) throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
   assertSameEnvironmentOrPlatform(profileRequester, current.environment_code);
-  const merged = { ...current, ...payload, environment_code: payload.environment_code || current.environment_code, license_type: payload.license_type || current.license_type };
+  const safePayload = clampAssignedPrivileges(payload, profileRequester);
+  const merged = { ...current, ...safePayload, environment_code: safePayload.environment_code || current.environment_code, license_type: safePayload.license_type || current.license_type };
   await assertQuotaAvailable(url, serviceRole, merged, id);
   await updateAuthUserPassword(url, serviceRole, id, payload);
   const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged);
@@ -674,7 +682,7 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
   return { ok: true, success: true };
 }
 
-module.exports = async function handler(req, res) {
+async function handler(req, res) {
   setCors(req, res);
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
@@ -716,6 +724,7 @@ module.exports = async function handler(req, res) {
     }
 
     if (!functionName) return json(res, 400, { error: 'Fonction manquante' });
+    if (resolveFunctionRoute(functionName) !== 'edge') return json(res, 404, { error: 'Fonction inconnue' });
     await requireAuth(req);
     const token = bearer(req);
     const key = anonKey;
@@ -740,3 +749,8 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+
+handler.resolveFunctionRoute = resolveFunctionRoute;
+handler.verifiedActor = verifiedActor;
+handler.clampAssignedPrivileges = clampAssignedPrivileges;
+module.exports = handler;
