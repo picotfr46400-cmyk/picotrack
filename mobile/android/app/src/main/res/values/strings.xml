@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="generatorApp">picotrack-pad</string>
+    <string name="fallbackType">customtabs</string>
+    <string name="orientation">default</string>
+    <bool name="enableNotification">true</bool>
+    <bool name="enableSiteSettingsShortcut">true</bool>
+    <integer name="splashScreenFadeOutDuration">300</integer>
+</resources>
