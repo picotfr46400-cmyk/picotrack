@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile, fetchUpstream, clientIp, takeAttempt } = require('./_server-supabase');
 
 function normalizeProfile(user, profile) {
   if (!user || !profile) return null;
@@ -72,19 +72,23 @@ module.exports = async function handler(req, res) {
         const rows = await serviceRest(`user_profiles?or=(login_user.eq.${safeLogin},username.eq.${safeLogin})&select=email,active&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []);
         if (Array.isArray(rows) && rows[0]?.email) loginEmail = String(rows[0].email || '').trim().toLowerCase();
       }
-      const upstream = await fetch(`${url}/auth/v1/token?grant_type=password`, {
+      const attempt = takeAttempt(`signin:${clientIp(req)}:${loginEmail || 'unknown'}`);
+      if (!attempt.allowed) return json(res, 429, { error: 'Trop de tentatives. Réessayez plus tard.' });
+      const upstream = await fetchUpstream(`${url}/auth/v1/token?grant_type=password`, {
         method: 'POST',
         headers: { apikey: anonKey, 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: loginEmail, password: body.password })
-      });
+      }, 8000);
       const text = await upstream.text();
       let payload = {};
       try { payload = JSON.parse(text || '{}'); } catch { payload = { message: text }; }
       if (!upstream.ok) {
+        attempt.fail();
         return json(res, upstream.status, {
           error: payload.error_description || payload.msg || payload.error || payload.message || 'Connexion refusée'
         });
       }
+      attempt.ok();
 
       const authUser = payload.user || null;
       if (authUser?.id) {
@@ -121,6 +125,10 @@ module.exports = async function handler(req, res) {
 
     return json(res, 400, { error: 'Action invalide' });
   } catch (e) {
+    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError' || e.status === 504)) {
+      return json(res, 504, { error: 'Délai de connexion dépassé. Réessayez.' });
+    }
+    if (e && e.status === 408) return json(res, 408, { error: 'Délai de lecture de la requête dépassé' });
     return json(res, e.status || 500, { error: e.message || 'Erreur auth', code: e.code || undefined });
   }
 };

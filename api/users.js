@@ -1,4 +1,4 @@
-const { getSupabaseConfig, json, setCors, bearer, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile, readJsonBody } = require('./_server-supabase');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
@@ -73,7 +73,7 @@ function sameEnv(profile, environmentCode) {
   const profileEnv = normalizeEnvironmentCode(profile?.environment_code || '');
   const requestedEnv = normalizeEnvironmentCode(environmentCode || '');
   if (isPlatformProfile(profile)) return requestedEnv || profileEnv || 'DEMO';
-  if (!profileEnv || profileEnv === 'GLOBAL') return requestedEnv || 'DEMO';
+  if (!profileEnv || profileEnv === 'GLOBAL') return 'DEMO';
   if (requestedEnv && requestedEnv !== profileEnv) {
     const err = new Error('Accès refusé à cet environnement.');
     err.status = 403;
@@ -99,22 +99,8 @@ async function requireProfile(req) {
   return { user, profile };
 }
 
-async function readBody(req) {
-  if (req.body && typeof req.body === 'object') return req.body;
-  if (typeof req.body === 'string') {
-    try { return JSON.parse(req.body || '{}'); } catch (_) { return {}; }
-  }
-  return await new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', chunk => {
-      raw += chunk;
-      if (raw.length > 500000) reject(Object.assign(new Error('Payload trop volumineux'), { status: 413 }));
-    });
-    req.on('end', () => {
-      try { resolve(raw ? JSON.parse(raw) : {}); } catch (_) { resolve({}); }
-    });
-    req.on('error', reject);
-  });
+function readBody(req) {
+  return readJsonBody(req, 500000);
 }
 
 async function handleSummary(req, body) {
