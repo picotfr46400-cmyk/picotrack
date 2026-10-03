@@ -202,26 +202,69 @@ function normalizeRecord(record, entity = '') {
 }
 
 const SENSITIVE_ROW_KEYS = ['password_hash', 'supa_key', 'supa_url'];
+const ALWAYS_SECRET_COLUMNS = ['password_hash', 'supa_key', 'supa_url'];
+const ACTIVATION_COLUMNS = ['license_key'];
 
-function redactRow(row) {
-  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
-  if (!SENSITIVE_ROW_KEYS.some(key => Object.prototype.hasOwnProperty.call(row, key))) return row;
-  const copy = Object.assign({}, row);
-  for (const key of SENSITIVE_ROW_KEYS) delete copy[key];
-  return copy;
-}
-
-function redactRecordsPayload(value) {
-  if (Array.isArray(value)) return value.map(redactRow);
-  if (!value || typeof value !== 'object') return value;
+function redactRow(row, extraKeys = []) {
+  if (Array.isArray(row)) return row.map(item => redactRow(item, extraKeys));
+  if (!row || typeof row !== 'object') return row;
+  const blocked = new Set([...SENSITIVE_ROW_KEYS, ...extraKeys]);
   const out = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (SENSITIVE_ROW_KEYS.includes(key)) continue;
-    if (Array.isArray(item)) out[key] = item.map(redactRow);
-    else if (item && typeof item === 'object') out[key] = redactRow(item);
-    else out[key] = item;
+  for (const [key, value] of Object.entries(row)) {
+    if (blocked.has(key)) continue;
+    if (key === 'values') {
+      out[key] = value;
+      continue;
+    }
+    out[key] = value && typeof value === 'object' ? redactRow(value, extraKeys) : value;
   }
   return out;
+}
+
+function redactRecordsPayload(value, profile) {
+  const extra = canManageUsers(profile) ? [] : ACTIVATION_COLUMNS;
+  return redactRow(value, extra);
+}
+
+function textMentionsColumn(text, column) {
+  return new RegExp(`(?:^|[^A-Za-z0-9_])${column}(?:[^A-Za-z0-9_]|$)`, 'i').test(String(text ?? ''));
+}
+
+function collectTexts(value, out) {
+  if (value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+    value.forEach(item => collectTexts(item, out));
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      out.push(key);
+      collectTexts(item, out);
+    }
+    return;
+  }
+  out.push(value);
+}
+
+function assertSafeRead(profile, { select, filters, order }) {
+  const texts = [];
+  collectTexts(select, texts);
+  collectTexts(filters, texts);
+  collectTexts(order, texts);
+  if (ALWAYS_SECRET_COLUMNS.some(column => texts.some(text => textMentionsColumn(text, column)))) {
+    throw Object.assign(new Error('Colonne sensible interdite.'), { status: 403 });
+  }
+  if (!canManageUsers(profile) && ACTIVATION_COLUMNS.some(column => texts.some(text => textMentionsColumn(text, column)))) {
+    throw Object.assign(new Error('Colonne sensible interdite.'), { status: 403 });
+  }
+  const nested = Array.isArray(filters) && filters.some(filter => {
+    const column = String(filter?.column || '').trim().toLowerCase();
+    const op = String(filter?.op || '').trim().toLowerCase();
+    return column === 'or' || column === 'and' || op === 'or' || op === 'and' || /[()]/.test(String(filter?.value ?? ''));
+  });
+  if (!isPlatformLicenseManagerProfile(profile) && (/[()]/.test(String(select || '')) || nested)) {
+    throw Object.assign(new Error('Jointure ou filtre imbriqué interdit.'), { status: 403 });
+  }
 }
 
 function canManageUsers(profile) {
@@ -234,16 +277,18 @@ function canManageUsers(profile) {
 }
 
 function demotePrivilegedFields(record) {
+  const blockedRoles = new Set(['super_admin', 'platform_admin', 'admin', 'environment_admin']);
   const role = String(record.role || '').toLowerCase();
-  if (role === 'super_admin' || role === 'platform_admin') delete record.role;
+  if (blockedRoles.has(role)) delete record.role;
   if (Array.isArray(record.roles)) {
-    record.roles = record.roles.filter(item => !['super_admin', 'platform_admin'].includes(String(item).toLowerCase()));
+    record.roles = record.roles.filter(item => !blockedRoles.has(String(item).toLowerCase()));
   }
   if (String(record.scope || '').toLowerCase() === 'platform') record.scope = 'environment';
   if (String(record.license_type || '').toLowerCase() === 'super_admin') delete record.license_type;
   if (record.resolved_permissions && typeof record.resolved_permissions === 'object' && !Array.isArray(record.resolved_permissions)) {
     delete record.resolved_permissions.platform_admin;
     delete record.resolved_permissions.manage_global_licenses;
+    delete record.resolved_permissions.manage_users;
   }
   return record;
 }
@@ -447,6 +492,8 @@ async function handleList(req, body) {
   // sans laisser le navigateur choisir librement le périmètre client.
   const user = await requireAuth(req);
   const profile = await getUserProfile(user.id, req);
+  req.picoReaderProfile = profile;
+  assertSafeRead(profile, { select: body.select, filters: body.filters, order: body.order });
   const profileEnv = String(profile?.environment_code || '').trim().toUpperCase();
   const isPlatform = isPlatformLicenseManagerProfile(profile);
   if (entity === 'tenants' && !isPlatform) {
@@ -720,7 +767,7 @@ async function handler(req, res) {
         return json(res, 400, { error: 'Action non autorisée' });
     }
 
-    return json(res, 200, redactRecordsPayload(result));
+    return json(res, 200, redactRecordsPayload(result, req.picoReaderProfile));
   } catch (err) {
     return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}) });
   }
