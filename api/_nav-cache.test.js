@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const vm = require('node:vm');
 const { prefixForHost } = require('./_server-supabase');
 
 const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
@@ -268,7 +269,9 @@ function makeRealtimeApi(form, submissions) {
     'mergeFormResp',
     'dataList',
     'SUBMISSIONS_DATA',
-    floorSrc + insertSrc + '; return { getRespFloor, raiseRespFloor, applyRespFloorToForm, bumpRespFloor, handleRealtimeSubmissionInsert, afterSubmitSaisieRecord };'
+    'var countedSubmissionIds = Object.create(null);\n' +
+      floorSrc + insertSrc +
+      '; return { getRespFloor, raiseRespFloor, applyRespFloorToForm, bumpRespFloor, handleRealtimeSubmissionInsert, afterSubmitSaisieRecord, wasCounted };'
   );
   return factory(windowObj, mergeFormResp, (name) => (name === 'forms' ? forms : []), submissions);
 }
@@ -317,6 +320,150 @@ test('INSERT realtime d’un id déjà présent ne fait pas +1', () => {
   });
   assert.equal(form.resp, 101);
   assert.equal(api.getRespFloor('f1'), 101);
+});
+
+function bootOverlayVm(opts) {
+  opts = opts || {};
+  const form = opts.form || { id: 2708, nom: 'Recette', resp: 100, actif: true, published: true };
+  const FORMS_DATA = [form];
+  const SUBMISSIONS_DATA = opts.subs || [];
+  const timers = [];
+  const ctx = {
+    console,
+    Promise,
+    setTimeout(fn, ms) {
+      if (ms === 400 || ms === 1200) return 0;
+      const id = setTimeout(fn, ms);
+      timers.push(id);
+      return id;
+    },
+    clearTimeout(id) {
+      clearTimeout(id);
+    },
+    document: {
+      readyState: 'complete',
+      addEventListener() {},
+      getElementById() { return null; },
+      querySelectorAll() { return []; },
+      createElement() { return { style: {}, innerHTML: '', setAttribute() {}, appendChild() {} }; },
+      body: { appendChild() {} }
+    },
+    FORMS_DATA,
+    SUBMISSIONS_DATA,
+    filtered: FORMS_DATA.slice(),
+    curSaisieFormId: form.id,
+    __ptSubmittingSaisie: false,
+    submitSaisie: opts.submitSaisie || function () {},
+    onSync: opts.onSync || function () {},
+    toast() {},
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  ctx.window = ctx;
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(overlay, ctx, { filename: 'core-supervision.js' });
+  return {
+    ctx,
+    form,
+    FORMS_DATA,
+    SUBMISSIONS_DATA,
+    dispose() { timers.forEach((id) => clearTimeout(id)); }
+  };
+}
+
+function upsertSummary(list, item) {
+  const idx = list.findIndex((x) => String(x.id) === String(item.id));
+  if (idx >= 0) list[idx] = Object.assign({}, list[idx], item);
+  else list.push(item);
+}
+
+function load25Summaries(list, formId) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i]._summaryOnly) list.splice(i, 1);
+  }
+  for (let n = 1; n <= 25; n++) upsertSummary(list, { id: 'sum-' + n, formId, _summaryOnly: true });
+}
+
+test('vm overlay : double-clic submitSaisie donne +1', () => {
+  const env = bootOverlayVm({
+    submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+      this.SUBMISSIONS_DATA.push({ id: 'saisie-1', formId: 2708, values: { a: 1 } });
+    }
+  });
+  env.ctx.window.ptApplyRespFloorToForm(env.form);
+  assert.equal(env.form.resp, 100);
+  env.ctx.window.submitSaisie();
+  env.ctx.window.submitSaisie();
+  assert.equal(env.form.resp, 101);
+  assert.equal(env.ctx.window.ptWasSubmissionCounted('saisie-1'), true);
+  env.dispose();
+});
+
+test('vm overlay : échec puis nouvelle tentative donne +1', () => {
+  let mode = 'fail';
+  const env = bootOverlayVm({
+    submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+      if (mode === 'fail') {
+        this.__ptSubmittingSaisie = false;
+        return;
+      }
+      this.SUBMISSIONS_DATA.push({ id: 'saisie-ok', formId: 2708, values: { a: 1 } });
+    }
+  });
+  env.ctx.window.ptApplyRespFloorToForm(env.form);
+  env.ctx.window.submitSaisie();
+  assert.equal(env.form.resp, 100);
+  mode = 'ok';
+  env.ctx.window.submitSaisie();
+  assert.equal(env.form.resp, 101);
+  env.dispose();
+});
+
+test('vm overlay : échec puis push sans rapport donne 0', () => {
+  const env = bootOverlayVm({
+    submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+      this.__ptSubmittingSaisie = false;
+    }
+  });
+  env.ctx.window.ptApplyRespFloorToForm(env.form);
+  env.ctx.window.submitSaisie();
+  env.SUBMISSIONS_DATA.push({ id: 'other', formId: 999, values: { x: 1 } });
+  env.SUBMISSIONS_DATA.push({ id: 'sum-x', formId: 2708, _summaryOnly: true });
+  assert.equal(env.form.resp, 100);
+  env.dispose();
+});
+
+test('vm overlay : submit puis écho INSERT du même id donne +1', () => {
+  const env = bootOverlayVm({
+    submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+      this.SUBMISSIONS_DATA.push({ id: 'echo-1', formId: 2708, values: { a: 1 } });
+    }
+  });
+  env.ctx.window.ptApplyRespFloorToForm(env.form);
+  env.ctx.window.submitSaisie();
+  assert.equal(env.form.resp, 101);
+  env.ctx.window.ptHandleRealtimeSubmissionInsert('INSERT', { id: 'echo-1', form_id: 2708, values: { a: 1 } }, function () {});
+  assert.equal(env.form.resp, 101);
+  env.dispose();
+});
+
+test('vm overlay : deux ouvertures de 25 résumés ne changent pas resp', () => {
+  const env = bootOverlayVm();
+  env.ctx.window.ptApplyRespFloorToForm(env.form);
+  load25Summaries(env.SUBMISSIONS_DATA, 2708);
+  load25Summaries(env.SUBMISSIONS_DATA, 2708);
+  assert.equal(env.SUBMISSIONS_DATA.filter((x) => x._summaryOnly).length, 25);
+  assert.equal(env.form.resp, 100);
+  env.dispose();
 });
 
 test('Pluriel réponse / réponses selon le compteur', () => {

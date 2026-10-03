@@ -36,6 +36,8 @@
   var instMapCache = { fp: '', map: null };
   var subCountCache = { fp: '', map: null };
   var lastNavEnv = '';
+  var countedSubmissionIds = Object.create(null);
+  var submitPushHook = { armed: false, formId: null, list: null, origPush: null, timer: null };
 
   function listFp(list) {
     list = list || [];
@@ -99,6 +101,8 @@
       window.__ptCoreServicesLoaded = false;
       window.__ptInstancesLoaded = false;
       window.__ptRespFloor = {};
+      countedSubmissionIds = Object.create(null);
+      disarmSubmitPushHook();
       return;
     }
     (Array.isArray(keys) ? keys : [keys]).forEach(function (k) { window.__ptNavDirty[k] = true; });
@@ -1661,6 +1665,71 @@
     return false;
   }
 
+  function wasCounted(id) {
+    return id != null && !!countedSubmissionIds[String(id)];
+  }
+
+  function markCounted(id) {
+    if (id == null) return false;
+    var k = String(id);
+    if (countedSubmissionIds[k]) return false;
+    countedSubmissionIds[k] = true;
+    return true;
+  }
+
+  function isCountableSaisieItem(item, formId) {
+    if (!item || item._summaryOnly) return false;
+    if (!item.values || typeof item.values !== 'object') return false;
+    var fid = item.formId || item.form_id;
+    if (formId != null && formKey(fid) !== formKey(formId)) return false;
+    if (item.id == null) return false;
+    if (wasCounted(item.id) || submissionIdPresent(item.id)) return false;
+    return true;
+  }
+
+  function disarmSubmitPushHook() {
+    if (!submitPushHook.armed) return;
+    try {
+      if (submitPushHook.list && submitPushHook.origPush) submitPushHook.list.push = submitPushHook.origPush;
+    } catch (_) {}
+    if (submitPushHook.timer) {
+      try { clearTimeout(submitPushHook.timer); } catch (_) {}
+    }
+    submitPushHook.armed = false;
+    submitPushHook.formId = null;
+    submitPushHook.list = null;
+    submitPushHook.origPush = null;
+    submitPushHook.timer = null;
+  }
+
+  function armSubmitPushHook(formId) {
+    if (submitPushHook.armed) return;
+    var list;
+    try { list = SUBMISSIONS_DATA; } catch (_) {}
+    if (!list || typeof list.push !== 'function') return;
+    var origPush = list.push;
+    submitPushHook.armed = true;
+    submitPushHook.formId = formId;
+    submitPushHook.list = list;
+    submitPushHook.origPush = origPush;
+    list.push = function () {
+      var hit = null;
+      for (var i = 0; i < arguments.length; i++) {
+        if (isCountableSaisieItem(arguments[i], submitPushHook.formId)) {
+          hit = arguments[i];
+          break;
+        }
+      }
+      var ret = origPush.apply(this, arguments);
+      if (hit && markCounted(hit.id)) {
+        afterSubmitSaisieRecord(submitPushHook.formId);
+        disarmSubmitPushHook();
+      }
+      return ret;
+    };
+    submitPushHook.timer = setTimeout(disarmSubmitPushHook, 20000);
+  }
+
   function afterSubmitSaisieRecord(formId) {
     if (formId == null) return getRespFloor(formId);
     bumpRespFloor(formId, 1);
@@ -1670,15 +1739,18 @@
   }
 
   function handleRealtimeSubmissionInsert(event, row, origHandler, thisArg) {
-    var already = !!(event === 'INSERT' && row && submissionIdPresent(row.id));
-    var fid = row && (row.form_id || row.formId);
-    if (event === 'INSERT' && !already && fid != null) {
+    if (event !== 'INSERT' || !row) {
+      return typeof origHandler === 'function' ? origHandler.call(thisArg, event, row) : undefined;
+    }
+    var already = submissionIdPresent(row.id) || wasCounted(row.id);
+    var fid = row.form_id || row.formId;
+    if (!already && fid != null) {
       var form = findFormById(fid);
       if (form) raiseRespFloor(fid, form.resp);
     }
     var ret;
     if (typeof origHandler === 'function') ret = origHandler.call(thisArg, event, row);
-    if (event === 'INSERT' && !already && fid != null) {
+    if (!already && fid != null && markCounted(row.id)) {
       bumpRespFloor(fid, 1);
       applyRespFloorToForm(findFormById(fid));
     }
@@ -1687,44 +1759,30 @@
 
   window.ptAfterSubmitSaisieRecord = afterSubmitSaisieRecord;
   window.ptHandleRealtimeSubmissionInsert = handleRealtimeSubmissionInsert;
+  window.ptWasSubmissionCounted = wasCounted;
 
   function wrapSubmitSaisieResp() {
     var orig = window.submitSaisie;
     if (typeof orig !== 'function' || orig.__ptRespFloor) return;
     window.submitSaisie = function () {
+      if (window.__ptSubmittingSaisie) return orig.apply(this, arguments);
       var fid;
       try { fid = typeof curSaisieFormId !== 'undefined' ? curSaisieFormId : null; } catch (_) {}
       var form = findFormById(fid);
       if (form) raiseRespFloor(form.id, form.resp);
-      var list;
-      try { list = SUBMISSIONS_DATA; } catch (_) {}
-      var origPush = list && list.push;
-      var hooked = false;
-      var done = false;
-      function afterSR() {
-        if (done || fid == null) return;
-        done = true;
-        afterSubmitSaisieRecord(fid);
-        if (list && origPush && hooked) {
-          list.push = origPush;
-          hooked = false;
-        }
+      armSubmitPushHook(fid);
+      var ret;
+      try {
+        ret = orig.apply(this, arguments);
+      } catch (err) {
+        disarmSubmitPushHook();
+        throw err;
       }
-      if (typeof origPush === 'function') {
-        list.push = function () {
-          var ret = origPush.apply(this, arguments);
-          Promise.resolve().then(afterSR);
-          return ret;
-        };
-        hooked = true;
+      if (ret && typeof ret.then === 'function') {
+        Promise.resolve(ret).catch(function () { disarmSubmitPushHook(); });
+      } else if (!window.__ptSubmittingSaisie) {
+        disarmSubmitPushHook();
       }
-      var ret = orig.apply(this, arguments);
-      setTimeout(function () {
-        if (list && origPush && hooked) {
-          list.push = origPush;
-          hooked = false;
-        }
-      }, 20000);
       return ret;
     };
     window.submitSaisie.__ptRespFloor = true;
