@@ -9,6 +9,39 @@ const ENTITIES = new Set([
 const SELECT_ALLOW = /^[a-zA-Z0-9_.*,()\-\s]+$/;
 const COL_ALLOW = /^[a-zA-Z0-9_]+$/;
 const OP_ALLOW = new Set(['eq','neq','gt','gte','lt','lte','like','ilike','is','in','cs','cd','ov']);
+const MAX_CLIENT_FILTERS = 19;
+const SYSTEM_ASSIGNABLE_ROLES = new Set(['supervision_user', 'pad_user', 'operator', 'operateur']);
+const BLOCKED_ROLE_NAMES = new Set(['admin', 'environment_admin', 'super_admin', 'client_admin', 'platform_admin']);
+const BLOCKED_ROLE_IDS = new Set(['00000000-0000-0000-0000-000000000001']);
+
+const READ_COLUMNS = {
+  forms: ['id','nom','description','couleur','actif','modules','fields','created_at','updated_at','visible_roles','permissions','triggers','version','published','environment_code'],
+  submissions: ['id','form_id','values','device','created_at','updated_at','environment_code'],
+  services: ['id','nom','description','couleur','actif','statuses','actions','created_at','updated_at','form_id','id_pattern','flux','card_config','kanban_groups','permissions','environment_code'],
+  service_instances: ['id','service_id','ref','form_data','status_id','priority','events','device','created_at','updated_at','assigned_to','environment_code','created_by','current_status_id','reference','submission_id'],
+  appointments: ['id','form_id','field_id','response_id','title','customer_name','date','start_time','end_time','status','assigned_team','capacity_group','parallel_slots','created_at','updated_at','environment_code'],
+  user_profiles: ['id','email','role','roles','environment_code','active','created_at','updated_at','label','firstname','lastname','first_name','last_name','username','login_user','license_type','scope'],
+  licenses: ['id','environment_code','license_type','label','active','device_name','last_seen','created_at','updated_at','email','role','scope','roles','login_user','username'],
+  app_roles: ['id','name','description','permissions','active','created_at','updated_at','environment_code'],
+  databases: ['id','nom','description','actif','fields','columns','created_at','updated_at','environment_code'],
+  database_rows: ['id','database_id','values','created_at','updated_at','environment_code'],
+  mail_logs: ['id','status','subject','recipient','created_at','environment_code'],
+  environment_license_limits: ['id','environment_code','supervision_limit','pad_limit','lecture_limit','readonly_limit','max_supervision','max_pad','updated_at']
+};
+
+const WRITE_COLUMNS = {
+  forms: ['nom','description','couleur','actif','modules','fields','visible_roles','permissions','triggers','version','published'],
+  services: ['nom','description','couleur','actif','statuses','actions','form_id','id_pattern','flux','card_config','kanban_groups','permissions'],
+  service_instances: ['service_id','ref','form_data','status_id','priority','events','device','assigned_to','created_by','current_status_id','reference','submission_id'],
+  submissions: ['form_id','values','device'],
+  appointments: ['form_id','field_id','response_id','title','customer_name','date','start_time','end_time','status','assigned_team','capacity_group','parallel_slots'],
+  app_roles: ['name','description','permissions','active'],
+  user_profiles: ['email','role','roles','active','label','firstname','lastname','first_name','last_name','username','login_user','license_type'],
+  licenses: ['email','role','roles','active','label','license_type','device_name','last_seen','login_user','username'],
+  databases: ['nom','description','actif','fields','columns'],
+  database_rows: ['database_id','values'],
+  mail_logs: ['status','subject','recipient']
+};
 
 function cleanEntity(value) {
   const entity = String(value || '').trim();
@@ -48,7 +81,7 @@ function cleanOrder(value, entity = '') {
 function cleanFilters(filters) {
   const out = [];
   if (!Array.isArray(filters)) return out;
-  for (const f of filters.slice(0, 20)) {
+  for (const f of filters) {
     const column = String(f?.column || '').trim();
     const op = String(f?.op || '').trim();
     const value = f?.value;
@@ -246,7 +279,7 @@ function collectTexts(value, out) {
   out.push(value);
 }
 
-function assertSafeRead(profile, { select, filters, order }) {
+function assertSafeRead(profile, { select, filters, order, entity }) {
   const texts = [];
   collectTexts(select, texts);
   collectTexts(filters, texts);
@@ -260,6 +293,7 @@ function assertSafeRead(profile, { select, filters, order }) {
   if (!isPlatformLicenseManagerProfile(profile) && /[()]/.test(String(select || ''))) {
     throw Object.assign(new Error('Jointure interdite.'), { status: 403 });
   }
+  if (!isPlatformLicenseManagerProfile(profile)) assertListedColumns(profile, entity, select, filters, order);
 }
 
 function canManageUsers(profile) {
@@ -271,41 +305,131 @@ function canManageUsers(profile) {
   return role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user' || type === 'supervision' || perms.manage_users === true;
 }
 
-const ASSIGNABLE_CLIENT_ROLES = new Set(['supervision_user', 'pad_user', 'operator', 'operateur']);
-
-function normalizeRoleToken(value) {
-  return String(value ?? '').trim().toLowerCase().replace(/^[\s"'{}]+|[\s"'{}]+$/g, '').trim();
+function normalizePrivilegeToken(value) {
+  return String(value ?? '').replace(/[\t\r\n\f\v]/g, '').trim().toLowerCase().replace(/^[\s"'{}]+|[\s"'{}]+$/g, '').trim();
 }
 
-function assignableRoleList(value) {
+function normalizeColumnName(value) {
+  return String(value ?? '').replace(/[\t\r\n\f\v]/g, '').trim().toLowerCase();
+}
+
+function readColumnsFor(entity, profile) {
+  const cols = new Set(READ_COLUMNS[entity] || []);
+  if ((entity === 'user_profiles' || entity === 'licenses') && canManageUsers(profile)) cols.add('license_key');
+  return cols;
+}
+
+function assertListedColumns(profile, entity, select, filters, order) {
+  const allowed = readColumnsFor(entity, profile);
+  if (!allowed.size) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
+  const rawSelect = String(select || '*').trim();
+  if (rawSelect && rawSelect !== '*') {
+    for (const part of rawSelect.split(',')) {
+      const column = normalizeColumnName(part.split('.')[0]);
+      if (!column || column === '*') continue;
+      if (!allowed.has(column)) throw Object.assign(new Error('Colonne non autorisée.'), { status: 403 });
+    }
+  }
+  for (const filter of Array.isArray(filters) ? filters : []) {
+    const column = normalizeColumnName(filter?.column);
+    const op = normalizeColumnName(filter?.op);
+    if (!column) continue;
+    if (column === 'environment_code') continue;
+    if (column === 'or' || column === 'and' || op === 'or' || op === 'and') {
+      throw Object.assign(new Error('Filtre non autorisé.'), { status: 403 });
+    }
+    if (!allowed.has(column)) throw Object.assign(new Error('Colonne non autorisée.'), { status: 403 });
+  }
+  const orderColumn = normalizeColumnName(String(order || '').split('.')[0]);
+  if (orderColumn && !allowed.has(orderColumn)) throw Object.assign(new Error('Tri non autorisé.'), { status: 403 });
+}
+
+function normalizeLicenseType(value) {
+  const token = normalizePrivilegeToken(value);
+  if (['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator'].includes(token)) return 'pad';
+  if (['readonly', 'read_only', 'lecture', 'lecture_seule', 'viewer', 'consultation'].includes(token)) return 'readonly';
+  return 'supervision';
+}
+
+function canonicalAssignableRole(value, catalog) {
+  const token = normalizePrivilegeToken(value);
+  if (!token || BLOCKED_ROLE_NAMES.has(token) || BLOCKED_ROLE_IDS.has(token)) return '';
+  if (SYSTEM_ASSIGNABLE_ROLES.has(token)) return token;
+  for (const row of Array.isArray(catalog) ? catalog : []) {
+    const id = normalizePrivilegeToken(row?.id);
+    const name = normalizePrivilegeToken(row?.name || row?.nom);
+    if (!id || BLOCKED_ROLE_IDS.has(id) || BLOCKED_ROLE_NAMES.has(name)) continue;
+    if (token === id) return String(row.id).replace(/[\t\r\n\f\v]/g, '').trim();
+    if (name && token === name) return name;
+  }
+  return '';
+}
+
+function mergeAssignedRoles(existingValue, submittedValue, catalog) {
   const out = [];
-  for (const token of parseRoleArray(value)) {
-    const role = normalizeRoleToken(token);
-    if (ASSIGNABLE_CLIENT_ROLES.has(role) && !out.includes(role)) out.push(role);
+  const seen = new Set();
+  for (const token of parseRoleArray(existingValue)) {
+    const cleaned = String(token ?? '').replace(/[\t\r\n\f\v]/g, '').trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  for (const token of parseRoleArray(submittedValue)) {
+    const allowed = canonicalAssignableRole(token, catalog);
+    if (!allowed) continue;
+    const key = allowed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(allowed);
   }
   return out;
 }
 
-function demotePrivilegedFields(record) {
+function sanitizePermissionMap(perms) {
+  const blocked = new Set(['platform_admin', 'manage_global_licenses', 'manage_users']);
+  const out = {};
+  for (const [key, value] of Object.entries(perms)) {
+    const normalized = normalizePrivilegeToken(key);
+    if (!normalized || blocked.has(normalized)) continue;
+    out[normalized] = value;
+  }
+  return out;
+}
+
+function applyWriteWhitelist(record, entity) {
+  const allowed = WRITE_COLUMNS[entity];
+  if (!record || !allowed) return record;
+  for (const key of Object.keys(record)) {
+    if (!allowed.includes(key)) delete record[key];
+  }
+  return record;
+}
+
+function demotePrivilegedFields(record, options = {}) {
   if (!record || typeof record !== 'object') return record;
+  const entity = options.entity || '';
   if (Object.prototype.hasOwnProperty.call(record, 'role')) {
-    const role = normalizeRoleToken(record.role);
-    record.role = role && ASSIGNABLE_CLIENT_ROLES.has(role) ? role : 'supervision_user';
+    const role = normalizePrivilegeToken(record.role);
+    record.role = SYSTEM_ASSIGNABLE_ROLES.has(role) ? role : 'supervision_user';
   }
   if (Object.prototype.hasOwnProperty.call(record, 'roles')) {
-    record.roles = assignableRoleList(record.roles);
+    record.roles = mergeAssignedRoles(options.existingRoles, record.roles, options.catalog || []);
   }
-  if (String(record.scope || '').toLowerCase() === 'platform') record.scope = 'environment';
-  if (String(record.license_type || '').toLowerCase() === 'super_admin') delete record.license_type;
-  if (record.resolved_permissions && typeof record.resolved_permissions === 'object' && !Array.isArray(record.resolved_permissions)) {
-    delete record.resolved_permissions.platform_admin;
-    delete record.resolved_permissions.manage_global_licenses;
-    delete record.resolved_permissions.manage_users;
+  if (entity === 'user_profiles' || entity === 'licenses' || (!entity && ('role' in record || 'license_type' in record || 'scope' in record))) {
+    record.scope = 'environment';
   }
+  if (Object.prototype.hasOwnProperty.call(record, 'license_type')) {
+    record.license_type = normalizeLicenseType(record.license_type);
+  }
+  delete record.resolved_permissions;
+  delete record.password_hash;
+  delete record.supa_key;
+  delete record.supa_url;
+  delete record.tenant_id;
   if (record.permissions && typeof record.permissions === 'object' && !Array.isArray(record.permissions)) {
-    delete record.permissions.platform_admin;
-    delete record.permissions.manage_global_licenses;
-    delete record.permissions.manage_users;
+    record.permissions = sanitizePermissionMap(record.permissions);
   }
   return record;
 }
@@ -347,7 +471,7 @@ function isPlatformLicenseManagerProfile(profile) {
 }
 
 function normalizeEnvCode(value) {
-  const raw = String(value ?? '').trim();
+  const raw = String(value ?? '').replace(/[\t\r\n\f\v]/g, '').trim();
   if (!raw) return '';
   if (raw === '*') return 'GLOBAL';
   return raw.toUpperCase();
@@ -454,8 +578,8 @@ function filtersWithoutClientEnvironment(filters) {
   const out = [];
   for (const filter of filters) {
     if (!filter || typeof filter !== 'object') continue;
-    const column = String(filter.column || '').trim().toLowerCase();
-    const op = String(filter.op || '').trim().toLowerCase();
+    const column = normalizeColumnName(filter.column);
+    const op = normalizeColumnName(filter.op);
     if (column === 'environment_code') continue;
     if (column === 'or' || column === 'and' || op === 'or' || op === 'and') {
       const { wrapped, parts } = splitFilterClauses(filter.value);
@@ -476,6 +600,13 @@ async function assertNotPlatformTarget(req, entity, id, profile) {
   if (isPlatformAccount(existing)) {
     throw Object.assign(new Error('Modification d’un compte plateforme refusée.'), { status: 403 });
   }
+}
+
+async function loadActiveAppRoles(req, env) {
+  const code = normalizeEnvRecordValue(env, '');
+  if (!code) return [];
+  const rows = await serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(code)}&active=eq.true&select=id,name&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []);
+  return Array.isArray(rows) ? rows : [];
 }
 
 async function readOneById(req, entity, id, env) {
@@ -572,7 +703,7 @@ async function handleList(req, body) {
   const user = await requireAuth(req);
   const profile = await getUserProfile(user.id, req);
   req.picoReaderProfile = profile;
-  assertSafeRead(profile, { select: body.select, filters: body.filters, order: body.order });
+  assertSafeRead(profile, { select: body.select, filters: body.filters, order: body.order, entity });
   const profileEnv = String(profile?.environment_code || '').trim().toUpperCase();
   const isPlatform = isPlatformLicenseManagerProfile(profile);
   if (entity === 'tenants' && !isPlatform) {
@@ -583,12 +714,20 @@ async function handleList(req, body) {
   }
   const scopedEntities = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
 
-  let filters = Array.isArray(body.filters) ? body.filters.slice(0, 20) : [];
+  let filters = Array.isArray(body.filters) ? body.filters.slice() : [];
+  let select = body.select;
 
   if (scopedEntities.has(entity) && !isPlatform) {
+    if (filters.length > MAX_CLIENT_FILTERS) {
+      throw Object.assign(new Error('Trop de filtres.'), { status: 400 });
+    }
     const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
-    filters = filtersWithoutClientEnvironment(filters);
+    filters = cleanFilters(filtersWithoutClientEnvironment(filters));
     if (env && env !== 'GLOBAL') filters.push({ column: 'environment_code', op: 'eq', value: env });
+    const rawSelect = String(select || '*').trim();
+    if (!rawSelect || rawSelect === '*') select = [...readColumnsFor(entity, profile)].join(',');
+  } else {
+    filters = filters.slice(0, 20);
   }
 
   // Le super_admin peut lire GLOBAL/*, mais s'il demande explicitement un environnement, on filtre aussi.
@@ -598,7 +737,7 @@ async function handleList(req, body) {
     if (env && !already) filters.push({ column: 'environment_code', op: 'eq', value: env });
   }
 
-  const path = buildReadPath(entity, { ...body, filters });
+  const path = buildReadPath(entity, { ...body, select, filters });
   const rows = await serviceRead(req, path);
   if (Array.isArray(rows) && (entity === 'forms' || entity === 'services')) {
     return rows.filter(row => recordAllowedForProfile(entity, row, 'view', profile));
@@ -617,9 +756,7 @@ async function handleSave(req, body) {
   assertEntityWrite(entity, profile);
   const source = body.record || body.body;
   const record = normalizeRecord(source, entity);
-  if (!isPlatformLicenseManagerProfile(profile) && (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles')) {
-    demotePrivilegedFields(record);
-  }
+  if (!isPlatformLicenseManagerProfile(profile)) applyWriteWhitelist(record, entity);
 
   if (entity === 'databases' && String(record.nom || '') === INTEGRATIONS_NAME) {
     throw Object.assign(new Error('Ressource interne non modifiable via records.'), { status: 403 });
@@ -669,6 +806,13 @@ async function handleSave(req, body) {
     if (service) assertRecordAllowed('services', service, 'create', profile, 'Création de demande refusée par les rôles du service.');
   }
 
+  if (!isPlatformLicenseManagerProfile(profile) && (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles')) {
+    const catalog = await loadActiveAppRoles(req, effectiveEnvironmentCode(profile, profile?.environment_code));
+    const existingRow = id && (entity === 'user_profiles' || entity === 'licenses')
+      ? await readOneById(req, entity, id, record.environment_code || profile?.environment_code)
+      : null;
+    demotePrivilegedFields(record, { catalog, existingRoles: existingRow?.roles, entity });
+  }
   if (id) await assertNotPlatformTarget(req, entity, id, profile);
   if (!id) delete record.id;
 
@@ -705,6 +849,12 @@ async function handleDelete(req, body) {
     return path;
   }
 
+  if (!isPlatform && (entity === 'user_profiles' || entity === 'licenses')) {
+    const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv), 'DEMO');
+    const existing = await readOneById(req, entity, id, env);
+    if (!existing) throw Object.assign(new Error('Profil introuvable dans cet environnement.'), { status: 403 });
+    if (isPlatformAccount(existing)) throw Object.assign(new Error('Modification d’un compte plateforme refusée.'), { status: 403 });
+  }
   await assertNotPlatformTarget(req, entity, id, profile);
 
   if (entity === 'forms' || entity === 'services') {

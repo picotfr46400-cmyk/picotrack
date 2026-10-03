@@ -29,7 +29,7 @@ test('C1 : un admin d’environnement crée un PAD sans pouvoir poser un rôle p
     environment_code: 'EFC',
     password: 'un-mot-de-passe'
   };
-  assert.deepEqual(functions.clampAssignedPrivileges(legitimate, envAdmin), legitimate);
+  assert.deepEqual(functions.clampAssignedPrivileges(legitimate, envAdmin), { ...legitimate, scope: 'environment' });
   assert.deepEqual(functions.clampAssignedPrivileges({
     role: 'supervision_user',
     license_type: 'supervision',
@@ -37,7 +37,8 @@ test('C1 : un admin d’environnement crée un PAD sans pouvoir poser un rôle p
   }, supervision), {
     role: 'supervision_user',
     license_type: 'supervision',
-    environment_code: 'EFC'
+    environment_code: 'EFC',
+    scope: 'environment'
   });
 
   const elevated = functions.clampAssignedPrivileges({
@@ -53,8 +54,8 @@ test('C1 : un admin d’environnement crée un PAD sans pouvoir poser un rôle p
   assert.equal(elevated.scope, 'environment');
   assert.equal(elevated.license_type, 'supervision');
   assert.equal(elevated.environment_code, 'EFC');
-  assert.equal(elevated.resolved_permissions.platform_admin, undefined);
-  assert.equal(elevated.resolved_permissions.manage_users, undefined);
+  assert.equal(elevated.scope, 'environment');
+  assert.equal(elevated.resolved_permissions, undefined);
   assert.equal(Object.prototype.hasOwnProperty.call(functions.clampAssignedPrivileges({ active: false }, supervision), 'resolved_permissions'), false);
   assert.equal(functions.clampAssignedPrivileges({ active: false, environment_code: 'ACME', role: 'admin' }, supervision).environment_code, 'EFC');
   assert.equal(functions.clampAssignedPrivileges({ active: false, environment_code: 'ACME', role: 'admin' }, supervision).role, 'supervision_user');
@@ -118,8 +119,8 @@ test('C2 : les secrets ne sortent pas, le métier et le rôle légitime restent'
   }, 'user_profiles');
   records.demotePrivilegedFields(elevated);
   assert.equal(elevated.role, 'supervision_user');
-  assert.equal(elevated.resolved_permissions.platform_admin, undefined);
-  assert.equal(elevated.resolved_permissions.manage_users, undefined);
+  assert.equal(elevated.scope, 'environment');
+  assert.equal(elevated.resolved_permissions, undefined);
 
   const out = records.redactRecordsPayload([
     { id: '1', email: 'a@b.c', password_hash: 'abc', license_key: 'secret-key', values: { password_hash: 'keep', note: 'ok' }, tenant: { nom: 'EFC', supa_key: 'secret' } },
@@ -291,9 +292,8 @@ test('handler : un supervision_user ne peut ni élever, ni modifier un compte pl
     assert.equal(saved.role, 'supervision_user');
     assert.deepEqual(saved.roles, ['pad_user']);
     assert.equal(saved.environment_code, 'EFC');
-    assert.equal(saved.resolved_permissions.manage_users, undefined);
-    assert.equal(saved.resolved_permissions.platform_admin, undefined);
-    assert.equal(saved.resolved_permissions.custom_flag, true);
+    assert.equal(saved.scope, 'environment');
+    assert.equal(Object.prototype.hasOwnProperty.call(saved, 'resolved_permissions'), false);
 
     saved = null;
     const blocked = await callJson(functions, {
@@ -374,18 +374,29 @@ test('handler : les rôles espacés et la chaîne postgres ne deviennent pas adm
       if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [requester]);
       if (u.includes('user_profiles?id=eq.target-1')) return jsonResponse(200, [target]);
       if (u.includes('environment_license_limits')) return jsonResponse(200, [{ environment_code: 'EFC', supervision_limit: 10, pad_limit: 10 }]);
+      if (u.includes('/rest/v1/app_roles?')) return jsonResponse(200, [
+        { id: '00000000-0000-0000-0000-000000000003', name: 'Opérateur', active: true, environment_code: 'EFC' },
+        { id: '67baf9e4-8fe3-40f4-bebd-d2c8814a43b7', name: 'Manager', active: true, environment_code: 'EFC' }
+      ]);
       return jsonResponse(200, []);
     };
     for (const role of [' admin', ' environment_admin', ' client_admin', 'platform_admin']) {
       saved = null;
       const out = await callJson(functions, {
         functionName: 'update-user',
-        payload: { id: 'target-1', role, roles: [' environment_admin', ' client_admin', 'pad_user', '{admin}'] }
+        payload: { id: 'target-1', role, roles: [' environment_admin', ' client_admin', 'pad_user', '{admin}', '00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000001'] }
       }, authHeaders());
       assert.equal(out.status, 200, out.payload.error || role);
       assert.equal(saved.role, 'supervision_user');
-      assert.deepEqual(saved.roles, ['pad_user']);
+      assert.deepEqual(saved.roles, ['pad_user', '00000000-0000-0000-0000-000000000003']);
     }
+    saved = null;
+    const onlyUuid = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'target-1', roles: ['67baf9e4-8fe3-40f4-bebd-d2c8814a43b7'] }
+    }, authHeaders());
+    assert.equal(onlyUuid.status, 200, onlyUuid.payload.error || '');
+    assert.deepEqual(saved.roles, ['67baf9e4-8fe3-40f4-bebd-d2c8814a43b7']);
 
     saved = null;
     const byRecords = await callJson(records, {
@@ -470,9 +481,7 @@ test('handler : un PAD ne voit que son environment_code', async () => {
     [{ column: 'environment_code', op: 'neq', value: 'EFC' }],
     [{ column: 'environment_code', op: 'is', value: 'null' }],
     [{ column: 'environment_code', op: 'eq', value: 'ACME' }],
-    [{ column: 'environment_code', op: 'in', value: '(EFC,ACME)' }],
-    [{ column: 'or', op: 'eq', value: '(environment_code.eq.ACME,environment_code.neq.EFC)' }],
-    [{ column: 'and', op: 'eq', value: '(environment_code.is.null,environment_code.eq.ACME)' }]
+    [{ column: 'environment_code', op: 'in', value: '(EFC,ACME)' }]
   ];
   await withSupabase(async () => {
     const calls = [];
@@ -498,5 +507,453 @@ test('handler : un PAD ne voit que son environment_code', async () => {
         assert.equal(out.payload.every(row => row.environment_code === 'EFC'), true);
       }
     }
+  });
+});
+
+const MANAGER_ROLE = '67baf9e4-8fe3-40f4-bebd-d2c8814a43b7';
+const OPERATOR_ROLE = '00000000-0000-0000-0000-000000000003';
+const MANAGER_LEGACY = '00000000-0000-0000-0000-000000000002';
+const ADMIN_ROLE = '00000000-0000-0000-0000-000000000001';
+const EFC_CATALOG = [
+  { id: OPERATOR_ROLE, name: 'Opérateur', active: true, environment_code: 'EFC' },
+  { id: MANAGER_ROLE, name: 'Manager', active: true, environment_code: 'EFC' },
+  { id: '0cb3648d-e9f2-474a-97dd-477e8754b73a', name: 'test', active: true, environment_code: 'EFC' }
+];
+
+function installActor(actor, extras = {}) {
+  const calls = [];
+  const writes = [];
+  global.fetch = async (url, options = {}) => {
+    const u = String(url);
+    const method = options.method || 'GET';
+    calls.push({ url: u, method, body: options.body });
+    if (method !== 'GET' && options.body) writes.push({ url: u, method, body: JSON.parse(options.body) });
+    if (extras.onFetch) {
+      const handled = await extras.onFetch(u, method, options);
+      if (handled) return handled;
+    }
+    if (u.includes('/auth/v1/user') && !u.includes('/admin/users')) return jsonResponse(200, { id: actor.id, email: actor.email });
+    if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+    if (u.includes(`user_profiles?id=eq.${actor.id}`)) return jsonResponse(200, [extras.profile || actor]);
+    if (u.includes('/rest/v1/app_roles?')) return jsonResponse(200, EFC_CATALOG);
+    if (u.includes('environment_license_limits')) return jsonResponse(200, [{ id: 'lim-1', environment_code: 'EFC', supervision_limit: 10, pad_limit: 10, readonly_limit: 5 }]);
+    return jsonResponse(200, extras.rows || [{ id: 'row-1', environment_code: 'EFC', nom: 'Visite', actif: true, name: 'Manager' }]);
+  };
+  return { calls, writes };
+}
+
+test('handler : une colonne hors liste est refusée en select, en filtre et en tri', async () => {
+  const actor = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  await withSupabase(async () => {
+    const { calls } = installActor(actor);
+    const attacks = [
+      { select: 'id,tenant_id' },
+      { filters: [{ column: ' Tenant_Id ', op: 'eq', value: 'x' }] },
+      { order: 'tenant_id.desc' }
+    ];
+    for (const extra of attacks) {
+      calls.length = 0;
+      const out = await callJson(records, { action: 'list', entity: 'forms', ...extra }, authHeaders());
+      assert.equal(out.status, 403, JSON.stringify(extra) + ' ' + (out.payload.error || ''));
+      assert.equal(calls.some(call => call.url.includes('/rest/v1/forms?')), false);
+    }
+  });
+});
+
+test('handler : 19 filtres gardent l’environnement, 20 et 25 répondent 400', async () => {
+  const actor = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  await withSupabase(async () => {
+    const { calls } = installActor(actor);
+    const injections = [
+      [{ column: 'ENVIRONMENT_CODE', op: 'eq', value: 'ACME' }, { column: 'environment_code', op: 'neq', value: 'EFC' }],
+      [{ column: 'environment_code\t', op: 'eq', value: 'ACME' }],
+      [{ column: 'environment_code', op: 'like', value: '%' }, { column: 'environment_code', op: 'eq', value: 'acme' }]
+    ];
+    for (const entity of ['submissions', 'forms', 'user_profiles']) {
+      for (const filters of injections) {
+        calls.length = 0;
+        const out = await callJson(records, { action: 'list', entity, filters, environment_code: 'ACME' }, authHeaders());
+        assert.equal(out.status, 200, `${entity} ${JSON.stringify(filters)} ${out.payload.error || ''}`);
+        const listed = calls.find(call => call.url.includes(`/rest/v1/${entity}?`) && call.url.includes('environment_code=eq.EFC'));
+        assert.ok(listed, entity);
+        assert.equal(listed.url.includes('ACME') || listed.url.includes('acme'), false, listed.url);
+        assert.equal(listed.url.includes('neq'), false, listed.url);
+        assert.equal(listed.url.includes('like'), false, listed.url);
+      }
+      for (const count of [19, 20, 25]) {
+        calls.length = 0;
+        const filters = Array.from({ length: count }, (_, i) => ({ column: 'created_at', op: 'gte', value: `2026-01-${String((i % 28) + 1).padStart(2, '0')}` }));
+        const out = await callJson(records, { action: 'list', entity, filters }, authHeaders());
+        if (count === 19) {
+          assert.equal(out.status, 200, `${entity} 19 ${out.payload.error || ''}`);
+          const listed = calls.find(call => call.url.includes(`/rest/v1/${entity}?select=`));
+          assert.ok(listed, entity);
+          assert.equal(decodeURIComponent(listed.url).includes('environment_code=eq.EFC'), true, listed.url);
+          assert.equal((listed.url.match(/created_at=gte\./g) || []).length, 19, listed.url);
+        } else {
+          assert.equal(out.status, 400, `${entity} ${count} -> ${out.status}`);
+          assert.equal(calls.some(call => call.url.includes(`/rest/v1/${entity}?select=`)), false);
+        }
+      }
+    }
+  });
+});
+
+test('handler : scope et license_type déguisés ne passent pas update-license-limits', async () => {
+  const requester = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', scope: 'environment', environment_code: 'EFC', active: true };
+  const disguises = [' platform', 'PLATFORM', 'platform\t', ' super_admin', 'SUPER_ADMIN', '\tsuper_admin'];
+  await withSupabase(async () => {
+    let profile = { ...requester };
+    installActor(requester, {
+      onFetch(u, method, options) {
+        if (u.includes('user_profiles?id=eq.sup-1') && method === 'GET') return jsonResponse(200, [profile]);
+        if (u.includes('/rest/v1/user_profiles') && method !== 'GET') {
+          profile = { ...profile, ...JSON.parse(options.body) };
+          return jsonResponse(200, [profile]);
+        }
+        return null;
+      }
+    });
+    for (const value of disguises) {
+      profile = { ...requester };
+      const updated = await callJson(functions, {
+        functionName: 'update-user',
+        payload: { id: 'sup-1', scope: value, license_type: value }
+      }, authHeaders());
+      assert.equal(updated.status, 200, updated.payload.error || value);
+      assert.equal(profile.scope, 'environment', value);
+      assert.equal(profile.license_type, 'supervision', value);
+      const limits = await callJson(functions, {
+        functionName: 'update-license-limits',
+        payload: { environment_code: 'ACME', supervision_limit: 99 }
+      }, authHeaders());
+      assert.equal(limits.status, 403, value);
+
+      profile = { ...requester };
+      const saved = await callJson(records, {
+        action: 'save',
+        entity: 'user_profiles',
+        id: 'sup-1',
+        record: { scope: value, license_type: value, firstname: 'Robin' }
+      }, authHeaders());
+      assert.equal(saved.status, 200, saved.payload.error || value);
+      assert.equal(profile.scope, 'environment', value);
+      assert.equal(profile.license_type, 'supervision', value);
+      assert.equal(profile.firstname, 'Robin');
+      const limitsAfterRecords = await callJson(functions, {
+        functionName: 'update-license-limits',
+        payload: { environment_code: 'ACME', supervision_limit: 99 }
+      }, authHeaders());
+      assert.equal(limitsAfterRecords.status, 403, value);
+    }
+  });
+});
+
+test('handler : Admin, SUPER_ADMIN, tabulation et client_admin sont rabaissés', async () => {
+  const requester = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  const target = { id: 'target-1', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true, roles: ['pad_user'] };
+  const attacks = ['Admin ', 'SUPER_ADMIN', 'admin\t', ' client_admin'];
+  await withSupabase(async () => {
+    const saved = [];
+    installActor(requester, {
+      onFetch(u, method, options) {
+        if (method === 'GET' && (u.includes('user_profiles?id=eq.target-1') || u.includes('licenses?id=eq.target-1'))) return jsonResponse(200, [target]);
+        if (u.includes('/auth/v1/admin/users?page=')) return jsonResponse(200, { users: [] });
+        if (u.includes('/auth/v1/admin/users') && method === 'POST') return jsonResponse(200, { id: 'new-1', email: 'pad2@efc.picotrack.fr' });
+        if ((u.includes('/rest/v1/user_profiles') || u.includes('/rest/v1/licenses')) && method !== 'GET') {
+          saved.push(JSON.parse(options.body));
+          return jsonResponse(200, [saved[saved.length - 1]]);
+        }
+        return null;
+      }
+    });
+    for (const role of attacks) {
+      saved.length = 0;
+      const created = await callJson(functions, {
+        functionName: 'create-user',
+        payload: {
+          email: 'pad2@efc.picotrack.fr',
+          password: 'motdepasse',
+          role,
+          roles: [role],
+          license_type: 'pad',
+          environment_code: 'ACME',
+          firstname: 'Nora'
+        }
+      }, authHeaders());
+      assert.equal(created.status, 200, created.payload.error || role);
+      const profile = saved.find(row => row.email === 'pad2@efc.picotrack.fr' && row.firstname);
+      assert.ok(profile, role);
+      assert.equal(profile.role, 'supervision_user', role);
+      assert.equal(profile.firstname, 'Nora');
+      assert.equal(profile.environment_code, 'EFC');
+      assert.equal(profile.scope, 'environment');
+      assert.deepEqual(profile.roles, []);
+
+      saved.length = 0;
+      const byRecords = await callJson(records, {
+        action: 'save',
+        entity: 'licenses',
+        id: 'target-1',
+        record: { role, roles: [role], license_type: ' SUPER_ADMIN ' }
+      }, authHeaders());
+      assert.equal(byRecords.status, 200, byRecords.payload.error || role);
+      assert.equal(saved[0].role, 'supervision_user', role);
+      assert.deepEqual(saved[0].roles, ['pad_user']);
+      assert.equal(saved[0].license_type, 'supervision');
+      assert.equal(saved[0].scope, 'environment');
+      assert.equal(saved[0].environment_code, 'EFC');
+    }
+  });
+});
+
+test('handler : delete-user refuse un Auth sans profil, même super_admin', async () => {
+  const requester = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  const orphan = '44444444-4444-4444-8444-444444444444';
+  await withSupabase(async () => {
+    const ghost = { id: orphan, email: 'ghost@efc.picotrack.fr', app_metadata: { role: 'super_admin' }, user_metadata: { role: 'pad_user' } };
+    const { calls } = installActor(requester, {
+      onFetch(u) {
+        if (u.includes('/auth/v1/admin/users?page=')) return jsonResponse(200, { users: [ghost] });
+        if (u.includes(`/auth/v1/admin/users/${orphan}`)) return jsonResponse(200, ghost);
+        if (u.includes(`user_profiles?id=eq.${orphan}`) || u.includes('user_profiles?email=') || u.includes('licenses?id=')) return jsonResponse(200, []);
+        return null;
+      }
+    });
+    const out = await callJson(functions, { functionName: 'delete-user', payload: { user_id: orphan, email: ghost.email } }, authHeaders());
+    assert.equal(out.status, 403, out.payload.error || '');
+    assert.equal(calls.some(call => call.method === 'DELETE'), false);
+
+    calls.length = 0;
+    const missing = await callJson(records, { action: 'delete', entity: 'user_profiles', id: orphan }, authHeaders());
+    assert.equal(missing.status, 403, missing.payload.error || '');
+    assert.equal(calls.some(call => call.method === 'DELETE'), false);
+  });
+});
+
+test('handler : un rôle objet ou texte n’ajoute rien, et 0002 déjà présent reste', async () => {
+  const requester = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
+  const target = {
+    id: 'target-1',
+    email: 'robin@efc.picotrack.fr',
+    role: 'supervision_user',
+    license_type: 'supervision',
+    environment_code: 'EFC',
+    active: true,
+    roles: [MANAGER_LEGACY, '']
+  };
+  await withSupabase(async () => {
+    let saved = null;
+    installActor(requester, {
+      onFetch(u, method, options) {
+        if (u.includes('user_profiles?id=eq.target-1') && method === 'GET') return jsonResponse(200, [target]);
+        if (u.includes('/rest/v1/user_profiles') && method !== 'GET') {
+          saved = JSON.parse(options.body);
+          return jsonResponse(200, [saved]);
+        }
+        if (u.includes('/rest/v1/app_roles?')) return jsonResponse(200, EFC_CATALOG.concat([{ id: ADMIN_ROLE, name: 'Administrateur', active: true, environment_code: 'EFC' }]));
+        return null;
+      }
+    });
+    const payloads = [
+      { roles: { admin: true } },
+      { roles: '{admin,super_admin}' },
+      { roles: '["admin","super_admin"]' },
+      { roles: [ADMIN_ROLE, 'opérateur', MANAGER_ROLE] }
+    ];
+    for (const payload of payloads) {
+      saved = null;
+      const out = await callJson(functions, { functionName: 'update-user', payload: { id: 'target-1', ...payload } }, authHeaders());
+      assert.equal(out.status, 200, out.payload.error || JSON.stringify(payload));
+      assert.equal(saved.roles.includes(MANAGER_LEGACY), true, JSON.stringify(saved.roles));
+      assert.equal(saved.roles.includes(''), false);
+      assert.equal(saved.roles.includes(ADMIN_ROLE), false);
+      assert.equal(saved.roles.some(role => /admin/i.test(role)), false, JSON.stringify(saved.roles));
+    }
+    assert.equal(saved.roles.includes('opérateur'), true, JSON.stringify(saved.roles));
+    assert.equal(saved.roles.includes(MANAGER_ROLE), true);
+
+    saved = null;
+    const untouched = await callJson(functions, { functionName: 'update-user', payload: { id: 'target-1', active: true, firstname: 'Robin' } }, authHeaders());
+    assert.equal(untouched.status, 200, untouched.payload.error || '');
+    assert.deepEqual(saved.roles, [MANAGER_LEGACY, '']);
+    assert.equal(saved.firstname, 'Robin');
+  });
+});
+
+test('handler : un compte plateforme peut encore poser super_admin et supprimer un Auth sans profil', async () => {
+  const requester = { id: 'plat-1', email: 'root@picotrack.fr', role: 'super_admin', license_type: 'super_admin', scope: 'platform', environment_code: 'GLOBAL', active: true, resolved_permissions: { platform_admin: true } };
+  const target = { id: 'target-1', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true, roles: ['pad_user'] };
+  const orphan = '55555555-5555-4555-8555-555555555555';
+  await withSupabase(async () => {
+    let saved = null;
+    const { calls } = installActor(requester, {
+      onFetch(u, method, options) {
+        if (u.includes('user_profiles?id=eq.target-1')) return jsonResponse(200, [target]);
+        if (u.includes('/rest/v1/user_profiles') && method !== 'GET') {
+          saved = JSON.parse(options.body);
+          return jsonResponse(200, [saved]);
+        }
+        if (u.includes('/auth/v1/admin/users?page=')) return jsonResponse(200, { users: [{ id: orphan, email: 'ghost@picotrack.fr', app_metadata: { role: 'pad_user' } }] });
+        if (u.includes(`/auth/v1/admin/users/${orphan}`)) return jsonResponse(200, { id: orphan, email: 'ghost@picotrack.fr', app_metadata: { role: 'pad_user' } });
+        if (u.includes(`user_profiles?id=eq.${orphan}`) || u.includes('user_profiles?email=')) return jsonResponse(200, []);
+        return null;
+      }
+    });
+    const updated = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'target-1', role: 'super_admin', scope: 'platform', license_type: 'super_admin', environment_code: 'EFC' }
+    }, authHeaders());
+    assert.equal(updated.status, 200, updated.payload.error || '');
+    assert.equal(saved.role, 'super_admin');
+    assert.equal(saved.scope, 'platform');
+    assert.equal(saved.license_type, 'super_admin');
+
+    const deleted = await callJson(functions, { functionName: 'delete-user', payload: { user_id: orphan, email: 'ghost@picotrack.fr' } }, authHeaders());
+    assert.equal(deleted.status, 200, deleted.payload.error || '');
+    assert.equal(calls.some(call => call.method === 'DELETE' && call.url.includes(orphan)), true);
+  });
+});
+
+test('non-régression : le front EFC et le PAD passent la liste blanche', async () => {
+  const supervisionUser = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', scope: 'environment', environment_code: 'EFC', active: true };
+  const pad = { id: 'pad-1', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', scope: 'environment', environment_code: 'EFC', active: true };
+  const userTarget = { id: 'target-1', email: 'robin@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true, roles: [MANAGER_LEGACY, ''] };
+  await withSupabase(async () => {
+    let actor = supervisionUser;
+    const writes = [];
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      if (method !== 'GET' && options.body) writes.push({ url: u, method, body: JSON.parse(options.body) });
+      if (u.includes('/auth/v1/user') && !u.includes('/admin/')) return jsonResponse(200, { id: actor.id, email: actor.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes(`user_profiles?id=eq.${actor.id}`)) return jsonResponse(200, [actor]);
+      if (u.includes('user_profiles?id=eq.target-1')) return jsonResponse(200, [userTarget]);
+      if (u.includes('/rest/v1/app_roles?')) return jsonResponse(200, EFC_CATALOG);
+      if (u.includes('environment_license_limits')) return jsonResponse(200, [{ environment_code: 'EFC', supervision_limit: 10, pad_limit: 10 }]);
+      if (u.includes('forms?id=')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', permissions: {} }]);
+      if (u.includes('/rest/v1/user_profiles?environment_code=')) return jsonResponse(200, [userTarget]);
+      if (u.includes('/rest/v1/licenses?')) return jsonResponse(200, []);
+      if (method !== 'GET') return jsonResponse(200, [{ id: 'saved-1', ...(options.body ? JSON.parse(options.body) : {}) }]);
+      return jsonResponse(200, [{ id: 'row-1', nom: 'Visite', actif: true, environment_code: 'EFC', name: 'Manager', form_id: 'form-1', date: '2026-10-03' }]);
+    };
+
+    async function listed(entity, extra) {
+      const calls = [];
+      const previous = global.fetch;
+      const wrapped = global.fetch;
+      global.fetch = async (url, options) => {
+        calls.push(String(url));
+        return wrapped(url, options);
+      };
+      const out = await callJson(records, { action: 'list', entity, ...extra }, authHeaders());
+      global.fetch = previous;
+      assert.equal(out.status, 200, `${entity} ${JSON.stringify(extra)} ${out.payload.error || ''}`);
+      const hit = calls.map(url => decodeURIComponent(url)).find(url => url.includes(`/rest/v1/${entity}?`) && url.includes('environment_code=eq.EFC'));
+      assert.ok(hit, `${entity} sans filtre EFC`);
+      assert.equal(hit.includes('password_hash'), false, hit);
+      assert.equal(hit.includes('select=*'), false, hit);
+      return hit;
+    }
+
+    actor = supervisionUser;
+    await listed('forms', { select: '*', order: 'created_at.asc', limit: 500 });
+    await listed('forms', { select: 'id,actif', limit: 1000 });
+    await listed('submissions', { select: 'id,form_id,created_at,device,environment_code', filters: [{ column: 'form_id', op: 'eq', value: 'form-1' }], order: 'created_at.desc', limit: 25 });
+    await listed('submissions', { select: '*', limit: 500 });
+    await listed('appointments', { select: '*', filters: [{ column: 'date', op: 'gte', value: '2026-10-01' }, { column: 'date', op: 'lt', value: '2026-10-31' }], order: 'date.asc', limit: 500 });
+    await listed('appointments', { select: '*', filters: [{ column: 'form_id', op: 'eq', value: 'form-1' }, { column: 'field_id', op: 'eq', value: 'rdv' }, { column: 'date', op: 'eq', value: '2026-10-03' }] });
+    await listed('user_profiles', { select: '*' });
+    await listed('services', { select: '*', order: 'created_at.asc', limit: 300 });
+    await listed('service_instances', { select: 'id', filters: [{ column: 'submission_id', op: 'eq', value: 'sub-1' }], limit: 5 });
+    await listed('databases', { select: '*', order: 'created_at.asc', limit: 500 });
+    await listed('app_roles', { select: '*', filters: [{ column: 'environment_code', op: 'eq', value: 'EFC' }], order: 'name.asc', limit: 1000 });
+    await listed('environment_license_limits', { select: '*', filters: [{ column: 'environment_code', op: 'eq', value: 'EFC' }], limit: 1 });
+
+    const users = await callJson(functions, { functionName: 'list-users', payload: { environment_code: 'EFC' } }, authHeaders());
+    assert.equal(users.status, 200, users.payload.error || '');
+    assert.equal(users.payload.rows.some(row => row.environment_code === 'EFC'), true);
+
+    writes.length = 0;
+    const submission = await callJson(records, {
+      action: 'save',
+      entity: 'submissions',
+      record: { form_id: 'form-1', values: { client: 'EFC Nord' }, device: 'desktop', environment_code: 'ACME', tenant_id: 'autre' }
+    }, authHeaders());
+    assert.equal(submission.status, 200, submission.payload.error || '');
+    assert.equal(writes.at(-1).body.values.client, 'EFC Nord');
+    assert.equal(writes.at(-1).body.environment_code, 'EFC');
+    assert.equal(writes.at(-1).body.tenant_id, undefined);
+
+    const createdSlot = await callJson(records, {
+      action: 'save',
+      entity: 'appointments',
+      record: {
+        form_id: 'form-1', field_id: 'rdv', response_id: 'sub-1', title: 'Visite - Rendez-vous',
+        customer_name: 'Client EFC', date: '2026-10-03', start_time: '09:00:00', end_time: '09:30:00',
+        status: 'confirmed', assigned_team: '', capacity_group: 'rdv', parallel_slots: 2,
+        environment_code: 'ACME'
+      }
+    }, authHeaders());
+    assert.equal(createdSlot.status, 200, createdSlot.payload.error || '');
+    assert.equal(writes.at(-1).body.title, 'Visite - Rendez-vous');
+    assert.equal(writes.at(-1).body.customer_name, 'Client EFC');
+    assert.equal(writes.at(-1).body.environment_code, 'EFC');
+    assert.equal(writes.at(-1).body.date, '2026-10-03');
+
+    const updatedSlot = await callJson(records, {
+      action: 'save',
+      entity: 'appointments',
+      id: 'appt-1',
+      record: { status: 'pending', start_time: '10:00:00', customer_name: 'Client EFC' }
+    }, authHeaders());
+    assert.equal(updatedSlot.status, 200, updatedSlot.payload.error || '');
+    assert.equal(writes.at(-1).body.status, 'pending');
+    assert.equal(writes.at(-1).body.environment_code, 'EFC');
+
+    const userUpdate = await callJson(functions, {
+      functionName: 'update-user',
+      payload: {
+        id: 'target-1', firstname: 'Robin', lastname: 'Tournier', label: 'Robin Tournier',
+        email: 'robin@efc.picotrack.fr', role: 'supervision_user', roles: [MANAGER_ROLE],
+        license_type: 'supervision', active: true, scope: 'environment', environment_code: 'EFC'
+      }
+    }, authHeaders());
+    assert.equal(userUpdate.status, 200, userUpdate.payload.error || '');
+    const storedUser = writes.filter(row => row.url.includes('/rest/v1/user_profiles')).at(-1).body;
+    assert.equal(storedUser.firstname, 'Robin');
+    assert.equal(storedUser.lastname, 'Tournier');
+    assert.equal(storedUser.environment_code, 'EFC');
+    assert.equal(storedUser.scope, 'environment');
+    assert.equal(storedUser.license_type, 'supervision');
+    assert.deepEqual(storedUser.roles, [MANAGER_LEGACY, MANAGER_ROLE]);
+
+    const role = await callJson(records, {
+      action: 'save',
+      entity: 'app_roles',
+      id: MANAGER_ROLE,
+      record: { name: 'Chef équipe', description: 'Planning', permissions: { view: ['pad_user'], manage_users: true }, active: true, environment_code: 'ACME' }
+    }, authHeaders());
+    assert.equal(role.status, 200, role.payload.error || '');
+    assert.equal(writes.at(-1).body.name, 'Chef équipe');
+    assert.equal(writes.at(-1).body.environment_code, 'EFC');
+    assert.deepEqual(writes.at(-1).body.permissions.view, ['pad_user']);
+    assert.equal(writes.at(-1).body.permissions.manage_users, undefined);
+
+    actor = pad;
+    await listed('forms', { select: '*', order: 'created_at.asc', limit: 500 });
+    await listed('submissions', { select: 'id,form_id,created_at,device,environment_code', order: 'created_at.desc', limit: 50 });
+    await listed('appointments', { select: '*', filters: [{ column: 'date', op: 'gte', value: '2026-10-01' }, { column: 'date', op: 'lt', value: '2026-10-08' }], order: 'date.asc' });
+    const padSubmission = await callJson(records, {
+      action: 'save',
+      entity: 'submissions',
+      id: 'sub-1',
+      record: { values: { client: 'Saisie PAD' }, device: 'pad' }
+    }, authHeaders());
+    assert.equal(padSubmission.status, 200, padSubmission.payload.error || '');
+    assert.equal(writes.at(-1).body.values.client, 'Saisie PAD');
+    assert.equal(writes.at(-1).body.environment_code, 'EFC');
+    assert.equal(writes.at(-1).body.device, 'pad');
   });
 });
