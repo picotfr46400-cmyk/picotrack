@@ -257,13 +257,8 @@ function assertSafeRead(profile, { select, filters, order }) {
   if (!canManageUsers(profile) && ACTIVATION_COLUMNS.some(column => texts.some(text => textMentionsColumn(text, column)))) {
     throw Object.assign(new Error('Colonne sensible interdite.'), { status: 403 });
   }
-  const nested = Array.isArray(filters) && filters.some(filter => {
-    const column = String(filter?.column || '').trim().toLowerCase();
-    const op = String(filter?.op || '').trim().toLowerCase();
-    return column === 'or' || column === 'and' || op === 'or' || op === 'and' || /[()]/.test(String(filter?.value ?? ''));
-  });
-  if (!isPlatformLicenseManagerProfile(profile) && (/[()]/.test(String(select || '')) || nested)) {
-    throw Object.assign(new Error('Jointure ou filtre imbriqué interdit.'), { status: 403 });
+  if (!isPlatformLicenseManagerProfile(profile) && /[()]/.test(String(select || ''))) {
+    throw Object.assign(new Error('Jointure interdite.'), { status: 403 });
   }
 }
 
@@ -276,12 +271,29 @@ function canManageUsers(profile) {
   return role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user' || type === 'supervision' || perms.manage_users === true;
 }
 
+const ASSIGNABLE_CLIENT_ROLES = new Set(['supervision_user', 'pad_user', 'operator', 'operateur']);
+
+function normalizeRoleToken(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/^[\s"'{}]+|[\s"'{}]+$/g, '').trim();
+}
+
+function assignableRoleList(value) {
+  const out = [];
+  for (const token of parseRoleArray(value)) {
+    const role = normalizeRoleToken(token);
+    if (ASSIGNABLE_CLIENT_ROLES.has(role) && !out.includes(role)) out.push(role);
+  }
+  return out;
+}
+
 function demotePrivilegedFields(record) {
-  const blockedRoles = new Set(['super_admin', 'platform_admin', 'admin', 'environment_admin']);
-  const role = String(record.role || '').toLowerCase();
-  if (blockedRoles.has(role)) delete record.role;
-  if (Array.isArray(record.roles)) {
-    record.roles = record.roles.filter(item => !blockedRoles.has(String(item).toLowerCase()));
+  if (!record || typeof record !== 'object') return record;
+  if (Object.prototype.hasOwnProperty.call(record, 'role')) {
+    const role = normalizeRoleToken(record.role);
+    record.role = role && ASSIGNABLE_CLIENT_ROLES.has(role) ? role : 'supervision_user';
+  }
+  if (Object.prototype.hasOwnProperty.call(record, 'roles')) {
+    record.roles = assignableRoleList(record.roles);
   }
   if (String(record.scope || '').toLowerCase() === 'platform') record.scope = 'environment';
   if (String(record.license_type || '').toLowerCase() === 'super_admin') delete record.license_type;
@@ -289,6 +301,11 @@ function demotePrivilegedFields(record) {
     delete record.resolved_permissions.platform_admin;
     delete record.resolved_permissions.manage_global_licenses;
     delete record.resolved_permissions.manage_users;
+  }
+  if (record.permissions && typeof record.permissions === 'object' && !Array.isArray(record.permissions)) {
+    delete record.permissions.platform_admin;
+    delete record.permissions.manage_global_licenses;
+    delete record.permissions.manage_users;
   }
   return record;
 }
@@ -306,19 +323,27 @@ function assertEntityWrite(entity, profile) {
 }
 
 
+function permissionFlag(profile, key) {
+  return [profile?.resolved_permissions, profile?.permissions].some(source => source && typeof source === 'object' && !Array.isArray(source) && source[key] === true);
+}
+
+function isPlatformAccount(profile) {
+  if (!profile || typeof profile !== 'object') return false;
+  const role = String(profile.role || '').trim().toLowerCase();
+  const licenseType = String(profile.license_type || '').trim().toLowerCase();
+  const scope = String(profile.scope || '').trim().toLowerCase();
+  const env = String(profile.environment_code || '').trim().toUpperCase();
+  return role === 'super_admin'
+    || role === 'platform_admin'
+    || licenseType === 'super_admin'
+    || scope === 'platform'
+    || env === 'GLOBAL'
+    || permissionFlag(profile, 'platform_admin')
+    || permissionFlag(profile, 'manage_global_licenses');
+}
+
 function isPlatformLicenseManagerProfile(profile) {
-  const role = String(profile?.role || '').toLowerCase();
-  const scope = String(profile?.scope || '').toLowerCase();
-  const env = String(profile?.environment_code || '').toUpperCase();
-  const perms = profile?.resolved_permissions || {};
-  return profile?.active !== false && (
-    role === 'super_admin' ||
-    role === 'platform_admin' ||
-    scope === 'platform' ||
-    env === 'GLOBAL' ||
-    perms.platform_admin === true ||
-    perms.manage_global_licenses === true
-  );
+  return profile?.active !== false && isPlatformAccount(profile);
 }
 
 function normalizeEnvCode(value) {
@@ -396,6 +421,60 @@ function assertRecordAllowed(entity, record, action, profile, message) {
     err.status = 403;
     err.code = 'PT_RBAC_DENIED';
     throw err;
+  }
+}
+
+function splitFilterClauses(value) {
+  const raw = String(value ?? '').trim();
+  const wrapped = raw.startsWith('(') && raw.endsWith(')');
+  const inner = wrapped ? raw.slice(1, -1) : raw;
+  const parts = [];
+  let current = '';
+  let depth = 0;
+  for (const ch of inner) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) {
+      if (current.trim()) parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return { wrapped, parts };
+}
+
+function clauseNamesEnvironment(text) {
+  return /(?:^|[^A-Za-z0-9_])environment_code(?:[^A-Za-z0-9_]|$)/i.test(String(text ?? ''));
+}
+
+function filtersWithoutClientEnvironment(filters) {
+  if (!Array.isArray(filters)) return [];
+  const out = [];
+  for (const filter of filters) {
+    if (!filter || typeof filter !== 'object') continue;
+    const column = String(filter.column || '').trim().toLowerCase();
+    const op = String(filter.op || '').trim().toLowerCase();
+    if (column === 'environment_code') continue;
+    if (column === 'or' || column === 'and' || op === 'or' || op === 'and') {
+      const { wrapped, parts } = splitFilterClauses(filter.value);
+      const kept = parts.filter(part => !clauseNamesEnvironment(part));
+      if (!kept.length) continue;
+      out.push({ ...filter, value: wrapped ? `(${kept.join(',')})` : kept.join(',') });
+      continue;
+    }
+    out.push(filter);
+  }
+  return out;
+}
+
+async function assertNotPlatformTarget(req, entity, id, profile) {
+  if (!id || (entity !== 'user_profiles' && entity !== 'licenses')) return;
+  if (isPlatformLicenseManagerProfile(profile)) return;
+  const existing = await readOneById(req, entity, id, null);
+  if (isPlatformAccount(existing)) {
+    throw Object.assign(new Error('Modification d’un compte plateforme refusée.'), { status: 403 });
   }
 }
 
@@ -504,15 +583,12 @@ async function handleList(req, body) {
   }
   const scopedEntities = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
 
-  const requestFilters = Array.isArray(body.filters) ? body.filters.slice(0, 20) : [];
-  const filters = [...requestFilters];
+  let filters = Array.isArray(body.filters) ? body.filters.slice(0, 20) : [];
 
   if (scopedEntities.has(entity) && !isPlatform) {
-    const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, body.environment_code || body.env), 'DEMO');
-    if (env && env !== 'GLOBAL') {
-      const already = filters.some(f => String(f?.column || '').trim() === 'environment_code');
-      if (!already) filters.push({ column: 'environment_code', op: 'eq', value: env });
-    }
+    const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
+    filters = filtersWithoutClientEnvironment(filters);
+    if (env && env !== 'GLOBAL') filters.push({ column: 'environment_code', op: 'eq', value: env });
   }
 
   // Le super_admin peut lire GLOBAL/*, mais s'il demande explicitement un environnement, on filtre aussi.
@@ -593,6 +669,7 @@ async function handleSave(req, body) {
     if (service) assertRecordAllowed('services', service, 'create', profile, 'Création de demande refusée par les rôles du service.');
   }
 
+  if (id) await assertNotPlatformTarget(req, entity, id, profile);
   if (!id) delete record.id;
 
   const method = id ? 'PATCH' : 'POST';
@@ -627,6 +704,8 @@ async function handleDelete(req, body) {
     }
     return path;
   }
+
+  await assertNotPlatformTarget(req, entity, id, profile);
 
   if (entity === 'forms' || entity === 'services') {
     const existing = await readOneById(req, entity, id, profileEnv || body.environment_code);
