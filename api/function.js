@@ -30,18 +30,23 @@ function verifiedActor(user) {
 function clampAssignedPrivileges(payload, requester) {
   const next = Object.assign({}, payload || {});
   if (isPlatformOperatorProfile(requester)) return next;
+  const blockedRoles = new Set(['super_admin', 'platform_admin', 'admin', 'environment_admin']);
   const role = String(next.role || '').toLowerCase();
-  if (role === 'super_admin' || role === 'platform_admin') next.role = 'supervision_user';
+  if (blockedRoles.has(role)) next.role = 'supervision_user';
   if (Array.isArray(next.roles)) {
-    next.roles = next.roles.filter(item => !['super_admin', 'platform_admin'].includes(String(item).toLowerCase()));
+    next.roles = next.roles.filter(item => !blockedRoles.has(String(item).toLowerCase()));
   }
   if (String(next.scope || '').toLowerCase() === 'platform') next.scope = 'environment';
   if (String(next.license_type || '').toLowerCase() === 'super_admin') next.license_type = 'supervision';
-  const perms = Object.assign({}, next.resolved_permissions || {});
-  delete perms.platform_admin;
-  delete perms.manage_global_licenses;
-  next.resolved_permissions = perms;
-  if (String(next.environment_code || '').toUpperCase() === 'GLOBAL') delete next.environment_code;
+  if (Object.prototype.hasOwnProperty.call(next, 'resolved_permissions') && next.resolved_permissions && typeof next.resolved_permissions === 'object' && !Array.isArray(next.resolved_permissions)) {
+    const perms = Object.assign({}, next.resolved_permissions);
+    delete perms.platform_admin;
+    delete perms.manage_global_licenses;
+    delete perms.manage_users;
+    next.resolved_permissions = perms;
+  }
+  next.environment_code = profileEnvironmentCode(requester) || 'DEMO';
+  delete next.active_env;
   return next;
 }
 
@@ -160,9 +165,11 @@ async function upsertUserProfile(url, serviceRole, authUser, payload) {
     active: payload.active !== false,
     license_type: cleanString(payload.license_type || 'supervision'),
     license_key: payload.license_key || null,
-    resolved_permissions: safeObject(payload.resolved_permissions),
     updated_at: new Date().toISOString()
   };
+  if (payload.resolved_permissions && typeof payload.resolved_permissions === 'object' && !Array.isArray(payload.resolved_permissions)) {
+    profile.resolved_permissions = payload.resolved_permissions;
+  }
 
   const rows = await supabaseFetch(url, serviceRole, '/rest/v1/user_profiles?on_conflict=id', {
     method: 'POST',
@@ -585,10 +592,13 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   const profileRequester = await requireUserCreator(req, url, serviceRole);
   const id = cleanString(payload.user_id || payload.id, 80);
   if (!id) throw Object.assign(new Error('ID utilisateur manquant.'), { status: 400 });
-  const currentRows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,email,environment_code,license_type&limit=1`, { method: 'GET' });
+  const currentRows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,email,environment_code,license_type,role,roles,scope,resolved_permissions,active&limit=1`, { method: 'GET' });
   const current = Array.isArray(currentRows) ? currentRows[0] : null;
   if (!current?.id) throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
   assertSameEnvironmentOrPlatform(profileRequester, current.environment_code);
+  if (!isPlatformOperatorProfile(profileRequester) && isPlatformOperatorProfile(current)) {
+    throw Object.assign(new Error('Modification d’un compte plateforme refusée.'), { status: 403 });
+  }
   const safePayload = clampAssignedPrivileges(payload, profileRequester);
   const merged = { ...current, ...safePayload, environment_code: safePayload.environment_code || current.environment_code, license_type: safePayload.license_type || current.license_type };
   await assertQuotaAvailable(url, serviceRole, merged, id);

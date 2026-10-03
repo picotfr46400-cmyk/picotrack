@@ -249,24 +249,20 @@ async function getUserProfile(userId,req){const rows=await serviceRest(`user_pro
 function isAdminProfile(profile){const role=String(profile?.role||'').toLowerCase();const roles=Array.isArray(profile?.roles)?profile.roles.map(r=>String(r).toLowerCase()):[];const perms=profile?.resolved_permissions||{};return profile?.active!==false&&(role==='super_admin'||role==='admin'||role==='client_admin'||role==='environment_admin'||role==='platform_admin'||roles.includes('super_admin')||roles.includes('admin')||roles.includes('client_admin')||roles.includes('environment_admin')||perms.manage_users===true||perms.manage_global_licenses===true||perms.platform_admin===true)}
 async function requireAdmin(req){const user=await requireAuth(req);const profile=await getUserProfile(user.id,req);if(!isAdminProfile(profile)){const err=new Error('Droits administrateur requis');err.status=403;throw err;}return {user,profile}}
 const SENSITIVE_ROW_KEYS=['password_hash','supa_key','supa_url'];
-function redactRow(row){
-  if(!row||typeof row!=='object'||Array.isArray(row))return row;
-  if(!SENSITIVE_ROW_KEYS.some(key=>Object.prototype.hasOwnProperty.call(row,key)))return row;
-  const out=Object.assign({},row);
-  for(const key of SENSITIVE_ROW_KEYS)delete out[key];
+function redactRow(row, extraKeys = []){
+  if(Array.isArray(row))return row.map(item=>redactRow(item, extraKeys));
+  if(!row||typeof row!=='object')return row;
+  const blocked=new Set([...SENSITIVE_ROW_KEYS, ...extraKeys]);
+  const out={};
+  for(const [key,value] of Object.entries(row)){
+    if(blocked.has(key))continue;
+    if(key==='values'){out[key]=value;continue;}
+    out[key]=value&&typeof value==='object'?redactRow(value, extraKeys):value;
+  }
   return out;
 }
 function redactPayload(value){
-  if(Array.isArray(value))return value.map(redactRow);
-  if(!value||typeof value!=='object')return value;
-  const out={};
-  for(const [key,item] of Object.entries(value)){
-    if(SENSITIVE_ROW_KEYS.includes(key))continue;
-    if(Array.isArray(item))out[key]=item.map(redactRow);
-    else if(item&&typeof item==='object')out[key]=redactRow(item);
-    else out[key]=item;
-  }
-  return out;
+  return redactRow(value);
 }
 const rateBuckets=new Map();
 function clientIp(req){
