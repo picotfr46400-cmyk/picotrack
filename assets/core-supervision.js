@@ -1703,7 +1703,12 @@
   }
 
   function armSubmitPushHook(formId) {
-    if (submitPushHook.armed) return;
+    if (submitPushHook.armed) {
+      submitPushHook.formId = formId;
+      if (submitPushHook.timer) { try { clearTimeout(submitPushHook.timer); } catch (_) {} }
+      submitPushHook.timer = setTimeout(disarmSubmitPushHook, 60000);
+      return;
+    }
     var list;
     try { list = SUBMISSIONS_DATA; } catch (_) {}
     if (!list || typeof list.push !== 'function') return;
@@ -1713,6 +1718,10 @@
     submitPushHook.list = list;
     submitPushHook.origPush = origPush;
     list.push = function () {
+      if (!window.__ptSubmittingSaisie) {
+        disarmSubmitPushHook();
+        return origPush.apply(this, arguments);
+      }
       var hit = null;
       for (var i = 0; i < arguments.length; i++) {
         if (isCountableSaisieItem(arguments[i], submitPushHook.formId)) {
@@ -1727,7 +1736,7 @@
       }
       return ret;
     };
-    submitPushHook.timer = setTimeout(disarmSubmitPushHook, 20000);
+    submitPushHook.timer = setTimeout(disarmSubmitPushHook, 60000);
   }
 
   function afterSubmitSaisieRecord(formId) {

@@ -325,7 +325,8 @@ test('INSERT realtime d’un id déjà présent ne fait pas +1', () => {
 function bootOverlayVm(opts) {
   opts = opts || {};
   const form = opts.form || { id: 2708, nom: 'Recette', resp: 100, actif: true, published: true };
-  const FORMS_DATA = [form];
+  const extra = (opts.forms || []).filter((f) => f && f !== form);
+  const FORMS_DATA = [form].concat(extra);
   const SUBMISSIONS_DATA = opts.subs || [];
   const timers = [];
   const ctx = {
@@ -462,6 +463,105 @@ test('vm overlay : deux ouvertures de 25 résumés ne changent pas resp', () => 
   load25Summaries(env.SUBMISSIONS_DATA, 2708);
   load25Summaries(env.SUBMISSIONS_DATA, 2708);
   assert.equal(env.SUBMISSIONS_DATA.filter((x) => x._summaryOnly).length, 25);
+  assert.equal(env.form.resp, 100);
+  env.dispose();
+});
+
+test('vm overlay async : échec absorbé puis saisie sur un autre formulaire', async () => {
+  const formA = { id: 2708, nom: 'A', resp: 100, actif: true, published: true };
+  const formB = { id: 2709, nom: 'B', resp: 40, actif: true, published: true };
+  let mode = 'fail';
+  const env = bootOverlayVm({
+    form: formA,
+    forms: [formB],
+    async submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+      try {
+        await Promise.resolve();
+        if (mode === 'fail') {
+          this.__ptSubmittingSaisie = false;
+          return;
+        }
+        this.SUBMISSIONS_DATA.push({ id: 'b-ok', formId: this.curSaisieFormId, values: { a: 1 } });
+      } catch (_) {
+        this.__ptSubmittingSaisie = false;
+      }
+    }
+  });
+  env.ctx.window.ptApplyRespFloorToForm(formA);
+  env.ctx.window.ptApplyRespFloorToForm(formB);
+  await env.ctx.window.submitSaisie();
+  assert.equal(formA.resp, 100);
+  env.ctx.curSaisieFormId = 2709;
+  mode = 'ok';
+  await env.ctx.window.submitSaisie();
+  assert.equal(formA.resp, 100, 'form A inchangé après saisie B');
+  assert.equal(formB.resp, 41);
+  env.dispose();
+});
+
+test('vm overlay async : s(r) tardif après échec absorbé ne compte pas', async () => {
+  const env = bootOverlayVm({
+    async submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+      try {
+        await Promise.resolve();
+        this.__ptSubmittingSaisie = false;
+      } catch (_) {
+        this.__ptSubmittingSaisie = false;
+      }
+    }
+  });
+  env.ctx.window.ptApplyRespFloorToForm(env.form);
+  await env.ctx.window.submitSaisie();
+  env.SUBMISSIONS_DATA.push({ id: 'late-fail', formId: 2708, values: { a: 1 } });
+  assert.equal(env.form.resp, 100, 's(r) tardif après échec : pas de +1');
+  env.dispose();
+});
+
+test('vm overlay async : s(r) tardif pendant submit compte +1 une fois', async () => {
+  const env = bootOverlayVm({
+    async submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+      try {
+        await Promise.resolve();
+      } catch (_) {
+        this.__ptSubmittingSaisie = false;
+      }
+    }
+  });
+  env.ctx.window.ptApplyRespFloorToForm(env.form);
+  await env.ctx.window.submitSaisie();
+  assert.equal(env.ctx.__ptSubmittingSaisie, true);
+  env.SUBMISSIONS_DATA.push({ id: 'late-ok', formId: 2708, values: { a: 1 } });
+  assert.equal(env.form.resp, 101);
+  env.SUBMISSIONS_DATA.push({ id: 'late-ok-2', formId: 2708, values: { a: 1 } });
+  assert.equal(env.form.resp, 101, 'hook retiré après le premier item');
+  env.dispose();
+});
+
+test('vm overlay async : échec absorbé puis submitServiceInstance donne 0', async () => {
+  const env = bootOverlayVm({
+    async submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+      try {
+        await Promise.resolve();
+        this.__ptSubmittingSaisie = false;
+      } catch (_) {
+        this.__ptSubmittingSaisie = false;
+      }
+    }
+  });
+  env.ctx.window.ptApplyRespFloorToForm(env.form);
+  await env.ctx.window.submitSaisie();
+  env.ctx.submitServiceInstance = function () {
+    env.SUBMISSIONS_DATA.push({ id: 'svc-1', formId: 2708, values: { dossier: 1 } });
+  };
+  env.ctx.submitServiceInstance();
   assert.equal(env.form.resp, 100);
   env.dispose();
 });
