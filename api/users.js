@@ -1,4 +1,5 @@
 const { getSupabaseConfig, json, setCors, bearer, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
+const { normalizeLicenseType: canonicalLicenseType, interpretedLicenseType } = require('./_license-type');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
@@ -26,11 +27,9 @@ function safeObject(value) {
 }
 
 function normalizeLicenseType(value, roles) {
-  const v = String(value || '').trim().toLowerCase();
   const roleList = safeArray(roles).map(r => String(r).toLowerCase());
-  if (['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator'].includes(v) || roleList.includes('pad_user')) return 'pad';
-  if (['readonly', 'read_only', 'lecture', 'lecture_seule', 'viewer', 'consultation'].includes(v)) return 'readonly';
-  return 'supervision';
+  if (roleList.includes('pad_user')) return 'pad';
+  return canonicalLicenseType(value);
 }
 
 function isPlatformRow(row) {
@@ -45,7 +44,8 @@ function canReadLicenseKey(profile) {
   if (!profile || profile.active === false) return false;
   if (isPlatformProfile(profile)) return true;
   const role = String(profile.role || '').toLowerCase();
-  const type = String(profile.license_type || '').toLowerCase();
+  const rawType = String(profile.license_type || '').toLowerCase();
+  const type = interpretedLicenseType(profile.license_type) === 'pad' ? 'pad' : rawType;
   const perms = safeObject(profile.resolved_permissions);
   return role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user' || type === 'supervision' || perms.manage_users === true;
 }

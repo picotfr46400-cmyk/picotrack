@@ -1,6 +1,7 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdf } = require('./_submission-pdf');
+const { normalizeLicenseType, interpretedLicenseType } = require('./_license-type');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -331,7 +332,8 @@ function canManageUsers(profile) {
   if (!profile || profile.active === false) return false;
   if (isPlatformLicenseManagerProfile(profile)) return true;
   const role = String(profile.role || '').toLowerCase();
-  const type = String(profile.license_type || '').toLowerCase();
+  const rawType = String(profile.license_type || '').toLowerCase();
+  const type = interpretedLicenseType(profile.license_type) === 'pad' ? 'pad' : rawType;
   const perms = profile.resolved_permissions || {};
   return role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user' || type === 'supervision' || perms.manage_users === true;
 }
@@ -374,13 +376,6 @@ function assertListedColumns(profile, entity, select, filters, order) {
   }
   const orderColumn = normalizeColumnName(String(order || '').split('.')[0]);
   if (orderColumn && !allowed.has(orderColumn)) throw Object.assign(new Error('Tri non autorisé.'), { status: 403 });
-}
-
-function normalizeLicenseType(value) {
-  const token = normalizePrivilegeToken(value);
-  if (['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator'].includes(token)) return 'pad';
-  if (['readonly', 'read_only', 'lecture', 'lecture_seule', 'viewer', 'consultation'].includes(token)) return 'readonly';
-  return 'supervision';
 }
 
 function canonicalAssignableRole(value, catalog) {
@@ -497,7 +492,9 @@ function permissionFlag(profile, key) {
 function isPlatformAccount(profile) {
   if (!profile || typeof profile !== 'object') return false;
   const role = normalizePrivilegeToken(profile.role);
-  const licenseType = normalizePrivilegeToken(profile.license_type);
+  const licenseType = interpretedLicenseType(profile.license_type) === 'pad'
+    ? 'pad'
+    : normalizePrivilegeToken(profile.license_type);
   const scope = normalizePrivilegeToken(profile.scope);
   const env = String(profile.environment_code || '').replace(/[\t\r\n\f\v]/g, '').trim().toUpperCase();
   return role === 'super_admin'
@@ -550,7 +547,8 @@ function profileRoleKeys(profile) {
   const keys = [];
   const add = v => { const s = String(v || '').trim(); if (s) keys.push(s.toLowerCase()); };
   add(profile?.role);
-  add(profile?.license_type);
+  const license = interpretedLicenseType(profile?.license_type);
+  if (license) keys.push(license);
   for (const r of parseRoleArray(profile?.roles)) add(r);
   const uniq = [...new Set(keys)];
   if (uniq.includes('super_admin') || uniq.includes('platform_admin')) uniq.push('administrateur', 'admin');
@@ -1130,8 +1128,8 @@ function canExportSubmissionPdf(profile) {
   if (!profile || profile.active === false) return false;
   if (isPlatformLicenseManagerProfile(profile)) return true;
   const role = normalizePrivilegeToken(profile.role);
-  const type = normalizePrivilegeToken(profile.license_type);
-  if (PDF_EXPORT_DENIED.has(role) || PDF_EXPORT_DENIED.has(type)) return false;
+  const type = interpretedLicenseType(profile.license_type);
+  if (PDF_EXPORT_DENIED.has(role) || type === 'pad' || PDF_EXPORT_DENIED.has(type)) return false;
   if (PDF_EXPORT_ROLES.has(role) || type === 'supervision') return true;
   return profileRoleKeys(profile).some((key) => PDF_EXPORT_ROLES.has(key));
 }

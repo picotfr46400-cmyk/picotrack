@@ -12,6 +12,7 @@ const MAX_IMAGES = 8;
 const MAX_DECODE_ATTEMPTS = 16;
 const MAX_IMAGE_SLOTS = 16;
 const MAX_IMAGE_BYTES = 1_200_000;
+const MAX_JPEG_BUDGET = 2_500_000;
 const MAX_DIMENSION = 4096;
 const MAX_PIXELS = 16_000_000;
 const MAX_DECODED_BYTES = 64 * 1024 * 1024;
@@ -357,7 +358,7 @@ function decodeImageBuffer(buf, room = MAX_DECODED_BYTES) {
 }
 
 function createImageBudget() {
-  return { kept: 0, attempts: 0, decodedBytes: 0, slots: 0 };
+  return { kept: 0, attempts: 0, decodedBytes: 0, slots: 0, jpegBytes: 0 };
 }
 
 function acceptImageSource(value, out, budget) {
@@ -383,7 +384,12 @@ function acceptImageSource(value, out, budget) {
     out.push({ omitted: true });
     return true;
   }
+  if (image.kind === 'jpeg' && budget.jpegBytes + image.buf.length > MAX_JPEG_BUDGET) {
+    out.push({ omitted: true });
+    return true;
+  }
   budget.decodedBytes += image.decodedBytes;
+  if (image.kind === 'jpeg') budget.jpegBytes += image.buf.length;
   budget.kept += 1;
   out.push(image);
   return true;
