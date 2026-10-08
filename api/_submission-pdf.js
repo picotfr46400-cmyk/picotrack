@@ -13,6 +13,11 @@ const MAX_DECODE_ATTEMPTS = 16;
 const MAX_IMAGE_SLOTS = 16;
 const MAX_IMAGE_BYTES = 1_200_000;
 const MAX_JPEG_BUDGET = 2_500_000;
+// Même seuil que records.js : pdf.length > PDF_BYTE_LIMIT → 413.
+const PDF_BYTE_LIMIT = 3_000_000;
+const TEXT_BYTE_MARGIN = 300_000;
+// Flux réellement écrits (JPEG copiés + PNG recompressés), sous le plafond moins le texte.
+const MAX_EMBEDDED_BUDGET = PDF_BYTE_LIMIT - TEXT_BYTE_MARGIN;
 const MAX_DIMENSION = 4096;
 const MAX_PIXELS = 16_000_000;
 const MAX_DECODED_BYTES = 64 * 1024 * 1024;
@@ -358,7 +363,20 @@ function decodeImageBuffer(buf, room = MAX_DECODED_BYTES) {
 }
 
 function createImageBudget() {
-  return { kept: 0, attempts: 0, decodedBytes: 0, slots: 0, jpegBytes: 0 };
+  return { kept: 0, attempts: 0, decodedBytes: 0, slots: 0, jpegBytes: 0, embeddedBytes: 0 };
+}
+
+function imageStream(image) {
+  if (!image || image.omitted) return null;
+  if (Buffer.isBuffer(image.payload) && image.payload.length) return image.payload;
+  try {
+    if (image.kind === 'jpeg' && Buffer.isBuffer(image.buf) && image.buf.length) image.payload = image.buf;
+    else if (Buffer.isBuffer(image.rgb) && image.rgb.length) image.payload = zlib.deflateSync(image.rgb);
+    else return null;
+  } catch (_) {
+    return null;
+  }
+  return image.payload.length ? image.payload : null;
 }
 
 function acceptImageSource(value, out, budget) {
@@ -388,8 +406,14 @@ function acceptImageSource(value, out, budget) {
     out.push({ omitted: true });
     return true;
   }
+  const payload = imageStream(image);
+  if (!payload || budget.embeddedBytes + payload.length > MAX_EMBEDDED_BUDGET) {
+    out.push({ omitted: true });
+    return true;
+  }
   budget.decodedBytes += image.decodedBytes;
   if (image.kind === 'jpeg') budget.jpegBytes += image.buf.length;
+  budget.embeddedBytes += payload.length;
   budget.kept += 1;
   out.push(image);
   return true;
@@ -524,13 +548,14 @@ function formatSubmissionDocument(input) {
     imageStats: {
       kept: budget.kept,
       attempts: budget.attempts,
-      decodedBytes: budget.decodedBytes
+      decodedBytes: budget.decodedBytes,
+      embeddedBytes: budget.embeddedBytes
     }
   };
 }
 
 function imageObject(image) {
-  const data = image.kind === 'jpeg' ? image.buf : zlib.deflateSync(image.rgb);
+  const data = imageStream(image);
   const filter = image.kind === 'jpeg' ? '/DCTDecode' : '/FlateDecode';
   const dict = Buffer.from(
     `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace ${image.colorSpace} /BitsPerComponent 8 /Filter ${filter} /Length ${data.length} >>\nstream\n`
@@ -538,7 +563,23 @@ function imageObject(image) {
   return Buffer.concat([dict, data, Buffer.from('\nendstream')]);
 }
 
-function buildSubmissionPdf(doc) {
+function hasIncludedImages(model) {
+  return (model.fields || []).some((field) =>
+    Array.isArray(field && field.images) && field.images.some((image) => image && !image.omitted)
+  );
+}
+
+function modelWithoutImages(model) {
+  return {
+    ...model,
+    fields: (model.fields || []).map((field) => {
+      if (!field || !Array.isArray(field.images) || !field.images.length) return field;
+      return { ...field, images: field.images.map(() => ({ omitted: true })) };
+    })
+  };
+}
+
+function renderSubmissionPdf(doc) {
   const model = doc && doc.fields ? doc : formatSubmissionDocument(doc);
   const pages = [];
   let page = null;
@@ -639,6 +680,9 @@ function buildSubmissionPdf(doc) {
     }
   });
 
+  // La frise de traçabilité s'insère ici, avant le pied de page.
+  // Son repli (retirer la frise, puis rappeler renderSubmissionPdf) reste à l'appelant.
+
   if (page) {
     page.chunks.push(Buffer.from(
       `${fill(148, 163, 184)}BT\n/F1 8 Tf\n1 0 0 1 ${num(LEFT)} 28 Tm\n`
@@ -698,10 +742,30 @@ function buildSubmissionPdf(doc) {
   return Buffer.concat([out, Buffer.from(xref)]);
 }
 
+// Rend le PDF dans le plafond de records.js. Les images sont bornées à
+// PDF_BYTE_LIMIT − TEXT_BYTE_MARGIN. Si le fichier dépasse quand même,
+// un second rendu sans images remplace le 413.
+// options.omitImages force ce second rendu.
+// options.enforceLimit === false rend une seule fois, pour enchaîner un autre repli avant.
+function buildSubmissionPdf(doc, options) {
+  const omitImages = !!(options && options.omitImages);
+  const enforceLimit = !(options && options.enforceLimit === false);
+  const source = doc && doc.fields ? doc : formatSubmissionDocument(doc);
+  const model = omitImages ? modelWithoutImages(source) : source;
+  const binary = renderSubmissionPdf(model);
+  if (!enforceLimit || omitImages || binary.length <= PDF_BYTE_LIMIT || !hasIncludedImages(model)) return binary;
+  return renderSubmissionPdf(modelWithoutImages(model));
+}
+
 module.exports = {
+  PDF_BYTE_LIMIT,
+  TEXT_BYTE_MARGIN,
+  MAX_EMBEDDED_BUDGET,
+  MAX_JPEG_BUDGET,
   formatSubmissionDate,
   deviceAuthor,
   formatSubmissionDocument,
+  renderSubmissionPdf,
   buildSubmissionPdf,
   extractPdfText,
   decodeImageBuffer
