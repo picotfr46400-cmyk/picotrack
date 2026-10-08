@@ -848,10 +848,7 @@ async function listEnvironmentLicenses(url, serviceRole, environmentCode) {
 
 async function prepareCompanionLicenseChange(url, serviceRole, profile, activating) {
   const environmentCode = normalizeEnvironmentCode(profile?.environment_code || '');
-  if (!environmentCode || environmentCode === 'GLOBAL') {
-    if (activating) throw Object.assign(new Error('Aucune licence ne correspond à ce compte.'), { status: 409 });
-    return [];
-  }
+  if (!environmentCode || environmentCode === 'GLOBAL') return [];
   const visible = (await listEnvironmentLicenses(url, serviceRole, environmentCode)).filter(row => {
     if (!row?.id) return false;
     if (normalizeEnvironmentCode(row.environment_code) !== environmentCode) return false;
@@ -859,16 +856,24 @@ async function prepareCompanionLicenseChange(url, serviceRole, profile, activati
     return true;
   });
   const linked = visible.filter(row => licenseBelongsToProfile(row, profile.id));
-  if (linked.length) return linked.map(companionLicenseSnapshot);
   const email = licenseEmailKey(profile?.email || '');
   const byEmail = email ? visible.filter(row => licenseEmailKey(row.email) === email) : [];
-  if (byEmail.length === 1) return byEmail.map(companionLicenseSnapshot);
-  if (activating || byEmail.length > 1) {
-    throw Object.assign(new Error(byEmail.length > 1
-      ? 'Plusieurs licences correspondent à ce compte.'
-      : 'Aucune licence ne correspond à ce compte.'), { status: 409 });
+  if (!activating) {
+    const seen = new Set();
+    const all = [];
+    for (const row of linked.concat(byEmail)) {
+      const key = String(row.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      all.push(companionLicenseSnapshot(row));
+    }
+    return all;
   }
-  return [];
+  if (linked.length) return linked.map(companionLicenseSnapshot);
+  if (byEmail.length > 1) {
+    throw Object.assign(new Error('Plusieurs licences correspondent à ce compte.'), { status: 409 });
+  }
+  return byEmail.map(companionLicenseSnapshot);
 }
 
 async function patchLicenseActive(url, serviceRole, license, active) {

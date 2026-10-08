@@ -959,13 +959,14 @@ test('B6 : désactiver puis réactiver remet la licence, et refuse plafond ou do
     assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
 
     world.user_profiles.find(row => row.id === 'pad-off').active = true;
-    world.licenses.forEach(row => { row.active = true; });
+    world.licenses.find(row => row.id === 'lic-a').active = true;
+    world.licenses.find(row => row.id === 'lic-b').active = false;
     writes.length = 0;
     const off = await callJson(functions, { functionName: 'update-user', payload: { id: 'pad-off', active: false } });
-    assert.equal(off.status, 409, off.payload.error || '');
-    assert.equal(world.user_profiles.find(row => row.id === 'pad-off').active, true);
-    assert.equal(world.licenses.every(row => row.active === true), true);
-    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+    assert.equal(off.status, 200, off.payload.error || '');
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-off').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-a').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-b').active, false);
   });
 
   await withSupabase(async () => {
@@ -983,13 +984,14 @@ test('B6 : désactiver puis réactiver remet la licence, et refuse plafond ou do
     assert.equal(off.status, 200, off.payload.error || '');
     assert.equal(world.user_profiles.find(row => row.id === 'pad-off').active, false);
     assert.equal(world.licenses.find(row => row.id === 'lic-link').active, false);
-    assert.equal(world.licenses.find(row => row.id === 'lic-mail').active, true);
+    assert.equal(world.licenses.find(row => row.id === 'lic-mail').active, false);
     assert.equal(world.licenses.find(row => row.id === 'lic-acme').active, true);
     const on = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'pad-off', record: { active: true } });
     assert.equal(on.status, 200, on.payload.error || '');
     assert.equal(world.user_profiles.find(row => row.id === 'pad-off').active, true);
     assert.equal(world.licenses.find(row => row.id === 'lic-link').active, true);
-    assert.equal(world.licenses.find(row => row.id === 'lic-mail').active, true);
+    assert.equal(world.licenses.find(row => row.id === 'lic-mail').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-acme').active, true);
   });
 
   await withSupabase(async () => {
@@ -1047,6 +1049,62 @@ test('B6 : désactiver puis réactiver remet la licence, et refuse plafond ou do
     assert.equal(profile.active, true);
     assert.equal(profile.firstname, 'Ada');
     assert.equal(world.licenses.find(row => row.id === 'lic-efc').active, true);
+  });
+});
+
+test('désactivation : toutes les licences du même e-mail ; réactivation sans licence', async () => {
+  await withSupabase(async () => {
+    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true };
+    const world = worldFor('supervision', {
+      profiles: [target],
+      licenses: [
+        { id: 'lic-on', email: 'TERRAIN@EFC.PICOTRACK.FR', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true },
+        { id: 'lic-off', email: ' terrain@efc.picotrack.fr ', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false },
+        { id: 'lic-acme', email: 'terrain@efc.picotrack.fr', environment_code: 'ACME', role: 'pad_user', license_type: 'pad', active: true }
+      ]
+    });
+    installWorld(world);
+    const off = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'pad-duo', record: { active: false } });
+    assert.equal(off.status, 200, off.payload.error || '');
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-on').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-off').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-acme').active, true);
+  });
+
+  await withSupabase(async () => {
+    const target = { id: 'pad-bare', email: 'seul@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: false };
+    const world = worldFor('supervision', { profiles: [target], licenses: [] });
+    const { writes } = installWorld(world);
+    const on = await callJson(functions, { functionName: 'update-user', payload: { id: 'pad-bare', active: true } });
+    assert.equal(on.status, 200, on.payload.error || '');
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-bare').active, true);
+    assert.equal(writes.some(entry => entry.url.includes('/rest/v1/licenses') && entry.method !== 'GET'), false);
+    const viaRecords = { id: 'pad-bare-2', email: 'seul2@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: false };
+    world.user_profiles.push(viaRecords);
+    const recordsOn = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'pad-bare-2', record: { active: true } });
+    assert.equal(recordsOn.status, 200, recordsOn.payload.error || '');
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-bare-2').active, true);
+  });
+
+  await withSupabase(async () => {
+    const holder = { id: 'pad-full', email: 'full@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true };
+    const target = { id: 'pad-bare', email: 'seul@efc.picotrack.fr', role: 'pad_user', license_type: null, environment_code: 'EFC', active: false };
+    const world = worldFor('supervision', {
+      profiles: [holder, target],
+      licenses: [],
+      limits: [{ id: 'lim-efc', environment_code: 'EFC', supervision_limit: 10, pad_limit: 1, lecture_limit: 5 }]
+    });
+    const { writes } = installWorld(world);
+    const on = await callJson(functions, { functionName: 'update-user', payload: { id: 'pad-bare', active: true } });
+    assert.equal(on.status, 403, on.payload.error || '');
+    assert.match(on.payload.error || '', /PAD Terrain/);
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-bare').active, false);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+    const viaRecords = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'pad-bare', record: { active: true } });
+    assert.equal(viaRecords.status, 403, viaRecords.payload.error || '');
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-bare').active, false);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
   });
 });
 
