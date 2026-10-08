@@ -100,6 +100,7 @@ async function requireProfile(req) {
   if (!user?.id) throw Object.assign(new Error('Authentification requise'), { status: 401 });
   const profile = await getUserProfile(user.id, req).catch(() => null);
   if (!profile?.id) throw Object.assign(new Error('Profil utilisateur introuvable'), { status: 403 });
+  if (profile.active === false) throw Object.assign(new Error('Compte désactivé'), { status: 403 });
   await validateActiveDeviceSession(req, user, profile);
   return { user, profile };
 }

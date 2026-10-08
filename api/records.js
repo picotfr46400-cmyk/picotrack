@@ -1,7 +1,8 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
-const { normalizeLicenseType, interpretedLicenseType } = require('./_license-type');
+const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
+const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile } = require('./function');
 const submissionAudit = require('./_submission-audit');
 
 const ENTITIES = new Set([
@@ -523,6 +524,18 @@ function normalizeEnvRecordValue(value, fallback = 'DEMO') {
   return normalized || normalizeEnvCode(fallback) || 'DEMO';
 }
 
+function suppliedEnvironmentCode(source, body) {
+  if (source && Object.prototype.hasOwnProperty.call(source, 'environment_code')) return source.environment_code;
+  if (body && Object.prototype.hasOwnProperty.call(body, 'environment_code')) return body.environment_code;
+  return undefined;
+}
+
+function persistedEnvironmentCode(value) {
+  const env = normalizeEnvCode(value);
+  if (!env || env === 'GLOBAL') return '';
+  return env;
+}
+
 function effectiveEnvironmentCode(profile, requested) {
   const profileEnv = normalizeEnvCode(profile?.environment_code);
   if (!isPlatformLicenseManagerProfile(profile)) {
@@ -651,11 +664,12 @@ async function loadActiveAppRoles(req, env) {
   return Array.isArray(rows) ? rows : [];
 }
 
-async function readOneById(req, entity, id, env) {
+async function readOneById(req, entity, id, env, options = {}) {
   if (!id) return null;
   let path = `${entity}?id=eq.${encodeURIComponent(id)}&select=*&limit=1`;
   if (env && env !== 'GLOBAL' && env !== '*') path += `&environment_code=eq.${encodeURIComponent(env)}`;
-  const rows = await serviceRest(path, { method: 'GET', prefer: '', req }).catch(() => []);
+  const request = serviceRest(path, { method: 'GET', prefer: '', req });
+  const rows = options.strict ? await request : await request.catch(() => []);
   return Array.isArray(rows) ? rows[0] : null;
 }
 
@@ -861,6 +875,9 @@ async function handleSave(req, body) {
   if (submissionAudit.isAuditEntity(body && body.entity)) {
     throw Object.assign(new Error('Journal de traçabilité en ajout seul.'), { status: 403 });
   }
+  let companionLicenses = null;
+  let companionActivating = false;
+  let profileSnapshot = null;
   const entity = cleanEntity(body.entity);
   if (!entity) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
   const user = await requireAuth(req);
@@ -876,16 +893,40 @@ async function handleSave(req, body) {
   }
 
   const entitiesWithEnvironmentCode = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
+  const suppliedEnv = suppliedEnvironmentCode(source, body);
+  const id = String(body.id || '').trim();
+  const platformWriter = isPlatformLicenseManagerProfile(profile);
   if (entitiesWithEnvironmentCode.has(entity)) {
-    record.environment_code = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, record.environment_code || body.environment_code), 'DEMO');
+    if (!platformWriter) {
+      record.environment_code = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, suppliedEnv ?? record.environment_code), 'DEMO');
+    } else {
+      const chosen = persistedEnvironmentCode(suppliedEnv);
+      if (chosen) record.environment_code = chosen;
+      else if (!id) throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+      else delete record.environment_code;
+    }
   }
 
   if (entity === 'environment_license_limits') {
+    if (!persistedEnvironmentCode(record.environment_code)) {
+      throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+    }
     return await saveEnvironmentLicenseLimits(req, record, profile);
   }
 
-  const id = String(body.id || '').trim();
-  const env = record.environment_code || effectiveEnvironmentCode(profile, body.environment_code);
+  if (id && entitiesWithEnvironmentCode.has(entity) && platformWriter && !persistedEnvironmentCode(record.environment_code)) {
+    let existingEnvRow = null;
+    try {
+      existingEnvRow = await readOneById(req, entity, id, null, { strict: true });
+    } catch (err) {
+      throw Object.assign(new Error('Relecture de la fiche impossible.'), { status: 503 });
+    }
+    const kept = persistedEnvironmentCode(existingEnvRow?.environment_code);
+    if (!kept) throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+    record.environment_code = kept;
+  }
+
+  const env = persistedEnvironmentCode(record.environment_code) || effectiveEnvironmentCode(profile, body.environment_code);
 
   if (entity === 'databases' && id) {
     const existing = await readOneById(req, 'databases', id, env).catch(() => null);
@@ -917,12 +958,66 @@ async function handleSave(req, body) {
     if (auditService) assertRecordAllowed('services', auditService, 'create', profile, 'Création de demande refusée par les rôles du service.');
   }
 
-  if (!isPlatformLicenseManagerProfile(profile) && (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles')) {
-    const catalog = await loadActiveAppRoles(req, effectiveEnvironmentCode(profile, profile?.environment_code));
-    const existingRow = id && (entity === 'user_profiles' || entity === 'licenses')
-      ? await readOneById(req, entity, id, record.environment_code || profile?.environment_code)
-      : null;
-    demotePrivilegedFields(record, { catalog, existingRoles: existingRow?.roles, entity });
+  if (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles') {
+    let existingRow = null;
+    if (id && entity !== 'app_roles') {
+      try {
+        existingRow = await readOneById(req, entity, id, record.environment_code || null, { strict: true });
+      } catch (err) {
+        throw Object.assign(new Error('Relecture de la fiche impossible.'), { status: 503 });
+      }
+    }
+    const explicitEnv = !!persistedEnvironmentCode(suppliedEnv);
+    if (!explicitEnv && existingRow?.environment_code) {
+      const kept = persistedEnvironmentCode(existingRow.environment_code);
+      if (kept) record.environment_code = kept;
+    }
+    if (!isPlatformLicenseManagerProfile(profile)) {
+      const catalog = await loadActiveAppRoles(req, effectiveEnvironmentCode(profile, profile?.environment_code));
+      demotePrivilegedFields(record, { catalog, existingRoles: existingRow?.roles, entity });
+    } else if (entity !== 'app_roles' && Object.prototype.hasOwnProperty.call(record, 'license_type')) {
+      if (!normalizePrivilegeToken(record.license_type)) delete record.license_type;
+      else record.license_type = canonicalizeStoredLicenseType(record.license_type, { keepPlatformTypes: true });
+    }
+    if (entity === 'user_profiles' || entity === 'licenses') {
+      const creating = !id;
+      const after = {
+        license_type: Object.prototype.hasOwnProperty.call(record, 'license_type') ? record.license_type : existingRow?.license_type,
+        role: Object.prototype.hasOwnProperty.call(record, 'role') ? record.role : existingRow?.role,
+        roles: Object.prototype.hasOwnProperty.call(record, 'roles') ? record.roles : existingRow?.roles,
+        active: Object.prototype.hasOwnProperty.call(record, 'active') ? record.active !== false : (creating ? true : existingRow?.active !== false)
+      };
+      if (creating && !Object.prototype.hasOwnProperty.call(record, 'license_type')) {
+        record.license_type = seatLicenseType(after);
+        after.license_type = record.license_type;
+      }
+      if (updateAddsActiveSeat(creating ? { active: false } : existingRow, after)) {
+        const { url, serviceRole } = getSupabaseConfig(req);
+        await assertQuotaAvailable(url, serviceRole, {
+          environment_code: record.environment_code,
+          license_type: after.license_type,
+          role: after.role,
+          roles: after.roles,
+          active: true
+        }, entity === 'user_profiles' ? (id || null) : null);
+      }
+      const explicitActive = Object.prototype.hasOwnProperty.call(record, 'active') && (record.active === true || record.active === false);
+      const turningOn = explicitActive && record.active === true && existingRow?.active === false;
+      const turningOff = explicitActive && record.active === false && existingRow?.active !== false;
+      if (entity === 'user_profiles' && id && existingRow && (turningOn || turningOff)) {
+        const { url, serviceRole } = getSupabaseConfig(req);
+        profileSnapshot = snapshotUserProfile(existingRow);
+        companionActivating = turningOn;
+        companionLicenses = await prepareCompanionLicenseChange(url, serviceRole, {
+          id: existingRow.id,
+          email: existingRow.email,
+          environment_code: existingRow.environment_code || record.environment_code
+        }, turningOn);
+      }
+    }
+  }
+  if (entitiesWithEnvironmentCode.has(entity) && !persistedEnvironmentCode(record.environment_code)) {
+    throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
   }
   applyServerTenant(record, entity, profile);
   if (id) await assertNotPlatformTarget(req, entity, id, profile);
@@ -945,6 +1040,10 @@ async function handleSave(req, body) {
       serviceRest, user, profile, entity, id, record, env,
       before: auditBefore, form: auditForm, service: auditService, saved
     });
+  }
+  if (companionLicenses && companionLicenses.length) {
+    const { url, serviceRole } = getSupabaseConfig(req);
+    await commitCompanionLicenseChange(url, serviceRole, profileSnapshot, companionLicenses, companionActivating);
   }
   return saved;
 }

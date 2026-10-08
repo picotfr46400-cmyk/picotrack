@@ -1,5 +1,5 @@
 const { getSupabaseConfig, json, setCors, bearer, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
-const { normalizeLicenseType: canonicalLicenseType, interpretedLicenseType } = require('./_license-type');
+const { interpretedLicenseType, seatLicenseType } = require('./_license-type');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
@@ -26,12 +26,6 @@ function safeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
-function normalizeLicenseType(value, roles) {
-  const roleList = safeArray(roles).map(r => String(r).toLowerCase());
-  if (roleList.includes('pad_user')) return 'pad';
-  return canonicalLicenseType(value);
-}
-
 function isPlatformRow(row) {
   const role = String(row?.role || '').toLowerCase();
   const scope = String(row?.scope || '').toLowerCase();
@@ -52,7 +46,7 @@ function canReadLicenseKey(profile) {
 
 function normalizeUserRow(row, source, environmentCode, options = {}) {
   const roles = safeArray(row?.roles);
-  const licenseType = normalizeLicenseType(row?.license_type, roles);
+  const licenseType = seatLicenseType(row);
   const email = normalizeEmail(row?.email || '');
   const label = cleanString(row?.label || [row?.firstname || row?.first_name || '', row?.lastname || row?.last_name || ''].join(' ').trim() || row?.email || row?.login_user || row?.username || '');
   const normalized = {
@@ -102,6 +96,11 @@ async function requireProfile(req) {
   const profile = await getUserProfile(user.id, req).catch(() => null);
   if (!profile?.id) {
     const err = new Error('Profil utilisateur introuvable');
+    err.status = 403;
+    throw err;
+  }
+  if (profile.active === false) {
+    const err = new Error('Compte désactivé');
     err.status = 403;
     throw err;
   }
@@ -172,7 +171,7 @@ async function handleSummary(req, body) {
   const readonlyLimit = Number(limits.readonly_limit ?? limits.lecture_limit ?? 0) || 0;
 
   const counts = rows.reduce((acc, row) => {
-    const type = normalizeLicenseType(row.license_type, row.roles);
+    const type = seatLicenseType(row);
     acc[type] = (acc[type] || 0) + 1;
     acc.total += 1;
     return acc;
