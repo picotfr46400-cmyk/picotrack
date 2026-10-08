@@ -1,5 +1,5 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
-const { normalizeLicenseType } = require('./_license-type');
+const { normalizeLicenseType, seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
 
 const INTERNAL_FUNCTIONS = new Set([
   'list-users',
@@ -318,7 +318,7 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
   }
 
   function rowType(row) {
-    return normalizeLicenseType(row?.license_type || (Array.isArray(row?.roles) && row.roles.includes('pad_user') ? 'pad' : 'supervision'));
+    return seatLicenseType(row);
   }
 
   function emailKey(row) {
@@ -522,7 +522,12 @@ function clampAssignedPrivileges(payload, requester, context = {}) {
     if (Array.isArray(context.existingRoles)) next.roles = context.existingRoles.slice();
     else delete next.roles;
   }
-  if (isPlatformOperatorProfile(requester)) return next;
+  if (isPlatformOperatorProfile(requester)) {
+    if (Object.prototype.hasOwnProperty.call(next, 'license_type')) {
+      next.license_type = canonicalizeStoredLicenseType(next.license_type, { keepPlatformTypes: true });
+    }
+    return next;
+  }
   if (Object.prototype.hasOwnProperty.call(next, 'role')) {
     const role = normalizePrivilegeToken(next.role);
     next.role = ASSIGNABLE_CLIENT_ROLES.has(role) ? role : 'supervision_user';
@@ -683,7 +688,7 @@ async function handleListUsers(req, url, serviceRole, payload) {
   }
 
   function normalizedType(row) {
-    return normalizeLicenseType(row?.license_type || (Array.isArray(row?.roles) && row.roles.includes('pad_user') ? 'pad' : 'supervision'));
+    return seatLicenseType(row);
   }
 
   function normalizeUserRow(row, source) {
@@ -834,7 +839,9 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
     current = Array.isArray(rows) ? rows[0] : null;
   }
 
-  const licenseIdToTry = rawLicenseId || (rawId && !isUuidLike(rawId) ? rawId : '');
+  // Le front envoie l'UUID d'une licence autonome dans id / user_id, pas dans license_id.
+  // On ne le cherche dans licenses que si ce n'est pas déjà un profil.
+  const licenseIdToTry = rawLicenseId || (!current?.id && rawId ? rawId : '');
   if (licenseIdToTry) {
     const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseIdToTry)}&select=*&limit=1`, { method: 'GET' }).catch(() => []);
     licenseRow = Array.isArray(rows) ? rows[0] : null;
@@ -1005,4 +1012,6 @@ async function handler(req, res) {
 handler.resolveFunctionRoute = resolveFunctionRoute;
 handler.verifiedActor = verifiedActor;
 handler.clampAssignedPrivileges = clampAssignedPrivileges;
+handler.assertQuotaAvailable = assertQuotaAvailable;
+handler.updateAddsActiveSeat = updateAddsActiveSeat;
 module.exports = handler;

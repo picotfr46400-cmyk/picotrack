@@ -1,7 +1,8 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdf } = require('./_submission-pdf');
-const { normalizeLicenseType, interpretedLicenseType } = require('./_license-type');
+const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
+const { assertQuotaAvailable, updateAddsActiveSeat } = require('./function');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -911,12 +912,35 @@ async function handleSave(req, body) {
     if (service) assertRecordAllowed('services', service, 'create', profile, 'Création de demande refusée par les rôles du service.');
   }
 
-  if (!isPlatformLicenseManagerProfile(profile) && (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles')) {
-    const catalog = await loadActiveAppRoles(req, effectiveEnvironmentCode(profile, profile?.environment_code));
-    const existingRow = id && (entity === 'user_profiles' || entity === 'licenses')
+  if (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles') {
+    const existingRow = id && entity !== 'app_roles'
       ? await readOneById(req, entity, id, record.environment_code || profile?.environment_code)
       : null;
-    demotePrivilegedFields(record, { catalog, existingRoles: existingRow?.roles, entity });
+    const explicitEnv = Object.prototype.hasOwnProperty.call(source || {}, 'environment_code')
+      || Object.prototype.hasOwnProperty.call(body, 'environment_code');
+    if (!explicitEnv && existingRow?.environment_code) {
+      record.environment_code = normalizeEnvRecordValue(existingRow.environment_code, record.environment_code);
+    }
+    if (!isPlatformLicenseManagerProfile(profile)) {
+      const catalog = await loadActiveAppRoles(req, effectiveEnvironmentCode(profile, profile?.environment_code));
+      demotePrivilegedFields(record, { catalog, existingRoles: existingRow?.roles, entity });
+    } else if (entity !== 'app_roles' && Object.prototype.hasOwnProperty.call(record, 'license_type')) {
+      record.license_type = canonicalizeStoredLicenseType(record.license_type, { keepPlatformTypes: true });
+    }
+    if (entity === 'user_profiles' || entity === 'licenses') {
+      const nextSeat = {
+        active: record.active !== false,
+        license_type: Object.prototype.hasOwnProperty.call(record, 'license_type') ? record.license_type : existingRow?.license_type
+      };
+      if (updateAddsActiveSeat(existingRow || { active: false }, nextSeat)) {
+        const { url, serviceRole } = getSupabaseConfig(req);
+        await assertQuotaAvailable(url, serviceRole, {
+          environment_code: record.environment_code,
+          license_type: nextSeat.license_type,
+          active: true
+        }, entity === 'user_profiles' ? (id || null) : null);
+      }
+    }
   }
   applyServerTenant(record, entity, profile);
   if (id) await assertNotPlatformTarget(req, entity, id, profile);

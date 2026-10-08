@@ -1,6 +1,6 @@
 // PicoTrack — API Vercel d'envoi d'e-mails via Resend
 // Sécurité V2 : endpoint authentifié, aucune clé Resend côté navigateur.
-const { json, setCors, getAuthUser, readJsonBody } = require('./_server-supabase');
+const { json, setCors, getAuthUser, getUserProfile, readJsonBody } = require('./_server-supabase');
 const DEFAULT_FROM = 'PicoTrack <notifications@noreply.picotrack.fr>';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function escapeHtml(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
@@ -29,6 +29,9 @@ async function handler(req,res){
   try{
     const user = await getAuthUser(req);
     if (!user?.id) return json(res,401,{ok:false,error:'Authentification requise'});
+    const profile = await getUserProfile(user.id, req);
+    if (!profile?.id) return json(res,403,{ok:false,error:'Profil utilisateur introuvable'});
+    if (profile.active === false) return json(res,403,{ok:false,error:'Compte désactivé'});
     const body=await readJsonBody(req,9_000_000);
     const to=normalizeEmails(body.to), cc=normalizeEmails(body.cc), bcc=normalizeEmails(body.bcc), replyTo=normalizeEmails(body.replyTo||body.reply_to);
     const subject=String(body.subject||'').trim().slice(0,200);
