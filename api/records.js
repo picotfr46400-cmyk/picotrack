@@ -1,5 +1,6 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
+const { formatSubmissionDocument, buildSubmissionPdf } = require('./_submission-pdf');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -1059,6 +1060,139 @@ async function handleCurrentProfile(req) {
   return Array.isArray(rows) ? rows : [];
 }
 
+function cleanSubmissionId(value) {
+  const id = String(value ?? '').trim();
+  return /^[A-Za-z0-9_-]{1,80}$/.test(id) ? id : '';
+}
+
+function submissionAuthorName(profile) {
+  if (!profile || typeof profile !== 'object') return '';
+  const name = [profile.firstname || profile.first_name, profile.lastname || profile.last_name]
+    .map(part => String(part || '').trim())
+    .filter(Boolean)
+    .join(' ');
+  return name || String(profile.label || profile.email || '').trim();
+}
+
+async function environmentDisplayName(req, env) {
+  const rows = await serviceRest(
+    `tenants?code=eq.${encodeURIComponent(env)}&select=nom,code&limit=1`,
+    { method: 'GET', prefer: '', req }
+  ).catch(() => []);
+  const row = Array.isArray(rows) ? rows[0] : null;
+  const code = normalizeEnvCode(row?.code);
+  const nom = String(row?.nom || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (nom && code === env) return nom;
+  return env;
+}
+
+async function submissionWorkflow(req, id, env) {
+  const empty = { status: 'Enregistrée', author: '' };
+  const rows = await serviceRest(
+    `service_instances?submission_id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(env)}&select=id,service_id,current_status_id,status_id,created_by,environment_code&order=updated_at.desc&limit=1`,
+    { method: 'GET', prefer: '', req }
+  ).catch(() => []);
+  const instance = Array.isArray(rows) ? rows[0] : null;
+  if (!instance || normalizeEnvCode(instance.environment_code) !== env) return empty;
+  let status = 'Enregistrée';
+  if (instance.service_id && /^[A-Za-z0-9_-]{1,80}$/.test(String(instance.service_id))) {
+    const service = await readServiceForInstance(req, instance.service_id, env);
+    if (service && normalizeEnvCode(service.environment_code) === env) {
+      const statuses = Array.isArray(service.statuses) ? service.statuses : [];
+      const statusId = instance.current_status_id || instance.status_id;
+      const found = statuses.find(item => item && String(item.id) === String(statusId));
+      const label = found && (found.nom || found.name || found.label);
+      if (label) status = String(label).replace(/\s+/g, ' ').trim().slice(0, 80);
+    }
+  }
+  return { status, author: await authorFromCreatedBy(req, instance.created_by, env) };
+}
+
+async function authorFromCreatedBy(req, createdBy, env) {
+  const raw = String(createdBy || '').replace(/\s+/g, ' ').trim();
+  if (!raw || raw.length > 120) return '';
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw)) {
+    const rows = await serviceRest(
+      `user_profiles?id=eq.${encodeURIComponent(raw)}&environment_code=eq.${encodeURIComponent(env)}&select=id,label,firstname,lastname,first_name,last_name,email,environment_code&limit=1`,
+      { method: 'GET', prefer: '', req }
+    ).catch(() => []);
+    const profile = Array.isArray(rows) ? rows[0] : null;
+    if (!profile || normalizeEnvCode(profile.environment_code) !== env) return '';
+    return submissionAuthorName(profile).slice(0, 120);
+  }
+  return raw;
+}
+
+const PDF_EXPORT_ROLES = new Set(['supervision_user', 'admin', 'client_admin', 'environment_admin', 'gestionnaire', 'manager', 'superviseur']);
+const PDF_EXPORT_DENIED = new Set(['pad_user', 'operator', 'operateur', 'pad']);
+
+function canExportSubmissionPdf(profile) {
+  if (!profile || profile.active === false) return false;
+  if (isPlatformLicenseManagerProfile(profile)) return true;
+  const role = normalizePrivilegeToken(profile.role);
+  const type = normalizePrivilegeToken(profile.license_type);
+  if (PDF_EXPORT_DENIED.has(role) || PDF_EXPORT_DENIED.has(type)) return false;
+  if (PDF_EXPORT_ROLES.has(role) || type === 'supervision') return true;
+  return profileRoleKeys(profile).some((key) => PDF_EXPORT_ROLES.has(key));
+}
+
+async function handleExportSubmissionPdf(req, body) {
+  const user = await requireAuth(req);
+  const profile = await getUserProfile(user.id, req);
+  req.picoReaderProfile = profile;
+  if (!canExportSubmissionPdf(profile)) {
+    throw Object.assign(new Error('Export PDF réservé à la supervision.'), { status: 403 });
+  }
+  const platform = isPlatformLicenseManagerProfile(profile);
+  const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, platform ? body.environment_code : profile?.environment_code), 'DEMO');
+  const requested = normalizeEnvCode(body.environment_code);
+  if (!env || env === 'GLOBAL' || (!platform && requested && requested !== env)) {
+    throw Object.assign(new Error('Environnement refusé.'), { status: 403 });
+  }
+  const id = cleanSubmissionId(body.id || body.submission_id);
+  if (!id) throw Object.assign(new Error('Identifiant de saisie invalide.'), { status: 400 });
+
+  const rows = await serviceRest(
+    `submissions?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(env)}&select=id,form_id,values,device,created_at,environment_code&limit=1`,
+    { method: 'GET', prefer: '', req }
+  );
+  const submission = Array.isArray(rows) ? rows[0] : null;
+  if (!submission) throw Object.assign(new Error('Saisie introuvable.'), { status: 404 });
+  if (normalizeEnvCode(submission.environment_code) !== env) {
+    throw Object.assign(new Error('Environnement refusé.'), { status: 403 });
+  }
+
+  const formId = cleanSubmissionId(submission.form_id) ? String(submission.form_id).trim() : '';
+  const [form, workflow, environmentName] = await Promise.all([
+    formId ? readFormForSubmission(req, formId, env) : null,
+    submissionWorkflow(req, id, env),
+    environmentDisplayName(req, env)
+  ]);
+  const safeForm = form && normalizeEnvCode(form.environment_code) === env ? form : null;
+  const document = formatSubmissionDocument({
+    environmentName,
+    environmentCode: env,
+    formName: safeForm?.nom || safeForm?.name || 'Formulaire',
+    fields: Array.isArray(safeForm?.fields) ? safeForm.fields : [],
+    values: submission.values,
+    createdAt: submission.created_at,
+    device: submission.device,
+    author: workflow.author,
+    status: workflow.status,
+    reference: id
+  });
+  const pdf = buildSubmissionPdf(document);
+  if (!pdf || pdf.length > 3_000_000) {
+    throw Object.assign(new Error('Export PDF impossible.'), { status: 413 });
+  }
+  return {
+    filename: `saisie-${id}.pdf`,
+    contentType: 'application/pdf',
+    content: pdf.toString('base64'),
+    environment_code: env
+  };
+}
+
 async function handler(req, res) {
   setCors(req, res);
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
@@ -1085,6 +1219,9 @@ async function handler(req, res) {
         break;
       case 'list':
         result = await handleList(req, body);
+        break;
+      case 'export_submission_pdf':
+        result = await handleExportSubmissionPdf(req, body);
         break;
       case 'save':
         result = await handleSave(req, body);
@@ -1116,6 +1253,7 @@ async function handler(req, res) {
 
 handler.normalizeRecord = normalizeRecord;
 handler.canManageUsers = canManageUsers;
+handler.canExportSubmissionPdf = canExportSubmissionPdf;
 handler.demotePrivilegedFields = demotePrivilegedFields;
 handler.assertEntityWrite = assertEntityWrite;
 handler.effectiveEnvironmentCode = effectiveEnvironmentCode;
