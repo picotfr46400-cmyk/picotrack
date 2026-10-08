@@ -9,11 +9,11 @@ const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision
 const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
 const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
 
-test('index.html : Babel absent, React conservé, cache-buster 20261008m sur le bundle modifié', () => {
+test('index.html : Babel absent, React conservé, cache-buster 20261008k sur le bundle modifié', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.match(html, /app\.secured\.js\?v=20261008m/);
+  assert.match(html, /app\.secured\.js\?v=20261008k/);
   assert.match(html, /core-supervision\.js\?v=20261008f/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
@@ -32,6 +32,7 @@ test('utilisateurs : filtre Inactives, suppression par id, et 409 sans déconnex
   assert.match(bundle, /Voir les licences inactives/);
   assert.match(bundle, /deleteInactiveLicense\(/);
   assert.match(bundle, /license_id:e/);
+  assert.match(bundle, /e-mail non normalisé/);
   assert.match(bundle, /409===i\.status&&\/autre appareil\|Session appareil manquante/);
   assert.equal(bundle.includes('if(409===i.status){try{_clearStoredSession()'), false);
 });

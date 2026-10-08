@@ -5,8 +5,12 @@ function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
 }
 
+function licenseEmailKey(value) {
+  return String(value ?? '').replace(/\s+/g, '').toLowerCase();
+}
+
 function normalizeEmail(value) {
-  return cleanString(value, 320).toLowerCase();
+  return licenseEmailKey(value).slice(0, 320);
 }
 
 function safeArray(value) {
@@ -70,6 +74,9 @@ function normalizeUserRow(row, source, environmentCode, options = {}) {
   };
   if (options.revealLicenseKey) normalized.license_key = row?.license_key || null;
   if (options.revealPermissions) normalized.resolved_permissions = safeObject(row?.resolved_permissions);
+  if (source === 'licenses' && String(row?.email ?? '') !== licenseEmailKey(row?.email || '')) {
+    normalized.email_unnormalized = true;
+  }
   return normalized;
 }
 

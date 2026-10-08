@@ -1,5 +1,15 @@
 const { sendJson, setCors, safeCode, safeLogin, safeHash, signPayload, sbRest } = require('./_pad-security');
 const { clientIp, takeAttempt } = require('./_server-supabase');
+const { normalizeLicenseType } = require('./_license-type');
+
+function licenseEmailKey(value) {
+  return String(value ?? '').replace(/\s+/g, '').toLowerCase();
+}
+
+function isPadLoginLicense(row) {
+  const token = String(row?.license_type || '').replace(/\s+/g, '').toLowerCase();
+  return token === 'nomade' || normalizeLicenseType(row?.license_type) === 'pad';
+}
 
 module.exports = async function handler(req, res) {
   setCors(req, res);
@@ -21,24 +31,22 @@ module.exports = async function handler(req, res) {
     const attempt = takeAttempt(`pad:${clientIp(req)}:${environmentCode}:${login.toLowerCase()}`);
     if (!attempt.allowed) return sendJson(res, 429, { ok:false, error:'Trop de tentatives. Réessayez plus tard.' });
 
+    const loginKey = licenseEmailKey(login);
     const q = [
       'licenses?select=id,email,label,role,roles,environment_code,license_type,active',
       `environment_code=eq.${encodeURIComponent(environmentCode)}`,
-      `email=eq.${encodeURIComponent(login)}`,
       `password_hash=eq.${encodeURIComponent(passwordHash)}`,
-      'license_type=in.(nomade,pad,PAD)',
       'active=eq.true',
-      'limit=1'
+      'limit=50'
     ].join('&');
 
     const rows = await sbRest(req, q, { method:'GET', prefer:'' });
-    if (!Array.isArray(rows) || !rows.length) {
+    const license = (Array.isArray(rows) ? rows : []).find(row => licenseEmailKey(row.email) === loginKey && isPadLoginLicense(row));
+    if (!license) {
       attempt.fail();
       return sendJson(res, 401, { ok:false, error:'Identifiants PAD invalides ou licence inactive' });
     }
     attempt.ok();
-
-    const license = rows[0];
     await sbRest(req, `licenses?id=eq.${encodeURIComponent(license.id)}`, {
       method:'PATCH',
       body:{ last_seen:new Date().toISOString(), device_name:String(req.headers['user-agent']||'').slice(0,120) }

@@ -25,12 +25,12 @@ function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
 }
 
-function normalizeEmail(value) {
-  return cleanString(value, 320).toLowerCase();
-}
-
 function licenseEmailKey(value) {
   return String(value ?? '').replace(/\s+/g, '').toLowerCase();
+}
+
+function normalizeEmail(value) {
+  return licenseEmailKey(value).slice(0, 320);
 }
 
 function normalizeEnvironmentCode(value) {
@@ -718,6 +718,9 @@ async function handleListUsers(req, url, serviceRole, payload) {
     };
     if (showLicenseKey) normalized.license_key = row?.license_key || null;
     if (showPermissions) normalized.resolved_permissions = safeObject(row?.resolved_permissions);
+    if (source === 'licenses' && String(row?.email ?? '') !== licenseEmailKey(row?.email || '')) {
+      normalized.email_unnormalized = true;
+    }
     return normalized;
   }
 
@@ -840,8 +843,18 @@ function companionLicenseSnapshot(license) {
   return {
     id: license.id,
     environment_code: normalizeEnvironmentCode(license.environment_code),
-    active: license.active !== false
+    active: license.active !== false,
+    email: license.email ?? null
   };
+}
+
+function assertReactivationLicenseType(profile, licenses) {
+  const expected = seatLicenseType(profile);
+  for (const license of licenses) {
+    if (normalizeLicenseType(license?.license_type) !== expected) {
+      throw Object.assign(new Error('Type de licence différent du profil'), { status: 409 });
+    }
+  }
 }
 
 function describePublicLicense(license) {
@@ -883,6 +896,7 @@ async function prepareCompanionLicenseChange(url, serviceRole, profile, activati
   const requestedId = cleanString(options.licenseId || '', 80);
   if (activating && requestedId) {
     const chosen = await resolveReactivationLicense(url, serviceRole, profile, requestedId);
+    assertReactivationLicenseType(profile, [chosen]);
     return [companionLicenseSnapshot(chosen)];
   }
   const environmentCode = normalizeEnvironmentCode(profile?.environment_code || '');
@@ -907,8 +921,12 @@ async function prepareCompanionLicenseChange(url, serviceRole, profile, activati
     }
     return all;
   }
-  if (linked.length) return linked.map(companionLicenseSnapshot);
+  if (linked.length) {
+    assertReactivationLicenseType(profile, linked);
+    return linked.map(companionLicenseSnapshot);
+  }
   if (byEmail.length > 1) throw ambiguousLicenseError(byEmail);
+  if (byEmail.length) assertReactivationLicenseType(profile, byEmail);
   return byEmail.map(companionLicenseSnapshot);
 }
 
@@ -942,12 +960,16 @@ async function assertExplicitLicenseQuota(url, serviceRole, account, license, ex
   }, excludeId);
 }
 
-async function patchLicenseActive(url, serviceRole, license, active) {
+async function patchLicenseActive(url, serviceRole, license, active, options = {}) {
   const environmentCode = normalizeEnvironmentCode(license.environment_code);
+  const body = { active: active === true };
+  if (license.email != null && String(license.email) !== '') {
+    body.email = options.restoreEmail ? license.email : licenseEmailKey(license.email);
+  }
   const updated = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(license.id)}&environment_code=eq.${encodeURIComponent(environmentCode)}`, {
     method: 'PATCH',
     prefer: 'return=representation',
-    body: { active: active === true }
+    body
   });
   if (!Array.isArray(updated) || !updated.length) {
     throw Object.assign(new Error('Mise à jour de la licence impossible.'), { status: 503 });
@@ -989,7 +1011,7 @@ async function commitCompanionLicenseChange(url, serviceRole, profileSnapshot, l
     }
   } catch (_) {
     for (const license of applied.reverse()) {
-      await patchLicenseActive(url, serviceRole, license, license.active === true).catch(() => {});
+      await patchLicenseActive(url, serviceRole, license, license.active === true, { restoreEmail: true }).catch(() => {});
     }
     await restoreUserProfileSnapshot(url, serviceRole, profileSnapshot).catch(() => {});
     throw Object.assign(new Error('Mise à jour de la licence impossible.'), { status: 503 });
@@ -1022,14 +1044,14 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   const turningOn = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === true && current.active === false;
   const turningOff = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === false && current.active !== false;
   const requestedLicenseId = cleanString(payload.license_id, 80);
-  const explicitLicense = turningOn && requestedLicenseId
-    ? await resolveReactivationLicense(url, serviceRole, current, requestedLicenseId)
-    : null;
-  if (updateAddsActiveSeat(current, merged)) await assertQuotaAvailable(url, serviceRole, merged, id);
-  if (explicitLicense) await assertExplicitLicenseQuota(url, serviceRole, merged, explicitLicense, id);
   const companions = (turningOn || turningOff)
     ? await prepareCompanionLicenseChange(url, serviceRole, current, turningOn, { licenseId: turningOn ? requestedLicenseId : '' })
     : null;
+  if (updateAddsActiveSeat(current, merged)) await assertQuotaAvailable(url, serviceRole, merged, id);
+  if (turningOn && requestedLicenseId) {
+    const explicitLicense = await resolveReactivationLicense(url, serviceRole, current, requestedLicenseId);
+    await assertExplicitLicenseQuota(url, serviceRole, merged, explicitLicense, id);
+  }
   const profileSnapshot = snapshotUserProfile(current);
   await updateAuthUserPassword(url, serviceRole, id, payload);
   const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged, { partial: true, requested: payload });
@@ -1285,4 +1307,5 @@ handler.commitCompanionLicenseChange = commitCompanionLicenseChange;
 handler.snapshotUserProfile = snapshotUserProfile;
 handler.resolveReactivationLicense = resolveReactivationLicense;
 handler.assertExplicitLicenseQuota = assertExplicitLicenseQuota;
+handler.licenseEmailKey = licenseEmailKey;
 module.exports = handler;
