@@ -20,4 +20,8 @@ const overlayAsset = 'core-supervision.js';
 const overlayPath = path.join('assets', overlayAsset);
 if (!fs.existsSync(overlayPath)) throw new Error(`${overlayAsset} manquant`);
 fs.copyFileSync(overlayPath, path.join(out, 'assets', overlayAsset));
+const offlineAsset = 'offline-sync.js';
+const offlinePath = path.join('assets', offlineAsset);
+if (!fs.existsSync(offlinePath)) throw new Error(`${offlineAsset} manquant`);
+fs.copyFileSync(offlinePath, path.join(out, 'assets', offlineAsset));
 console.log('PicoTrack build : asset courant + overlay core-supervision + portail public publiés.');
