@@ -1840,6 +1840,64 @@
     wrapOnSyncSubmissions();
   }
 
+  function injectSubmissionPdfButton(sub) {
+    var main = document.getElementById('sd-main');
+    if (!main || !sub || main.querySelector('[data-pt-export-pdf]')) return;
+    var bar = document.createElement('div');
+    bar.setAttribute('data-pt-export-pdf', '1');
+    bar.style.cssText = 'display:flex;justify-content:flex-end;margin:0 0 12px';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn bp btn-sm';
+    btn.textContent = 'Exporter en PDF';
+    btn.addEventListener('click', function () {
+      return window.ptExportSubmissionPdf(sub.id);
+    });
+    bar.appendChild(btn);
+    main.insertBefore(bar, main.firstChild);
+  }
+
+  function wrapSubmissionPdf() {
+    if (typeof window.renderSubmissionDetail !== 'function' || window.renderSubmissionDetail.__ptPdf) return;
+    var orig = window.renderSubmissionDetail;
+    window.renderSubmissionDetail = function (sub) {
+      var ret = orig.apply(this, arguments);
+      try { injectSubmissionPdfButton(sub); } catch (err) {
+        try { console.warn('[PicoTrack] PDF saisie', err); } catch (_) {}
+      }
+      return ret;
+    };
+    window.renderSubmissionDetail.__ptPdf = true;
+  }
+
+  window.ptExportSubmissionPdf = async function (id) {
+    var sid = String(id == null ? '' : id).trim();
+    if (!sid) return toast('e', 'Saisie introuvable.');
+    try {
+      var res = await apiPost('/api/records', {
+        action: 'export_submission_pdf',
+        id: sid,
+        environment_code: envCode()
+      });
+      if (!res || res.error || !res.content) throw new Error((res && res.error) || 'Export PDF refusé');
+      var binary = atob(res.content);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i) & 255;
+      var blob = new Blob([bytes], { type: 'application/pdf' });
+      var link = document.createElement('a');
+      var url = URL.createObjectURL(blob);
+      link.href = url;
+      link.download = String(res.filename || ('saisie-' + sid + '.pdf')).replace(/[\\/\0]/g, '_');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+      toast('s', 'PDF téléchargé.');
+    } catch (err) {
+      toast('e', 'Export PDF : ' + (err && err.message || err));
+    }
+  };
+
   function boot() {
     window._prodServicesAssignee = window._prodServicesAssignee || 'all';
     window._prodServicesExtra = window._prodServicesExtra || { sla: 'all', waiting: false, unassigned: false };
@@ -1853,6 +1911,7 @@
     wrapApiConfig();
     wrapApiEndpoints();
     wrapNavCache();
+    wrapSubmissionPdf();
     wireImporterButton();
     hideInternalDatabases();
     if (ready) return;
