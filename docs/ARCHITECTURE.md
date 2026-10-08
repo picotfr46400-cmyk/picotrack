@@ -47,3 +47,44 @@ Chaque passage de ce mode écrit un `console.warn` dont le préfixe stable est `
 Un délai dépassé ou une erreur 5xx de la table de reçus n’est pas une table absente. Ces cas restent tolérés pour la réservation, avec un préfixe distinct : `[pad-sync] receipts timeout or 5xx, idempotence degraded`, suivi du code HTTP. Après le premier délai ou 5xx, le reste des réservations passe en mode dégradé sans nouvel appel, et un seul avertissement est écrit. Ce budget n’est pas celui du journal, et il ne s’applique pas aux créations.
 
 Une erreur de synchronisation répond 503 (401 seulement si la session ou la licence est refusée) avec un message générique et un `request_id`. Le détail, y compris le message Postgres, ne part pas au client : il est écrit dans les logs serveur avec le même `request_id`.
+## Mails automatiques
+
+Les saisies (y compris une tablette hors ligne, au moment de la synchronisation) et les étapes de workflow déclenchent les mails **côté serveur**, après l’écriture réussie. Le navigateur ne contacte plus le transport : aucune clé Resend ni SMTP n’y est exposée. Il n’y a pas de fonction Vercel supplémentaire (le plafond Hobby reste 12) et pas de cron dédié.
+
+### Transport
+
+`MAIL_TRANSPORT` vaut `smtp` ou `resend`. Sans cette variable, PicoTrack choisit SMTP dès que `SMTP_HOST` et `SMTP_FROM` sont remplis, sinon Resend (`RESEND_API_KEY`, expéditeur `RESEND_FROM`).
+
+Boîte Microsoft 365 déjà payée par le client, sans abonnement Make / Zapier / Resend :
+
+| Variable | Exemple |
+| --- | --- |
+| `MAIL_TRANSPORT` | `smtp` (ou vide : le choix est automatique) |
+| `SMTP_HOST` | `smtp.office365.com` |
+| `SMTP_PORT` | `587` |
+| `SMTP_USER` | l’adresse de la boîte |
+| `SMTP_PASS` | mot de passe d’application ou mot de passe de la boîte si l’authentification SMTP est autorisée |
+| `SMTP_FROM` | la même adresse que `SMTP_USER` |
+
+Le port 587 utilise STARTTLS (`requireTLS`, pas de TLS implicite). Gmail se branche de la même façon sur `smtp.gmail.com:587` avec un mot de passe d’application. Côté Microsoft 365, l’authentification SMTP authentifiée doit être activée pour la boîte.
+
+### Limites
+
+- Budget d’envoi : environ 2 s par appel au transporteur et 3 s au total pour la requête de saisie. Le SMTP lui-même est borné à 15 s (connexion, bannière, socket). Le bail de claim dure 120 s, toujours plus longtemps que l’envoi. Au-delà du budget HTTP, la ligne reste `sending`. Le passage à `sent` est conditionné par `attempt_id` : un succès tardif ne peut pas réécrire une ligne déjà sortie de `sending`. Si le bail expire pendant `sending`, `expire_mail_outbox` passe la ligne à `uncertain`. Cet état n’est jamais renvoyé automatiquement, quel que soit le transport. L’admin affiche « Envoi incertain » et un bouton « Renvoyer ». Le `Message-ID` SMTP est dérivé de l’identifiant de la ligne d’outbox. Resend garde l’en-tête `Idempotency-Key`.
+- `{{lien}}` et le logo utilisent `APP_ORIGIN`, uniquement en https sur `*.picotrack.fr` ou un aperçu Vercel dont l’hôte commence par `picotrack` et finit par `.vercel.app`. Sinon le repli est `https://picotrack.fr`. L’en-tête `Host` et `X-Forwarded-Host` ne sont pas lus.
+- 10 destinataires au plus par règle (To, Cc et Cci dédoublonnés). Un enregistrement au-delà répond 400 : « 10 destinataires maximum par règle. » Une règle déjà enregistrée, ou un ancien `triggers.sendMail`, qui en a davantage part aux 10 premiers, la ligne passe `sent` avec l’avertissement « Destinataires limités aux 10 premiers. À réduire à 10 destinataires. »
+- Plafonds par environnement, comptés en destinataires des lignes `sent` et `sending` : 60 par heure (`MAIL_HOURLY_LIMIT`) et 300 par jour (`MAIL_DAILY_LIMIT`, fuseau Europe/Paris). Au-delà, la ligne reste `pending` avec « Plafond de destinataires atteint ».
+- 3 essais automatiques. Le claim (`claim_mail_outbox`) ne reprend que `pending` ou `failed`, pose un `attempt_id` et un bail de 120 s. Il ne reprend jamais un `sending` expiré. L’essai suivant a lieu à la prochaine écriture, pas via un cron.
+- Chaque saisie d’un lot qui correspond à une règle a une ligne d’outbox (`pending`, `sent`, `failed` ou `skipped`, avec la raison). Les lignes sont insérées en un seul lot avant les envois. Une synchro tablette rejouée s’appuie sur l’identifiant d’action PAD, pas sur l’identifiant de saisie.
+- Les règles et l’outbox sont filtrées par `environment_code`. Seule la supervision autorisée de l’environnement les lit ou les écrit. Une licence PAD, quel que soit son alias, et une licence lecture reçoivent 403. Un environnement vide répond 400, sans repli `DEMO`.
+- La file ne stocke que des identifiants. Le masquage unique (`api/_secret-mask.js`) compare les noms en forme compacte (sans espace ni ponctuation). Il masque les mots de passe, `token`, `apiKey`, session, cookie, code PIN, digicode, code d’accès, code secret, numéro de carte, cryptogramme, CVV et IBAN. Il ne masque pas sur le nom seul un code client, article, chantier, barre, un contrôle d’accès, « accès », « confidentiel » ni le code postal. Les valeurs sont quand même examinées : JWT, jeton à haute entropie, carte Luhn, IBAN. Le remplacement est le mot « masqué ». Si le formulaire ne peut pas être relu, rien n’est envoyé et la ligne reste `pending`.
+- Le même masquage s’applique à chaque PDF, pièce jointe du mail et export de saisie. S’il échoue ou dépasse le budget, le mail part sans pièce jointe, avec la mention « PDF indisponible, consultable dans PicoTrack ». La saisie n’est jamais bloquée.
+- Les variables de modèle sont `{{formulaire}}`, `{{statut}}`, `{{auteur}}`, `{{date}}` (Europe/Paris), `{{lien}}` (`/?saisie=<id>`) et le nom ou la clé de chaque champ. Les valeurs sont échappées en HTML. Un formulaire qui a encore `triggers.sendMail` et aucune règle serveur est traité comme une règle implicite, avec le PDF seulement si `attachPdf` vaut `true`.
+
+### Migration
+
+Appliquer à la main, sur le projet Supabase de chaque client, dans l’ordre des noms de fichiers :
+
+1. `supabase/migrations/20261009010000_mail_outbox.sql` — tables `mail_rules` puis `mail_outbox`, puis `claim_mail_outbox`, puis `expire_mail_outbox`. Contrainte unique complète sur `idempotency_key` (sans filtre `WHERE`), colonne `attempt_id`, statut `uncertain`, RLS forcée, droits limités à `service_role`. Le nom est postérieur aux fichiers du journal de saisie.
+
+L’application ne lance pas cette migration.

@@ -74,3 +74,51 @@ jobs:
           PGUSER: postgres
           PGDATABASE: picotrack
         run: node scripts/submission-audit-pg.js
+
+  mail-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: picotrack
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d picotrack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Client Postgres
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Rôles et migration mail
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "create role anon nologin;"
+          psql -v ON_ERROR_STOP=1 -c "create role authenticated nologin;"
+          psql -v ON_ERROR_STOP=1 -c "create role service_role nologin bypassrls;"
+          psql -v ON_ERROR_STOP=1 -c "grant service_role to postgres;"
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261009010000_mail_outbox.sql
+          psql -v ON_ERROR_STOP=1 -c "create table public.forms (id text primary key, nom text, fields jsonb, triggers jsonb, environment_code text);"
+          psql -v ON_ERROR_STOP=1 -c "create table public.submissions (id text primary key, form_id text, values jsonb, device text, created_at timestamptz, environment_code text);"
+      - name: Dépendances
+        run: npm ci
+      - name: Mails sur Postgres
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: node scripts/mail-rules-pg.js

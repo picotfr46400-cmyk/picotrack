@@ -435,7 +435,7 @@ test('matrice : handlers selon le rôle et la licence', async () => {
     ['supervision', 'appointments', { action: 'list', environment_code: 'ACME' }, 200],
     ['pad', 'appointments', { action: 'create', environment_code: 'ACME', record: { form_id: 'form-open', field_id: 'slot', date: '2026-02-02', start_time: '09:00' } }, 200],
     ['inactive', 'mail', { to: 'a@efc.picotrack.fr', subject: 'Bonjour', text: 'Texte' }, 403],
-    ['pad', 'mail', { to: 'a@efc.picotrack.fr', subject: 'Bonjour', text: 'Texte' }, 200],
+    ['pad', 'mail', { to: 'a@efc.picotrack.fr', subject: 'Bonjour', text: 'Texte' }, 403],
     ['pad', 'records', { action: 'integrations_save', config: { keys: [], webhooks: [] } }, 200],
     ['supervision', 'records', { action: 'integrations_create_key', name: 'clé' }, 200]
   ];
