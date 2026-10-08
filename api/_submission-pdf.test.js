@@ -5,6 +5,7 @@ const path = require('path');
 const vm = require('node:vm');
 const zlib = require('zlib');
 const records = require('./records');
+const appointments = require('./appointments');
 const pdf = require('./_submission-pdf');
 
 const SUPA = 'https://hotfix-test.supabase.co';
@@ -498,6 +499,321 @@ test('le PDF déclare WinAnsiEncoding et conserve les accents', () => {
   assert.equal(text.includes('Joël'), true);
   assert.equal(text.includes('Validée'), true);
 });
+
+function jpegOfSize(size) {
+  const buf = Buffer.alloc(size);
+  buf[0] = 0xFF;
+  buf[1] = 0xD8;
+  buf[2] = 0xFF;
+  buf[3] = 0xC0;
+  buf.writeUInt16BE(11, 4);
+  buf[6] = 8;
+  buf.writeUInt16BE(2, 7);
+  buf.writeUInt16BE(2, 9);
+  buf[11] = 3;
+  return buf;
+}
+
+async function exportAs(actor, submission) {
+  return withSupabase(async () => {
+    const calls = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      calls.push(u);
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: actor.id, email: actor.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes(`user_profiles?id=eq.${actor.id}`)) return jsonResponse(200, [actor]);
+      if (u.includes('/rest/v1/submissions')) return jsonResponse(200, [submission]);
+      if (u.includes('/rest/v1/forms?')) {
+        return jsonResponse(200, [{
+          id: 'form-1',
+          nom: 'Contrôle',
+          environment_code: 'EFC',
+          fields: [{ id: 'photo', nom: 'Photo', type: 'photo' }, { id: 'note', nom: 'Note', type: 'text' }]
+        }]);
+      }
+      if (u.includes('/rest/v1/tenants?')) return jsonResponse(200, [{ nom: 'EFC', code: 'EFC' }]);
+      return jsonResponse(200, []);
+    };
+    const out = await callJson({ action: 'export_submission_pdf', id: 'sub-1', environment_code: 'EFC' }, authHeaders());
+    return { out, calls };
+  });
+}
+
+for (const licenseType of ['pad', 'pad_terrain', 'terrain', 'mobile']) {
+  test(`export PDF refuse la licence ${licenseType} même avec le rôle supervision_user`, async () => {
+    const actor = {
+      id: 'pad-1',
+      email: 'pad@efc.picotrack.fr',
+      role: 'supervision_user',
+      license_type: licenseType,
+      environment_code: 'EFC',
+      active: true
+    };
+    const { out, calls } = await exportAs(actor, {
+      id: 'sub-1',
+      environment_code: 'EFC',
+      values: { note: 'SECRET-PAD' }
+    });
+    assert.equal(out.status, 403);
+    assert.equal(out.payload.error, 'Export PDF réservé à la supervision.');
+    assert.equal(out.payload.content, undefined);
+    assert.equal(JSON.stringify(out.payload).includes('SECRET-PAD'), false);
+    assert.equal(calls.some((u) => u.includes('/rest/v1/submissions')), false);
+  });
+}
+
+test('export PDF autorise une licence supervision', async () => {
+  const roles = ['supervision_user', 'supervision', 'manager', 'gestionnaire', 'environment_admin', 'client_admin', 'plateforme'];
+  for (const role of roles) {
+    const actor = {
+      id: 'sup-1',
+      email: 'sup@efc.picotrack.fr',
+      role,
+      license_type: 'supervision',
+      environment_code: 'EFC',
+      active: true
+    };
+    const { out, calls } = await exportAs(actor, {
+      id: 'sub-1',
+      form_id: 'form-1',
+      environment_code: 'EFC',
+      device: 'bureau',
+      created_at: '2026-10-08T09:15:00.000Z',
+      values: { note: 'Visible' }
+    });
+    assert.equal(out.status, 200, `${role}: ${out.payload.error || ''}`);
+    assert.equal(out.payload.contentType, 'application/pdf');
+    assert.equal(pdf.extractPdfText(Buffer.from(out.payload.content, 'base64')).includes('Visible'), true, role);
+    assert.equal(calls.some((u) => u.includes('/rest/v1/submissions')), true, role);
+  }
+  const platform = {
+    id: 'plat-1',
+    email: 'root@picotrack.fr',
+    role: 'super_admin',
+    license_type: 'super_admin',
+    scope: 'platform',
+    environment_code: 'GLOBAL',
+    active: true
+  };
+  const platformOut = await exportAs(platform, {
+    id: 'sub-1',
+    form_id: 'form-1',
+    environment_code: 'EFC',
+    device: 'bureau',
+    created_at: '2026-10-08T09:15:00.000Z',
+    values: { note: 'Plateforme' }
+  });
+  assert.equal(platformOut.out.status, 200, platformOut.out.payload.error || '');
+  assert.equal(pdf.extractPdfText(Buffer.from(platformOut.out.payload.content, 'base64')).includes('Plateforme'), true);
+
+  const missingType = {
+    id: 'sup-1',
+    email: 'sup@efc.picotrack.fr',
+    role: 'supervision_user',
+    license_type: null,
+    environment_code: 'EFC',
+    active: true
+  };
+  const nullOut = await exportAs(missingType, {
+    id: 'sub-1',
+    form_id: 'form-1',
+    environment_code: 'EFC',
+    device: 'bureau',
+    created_at: '2026-10-08T09:15:00.000Z',
+    values: { note: 'Sans type' }
+  });
+  assert.equal(nullOut.out.status, 200, nullOut.out.payload.error || '');
+});
+
+test('huit JPEG d’environ 1,2 Mo restent dans un export 200 sous la limite', async () => {
+  const jpeg = jpegOfSize(1_150_000);
+  assert.ok(jpeg.length < 1_200_000);
+  assert.ok(jpeg.length > 1_000_000);
+  const dataUrl = `data:image/jpeg;base64,${jpeg.toString('base64')}`;
+  const values = {};
+  for (let i = 0; i < 8; i++) values[`p${i}`] = dataUrl;
+  const actor = {
+    id: 'sup-1',
+    email: 'sup@efc.picotrack.fr',
+    role: 'supervision_user',
+    license_type: 'supervision',
+    environment_code: 'EFC',
+    active: true
+  };
+  await withSupabase(async () => {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: actor.id, email: actor.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [actor]);
+      if (u.includes('/rest/v1/submissions?')) {
+        return jsonResponse(200, [{
+          id: 'sub-jpeg',
+          form_id: 'form-1',
+          environment_code: 'EFC',
+          device: 'bureau',
+          created_at: '2026-10-08T09:15:00.000Z',
+          values
+        }]);
+      }
+      if (u.includes('/rest/v1/forms?')) {
+        return jsonResponse(200, [{
+          id: 'form-1',
+          nom: 'Photos',
+          environment_code: 'EFC',
+          fields: Array.from({ length: 8 }, (_, i) => ({ id: `p${i}`, nom: `Photo ${i}`, type: 'photo' }))
+        }]);
+      }
+      if (u.includes('/rest/v1/tenants?')) return jsonResponse(200, [{ nom: 'EFC', code: 'EFC' }]);
+      return jsonResponse(200, []);
+    };
+    const out = await callJson({ action: 'export_submission_pdf', id: 'sub-jpeg', environment_code: 'EFC' }, authHeaders());
+    assert.equal(out.status, 200, out.payload.error || '');
+    const binary = Buffer.from(out.payload.content, 'base64');
+    const text = pdf.extractPdfText(binary);
+    const mentions = text.split('image non incluse').length - 1;
+    const images = (binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length;
+    assert.equal(images, 2);
+    assert.ok(mentions >= 6);
+    assert.ok(binary.length < 4_500_000);
+    assert.ok(out.payload.content.length < 4_500_000);
+  });
+});
+
+test('les alias PAD sont écrits et lus comme pad, pas le vide ni supervision', () => {
+  const { normalizeLicenseType, interpretedLicenseType } = require('./_license-type');
+  for (const alias of ['pad', 'pad_terrain', 'terrain', 'mobile']) {
+    assert.equal(normalizeLicenseType(alias), 'pad', alias);
+    assert.equal(interpretedLicenseType(alias), 'pad', alias);
+    const record = { role: 'supervision_user', license_type: alias };
+    records.demotePrivilegedFields(record);
+    assert.equal(record.license_type, 'pad', alias);
+  }
+  assert.equal(normalizeLicenseType(null), 'supervision');
+  assert.equal(normalizeLicenseType(''), 'supervision');
+  assert.equal(normalizeLicenseType('supervision'), 'supervision');
+  assert.equal(interpretedLicenseType(null), '');
+  assert.equal(interpretedLicenseType(''), '');
+  assert.equal(interpretedLicenseType('supervision'), 'supervision');
+  const kept = { role: 'manager', license_type: 'supervision' };
+  records.demotePrivilegedFields(kept);
+  assert.equal(kept.license_type, 'supervision');
+  const empty = { role: 'supervision_user', license_type: null };
+  records.demotePrivilegedFields(empty);
+  assert.equal(empty.license_type, 'supervision');
+});
+
+function targetedForm(id, roleName) {
+  return {
+    id,
+    nom: id,
+    environment_code: 'EFC',
+    visible_roles: [roleName],
+    permissions: { view: [roleName], submit: [roleName] }
+  };
+}
+
+async function callAppointments(body) {
+  const res = mockRes();
+  await appointments({ method: 'POST', headers: authHeaders(), body }, res);
+  let payload = {};
+  try { payload = JSON.parse(res.body || '{}'); } catch (_) { payload = { raw: res.body }; }
+  return { status: res.statusCode, payload };
+}
+
+for (const alias of ['pad_terrain', 'terrain', 'mobile', 'operator', 'operateur']) {
+  test(`licence ${alias} : alias et pad autorisés, supervision refusé, export PDF 403`, async () => {
+    const actor = {
+      id: 'pad-1',
+      email: 'pad@efc.picotrack.fr',
+      role: 'pad_user',
+      license_type: alias,
+      environment_code: 'EFC',
+      active: true
+    };
+    const forms = [
+      targetedForm('form-alias', alias),
+      targetedForm('form-pad', 'pad'),
+      targetedForm('form-sup', 'supervision')
+    ];
+    const expectStatus = { 'form-alias': 200, 'form-pad': 200, 'form-sup': 403 };
+
+    await withSupabase(async () => {
+      global.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: actor.id, email: actor.email });
+        if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+        if (u.includes('user_profiles?id=eq.pad-1')) return jsonResponse(200, [actor]);
+        if (u.includes('/rest/v1/forms')) {
+          const match = u.match(/id=eq\.([^&]+)/);
+          if (!match) return jsonResponse(200, forms);
+          const id = decodeURIComponent(match[1]);
+          return jsonResponse(200, forms.filter((form) => form.id === id));
+        }
+        if (u.includes('/rest/v1/submissions') && !u.includes('?')) return jsonResponse(200, [{ id: 'sub-new' }]);
+        return jsonResponse(200, []);
+      };
+
+      const listed = await callJson({
+        action: 'list',
+        entity: 'forms',
+        select: 'id,nom,visible_roles,permissions,environment_code'
+      }, authHeaders());
+      assert.equal(listed.status, 200, listed.payload.error || alias);
+      const ids = (Array.isArray(listed.payload) ? listed.payload : []).map((row) => row.id).sort();
+      assert.deepEqual(ids, ['form-alias', 'form-pad'], alias);
+
+      for (const formId of Object.keys(expectStatus)) {
+        const saved = await callJson({
+          action: 'save',
+          entity: 'submissions',
+          record: { form_id: formId, values: { note: 'saisie' }, device: 'pad' }
+        }, authHeaders());
+        assert.equal(saved.status, expectStatus[formId], `${alias} saisie ${formId}: ${saved.payload.error || ''}`);
+      }
+    });
+
+    await withSupabase(async () => {
+      global.fetch = async (url, options = {}) => {
+        const u = String(url);
+        const method = String(options.method || 'GET').toUpperCase();
+        if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: actor.id, email: actor.email });
+        if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+        if (u.includes('user_profiles?id=eq.pad-1')) return jsonResponse(200, [actor]);
+        if (u.includes('/rest/v1/forms')) {
+          const match = u.match(/id=eq\.([^&]+)/);
+          const id = match ? decodeURIComponent(match[1]) : '';
+          return jsonResponse(200, forms.filter((form) => form.id === id));
+        }
+        if (u.includes('/rest/v1/appointments') && method === 'POST') return jsonResponse(200, [{ id: 'rdv-1' }]);
+        if (u.includes('/rest/v1/appointments')) return jsonResponse(200, [{ id: 'rdv-1' }]);
+        return jsonResponse(200, []);
+      };
+
+      for (const formId of Object.keys(expectStatus)) {
+        const viewed = await callAppointments({ action: 'list', environment_code: 'EFC', form_id: formId });
+        assert.equal(viewed.status, expectStatus[formId], `${alias} rdv ${formId}: ${viewed.payload.error || ''}`);
+        const reserved = await callAppointments({
+          action: 'create',
+          environment_code: 'EFC',
+          record: { form_id: formId, field_id: 'slot', date: '2026-10-08', start_time: '09:00' }
+        });
+        assert.equal(reserved.status, expectStatus[formId], `${alias} réservation ${formId}: ${reserved.payload.error || ''}`);
+      }
+    });
+
+    const denied = await exportAs(actor, { id: 'sub-1', environment_code: 'EFC', values: { note: 'SECRET-PAD' } });
+    assert.equal(denied.out.status, 403, alias);
+    assert.equal(denied.out.payload.error, 'Export PDF réservé à la supervision.');
+    assert.equal(denied.calls.some((u) => u.includes('/rest/v1/submissions')), false, alias);
+
+    const supervisor = { ...actor, id: 'sup-pad', email: 'sup@efc.picotrack.fr', role: 'supervision_user' };
+    const stillDenied = await exportAs(supervisor, { id: 'sub-1', environment_code: 'EFC', values: { note: 'SECRET-PAD' } });
+    assert.equal(stillDenied.out.status, 403, `${alias} supervision_user`);
+    assert.equal(stillDenied.calls.some((u) => u.includes('/rest/v1/submissions')), false, alias);
+  });
+}
 
 test('export PDF refuse un compte pad_user', async () => {
   const actor = {

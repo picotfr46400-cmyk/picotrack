@@ -1,4 +1,5 @@
 const { json, setCors, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile, readJsonBody } = require('./_server-supabase');
+const { normalizeLicenseType } = require('./_license-type');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
@@ -60,6 +61,7 @@ function profileRoleKeys(profile) {
   const add = v => { const s = String(v || '').trim(); if (s) keys.push(s.toLowerCase()); };
   add(profile?.role);
   add(profile?.license_type);
+  if (normalizeLicenseType(profile?.license_type) === 'pad') keys.push('pad');
   for (const r of parseRoleArray(profile?.roles)) add(r);
   return [...new Set(keys)];
 }
