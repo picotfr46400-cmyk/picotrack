@@ -22,6 +22,7 @@ function interpretedLicenseType(value) {
 }
 
 module.exports = {
+  PAD_LICENSE_ALIASES,
   normalizeLicenseType,
   interpretedLicenseType
 };

@@ -1935,3 +1935,147 @@ test('handler : create-user plateforme dérive tenant_id de l’environnement ci
     });
   }
 });
+
+test('handler : function.js range chaque alias PAD dans le pool PAD, NULL et supervision dans le pool supervision, quota inchangé', async () => {
+  const { normalizeLicenseType, PAD_LICENSE_ALIASES } = require('./_license-type');
+  const padAliases = [...PAD_LICENSE_ALIASES];
+  assert.deepEqual(padAliases, ['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator']);
+  for (const alias of padAliases) assert.equal(normalizeLicenseType(alias), 'pad', alias);
+  assert.equal(normalizeLicenseType(null), 'supervision');
+  assert.equal(normalizeLicenseType('supervision'), 'supervision');
+
+  const fnSrc = fs.readFileSync(path.join(__dirname, 'function.js'), 'utf8');
+  assert.match(fnSrc, /require\('\.\/_license-type'\)/);
+  assert.equal(/function normalizeLicenseType\s*\(/.test(fnSrc), false);
+  assert.equal(fnSrc.includes('pad_terrain'), false);
+
+  const requester = {
+    id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision',
+    environment_code: 'EFC', active: true, tenant_id: 'ten-efc'
+  };
+  const profiles = [
+    requester,
+    { id: 'null-1', email: 'null@efc.picotrack.fr', role: 'supervision_user', license_type: null, roles: ['supervision_user'], environment_code: 'EFC', active: true },
+    { id: 'sup-2', email: 'deux@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true },
+    { id: 'off-null', email: 'off-null@efc.picotrack.fr', role: 'supervision_user', license_type: null, environment_code: 'EFC', active: false },
+    { id: 'off-sup', email: 'off-sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: false }
+  ];
+  padAliases.forEach((alias, index) => {
+    profiles.push({
+      id: `pad-${index}`,
+      email: `pad-${alias}@efc.picotrack.fr`,
+      role: 'pad_user',
+      license_type: alias,
+      roles: ['pad_user'],
+      environment_code: 'EFC',
+      active: true
+    });
+    profiles.push({
+      id: `off-pad-${index}`,
+      email: `off-${alias}@efc.picotrack.fr`,
+      role: 'pad_user',
+      license_type: alias,
+      roles: ['pad_user'],
+      environment_code: 'EFC',
+      active: false
+    });
+  });
+
+  const supervisionSeats = 3;
+  const limits = {
+    environment_code: 'EFC',
+    supervision_limit: supervisionSeats,
+    pad_limit: padAliases.length,
+    tenant_id: 'ten-limits'
+  };
+  await withSupabase(async () => {
+    const authPosts = [];
+    const writes = [];
+    const limitWrites = [];
+    installActor(requester, {
+      onFetch(u, method, options) {
+        if (method === 'GET' && u.includes('/rest/v1/user_profiles?') && u.includes('environment_code=')) return jsonResponse(200, profiles);
+        if (method === 'GET' && u.includes('/rest/v1/licenses?')) return jsonResponse(200, []);
+        if (u.includes('environment_license_limits')) {
+          if (method !== 'GET') limitWrites.push(u);
+          return jsonResponse(200, [limits]);
+        }
+        if (u.includes('/auth/v1/admin/users?page=')) return jsonResponse(200, { users: [] });
+        if (u.includes('/auth/v1/admin/users') && method === 'POST') {
+          authPosts.push(u);
+          return jsonResponse(200, { id: 'new-1', email: 'nouveau@efc.picotrack.fr' });
+        }
+        if (method !== 'GET' && options.body) {
+          writes.push({ url: u, body: JSON.parse(options.body) });
+          return jsonResponse(200, [{ id: 'new-1' }]);
+        }
+        return null;
+      }
+    });
+
+    for (const alias of padAliases) {
+      const blocked = await callJson(functions, {
+        functionName: 'create-user',
+        payload: {
+          email: `nouveau-${alias}@efc.picotrack.fr`, password: 'motdepasse', role: 'pad_user',
+          license_type: alias, environment_code: 'EFC', firstname: 'Pia'
+        }
+      }, authHeaders());
+      assert.equal(blocked.status, 403, `${alias} ${blocked.payload.error || ''}`);
+      assert.match(blocked.payload.error || '', new RegExp(`PAD Terrain atteint \\(${padAliases.length}/${padAliases.length}\\)`), alias);
+    }
+
+    for (const licenseType of [null, 'supervision']) {
+      const blocked = await callJson(functions, {
+        functionName: 'create-user',
+        payload: {
+          email: 'nouveau-sup@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user',
+          license_type: licenseType, environment_code: 'EFC', firstname: 'Neo'
+        }
+      }, authHeaders());
+      assert.equal(blocked.status, 403, `${String(licenseType)} ${blocked.payload.error || ''}`);
+      assert.match(blocked.payload.error || '', /Supervision PC atteint \(3\/3\)/, String(licenseType));
+    }
+
+    assert.equal(authPosts.length, 0);
+    assert.equal(writes.length, 0);
+    assert.equal(limitWrites.length, 0);
+    assert.equal(limits.pad_limit, padAliases.length);
+    assert.equal(limits.supervision_limit, supervisionSeats);
+
+    limits.pad_limit = padAliases.length + 1;
+    const created = await callJson(functions, {
+      functionName: 'create-user',
+      payload: {
+        email: 'nouveau-operateur@efc.picotrack.fr', password: 'motdepasse', role: 'pad_user',
+        license_type: 'operateur', environment_code: 'EFC', firstname: 'Pia', tenant_id: 'spoof'
+      }
+    }, authHeaders());
+    assert.equal(created.status, 200, created.payload.error || '');
+    assert.equal(created.payload.quota.licenseType, 'pad');
+    assert.equal(created.payload.quota.used, padAliases.length);
+    assert.equal(created.payload.quota.max, padAliases.length + 1);
+    assert.equal(created.payload.quota.environmentCode, 'EFC');
+    const profile = writes.find(row => row.url.includes('/rest/v1/user_profiles'));
+    const license = writes.find(row => row.url.includes('/rest/v1/licenses'));
+    assert.ok(profile, 'profil non écrit');
+    assert.equal(profile.body.license_type, 'pad');
+    assert.equal(profile.body.tenant_id, 'ten-efc');
+    assert.equal(profile.body.environment_code, 'EFC');
+    assert.ok(license, 'licence non écrite');
+    assert.equal(license.body.license_type, 'pad');
+    assert.equal(limitWrites.length, 0);
+    assert.equal(limits.supervision_limit, supervisionSeats);
+
+    const stillFull = await callJson(functions, {
+      functionName: 'create-user',
+      payload: {
+        email: 'encore-sup@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user',
+        license_type: 'supervision', environment_code: 'EFC', firstname: 'Neo'
+      }
+    }, authHeaders());
+    assert.equal(stillFull.status, 403, stillFull.payload.error || '');
+    assert.match(stillFull.payload.error || '', /Supervision PC atteint \(3\/3\)/);
+    assert.equal(authPosts.length, 1);
+  });
+});

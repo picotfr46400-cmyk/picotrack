@@ -1,4 +1,5 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
+const { normalizeLicenseType } = require('./_license-type');
 
 const INTERNAL_FUNCTIONS = new Set([
   'list-users',
@@ -269,13 +270,6 @@ async function updateAuthUserPassword(url, serviceRole, userId, payload) {
     method: 'PUT',
     body: { password }
   });
-}
-
-function normalizeLicenseType(value) {
-  const v = String(value || '').replace(/[\t\r\n\f\v]/g, '').trim().toLowerCase();
-  if (['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator'].includes(v)) return 'pad';
-  if (['readonly', 'read_only', 'lecture', 'lecture_seule', 'viewer', 'consultation'].includes(v)) return 'readonly';
-  return 'supervision';
 }
 
 function envCandidates(env) {
