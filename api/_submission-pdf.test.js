@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('node:vm');
 const zlib = require('zlib');
+const crypto = require('crypto');
 const records = require('./records');
 const appointments = require('./appointments');
 const pdf = require('./_submission-pdf');
@@ -676,9 +677,309 @@ test('huit JPEG d’environ 1,2 Mo restent dans un export 200 sous la limite', a
     const images = (binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length;
     assert.equal(images, 2);
     assert.ok(mentions >= 6);
-    assert.ok(binary.length < 4_500_000);
+    assert.ok(binary.length <= pdf.PDF_BYTE_LIMIT);
     assert.ok(out.payload.content.length < 4_500_000);
   });
+});
+
+function noisyPng(width, height) {
+  const stride = width * 3;
+  const raw = Buffer.alloc(height * (1 + stride));
+  for (let y = 0; y < height; y++) {
+    const row = y * (1 + stride);
+    raw[row] = 0;
+    crypto.randomFillSync(raw, row + 1, stride);
+  }
+  return pngSized(width, height, zlib.deflateSync(raw, { level: 1 }));
+}
+
+function expandingPng(width, height) {
+  const stride = width * 3;
+  const raw = Buffer.alloc(height * (1 + stride));
+  for (let y = 0; y < height; y++) {
+    const row = y * (1 + stride);
+    raw[row] = 1;
+    for (let i = 0; i < stride; i++) raw[row + 1 + i] = (i * 17 + y * 3) & 255;
+  }
+  return pngSized(width, height, zlib.deflateSync(raw, { level: 9 }));
+}
+
+function embeddedPngBytes(png) {
+  const image = pdf.decodeImageBuffer(png);
+  assert.ok(image && image.rgb);
+  return zlib.deflateSync(image.rgb).length;
+}
+
+function keptWithin(sizes, budget) {
+  let sum = 0;
+  let kept = 0;
+  sizes.forEach((size) => {
+    if (sum + size > budget) return;
+    sum += size;
+    kept += 1;
+  });
+  return { kept, sum };
+}
+
+async function exportPhotoValues(id, values) {
+  const actor = {
+    id: 'sup-1',
+    email: 'sup@efc.picotrack.fr',
+    role: 'supervision_user',
+    license_type: 'supervision',
+    environment_code: 'EFC',
+    active: true
+  };
+  const ids = Object.keys(values);
+  return withSupabase(async () => {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: actor.id, email: actor.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [actor]);
+      if (u.includes('/rest/v1/submissions?')) {
+        return jsonResponse(200, [{
+          id,
+          form_id: 'form-1',
+          environment_code: 'EFC',
+          device: 'bureau',
+          created_at: '2026-10-08T09:15:00.000Z',
+          values
+        }]);
+      }
+      if (u.includes('/rest/v1/forms?')) {
+        return jsonResponse(200, [{
+          id: 'form-1',
+          nom: 'Photos',
+          environment_code: 'EFC',
+          fields: ids.map((key, index) => ({ id: key, nom: `Photo ${index}`, type: 'photo' }))
+        }]);
+      }
+      if (u.includes('/rest/v1/tenants?')) return jsonResponse(200, [{ nom: 'EFC', code: 'EFC' }]);
+      return jsonResponse(200, []);
+    };
+    return callJson({ action: 'export_submission_pdf', id, environment_code: 'EFC' }, authHeaders());
+  });
+}
+
+test('le budget images suit le plafond PDF de 3 Mo moins 300 Ko de texte', () => {
+  assert.equal(pdf.PDF_BYTE_LIMIT, 3_000_000);
+  assert.equal(pdf.TEXT_BYTE_MARGIN, 300_000);
+  assert.equal(pdf.MAX_EMBEDDED_BUDGET, pdf.PDF_BYTE_LIMIT - pdf.TEXT_BYTE_MARGIN);
+  assert.equal(pdf.MAX_JPEG_BUDGET, 2_500_000);
+  assert.equal(pdf.IMAGE_TIME_BUDGET_MS, 8_000);
+  const recordsSrc = fs.readFileSync(path.join(__dirname, 'records.js'), 'utf8');
+  assert.match(recordsSrc, /PDF_BYTE_LIMIT/);
+  assert.match(recordsSrc, /pdf\.length > PDF_BYTE_LIMIT/);
+  assert.equal(recordsSrc.includes('pdf.length > 3_000_000'), false);
+});
+
+function heavyZeroPng() {
+  const width = 4000;
+  const height = 4000;
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  return pngSized(width, height, zlib.deflateSync(raw, { level: 1 }));
+}
+
+test('seize PNG lourds restent un export 200 sans être décodés', async () => {
+  const png = heavyZeroPng();
+  assert.ok(png.length <= 1_200_000, String(png.length));
+  assert.equal(png.readUInt32BE(16), 4000);
+  assert.equal(png.readUInt32BE(20), 4000);
+  const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
+  const fields = [];
+  const values = {};
+  for (let i = 0; i < 16; i++) {
+    fields.push({ id: `p${i}`, nom: `Photo ${i}`, type: 'photo' });
+    values[`p${i}`] = dataUrl;
+  }
+  const started = Date.now();
+  const doc = pdf.formatSubmissionDocument({ fields, values, environmentName: 'EFC' });
+  assert.equal(doc.imageStats.kept, 0);
+  assert.equal(doc.imageStats.attempts, 0);
+  assert.equal(doc.imageStats.decodedBytes, 0);
+  const out = await exportPhotoValues('sub-heavy', values);
+  const elapsed = Date.now() - started;
+  assert.equal(out.status, 200, out.payload.error || '');
+  const binary = Buffer.from(out.payload.content, 'base64');
+  const mentions = pdf.extractPdfText(binary).split('image non incluse').length - 1;
+  assert.equal(mentions, 16);
+  assert.equal((binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length, 0);
+  assert.ok(binary.length <= pdf.PDF_BYTE_LIMIT);
+  assert.ok(elapsed < 3_000, `trop lent: ${elapsed} ms`);
+});
+
+test('une image suivante reste décodée après un PNG refusé sur l’en-tête', () => {
+  const heavy = heavyZeroPng();
+  const small = redPixelPng();
+  const doc = pdf.formatSubmissionDocument({
+    fields: [
+      { id: 'big', nom: 'Lourde', type: 'photo' },
+      { id: 'small', nom: 'Petite', type: 'photo' }
+    ],
+    values: {
+      big: `data:image/png;base64,${heavy.toString('base64')}`,
+      small: `data:image/png;base64,${small.toString('base64')}`
+    },
+    environmentName: 'EFC'
+  });
+  assert.equal(doc.imageStats.kept, 1);
+  assert.equal(doc.imageStats.attempts, 1);
+  assert.equal(doc.imageStats.decodedBytes, 3);
+  const binary = pdf.buildSubmissionPdf(doc);
+  assert.equal((binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length, 1);
+  assert.equal(pdf.extractPdfText(binary).includes('image non incluse'), true);
+  assert.ok(binary.length <= pdf.PDF_BYTE_LIMIT);
+});
+
+test('des PNG bruités restent un export 200 sous le plafond, avec des images écartées', async () => {
+  const pngs = [noisyPng(600, 500), noisyPng(600, 500), noisyPng(520, 500), noisyPng(600, 500)];
+  const sizes = pngs.map(embeddedPngBytes);
+  pngs.forEach((png) => assert.ok(png.length <= 1_200_000, String(png.length)));
+  assert.ok(sizes.reduce((sum, size) => sum + size, 0) > pdf.PDF_BYTE_LIMIT);
+  const withinEmbedded = keptWithin(sizes, pdf.MAX_EMBEDDED_BUDGET);
+  const withinJpegFigure = keptWithin(sizes, pdf.MAX_JPEG_BUDGET);
+  assert.ok(withinEmbedded.kept > withinJpegFigure.kept);
+  assert.ok(withinEmbedded.kept < pngs.length);
+  assert.ok(withinEmbedded.sum <= pdf.MAX_EMBEDDED_BUDGET);
+  const values = {};
+  pngs.forEach((png, index) => {
+    values[`p${index}`] = `data:image/png;base64,${png.toString('base64')}`;
+  });
+  const out = await exportPhotoValues('sub-noisy', values);
+  assert.equal(out.status, 200, out.payload.error || '');
+  const binary = Buffer.from(out.payload.content, 'base64');
+  const text = pdf.extractPdfText(binary);
+  const mentions = text.split('image non incluse').length - 1;
+  const images = (binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length;
+  assert.equal(images, withinEmbedded.kept);
+  assert.equal(mentions, pngs.length - withinEmbedded.kept);
+  assert.ok(binary.length <= pdf.PDF_BYTE_LIMIT);
+  assert.ok(binary.length > withinEmbedded.sum);
+  assert.equal(out.payload.error, undefined);
+});
+
+test('un mélange JPEG et PNG bruités reste sous le plafond', async () => {
+  const jpeg = jpegOfSize(1_150_000);
+  const pngs = [noisyPng(600, 500), noisyPng(600, 500)];
+  const pngSizes = pngs.map(embeddedPngBytes);
+  let embedded = 0;
+  let jpegBytes = 0;
+  let kept = 0;
+  const items = [{ embedded: jpeg.length, jpeg: jpeg.length }, ...pngSizes.map((size) => ({ embedded: size, jpeg: 0 }))];
+  items.forEach((item) => {
+    if (item.jpeg && jpegBytes + item.jpeg > pdf.MAX_JPEG_BUDGET) return;
+    if (embedded + item.embedded > pdf.MAX_EMBEDDED_BUDGET) return;
+    jpegBytes += item.jpeg;
+    embedded += item.embedded;
+    kept += 1;
+  });
+  assert.ok(kept >= 2);
+  assert.ok(kept < items.length);
+  const values = {
+    p0: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
+    p1: `data:image/png;base64,${pngs[0].toString('base64')}`,
+    p2: `data:image/png;base64,${pngs[1].toString('base64')}`
+  };
+  const out = await exportPhotoValues('sub-mix', values);
+  assert.equal(out.status, 200, out.payload.error || '');
+  const binary = Buffer.from(out.payload.content, 'base64');
+  const latin = binary.toString('latin1');
+  const images = (latin.match(/\/Subtype \/Image/g) || []).length;
+  const mentions = pdf.extractPdfText(binary).split('image non incluse').length - 1;
+  assert.equal(images, kept);
+  assert.equal(mentions, items.length - kept);
+  assert.match(latin, /\/DCTDecode/);
+  assert.match(latin, /\/FlateDecode/);
+  assert.ok(binary.length <= pdf.PDF_BYTE_LIMIT);
+});
+
+test('un PNG petit à l’écran mais lourd une fois recompressé est écarté sur sa taille intégrée', () => {
+  const pngs = [expandingPng(1500, 1100), expandingPng(1500, 1100)];
+  pngs.forEach((png) => assert.ok(png.length < 100_000, String(png.length)));
+  const sizes = pngs.map(embeddedPngBytes);
+  assert.ok(sizes[0] > 1_000_000);
+  assert.ok(sizes.reduce((sum, size) => sum + size, 0) > pdf.PDF_BYTE_LIMIT);
+  const fields = pngs.map((png, index) => ({ id: `p${index}`, nom: `Photo ${index}`, type: 'photo' }));
+  const values = {};
+  pngs.forEach((png, index) => {
+    values[`p${index}`] = `data:image/png;base64,${png.toString('base64')}`;
+  });
+  const doc = pdf.formatSubmissionDocument({ fields, values, environmentName: 'EFC' });
+  assert.equal(doc.imageStats.kept, 1);
+  assert.equal(doc.imageStats.embeddedBytes, sizes[0]);
+  assert.ok(sizes[0] + sizes[1] > pdf.MAX_EMBEDDED_BUDGET);
+  assert.ok(doc.imageStats.embeddedBytes <= pdf.MAX_EMBEDDED_BUDGET);
+  const binary = pdf.buildSubmissionPdf(doc);
+  assert.equal((binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length, 1);
+  assert.equal(pdf.extractPdfText(binary).includes('image non incluse'), true);
+  assert.ok(binary.length <= pdf.PDF_BYTE_LIMIT);
+});
+
+test('un PDF au-dessus du plafond est régénéré sans images', () => {
+  const fields = [];
+  for (let i = 0; i < 12; i++) {
+    fields.push({
+      label: `Note ${i}`,
+      value: 'Texte de la saisie. '.repeat(12),
+      images: []
+    });
+  }
+  fields.push({
+    label: 'Photo',
+    value: 'Image',
+    images: [{ kind: 'jpeg', width: 2, height: 2, colorSpace: '/DeviceRGB', buf: jpegOfSize(3_200_000) }]
+  });
+  const model = {
+    environmentName: 'EFC',
+    formName: 'Contrôle',
+    dateLabel: '08/10/2026 09:15 UTC',
+    author: 'Marie',
+    status: 'Validée',
+    reference: 'sub-gros',
+    fields
+  };
+  const open = pdf.buildSubmissionPdf(model, { enforceLimit: false });
+  assert.ok(open.length > pdf.PDF_BYTE_LIMIT);
+  assert.equal((open.toString('latin1').match(/\/Subtype \/Image/g) || []).length, 1);
+  const binary = pdf.buildSubmissionPdf(model);
+  assert.ok(binary.length <= pdf.PDF_BYTE_LIMIT);
+  const text = pdf.extractPdfText(binary);
+  assert.equal(text.includes('image non incluse'), true);
+  assert.equal(text.includes('Texte de la saisie'), true);
+  assert.equal((binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length, 0);
+  const forced = pdf.renderSubmissionPdf(model);
+  assert.ok(forced.length > pdf.PDF_BYTE_LIMIT);
+});
+
+test('le repli retire d’abord la dernière image', () => {
+  const model = {
+    environmentName: 'EFC',
+    formName: 'Contrôle',
+    dateLabel: '08/10/2026 09:15 UTC',
+    author: 'Marie',
+    status: 'Validée',
+    reference: 'sub-repli',
+    fields: [
+      {
+        label: 'Petite',
+        value: 'Image',
+        images: [{ kind: 'jpeg', width: 2, height: 2, colorSpace: '/DeviceRGB', buf: jpegOfSize(400_000) }]
+      },
+      {
+        label: 'Grosse',
+        value: 'Image',
+        images: [{ kind: 'jpeg', width: 2, height: 2, colorSpace: '/DeviceRGB', buf: jpegOfSize(2_800_000) }]
+      }
+    ]
+  };
+  const binary = pdf.buildSubmissionPdf(model);
+  assert.ok(binary.length <= pdf.PDF_BYTE_LIMIT);
+  assert.equal((binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length, 1);
+  const text = pdf.extractPdfText(binary);
+  assert.equal(text.includes('image non incluse'), true);
+  assert.equal(text.includes('Petite'), true);
+  assert.equal(text.includes('Grosse'), true);
 });
 
 test('les alias PAD sont écrits et lus comme pad, pas le vide ni supervision', () => {
