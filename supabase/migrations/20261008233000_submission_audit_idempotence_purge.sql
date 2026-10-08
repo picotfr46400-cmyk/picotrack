@@ -28,17 +28,25 @@ drop index if exists public.submission_audit_log_idem_idx;
 create unique index submission_audit_log_idem_idx
   on public.submission_audit_log (environment_code, idempotency_key);
 
+-- Reçu de synchro PAD.
+-- pending : réservation en cours, reprise possible après 60 secondes.
+-- applied : submission_id et service_instance_id sont les ids d'origine à renvoyer.
+-- failed : réservation libérée, une nouvelle tentative peut la reprendre.
+-- L'échec d'une action supprime la réservation pending ou la marque failed.
 create table if not exists public.pad_sync_receipts (
   environment_code text not null,
   action_id text not null,
-  submission_id text not null,
+  submission_id text,
   service_instance_id text,
+  status text not null default 'pending',
   created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
   primary key (environment_code, action_id),
   constraint pad_sync_receipts_env_len check (char_length(environment_code) between 1 and 80),
   constraint pad_sync_receipts_action_len check (char_length(action_id) between 1 and 120),
-  constraint pad_sync_receipts_submission_len check (char_length(submission_id) between 1 and 80),
-  constraint pad_sync_receipts_instance_len check (service_instance_id is null or char_length(service_instance_id) between 1 and 80)
+  constraint pad_sync_receipts_submission_len check (submission_id is null or char_length(submission_id) between 1 and 80),
+  constraint pad_sync_receipts_instance_len check (service_instance_id is null or char_length(service_instance_id) between 1 and 80),
+  constraint pad_sync_receipts_status_chk check (status in ('pending', 'applied', 'failed'))
 );
 
 alter table public.pad_sync_receipts enable row level security;
@@ -47,7 +55,7 @@ alter table public.pad_sync_receipts force row level security;
 revoke all on table public.pad_sync_receipts from public;
 revoke all on table public.pad_sync_receipts from anon;
 revoke all on table public.pad_sync_receipts from authenticated;
-grant select, insert on table public.pad_sync_receipts to service_role;
+grant select, insert, update, delete on table public.pad_sync_receipts to service_role;
 
 create or replace function public.submission_audit_log_append_only()
 returns trigger

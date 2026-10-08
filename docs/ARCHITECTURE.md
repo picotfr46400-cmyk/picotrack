@@ -32,4 +32,8 @@ Le mode tolérant de `claimPadAction` ne sert que pendant la fenêtre de déploi
 
 Chaque passage écrit un `console.warn` dont le préfixe stable est `[pad-sync] receipts table missing, idempotence degraded`, suivi du code d’erreur (`42P01`, `PGRST205` ou `404`). Pour vérifier que le mode a disparu : zéro occurrence de ce préfixe dans les logs.
 
-Un délai dépassé ou une erreur 5xx de la table n’est pas une table absente. Ces cas restent tolérés dans le budget de 2 s de l’appel, mais avec un préfixe distinct : `[pad-sync] receipts timeout or 5xx, idempotence degraded`, suivi du code HTTP.
+Un délai dépassé ou une erreur 5xx de la table n’est pas une table absente. Ces cas restent tolérés dans le budget partagé d’environ 3 s pour toute la requête, mais avec un préfixe distinct : `[pad-sync] receipts timeout or 5xx, idempotence degraded`, suivi du code HTTP. Après le premier délai ou 5xx, le reste du lot passe en mode dégradé sans nouvel appel, et un seul avertissement est écrit.
+
+Une réservation `pending` expire au bout d’environ 60 secondes : une réservation plus ancienne peut être reprise. Si l’action échoue, la réservation est supprimée. Le reçu `applied` garde les ids créés et un renvoi répond 200 avec ces mêmes ids.
+
+Une erreur de synchronisation répond 503 (401 seulement si la session ou la licence est refusée) avec un message générique et un `request_id`. Le détail, y compris le message Postgres, ne part pas au client : il est écrit dans les logs serveur avec le même `request_id`.

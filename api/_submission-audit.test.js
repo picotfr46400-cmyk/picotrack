@@ -121,10 +121,10 @@ test('le diff nomme le champ et décrit ajout, remplacement et suppression sans 
 
 test('chaque type d’événement peut être construit, avec durée d’étape', () => {
   const fields = [{ id: 'sign', nom: 'Signature', type: 'signature' }];
-  const created = audit.eventsForSubmission({ before: null, beforeValues: {}, afterValues: { client: 'A' }, fields, priorDeleted: false });
+  const created = audit.eventsForSubmission({ before: null, beforeValues: {}, afterValues: { client: 'A' }, fields });
   assert.equal(created[0].eventType, 'created');
-  const restored = audit.eventsForSubmission({ before: null, afterValues: { client: 'A' }, fields, priorDeleted: true });
-  assert.equal(restored[0].eventType, 'restored');
+  const notRewritten = audit.eventsForSubmission({ before: null, afterValues: { client: 'A' }, fields, priorDeleted: true });
+  assert.equal(notRewritten[0].eventType, 'created');
   const updated = audit.eventsForSubmission({
     before: { id: 'sub-1' },
     beforeValues: {},
@@ -234,9 +234,16 @@ test('la migration est en ajout seul : RLS, aucun UPDATE/DELETE, trigger', () =>
   assert.equal(/grant\s+delete/i.test(sql), false);
   assert.match(sql, /revoke update, delete, truncate/i);
   const src = fs.readFileSync(path.join(__dirname, '_submission-audit.js'), 'utf8');
-  assert.equal(src.includes("method: 'PATCH'"), false);
-  assert.equal(src.includes("method: 'DELETE'"), false);
   assert.equal(src.includes("method: 'PUT'"), false);
+  for (const method of ["method: 'PATCH'", "method: 'DELETE'"]) {
+    let from = 0;
+    while ((from = src.indexOf(method, from)) !== -1) {
+      const around = src.slice(Math.max(0, from - 240), from);
+      assert.equal(around.includes('RECEIPTS'), true, method);
+      assert.equal(around.includes('submission_audit_log'), false, method);
+      from += method.length;
+    }
+  }
   assert.equal(audit.mutationBlocked('PATCH'), true);
   assert.equal(audit.mutationBlocked('DELETE'), true);
   assert.equal(audit.mutationBlocked('POST'), false);
@@ -811,7 +818,8 @@ test('un journal qui ne répond pas laisse la sauvegarde et la synchro sous 4 s'
         return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
       }
       if (u.includes('pad_sync_receipts') && method === 'POST') {
-        return jsonResponse(200, [JSON.parse(options.body)]);
+        const parsed = JSON.parse(options.body);
+        return jsonResponse(200, Array.isArray(parsed) ? parsed : [parsed]);
       }
       if (u.includes('/rest/v1/submissions') && method === 'POST') {
         const body = JSON.parse(options.body);
@@ -852,9 +860,20 @@ test('un journal qui ne répond pas laisse la sauvegarde et la synchro sous 4 s'
   });
 });
 
+function receiptRowsFrom(url, receipts) {
+  const decoded = decodeURIComponent(String(url));
+  const many = decoded.match(/action_id=in\.\(([^)]*)\)/);
+  if (many) return many[1].split(',').map((id) => receipts.get(id)).filter(Boolean);
+  const one = decoded.match(/action_id=eq\.([^&]+)/);
+  const row = one && receipts.get(one[1]);
+  return row ? [row] : [];
+}
+
 test('une synchro PAD rejouée ne duplique ni la saisie ni l’événement', async () => {
   await withSupabase(async () => {
     const receipts = new Map();
+    const submissions = new Map();
+    let seq = 40;
     const writes = [];
     global.fetch = async (url, options = {}) => {
       const u = String(url);
@@ -865,24 +884,41 @@ test('une synchro PAD rejouée ne duplique ni la saisie ni l’événement', asy
         return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
       }
       if (u.includes('pad_sync_receipts') && method === 'POST') {
-        const body = JSON.parse(options.body);
-        if (receipts.has(body.action_id)) return jsonResponse(200, []);
-        receipts.set(body.action_id, body);
-        return jsonResponse(200, [body]);
+        const list = [].concat(JSON.parse(options.body));
+        const inserted = [];
+        for (const row of list) {
+          if (receipts.has(row.action_id)) continue;
+          const stored = Object.assign({ status: 'pending', submission_id: null, service_instance_id: null }, row);
+          receipts.set(row.action_id, stored);
+          inserted.push(stored);
+        }
+        return jsonResponse(200, inserted);
       }
-      if (u.includes('pad_sync_receipts') && method === 'GET') {
-        const match = decoded.match(/action_id=eq\.([^&]+)/);
-        const row = match && receipts.get(match[1]);
-        return jsonResponse(200, row ? [row] : []);
+      if (u.includes('pad_sync_receipts') && method === 'GET') return jsonResponse(200, receiptRowsFrom(u, receipts));
+      if (u.includes('pad_sync_receipts') && method === 'PATCH') {
+        const patch = JSON.parse(options.body);
+        for (const row of receiptRowsFrom(u, receipts)) Object.assign(row, patch);
+        return jsonResponse(200, receiptRowsFrom(u, receipts));
+      }
+      if (u.includes('pad_sync_receipts') && method === 'DELETE') {
+        for (const row of receiptRowsFrom(u, receipts)) {
+          if (!decoded.includes('status=eq.pending') || row.status === 'pending') receipts.delete(row.action_id);
+        }
+        return jsonResponse(200, []);
       }
       if (u.includes('/rest/v1/submissions') && method === 'POST') {
         const body = JSON.parse(options.body);
-        return jsonResponse(200, [{ id: body.id, form_id: body.form_id, environment_code: 'EFC', device: 'pad' }]);
+        const id = body.id || seq++;
+        const row = Object.assign({ environment_code: 'EFC', device: 'pad' }, body, { id });
+        submissions.set(String(id), row);
+        return jsonResponse(200, [row]);
       }
       if (u.includes('/rest/v1/submissions') && method === 'GET') {
         const match = decoded.match(/id=eq\.([^&]+)/);
-        return jsonResponse(200, match ? [{ id: match[1], form_id: 'form-1', environment_code: 'EFC', device: 'pad' }] : []);
+        const row = match && submissions.get(match[1]);
+        return jsonResponse(200, row ? [row] : []);
       }
+      if (u.includes('/rest/v1/service_instances') && method === 'GET') return jsonResponse(200, []);
       if (u.includes('submission_audit_log')) return jsonResponse(200, []);
       if (method === 'PATCH') return jsonResponse(200, []);
       return jsonResponse(200, []);
@@ -896,22 +932,53 @@ test('une synchro PAD rejouée ne duplique ni la saisie ni l’événement', asy
     };
     const first = await callJson(padSync, body);
     assert.equal(first.status, 200, first.payload.error || '');
+    const originId = String(first.payload.results[0].row.id);
     const second = await callJson(padSync, body);
     assert.equal(second.status, 200, second.payload.error || '');
+    assert.equal(String(second.payload.results[0].row.id), originId);
+    assert.equal(second.payload.results[0].duplicate, true);
     const submissionPosts = writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submissions'));
     assert.equal(submissionPosts.length, 1);
+    assert.equal(submissionPosts[0].body.submission_id, undefined);
+    assert.equal(submissionPosts[0].body.service_id, undefined);
     const audits = writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submission_audit_log'));
     assert.equal(audits.length, 2);
     const ids = audits.map((row) => {
       const list = Array.isArray(row.body) ? row.body : [row.body];
-      return list[0].submission_id;
+      return String(list[0].submission_id);
     });
     assert.equal(ids[0], ids[1]);
-    assert.equal(ids[0], submissionPosts[0].body.id);
+    assert.equal(ids[0], originId);
     assert.match(audits[0].url, /on_conflict=environment_code,idempotency_key/);
     assert.match(String(audits[0].prefer), /resolution=ignore-duplicates/);
     const flat = audits.flatMap((row) => Array.isArray(row.body) ? row.body : [row.body]);
     assert.equal(flat.filter((row) => row.event_type === 'created').every((row) => row.idempotency_key === 'pad:act-1:created'), true);
+
+    writes.length = 0;
+    const mixed = await callJson(padSync, {
+      pad: body.pad,
+      actions: [
+        body.actions[0],
+        { id: 'act-new', type: 'form_submission', created_at: '2026-10-08T08:05:00.000Z', payload: { formId: 'form-1', values: { client: 'Nouveau' } } }
+      ]
+    });
+    assert.equal(mixed.status, 200, mixed.payload.error || '');
+    assert.equal(mixed.payload.synced, 2);
+    assert.equal(String(mixed.payload.results[0].row.id), originId);
+    assert.equal(mixed.payload.results[0].already_applied, true);
+    assert.notEqual(String(mixed.payload.results[1].row.id), originId);
+    const mixedPosts = writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submissions'));
+    assert.equal(mixedPosts.length, 1);
+    const replay = await callJson(padSync, {
+      pad: body.pad,
+      actions: [
+        body.actions[0],
+        { id: 'act-new', type: 'form_submission', created_at: '2026-10-08T08:05:00.000Z', payload: { formId: 'form-1', values: { client: 'Nouveau' } } }
+      ]
+    });
+    assert.equal(replay.status, 200, replay.payload.error || '');
+    assert.equal(replay.payload.results.every((row) => row.duplicate), true);
+    assert.equal(writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submissions')).length, 1);
   });
 });
 
@@ -939,6 +1006,14 @@ test('la suppression d’une saisie efface son journal via la fonction service_r
   assert.match(purgeSql, /3 ans/);
   assert.equal(/5 ans/.test(purgeSql), false);
   assert.match(purgeSql, /durée de conservation invalide/);
+  assert.match(purgeSql, /status text not null default 'pending'/);
+  assert.match(purgeSql, /60 secondes/);
+  assert.match(purgeSql, /grant select, insert, update, delete on table public\.pad_sync_receipts to service_role/i);
+  assert.equal(padSync.readColumns.submissions, 'id,form_id,values,device,created_at,environment_code');
+  assert.equal(padSync.readColumns.submissions.includes('submission_id'), false);
+  assert.equal(padSync.readColumns.submissions.includes('service_id'), false);
+  assert.equal(padSync.readColumns.service_instances.includes('form_id'), false);
+  assert.equal(padSync.readColumns.service_instances.includes('submission_id'), true);
   const architecture = fs.readFileSync(path.join(__dirname, '../docs/ARCHITECTURE.md'), 'utf8');
   assert.match(architecture, /3 ans/);
   assert.match(architecture, /purge_submission_audit_log/);
@@ -1116,6 +1191,25 @@ test('les clés camelCase et un emoji en limite de coupe restent sûrs', () => {
     assert.equal(blob.includes(secret), false, secret);
   }
   assert.equal(changes.every((row) => row.after === 'masqué'), true);
+  const accent = audit.diffValues({}, {
+    code_d_acces: 'clair-7',
+    'code_d\u2019acces': 'clair-8',
+    note: 'clair-9',
+    libre: 'clair-10',
+    porte: 'clair-11'
+  }, [
+    { id: 'code_d_acces', nom: 'Repère', type: 'text' },
+    { id: 'code_d\u2019acces', nom: 'Note', type: 'text' },
+    { id: 'note', nom: 'Code d\u2019accès', type: 'text' },
+    { id: 'libre', nom: "CODE D'ACCES", type: 'text' },
+    { id: 'porte', nom: "Code d'accès", type: 'text' }
+  ]);
+  const accentBlob = JSON.stringify(accent);
+  for (const secret of ['clair-7', 'clair-8', 'clair-9', 'clair-10', 'clair-11']) {
+    assert.equal(accentBlob.includes(secret), false, secret);
+  }
+  assert.equal(accent.length, 5);
+  assert.equal(accent.every((row) => row.after === 'masqué'), true);
   const emoji = '😀';
   assert.equal(audit.clip(`abcd${emoji}`, 5), `abcd${emoji}`);
   const cut = audit.clip(`abcde${emoji}`, 5);
@@ -1207,8 +1301,88 @@ test('une table de reçus absente ou trop lente ne refuse pas la synchro PAD', a
       assert.equal(upstream.status, 200, upstream.payload.error || '');
       assert.equal(warnings.some((line) => line.includes(`${upstreamPrefix} 503`)), true);
       assert.equal(warnings.some((line) => line.includes(missingPrefix)), false);
+
+      warnings.length = 0;
+      let receiptCalls = 0;
+      let auditCalls = 0;
+      const batchActions = Array.from({ length: 25 }, (_, index) => ({
+        id: `lot-${index + 1}`,
+        type: 'form_submission',
+        created_at: '2026-10-08T08:00:00.000Z',
+        payload: { formId: 'form-1', values: { client: `L${index}` } }
+      }));
+      global.fetch = async (url, options = {}) => {
+        const u = String(url);
+        const method = options.method || 'GET';
+        if (u.includes('/rest/v1/licenses?')) return license();
+        if (u.includes('pad_sync_receipts')) {
+          receiptCalls += 1;
+          return hangUntilAbort(options);
+        }
+        if (u.includes('submission_audit_log')) {
+          auditCalls += 1;
+          return hangUntilAbort(options);
+        }
+        if (u.includes('/rest/v1/submissions') && method === 'POST') {
+          return jsonResponse(200, [{ id: `sub-${receiptCalls}`, form_id: 'form-1', environment_code: 'EFC', device: 'pad' }]);
+        }
+        if (method === 'PATCH') return jsonResponse(200, []);
+        return jsonResponse(200, []);
+      };
+      const batchStarted = Date.now();
+      const batch = await callJson(padSync, { pad: { sessionToken: token }, actions: batchActions });
+      const batchElapsed = Date.now() - batchStarted;
+      assert.equal(batch.status, 200, batch.payload.error || '');
+      assert.equal(batch.payload.synced, 25);
+      assert.ok(batchElapsed < 10000, `lot ${batchElapsed}ms`);
+      assert.equal(receiptCalls, 1);
+      assert.equal(auditCalls, 1);
+      assert.equal(warnings.filter((line) => line.includes(upstreamPrefix)).length, 1);
+      assert.equal(warnings.some((line) => line.includes(missingPrefix)), false);
     } finally {
       console.warn = previousWarn;
+    }
+  });
+});
+
+test('une erreur Postgres de synchro PAD répond 503 sans le message SQL', async () => {
+  await withSupabase(async () => {
+    const logs = [];
+    const previousError = console.error;
+    console.error = (...args) => { logs.push(args.join(' ')); };
+    const token = signPayload({ headers: { host: 'localhost' } }, {
+      typ: 'pad', licenseId: 'lic-1', environmentCode: 'EFC', exp: Date.now() + 60_000
+    });
+    try {
+      global.fetch = async (url, options = {}) => {
+        const u = String(url);
+        const method = options.method || 'GET';
+        if (u.includes('/rest/v1/licenses?')) {
+          return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
+        }
+        if (u.includes('pad_sync_receipts') && method === 'POST') {
+          const list = [].concat(JSON.parse(options.body));
+          return jsonResponse(200, list.map((row) => Object.assign({ status: 'pending' }, row)));
+        }
+        if (u.includes('pad_sync_receipts') && method === 'DELETE') return jsonResponse(200, []);
+        if (u.includes('/rest/v1/submissions') && method === 'POST') {
+          return jsonResponse(400, { code: '42703', message: 'column submissions.submission_id does not exist' });
+        }
+        if (u.includes('submission_audit_log')) return jsonResponse(200, []);
+        return jsonResponse(200, []);
+      };
+      const failed = await callJson(padSync, {
+        pad: { sessionToken: token },
+        actions: [{ id: 'act-sql', type: 'form_submission', created_at: '2026-10-08T08:00:00.000Z', payload: { formId: 'form-1', values: { client: 'X' } } }]
+      });
+      assert.equal(failed.status, 503);
+      assert.match(failed.payload.request_id, /^[0-9a-f-]{36}$/);
+      assert.equal(failed.payload.error, 'Synchronisation momentanément indisponible.');
+      assert.equal(JSON.stringify(failed.payload).includes('42703'), false);
+      assert.equal(JSON.stringify(failed.payload).includes('submission_id'), false);
+      assert.equal(logs.some((line) => line.includes(failed.payload.request_id) && line.includes('42703')), true);
+    } finally {
+      console.error = previousError;
     }
   });
 });

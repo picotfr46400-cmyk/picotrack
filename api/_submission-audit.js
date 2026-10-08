@@ -162,7 +162,7 @@ function actorFromSession(user, profile) {
 }
 
 function foldText(value) {
-  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
 function luhnOk(digits) {
@@ -203,11 +203,12 @@ function maskEmbeddedSecrets(text) {
 }
 
 function normalizeSecretText(value) {
-  const spaced = String(value ?? '')
+  const prepared = String(value ?? '')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u02BC`]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u00AB\u00BB]/g, "'")
     .replace(/([a-z\d])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .replace(/[_.\-/]+/g, ' ');
-  return foldText(spaced).replace(/\s+/g, ' ').trim();
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+  return foldText(prepared).replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function isSensitiveField(key, label) {
@@ -514,14 +515,11 @@ function newClientEvents(before, after) {
   return [];
 }
 
-function eventsForSubmission({ before, beforeValues, afterValues, fields, priorDeleted }) {
+function eventsForSubmission({ before, beforeValues, afterValues, fields }) {
   const changes = diffValues(beforeValues, afterValues, fields);
   const events = [];
   if (!before) {
-    events.push({
-      eventType: priorDeleted ? 'restored' : 'created',
-      detail: packDetail(priorDeleted ? { previous: 'deleted' } : {}, changes)
-    });
+    events.push({ eventType: 'created', detail: packDetail({}, changes) });
   } else if (changes.length) {
     events.push({ eventType: 'updated', detail: packDetail({}, changes) });
   }
@@ -1123,6 +1121,8 @@ function cleanActionId(value) {
 
 const RECEIPTS_MISSING_LOG = '[pad-sync] receipts table missing, idempotence degraded';
 const RECEIPTS_UPSTREAM_LOG = '[pad-sync] receipts timeout or 5xx, idempotence degraded';
+const RECEIPT_BUDGET_MS = 3000;
+const RECEIPT_TTL_MS = 60 * 1000;
 
 function receiptMessage(err) {
   return String(err && (err.message || err) || '');
@@ -1165,63 +1165,203 @@ function degradedClaim(actionId) {
   return { duplicate: false, reserved: false, actionId, degraded: true };
 }
 
-async function claimPadAction(rest, env, actionId, withInstance, req) {
-  const key = cleanActionId(actionId);
+function receiptBudget(req) {
+  const host = req || {};
+  if (!host.picoReceiptBudget) {
+    const start = Date.now();
+    host.picoReceiptBudget = {
+      degraded: '',
+      warned: false,
+      timeoutFor() {
+        const left = RECEIPT_BUDGET_MS - (Date.now() - start);
+        return left > 50 ? left : 0;
+      }
+    };
+    if (req) req.picoReceiptBudget = host.picoReceiptBudget;
+  }
+  return host.picoReceiptBudget;
+}
+
+function warnReceipts(req, err, kind) {
+  const budget = receiptBudget(req);
+  if (budget.warned) return;
+  budget.warned = true;
+  budget.degraded = kind || 'upstream';
+  const prefix = kind === 'missing' ? RECEIPTS_MISSING_LOG : RECEIPTS_UPSTREAM_LOG;
+  console.warn(prefix, receiptErrorCode(err));
+}
+
+function upstreamTimeout() {
+  return Object.assign(new Error('Délai dépassé vers la base.'), { status: 504 });
+}
+
+function asRows(value) {
+  if (Array.isArray(value)) return value;
+  return value ? [value] : [];
+}
+
+function isStaleReceipt(row, now) {
+  if (!row || row.submission_id || row.status !== 'pending') return false;
+  const stamp = Date.parse(row.updated_at || row.created_at || '');
+  return Number.isFinite(stamp) && now - stamp >= RECEIPT_TTL_MS;
+}
+
+function appliedClaim(row) {
+  return {
+    duplicate: true,
+    reserved: true,
+    submissionId: String(row.submission_id),
+    instanceId: row.service_instance_id ? String(row.service_instance_id) : null,
+    actionId: row.action_id
+  };
+}
+
+async function claimPadBatch(rest, env, actions, req) {
   const environmentCode = clip(env, 80);
-  if (!key || !environmentCode) return { duplicate: false, reserved: false, actionId: '' };
-  const submissionId = crypto.randomUUID();
-  const instanceId = withInstance ? crypto.randomUUID() : null;
-  const started = Date.now();
-  const claimTimeout = () => {
-    const left = JOURNAL_CALL_MS - (Date.now() - started);
-    return left > 50 ? left : 0;
+  const items = [];
+  const seen = new Set();
+  for (const action of Array.isArray(actions) ? actions : []) {
+    const actionId = cleanActionId(action && (action.id || action.actionId));
+    if (!actionId || !environmentCode || seen.has(actionId)) continue;
+    seen.add(actionId);
+    items.push({ actionId });
+  }
+  if (!items.length) return [];
+  const budget = receiptBudget(req);
+  const degradeAll = (err, kind) => {
+    warnReceipts(req, err, kind);
+    return items.map((item) => degradedClaim(item.actionId));
   };
-  const giveUp = (err, kind) => {
-    const prefix = kind === 'missing' ? RECEIPTS_MISSING_LOG : RECEIPTS_UPSTREAM_LOG;
-    console.warn(prefix, receiptErrorCode(err));
-    return degradedClaim(key);
-  };
-  const upstreamTimeout = () => Object.assign(new Error('Délai dépassé vers la base.'), { status: 504 });
+  if (budget.degraded) return items.map((item) => degradedClaim(item.actionId));
   try {
-    const timeoutMs = claimTimeout();
-    if (!timeoutMs) return giveUp(upstreamTimeout(), 'upstream');
+    const timeoutMs = budget.timeoutFor();
+    if (!timeoutMs) return degradeAll(upstreamTimeout(), 'upstream');
     const inserted = await rest(`${RECEIPTS}?on_conflict=environment_code,action_id`, {
       method: 'POST',
       prefer: 'return=representation,resolution=ignore-duplicates',
       timeoutMs,
       req,
-      body: {
+      body: items.map((item) => ({
         environment_code: environmentCode,
-        action_id: key,
-        submission_id: submissionId,
-        service_instance_id: instanceId
-      }
+        action_id: item.actionId,
+        status: 'pending'
+      }))
     });
-    const row = Array.isArray(inserted) ? inserted[0] : null;
-    if (row && row.submission_id === submissionId) {
-      return { duplicate: false, reserved: true, submissionId, instanceId, actionId: key };
+    const owned = new Set(asRows(inserted).map((row) => row && row.action_id).filter(Boolean));
+    const missing = items.filter((item) => !owned.has(item.actionId));
+    const existingById = new Map();
+    if (missing.length) {
+      const lookupMs = budget.timeoutFor();
+      if (!lookupMs) {
+        warnReceipts(req, upstreamTimeout(), 'upstream');
+      } else {
+        const list = missing.map((item) => item.actionId).join(',');
+        const rows = await rest(
+          `${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=in.(${list})&select=action_id,submission_id,service_instance_id,status,updated_at,created_at`,
+          { method: 'GET', prefer: '', timeoutMs: lookupMs, req }
+        );
+        for (const row of asRows(rows)) {
+          if (row && row.action_id) existingById.set(row.action_id, row);
+        }
+      }
     }
-    const lookupMs = claimTimeout();
-    if (!lookupMs) return giveUp(upstreamTimeout(), 'upstream');
-    const existingRows = await rest(
-      `${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=eq.${enc(key)}&select=submission_id,service_instance_id,action_id&limit=1`,
-      { method: 'GET', prefer: '', timeoutMs: lookupMs, req }
-    );
-    const existing = Array.isArray(existingRows) ? existingRows[0] : null;
-    if (!existing || !existing.submission_id) {
-      return { duplicate: false, reserved: true, submissionId, instanceId, actionId: key };
+    const now = Date.now();
+    const staleIds = missing
+      .map((item) => existingById.get(item.actionId))
+      .filter((row) => isStaleReceipt(row, now))
+      .map((row) => row.action_id);
+    if (staleIds.length && !budget.degraded) {
+      const claimMs = budget.timeoutFor();
+      if (!claimMs) {
+        warnReceipts(req, upstreamTimeout(), 'upstream');
+      } else {
+        const cutoff = new Date(now - RECEIPT_TTL_MS).toISOString();
+        const claimed = await rest(
+          `${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=in.(${staleIds.join(',')})&status=eq.pending&submission_id=is.null&updated_at=lt.${cutoff}`,
+          {
+            method: 'PATCH',
+            prefer: 'return=representation',
+            timeoutMs: claimMs,
+            req,
+            body: { status: 'pending', updated_at: new Date().toISOString() }
+          }
+        );
+        for (const row of asRows(claimed)) {
+          if (row && row.action_id) owned.add(row.action_id);
+        }
+      }
     }
-    return {
-      duplicate: true,
-      reserved: true,
-      submissionId: existing.submission_id,
-      instanceId: existing.service_instance_id || null,
-      actionId: key
-    };
+    return items.map((item) => {
+      if (owned.has(item.actionId)) return { duplicate: false, reserved: true, actionId: item.actionId };
+      const row = existingById.get(item.actionId);
+      if (row && row.submission_id) return appliedClaim(row);
+      if (row) return { duplicate: false, reserved: false, busy: true, actionId: item.actionId };
+      if (budget.degraded) return { duplicate: false, reserved: false, busy: true, actionId: item.actionId };
+      return degradedClaim(item.actionId);
+    });
   } catch (err) {
     const kind = receiptFailureKind(err);
-    if (kind) return giveUp(err, kind);
+    if (kind) return degradeAll(err, kind);
     throw err;
+  }
+}
+
+async function claimPadAction(rest, env, actionId, withInstance, req) {
+  const [claim] = await claimPadBatch(rest, env, [{ id: actionId, withInstance }], req);
+  return claim || { duplicate: false, reserved: false, actionId: '' };
+}
+
+async function completePadReceipt(rest, env, actionId, submissionId, instanceId, req) {
+  const budget = receiptBudget(req);
+  if (budget.degraded) return false;
+  const key = cleanActionId(actionId);
+  const environmentCode = clip(env, 80);
+  const submission = cleanId(submissionId);
+  if (!key || !environmentCode || !submission) return false;
+  const timeoutMs = budget.timeoutFor();
+  if (!timeoutMs) {
+    warnReceipts(req, upstreamTimeout(), 'upstream');
+    return false;
+  }
+  try {
+    await rest(`${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=eq.${enc(key)}`, {
+      method: 'PATCH',
+      prefer: 'return=minimal',
+      timeoutMs,
+      req,
+      body: {
+        status: 'applied',
+        submission_id: submission,
+        service_instance_id: cleanId(instanceId) || null,
+        updated_at: new Date().toISOString()
+      }
+    });
+    return true;
+  } catch (err) {
+    const kind = receiptFailureKind(err);
+    if (kind) warnReceipts(req, err, kind);
+    else console.error('[pad-sync] reçu non clos', err && (err.message || err));
+    return false;
+  }
+}
+
+async function releasePadReceipt(rest, env, actionId, req) {
+  const budget = receiptBudget(req);
+  if (budget.degraded) return false;
+  const key = cleanActionId(actionId);
+  const environmentCode = clip(env, 80);
+  if (!key || !environmentCode) return false;
+  const timeoutMs = budget.timeoutFor();
+  if (!timeoutMs) return false;
+  try {
+    await rest(
+      `${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=eq.${enc(key)}&status=eq.pending`,
+      { method: 'DELETE', prefer: 'return=minimal', timeoutMs, req }
+    );
+    return true;
+  } catch (err) {
+    console.error('[pad-sync] reçu non libéré', err && (err.message || err));
+    return false;
   }
 }
 
@@ -1289,6 +1429,9 @@ module.exports = {
   looksLikeSecret,
   pdfLineSets,
   claimPadAction,
+  claimPadBatch,
+  completePadReceipt,
+  releasePadReceipt,
   flushAudit,
   insertEvent,
   recordSave,
