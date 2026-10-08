@@ -1,6 +1,6 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
-const { formatSubmissionDocument, buildSubmissionPdf } = require('./_submission-pdf');
+const { formatSubmissionDocument, buildSubmissionPdfWithinLimit } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType } = require('./_license-type');
 const submissionAudit = require('./_submission-audit');
 
@@ -994,28 +994,34 @@ async function handleDelete(req, body) {
   }
 
   const deleteEnv = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
+  let deleteTarget = null;
   if (entity === 'submissions' || entity === 'service_instances') {
-    const existing = await readOneById(req, entity, id, isPlatform ? null : deleteEnv).catch(() => null);
-    await submissionAudit.recordDelete(req, {
-      serviceRest, user, profile, entity, id, env: deleteEnv, existing
-    });
+    deleteTarget = await readOneById(req, entity, id, isPlatform ? null : deleteEnv).catch(() => null);
   }
 
   // Suppression métier d'un formulaire : on nettoie d'abord les soumissions liées
   // pour éviter les blocages de contrainte et les données orphelines.
+  let removedSubmissions = [];
   if (entity === 'forms') {
-    let subPath = `submissions?form_id=eq.${encodeURIComponent(id)}`;
-    if (!isPlatform) {
-      const env = deleteEnv;
-      if (env && env !== 'GLOBAL') subPath += `&environment_code=eq.${encodeURIComponent(env)}`;
-    }
+    let subPath = `submissions?form_id=eq.${encodeURIComponent(id)}&select=id,environment_code,device&limit=100`;
+    if (!isPlatform && deleteEnv && deleteEnv !== 'GLOBAL') subPath += `&environment_code=eq.${encodeURIComponent(deleteEnv)}`;
+    removedSubmissions = await serviceRest(subPath, { method: 'GET', prefer: '', req }).catch(() => []);
+    let deletePath = `submissions?form_id=eq.${encodeURIComponent(id)}`;
+    if (!isPlatform && deleteEnv && deleteEnv !== 'GLOBAL') deletePath += `&environment_code=eq.${encodeURIComponent(deleteEnv)}`;
+    await serviceRest(deletePath, { method: 'DELETE', prefer: 'return=minimal', req });
     await submissionAudit.recordFormCascade(req, {
-      serviceRest, user, profile, formId: id, env: isPlatform ? '' : deleteEnv
+      serviceRest, user, profile, formId: id, env: isPlatform ? '' : deleteEnv,
+      rows: Array.isArray(removedSubmissions) ? removedSubmissions : []
     });
-    await serviceRest(subPath, { method: 'DELETE', prefer: 'return=minimal', req }).catch(() => []);
   }
 
-  return await serviceRest(scopedPath(entity), { method: 'DELETE', prefer: 'return=minimal', req });
+  const removed = await serviceRest(scopedPath(entity), { method: 'DELETE', prefer: 'return=minimal', req });
+  if (entity === 'submissions' || entity === 'service_instances') {
+    await submissionAudit.recordDelete(req, {
+      serviceRest, user, profile, entity, id, env: deleteEnv, existing: deleteTarget
+    });
+  }
+  return removed;
 }
 
 async function serviceRead(req, path) {
@@ -1197,14 +1203,14 @@ async function handleExportSubmissionPdf(req, body) {
     environmentDisplayName(req, env)
   ]);
   const safeForm = form && normalizeEnvCode(form.environment_code) === env ? form : null;
-  let traceLines = [];
   let exportRow = null;
+  let lineSets = [[]];
   try {
     const packed = await submissionAudit.prepareExportTrace(req, {
       serviceRest, user, profile, env, submissionId: id, submission
     });
-    traceLines = packed.lines;
     exportRow = packed.row;
+    lineSets = packed.lineSets || [packed.lines || []];
   } catch (err) {
     console.error('[submission-audit] préparation PDF', err && (err.message || err));
   }
@@ -1218,13 +1224,9 @@ async function handleExportSubmissionPdf(req, body) {
     device: submission.device,
     author: workflow.author,
     status: workflow.status,
-    reference: id,
-    traceLines
+    reference: id
   });
-  const pdf = buildSubmissionPdf(document);
-  if (!pdf || pdf.length > 3_000_000) {
-    throw Object.assign(new Error('Export PDF impossible.'), { status: 413 });
-  }
+  const pdf = buildSubmissionPdfWithinLimit(document, lineSets);
   if (exportRow) await submissionAudit.insertEvent(serviceRest, req, exportRow);
   return {
     filename: `saisie-${id}.pdf`,

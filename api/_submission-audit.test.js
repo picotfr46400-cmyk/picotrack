@@ -104,11 +104,15 @@ test('le diff nomme le champ et décrit ajout, remplacement et suppression sans 
   assert.equal(piece.name, 'bon.pdf');
   assert.equal(piece.size, 4000);
   const sign = changes.find((row) => row.key === 'sign');
-  assert.equal(sign.change, 'replaced');
+  assert.equal(sign.kind, 'redacted');
+  assert.equal(sign.signature, true);
+  assert.equal(sign.before, 'masqué');
+  assert.equal(sign.after, 'masqué');
   assert.equal(sign.label, 'Signature client');
   const secret = changes.find((row) => row.key === 'password');
   assert.equal(secret.kind, 'redacted');
-  assert.equal(secret.before, undefined);
+  assert.equal(secret.before, 'masqué');
+  assert.equal(secret.after, 'masqué');
   const blob = JSON.stringify(changes);
   assert.equal(blob.includes('data:image'), false);
   assert.equal(blob.includes('secret-a'), false);
@@ -461,7 +465,9 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
       }
     });
     assert.equal(saved.status, 200, saved.payload.error || '');
-    const journal = writes.filter((row) => row.url.includes('submission_audit_log')).map((row) => row.body);
+    const journalPosts = writes.filter((row) => row.url.includes('submission_audit_log') && row.method === 'POST');
+    assert.equal(journalPosts.length, 1);
+    const journal = journalPosts.flatMap((row) => Array.isArray(row.body) ? row.body : [row.body]);
     assert.equal(journal.some((row) => row.event_type === 'validated'), true);
     assert.equal(journal.some((row) => row.event_type === 'reassigned'), true);
     assert.equal(journal.some((row) => row.event_type === 'commented'), true);
@@ -474,7 +480,14 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
     assert.equal(validated.actor_license_type, 'pad');
     assert.equal(validated.origin, 'pad');
     assert.equal(validated.occurred_at.startsWith('1999'), false);
-    assert.ok(validated.detail.step_seconds >= 0);
+    const shown = audit.composeTimeline([
+      { id: 's1', event_type: 'status_changed', occurred_at: '2026-10-08T09:00:00.000Z', origin: 'supervision', detail: { to_status: 'Ouvert' } },
+      { id: 's2', event_type: 'validated', occurred_at: '2026-10-08T10:00:00.000Z', origin: 'supervision', detail: { from_status: 'Ouvert', to_status: 'Validée' } }
+    ], null, null);
+    assert.equal(shown.events.find((row) => row.event_type === 'validated').detail.step_label, '1 h 0 min');
+    assert.equal(shown.events.find((row) => row.event_type === 'commented'), undefined);
+    const declared = audit.composeTimeline(journal, null, null);
+    assert.equal(declared.events.find((row) => row.event_type === 'commented').declared_label, 'déclaré par l’appareil');
     assert.equal(JSON.stringify(journal).includes('Hacker'), false);
     const note = journal.find((row) => row.event_type === 'updated').detail.changes.find((row) => row.key === 'note');
     assert.equal(note.label, 'Note');
@@ -484,11 +497,13 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
     writes.length = 0;
     const removed = await callJson(records, { action: 'delete', entity: 'submissions', id: 'sub-1' });
     assert.equal(removed.status, 200, removed.payload.error || '');
-    const deleted = writes.find((row) => row.url.includes('submission_audit_log') && row.body.event_type === 'deleted');
+    const deleted = writes.find((row) => row.url.includes('submission_audit_log') && row.body && row.body.event_type === 'deleted');
     assert.ok(deleted);
     assert.equal(deleted.body.submission_id, 'sub-1');
     assert.equal(deleted.body.environment_code, 'EFC');
-    assert.equal(writes.some((row) => row.method === 'DELETE' && row.url.includes('/rest/v1/submissions')), true);
+    const deleteAt = writes.findIndex((row) => row.method === 'DELETE' && row.url.includes('/rest/v1/submissions'));
+    const auditAt = writes.findIndex((row) => row.url.includes('submission_audit_log') && row.method === 'POST');
+    assert.ok(deleteAt >= 0 && auditAt > deleteAt);
 
     const token = signPayload({ headers: { host: 'localhost' } }, {
       typ: 'pad', licenseId: 'lic-1', environmentCode: 'EFC', exp: Date.now() + 60_000
@@ -520,7 +535,9 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
     });
     assert.equal(synced.status, 200, synced.payload.error || '');
     assert.equal(synced.payload.ok, true);
-    const padRows = writes.filter((row) => row.url.includes('submission_audit_log')).map((row) => row.body);
+    const padPosts = writes.filter((row) => row.url.includes('submission_audit_log') && row.method === 'POST');
+    assert.equal(padPosts.length, 1);
+    const padRows = padPosts.flatMap((row) => Array.isArray(row.body) ? row.body : [row.body]);
     assert.equal(padRows.some((row) => row.event_type === 'created'), true);
     const sync = padRows.find((row) => row.event_type === 'pad_synced');
     assert.ok(sync);
@@ -617,4 +634,444 @@ test('la frise de traçabilité interroge le serveur et filtre sans réécrire l
     assert.equal(history.innerHTML.includes('A → B'), false);
     assert.equal(posts.filter((item) => item.body && item.body.action === 'submission_trace').length, 1);
   });
+});
+
+test('le type de champ, le libellé français et la forme de la valeur masquent avant insertion', () => {
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+  const dataUrl = 'data:image/png;base64,' + 'QUJD'.repeat(40);
+  const prose = ('bonjour le quai ').repeat(40);
+  const fields = [
+    { id: 'note', nom: 'Note', type: 'password' },
+    { id: 'mdp', nom: 'Mot de passe', type: 'text' },
+    { id: 'libre', nom: 'Commentaire', type: 'text' },
+    { id: 'sign', nom: 'Visa', type: 'signature' },
+    { id: 'photo', nom: 'Photo quai', type: 'photo' },
+    { id: 'piece', nom: 'Bon', type: 'fichier' },
+    { id: 'texte', nom: 'Compte rendu', type: 'text' }
+  ];
+  const changes = audit.diffValues(
+    {},
+    {
+      note: 'visible-password',
+      mdp: 'azerty-clair',
+      libre: `préfixe ${jwt} suffixe`,
+      sign: dataUrl,
+      photo: { name: 'quai-2.jpg', size: 1500, dataUrl },
+      piece: { name: 'bon.pdf', size: 4000, content: dataUrl },
+      texte: prose
+    },
+    fields
+  );
+  const note = changes.find((row) => row.key === 'note');
+  assert.equal(note.kind, 'redacted');
+  assert.equal(note.before, 'masqué');
+  assert.equal(note.after, 'masqué');
+  const mdp = changes.find((row) => row.key === 'mdp');
+  assert.equal(mdp.after, 'masqué');
+  const libre = changes.find((row) => row.key === 'libre');
+  assert.equal(libre.after, 'masqué');
+  const sign = changes.find((row) => row.key === 'sign');
+  assert.equal(sign.kind, 'redacted');
+  assert.equal(sign.signature, true);
+  const photo = changes.find((row) => row.key === 'photo');
+  assert.equal(photo.kind, 'file');
+  assert.equal(photo.name, 'quai-2.jpg');
+  assert.equal(photo.size, 1500);
+  const piece = changes.find((row) => row.key === 'piece');
+  assert.equal(piece.name, 'bon.pdf');
+  assert.equal(piece.size, 4000);
+  const texte = changes.find((row) => row.key === 'texte');
+  assert.equal(texte.kind, 'text');
+  assert.match(texte.after, /bonjour le quai/);
+  const signed = audit.eventsForSubmission({
+    before: { id: 'sub-1' },
+    beforeValues: {},
+    afterValues: { sign: dataUrl },
+    fields
+  }).find((row) => row.eventType === 'signed');
+  assert.ok(signed);
+  assert.equal(signed.detail.name, undefined);
+  assert.equal(signed.detail.size, undefined);
+  const blob = JSON.stringify({ changes, signed });
+  assert.equal(blob.includes('visible-password'), false);
+  assert.equal(blob.includes('azerty-clair'), false);
+  assert.equal(blob.includes('eyJ'), false);
+  assert.equal(blob.includes('data:image'), false);
+  assert.equal(blob.includes('QUJD'), false);
+
+  const many = [];
+  const after = {};
+  const wide = [];
+  for (let i = 0; i < 41; i += 1) {
+    wide.push({ id: `f${i}`, nom: `Champ ${i}`, type: 'text' });
+    after[`f${i}`] = i < 12 ? 'é'.repeat(500) : 'b';
+  }
+  const wideChanges = audit.diffValues({}, after, wide);
+  assert.equal(wideChanges.length, 40);
+  assert.equal(wideChanges.omitted, 1);
+  const row = audit.buildEventRow({
+    eventType: 'updated',
+    environmentCode: 'EFC',
+    submissionId: 'sub-1',
+    actor: { id: 'sup-1', name: 'Marie' },
+    origin: 'supervision',
+    detail: { changes: wideChanges.slice(), more_label: '+1 autres champs modifiés' }
+  });
+  assert.equal(row.detail.more_label, '+1 autres champs modifiés');
+  assert.ok(Buffer.byteLength(JSON.stringify(row.detail), 'utf8') <= audit.DETAIL_MAX_BYTES);
+  many.push(row);
+
+  const heavy = {};
+  const heavyFields = [];
+  for (let i = 0; i < 80; i += 1) {
+    heavyFields.push({ id: `h${i}`, nom: `Accent ${i}`, type: 'text' });
+    heavy[`h${i}`] = 'é'.repeat(500);
+  }
+  const heavyChanges = audit.diffValues({}, heavy, heavyFields);
+  const fitted = audit.buildEventRow({
+    eventType: 'updated',
+    environmentCode: 'EFC',
+    submissionId: 'sub-1',
+    actor: { id: 'sup-1', name: 'Marie' },
+    origin: 'supervision',
+    detail: { changes: heavyChanges.slice(), more_label: heavyChanges.omitted ? `+${heavyChanges.omitted} autres champs modifiés` : undefined }
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(fitted.detail), 'utf8') <= 20000);
+  assert.equal(fitted.detail.truncated, true);
+  assert.match(fitted.detail.more_label, /\+\d+ autres champs modifiés/);
+  assert.equal(many.length, 1);
+});
+
+test('une sauvegarde inchangée n’écrit pas updated', async () => {
+  const profile = actor();
+  await withSupabase(async () => {
+    const writes = [];
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      if (method !== 'GET' && options.body) writes.push({ url: u, method, body: JSON.parse(options.body) });
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
+      if (u.includes('/rest/v1/submissions') && method === 'GET') {
+        return jsonResponse(200, [{ id: 'sub-1', form_id: 'form-1', environment_code: 'EFC', values: { client: 'Nord' } }]);
+      }
+      if (u.includes('/rest/v1/submissions') && method === 'PATCH') {
+        return jsonResponse(200, [{ id: 'sub-1', form_id: 'form-1', environment_code: 'EFC', values: { client: 'Nord' } }]);
+      }
+      if (u.includes('submission_audit_log')) return jsonResponse(200, []);
+      return jsonResponse(200, []);
+    };
+    const saved = await callJson(records, {
+      action: 'save',
+      entity: 'submissions',
+      id: 'sub-1',
+      record: { form_id: 'form-1', values: { client: 'Nord' }, device: 'desktop' }
+    });
+    assert.equal(saved.status, 200, saved.payload.error || '');
+    assert.equal(writes.some((row) => row.url.includes('submission_audit_log')), false);
+  });
+});
+
+function hangUntilAbort(options) {
+  return new Promise((_, reject) => {
+    let settled = false;
+    const signal = options && options.signal;
+    const timer = setTimeout(() => fail('TimeoutError'), 15000);
+    function fail(name) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const err = new Error('The operation was aborted');
+      err.name = name || 'TimeoutError';
+      reject(err);
+    }
+    if (!signal) return;
+    if (signal.aborted) fail(signal.reason && signal.reason.name);
+    else signal.addEventListener('abort', () => fail(signal.reason && signal.reason.name), { once: true });
+  });
+}
+
+test('un journal qui ne répond pas laisse la sauvegarde et la synchro sous 4 s', async () => {
+  const profile = actor();
+  await withSupabase(async () => {
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      if (u.includes('submission_audit_log') || u.includes('purge_submission_audit_log')) return hangUntilAbort(options);
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
+      if (u.includes('/rest/v1/submissions') && method === 'POST') {
+        return jsonResponse(200, [{ id: 'sub-new', form_id: 'form-1', environment_code: 'EFC', values: { client: 'Nord' } }]);
+      }
+      if (u.includes('/rest/v1/licenses?')) {
+        return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
+      }
+      if (u.includes('pad_sync_receipts') && method === 'POST') {
+        return jsonResponse(200, [JSON.parse(options.body)]);
+      }
+      if (u.includes('/rest/v1/submissions') && method === 'POST') {
+        const body = JSON.parse(options.body);
+        return jsonResponse(200, [{ id: body.id || 'sub-pad', form_id: 'form-1', environment_code: 'EFC', device: 'pad' }]);
+      }
+      return jsonResponse(200, []);
+    };
+    const errors = [];
+    const previousError = console.error;
+    console.error = (...args) => { errors.push(args.join(' ')); };
+    const started = Date.now();
+    try {
+      const saved = await callJson(records, {
+        action: 'save',
+        entity: 'submissions',
+        record: { form_id: 'form-1', values: { client: 'Nord' }, device: 'desktop' }
+      });
+      assert.equal(saved.status, 200, saved.payload.error || '');
+      assert.ok(Date.now() - started < 4500, `save ${Date.now() - started}ms`);
+      const token = signPayload({ headers: { host: 'localhost' } }, {
+        typ: 'pad', licenseId: 'lic-1', environmentCode: 'EFC', exp: Date.now() + 60_000
+      });
+      const syncStarted = Date.now();
+      const synced = await callJson(padSync, {
+        pad: { sessionToken: token },
+        actions: [
+          { id: 'q1', type: 'form_submission', created_at: '2026-10-08T08:00:00.000Z', payload: { formId: 'form-1', values: { client: 'Un' } } },
+          { id: 'q2', type: 'form_submission', created_at: '2026-10-08T08:01:00.000Z', payload: { formId: 'form-1', values: { client: 'Deux' } } }
+        ]
+      });
+      assert.equal(synced.status, 200, synced.payload.error || '');
+      assert.equal(synced.payload.synced, 2);
+      assert.ok(Date.now() - syncStarted < 4500, `sync ${Date.now() - syncStarted}ms`);
+    } finally {
+      console.error = previousError;
+    }
+    assert.equal(errors.some((line) => line.includes('écriture journal impossible') || line.includes('effacement journal impossible')), true);
+  });
+});
+
+test('une synchro PAD rejouée ne duplique ni la saisie ni l’événement', async () => {
+  await withSupabase(async () => {
+    const receipts = new Map();
+    const writes = [];
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      const decoded = decodeURIComponent(u);
+      if (method !== 'GET' && options.body) writes.push({ url: u, method, prefer: options.headers && (options.headers.Prefer || options.headers.prefer), body: JSON.parse(options.body) });
+      if (u.includes('/rest/v1/licenses?')) {
+        return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
+      }
+      if (u.includes('pad_sync_receipts') && method === 'POST') {
+        const body = JSON.parse(options.body);
+        if (receipts.has(body.action_id)) return jsonResponse(200, []);
+        receipts.set(body.action_id, body);
+        return jsonResponse(200, [body]);
+      }
+      if (u.includes('pad_sync_receipts') && method === 'GET') {
+        const match = decoded.match(/action_id=eq\.([^&]+)/);
+        const row = match && receipts.get(match[1]);
+        return jsonResponse(200, row ? [row] : []);
+      }
+      if (u.includes('/rest/v1/submissions') && method === 'POST') {
+        const body = JSON.parse(options.body);
+        return jsonResponse(200, [{ id: body.id, form_id: body.form_id, environment_code: 'EFC', device: 'pad' }]);
+      }
+      if (u.includes('/rest/v1/submissions') && method === 'GET') {
+        const match = decoded.match(/id=eq\.([^&]+)/);
+        return jsonResponse(200, match ? [{ id: match[1], form_id: 'form-1', environment_code: 'EFC', device: 'pad' }] : []);
+      }
+      if (u.includes('submission_audit_log')) return jsonResponse(200, []);
+      if (method === 'PATCH') return jsonResponse(200, []);
+      return jsonResponse(200, []);
+    };
+    const token = signPayload({ headers: { host: 'localhost' } }, {
+      typ: 'pad', licenseId: 'lic-1', environmentCode: 'EFC', exp: Date.now() + 60_000
+    });
+    const body = {
+      pad: { sessionToken: token },
+      actions: [{ id: 'act-1', type: 'form_submission', created_at: '2026-10-08T08:00:00.000Z', payload: { formId: 'form-1', values: { client: 'Hors ligne' } } }]
+    };
+    const first = await callJson(padSync, body);
+    assert.equal(first.status, 200, first.payload.error || '');
+    const second = await callJson(padSync, body);
+    assert.equal(second.status, 200, second.payload.error || '');
+    const submissionPosts = writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submissions'));
+    assert.equal(submissionPosts.length, 1);
+    const audits = writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submission_audit_log'));
+    assert.equal(audits.length, 2);
+    const ids = audits.map((row) => {
+      const list = Array.isArray(row.body) ? row.body : [row.body];
+      return list[0].submission_id;
+    });
+    assert.equal(ids[0], ids[1]);
+    assert.equal(ids[0], submissionPosts[0].body.id);
+    assert.match(audits[0].url, /on_conflict=environment_code,idempotency_key/);
+    assert.match(String(audits[0].prefer), /resolution=ignore-duplicates/);
+    const flat = audits.flatMap((row) => Array.isArray(row.body) ? row.body : [row.body]);
+    assert.equal(flat.filter((row) => row.event_type === 'created').every((row) => row.idempotency_key === 'pad:act-1:created'), true);
+  });
+});
+
+test('la suppression d’une saisie efface son journal via la fonction service_role', async () => {
+  const profile = actor();
+  const purgeSql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261008233000_submission_audit_idempotence_purge.sql'), 'utf8');
+  assert.match(purgeSql, /security definer/i);
+  assert.match(purgeSql, /purge réservée à service_role/);
+  assert.match(purgeSql, /grant execute on function public\.purge_submission_audit_log\(interval, text, text\[\]\) to service_role/i);
+  assert.equal(/grant execute on function public\.purge_submission_audit_log[\s\S]*to (anon|authenticated)/i.test(purgeSql), false);
+  assert.match(purgeSql, /revoke all on function public\.purge_submission_audit_log\(interval, text, text\[\]\) from public/i);
+  assert.match(purgeSql, /revoke all on function public\.purge_submission_audit_log\(interval, text, text\[\]\) from authenticated/i);
+  assert.match(purgeSql, /tg_op = 'UPDATE'/);
+  assert.match(purgeSql, /tg_op = 'DELETE'/);
+  assert.match(purgeSql, /picotrack\.audit_purge/);
+  assert.match(purgeSql, /target_submissions/);
+  assert.match(purgeSql, /"erased":true/);
+  assert.match(purgeSql, /3 ans/);
+  assert.equal(/5 ans/.test(purgeSql), false);
+  assert.match(purgeSql, /durée de conservation invalide/);
+  const architecture = fs.readFileSync(path.join(__dirname, '../docs/ARCHITECTURE.md'), 'utf8');
+  assert.match(architecture, /3 ans/);
+  assert.match(architecture, /purge_submission_audit_log/);
+  const src = fs.readFileSync(path.join(__dirname, '_submission-audit.js'), 'utf8');
+  assert.match(src, /rpc\/purge_submission_audit_log/);
+  assert.equal(src.includes('interval \'3 years\''), false);
+  assert.equal(src.includes('retention'), false);
+
+  await withSupabase(async () => {
+    const writes = [];
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      if (method !== 'GET') writes.push({ url: u, method, body: options.body ? JSON.parse(options.body) : null });
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
+      if (method === 'DELETE' && u.includes('/rest/v1/submissions')) return jsonResponse(500, { message: 'refus' });
+      return jsonResponse(200, []);
+    };
+    const failed = await callJson(records, { action: 'delete', entity: 'submissions', id: 'sub-1' });
+    assert.notEqual(failed.status, 200);
+    assert.equal(writes.some((row) => row.url.includes('purge_submission_audit_log')), false);
+
+    writes.length = 0;
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      if (method !== 'GET') writes.push({ url: u, method, body: options.body ? JSON.parse(options.body) : null });
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
+      if (u.includes('/rest/v1/submissions') && method === 'GET') return jsonResponse(200, [{ id: 'sub-1', environment_code: 'EFC', device: 'desktop' }]);
+      if (method === 'DELETE') return jsonResponse(200, []);
+      if (u.includes('purge_submission_audit_log')) return jsonResponse(200, 1);
+      if (u.includes('submission_audit_log')) return jsonResponse(200, []);
+      return jsonResponse(200, []);
+    };
+    const removed = await callJson(records, { action: 'delete', entity: 'submissions', id: 'sub-1' });
+    assert.equal(removed.status, 200, removed.payload.error || '');
+    const deleteAt = writes.findIndex((row) => row.method === 'DELETE' && row.url.includes('/rest/v1/submissions'));
+    const purgeAt = writes.findIndex((row) => row.method === 'POST' && row.url.includes('rpc/purge_submission_audit_log'));
+    const auditAt = writes.findIndex((row) => row.method === 'POST' && row.url.includes('/rest/v1/submission_audit_log'));
+    assert.ok(deleteAt >= 0 && purgeAt > deleteAt && auditAt > purgeAt);
+    const purge = writes[purgeAt];
+    assert.deepEqual(purge.body, { target_environment: 'EFC', target_submissions: ['sub-1'] });
+    assert.equal(Object.prototype.hasOwnProperty.call(purge.body, 'retention'), false);
+    const deleted = writes[auditAt].body;
+    assert.equal(deleted.event_type, 'deleted');
+    assert.equal(deleted.detail.entity, 'submissions');
+    assert.equal(JSON.stringify(deleted.detail).includes('client'), false);
+  });
+});
+
+test('l’export PDF borne la frise puis retire les images', async () => {
+  const stored = [];
+  for (let i = 0; i < 200; i += 1) {
+    const at = new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString();
+    stored.push({
+      id: `e${i}`,
+      environment_code: 'EFC',
+      submission_id: 'sub-1',
+      event_type: 'updated',
+      occurred_at: at,
+      actor_name: i === 199 ? 'NEWEST-TRACE' : (i === 0 ? 'OLDEST-TRACE' : 'Marie'),
+      actor_id: 'sup-1',
+      origin: 'supervision',
+      detail: { changes: [{ key: 'client', label: 'Client', kind: 'text', before: 'a', after: 'b' }] }
+    });
+  }
+  const lines = audit.toPdfLines(audit.composeTimeline(stored, null, null), 50);
+  assert.match(lines.join('\n'), /150 événements plus anciens non affichés/);
+  assert.equal(lines.some((line) => line.includes('NEWEST-TRACE')), true);
+  assert.equal(lines.some((line) => line.includes('OLDEST-TRACE')), false);
+
+  const profile = actor();
+  await withSupabase(async () => {
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
+      if (u.includes('/rest/v1/submissions?')) {
+        return jsonResponse(200, [{ id: 'sub-1', form_id: 'form-1', environment_code: 'EFC', device: 'desktop', created_at: '2026-10-08T09:15:00.000Z', values: { client: 'Nord' } }]);
+      }
+      if (u.includes('/rest/v1/forms?')) {
+        return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
+      }
+      if (u.includes('/rest/v1/service_instances?')) return jsonResponse(200, []);
+      if (u.includes('/rest/v1/tenants?')) return jsonResponse(200, [{ nom: 'EFC Nord', code: 'EFC' }]);
+      if (u.includes('submission_audit_log') && method === 'GET') return jsonResponse(200, stored);
+      if (u.includes('submission_audit_log') && method === 'POST') return jsonResponse(200, []);
+      return jsonResponse(200, []);
+    };
+    const exported = await callJson(records, { action: 'export_submission_pdf', id: 'sub-1' });
+    assert.equal(exported.status, 200, exported.payload.error || '');
+    const text = pdf.extractPdfText(Buffer.from(exported.payload.content, 'base64'));
+    assert.match(text, /événements plus anciens non affichés/);
+    assert.equal(text.includes('NEWEST-TRACE'), true);
+    assert.equal(text.includes('OLDEST-TRACE'), false);
+  });
+
+  const marker = Buffer.from('UNIQUEIMAGEMARKER');
+  const doc = {
+    environmentName: 'EFC',
+    environmentCode: 'EFC',
+    formName: 'Contrôle',
+    dateLabel: '08/10/2026',
+    author: 'Marie',
+    status: 'Enregistrée',
+    reference: 'sub-1',
+    fields: [{
+      label: 'Photo',
+      value: 'Image',
+      images: [{ kind: 'jpeg', width: 8, height: 8, colorSpace: '/DeviceRGB', buf: Buffer.concat([Buffer.alloc(12000, 9), marker]) }]
+    }],
+    traceLines: []
+  };
+  const withImages = pdf.buildSubmissionPdf(doc, { enforceLimit: false, omitImages: false });
+  const withoutImages = pdf.buildSubmissionPdf(doc, { enforceLimit: false, omitImages: true });
+  assert.equal(withImages.includes(marker), true);
+  assert.equal(withoutImages.includes(marker), false);
+  assert.ok(withImages.length > withoutImages.length);
+  const long = Array.from({ length: 30 }, (_, i) => `EVT-${String(i).padStart(4, '0')} ${'x'.repeat(160)}`);
+  const plain = Object.assign({}, doc, { fields: [{ label: 'Client', value: 'Nord', images: [] }] });
+  const full = pdf.buildSubmissionPdf(Object.assign({}, plain, { traceLines: long }), { enforceLimit: false, omitImages: false });
+  const bare = pdf.buildSubmissionPdf(Object.assign({}, plain, { traceLines: [] }), { enforceLimit: false, omitImages: false });
+  assert.ok(full.length > bare.length);
+  const kept = pdf.buildSubmissionPdfWithinLimit(plain, [long, []], bare.length);
+  const keptText = pdf.extractPdfText(kept);
+  assert.equal(keptText.includes('Traçabilité'), false);
+  assert.equal(keptText.includes('EVT-0029'), false);
+  const mentionLines = long.concat(['12 événements plus anciens non affichés']);
+  const withMention = pdf.buildSubmissionPdf(Object.assign({}, plain, { traceLines: mentionLines }), { enforceLimit: false, omitImages: false });
+  const shown = pdf.buildSubmissionPdfWithinLimit(plain, [mentionLines, []], withMention.length);
+  const shownText = pdf.extractPdfText(shown);
+  assert.equal(shownText.includes('Traçabilité'), true);
+  assert.match(shownText, /12 événements plus anciens non affichés/);
+  const dropped = pdf.buildSubmissionPdfWithinLimit(doc, [long, []], withoutImages.length);
+  assert.equal(dropped.includes(marker), false);
+  assert.throws(() => pdf.buildSubmissionPdfWithinLimit(doc, [[]], 80), (err) => err.status === 413);
 });

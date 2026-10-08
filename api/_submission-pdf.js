@@ -522,7 +522,7 @@ function formatSubmissionDocument(input) {
     reference: clip(source.reference, 80) || '—',
     fields: rows,
     traceLines: Array.isArray(source.traceLines)
-      ? source.traceLines.map((line) => clip(line, 220)).filter(Boolean).slice(0, 40)
+      ? source.traceLines.map((line) => clip(line, 220)).filter(Boolean).slice(0, 400)
       : [],
     imageStats: {
       kept: budget.kept,
@@ -541,8 +541,19 @@ function imageObject(image) {
   return Buffer.concat([dict, data, Buffer.from('\nendstream')]);
 }
 
-function buildSubmissionPdf(doc) {
-  const model = doc && doc.fields ? doc : formatSubmissionDocument(doc);
+function modelWithoutImages(model) {
+  return Object.assign({}, model, {
+    fields: (model.fields || []).map((field) => {
+      if (!field || !Array.isArray(field.images) || !field.images.length) return field;
+      return Object.assign({}, field, { images: field.images.map(() => ({ omitted: true })) });
+    })
+  });
+}
+
+function buildSubmissionPdf(doc, options) {
+  const omitImages = !!(options && options.omitImages);
+  let model = doc && doc.fields ? doc : formatSubmissionDocument(doc);
+  if (omitImages) model = modelWithoutImages(model);
   const pages = [];
   let page = null;
   let y = 0;
@@ -712,11 +723,33 @@ function buildSubmissionPdf(doc) {
   return Buffer.concat([out, Buffer.from(xref)]);
 }
 
+const PDF_BYTE_LIMIT = 3_000_000;
+
+// Repli : frise complète, frise réduite, sans frise, puis sans images.
+// enforceLimit:false empêche le rendu de retirer les images avant ces essais.
+// Quand le budget images exposera omitImages, le dernier essai s'y branche tel quel.
+function buildSubmissionPdfWithinLimit(doc, lineSets, limit = PDF_BYTE_LIMIT) {
+  const sets = Array.isArray(lineSets) && lineSets.length ? lineSets : [[]];
+  const attempts = sets.map((lines) => ({ lines: lines || [], omitImages: false }));
+  attempts.push({ lines: [], omitImages: true });
+  let last = null;
+  for (const attempt of attempts) {
+    const next = Object.assign({}, doc, { traceLines: attempt.lines });
+    last = buildSubmissionPdf(next, { enforceLimit: false, omitImages: attempt.omitImages });
+    if (last && last.length <= limit) return last;
+  }
+  const err = new Error('Export PDF impossible.');
+  err.status = 413;
+  throw err;
+}
+
 module.exports = {
+  PDF_BYTE_LIMIT,
   formatSubmissionDate,
   deviceAuthor,
   formatSubmissionDocument,
   buildSubmissionPdf,
+  buildSubmissionPdfWithinLimit,
   extractPdfText,
   decodeImageBuffer
 };

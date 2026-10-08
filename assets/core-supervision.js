@@ -1936,7 +1936,7 @@
 
   function changeText(change) {
     if (!change) return '';
-    if (change.kind === 'redacted') return 'valeur masquée';
+    if (change.kind === 'redacted') return (change.before || 'masqué') + ' → ' + (change.after || 'masqué');
     if (change.kind === 'file') {
       var size = formatSize(change.size);
       var name = change.name || 'fichier';
@@ -1980,7 +1980,9 @@
         extra += '<div style="margin-top:3px">' + html(detail.from || '—') + ' → ' + html(detail.to || '—') + '</div>';
       }
       if (detail.comment) extra += '<div style="margin-top:3px;font-style:italic">« ' + html(detail.comment) + ' »</div>';
+      if (event.declared_label || event.declared_by_device) extra += '<div style="margin-top:3px">déclaré par l’appareil</div>';
       if (detail.step_label) extra += '<div style="margin-top:3px">Temps à l’étape précédente : ' + html(detail.step_label) + '</div>';
+      if (detail.more_label) extra += '<div style="margin-top:3px">' + html(detail.more_label) + '</div>';
       if (event.event_type === 'pad_synced' && event.device_captured_at) {
         extra += '<div style="margin-top:3px">Saisie appareil : ' + html(event.device_captured_at_paris || formatParis(event.device_captured_at)) + '<br>Réception serveur : ' + html(when) + '</div>';
       }

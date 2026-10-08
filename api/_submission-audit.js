@@ -37,8 +37,17 @@ const EVENT_LABELS = {
 const STEP_TYPES = ['status_changed', 'validated', 'refused', 'returned', 'closed', 'reopened', 'archived'];
 const DETAILED_TYPES = new Set(EVENT_TYPES.filter((type) => type !== 'viewed' && type !== 'exported'));
 const FILE_TYPES = new Set(['photo', 'image', 'file', 'fichier', 'signature', 'sign', 'camera', 'piece', 'pj', 'upload', 'video', 'audio', 'son']);
+const SECRET_FIELD_TYPES = new Set(['password', 'passwd', 'secret', 'hidden', 'pin', 'otp']);
 const SECRET_KEY = /password|passwd|token|secret|authorization|cookie|api[_-]?key|license[_-]?key|session|supa[_-]?(key|url)|bearer/i;
-const SELECT_COLUMNS = 'id,environment_code,submission_id,service_instance_id,event_type,occurred_at,device_captured_at,actor_id,actor_name,actor_role,actor_license_type,origin,device_label,detail';
+const SENSITIVE_TEXT = /mot de passe|\bpassword\b|\bpasswd\b|\bmdp\b|code d.?acces|digicode|code pin|\bpin\b|\botp\b|code de verification|verification code|\btoken\b|\bsecret\b|api ?key|\biban\b|carte bancaire|numero de carte|credit card|card number|\bcvv\b|\bcvc\b|cryptogramme/;
+const DEVICE_DECLARED = new Set(['email_sent', 'db_updated', 'form_filled', 'commented']);
+const SELECT_COLUMNS = 'id,environment_code,submission_id,service_instance_id,event_type,occurred_at,device_captured_at,actor_id,actor_name,actor_role,actor_license_type,origin,device_label,detail,idempotency_key';
+const JOURNAL_CALL_MS = 2000;
+const JOURNAL_BUDGET_MS = 3000;
+const DETAIL_MAX_BYTES = 20000;
+const PDF_TRACE_LIMIT = 50;
+const CHANGE_LIMIT = 40;
+const RECEIPTS = 'pad_sync_receipts';
 
 function isAuditEntity(value) {
   return String(value || '').trim() === TABLE;
@@ -151,12 +160,73 @@ function actorFromSession(user, profile) {
   };
 }
 
+function foldText(value) {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function luhnOk(digits) {
+  let sum = 0;
+  let alt = false;
+  for (let i = digits.length - 1; i >= 0; i -= 1) {
+    let n = digits.charCodeAt(i) - 48;
+    if (n < 0 || n > 9) return false;
+    if (alt) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    alt = !alt;
+  }
+  return sum % 10 === 0;
+}
+
+function looksLikeSecret(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return false;
+  if (/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/.test(text)) return true;
+  if (!/\s/.test(text) && /^[0-9a-fA-F]{32,}$/.test(text)) return true;
+  if (!/\s/.test(text) && text.length >= 32 && /^[A-Za-z0-9+/_=-]+$/.test(text)) return true;
+  const digits = text.replace(/[\s-]/g, '');
+  if (/^\d{13,19}$/.test(digits) && luhnOk(digits)) return true;
+  return false;
+}
+
+function maskEmbeddedSecrets(text) {
+  return String(text || '')
+    .replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, 'masqué')
+    .replace(/\b[0-9a-fA-F]{32,}\b/g, 'masqué')
+    .replace(/\b(?:\d[ -]?){13,19}\b/g, (match) => {
+      const digits = match.replace(/\D/g, '');
+      return /^\d{13,19}$/.test(digits) && luhnOk(digits) ? 'masqué' : match;
+    });
+}
+
+function isSensitiveField(key, label) {
+  const blob = foldText(`${key} ${label}`).replace(/[_-]+/g, ' ');
+  return SENSITIVE_TEXT.test(blob) || SECRET_KEY.test(String(key || '')) || SECRET_KEY.test(String(label || ''));
+}
+
+function isSignatureType(type) {
+  const value = String(type || '').toLowerCase();
+  return value === 'signature' || value === 'sign';
+}
+
+function maskKindForType(type) {
+  const raw = String(type || '').trim();
+  if (!raw) return '';
+  if (isSignatureType(raw)) return 'signature';
+  const folded = foldText(raw).replace(/[_-]+/g, ' ');
+  if (SECRET_FIELD_TYPES.has(folded) || SENSITIVE_TEXT.test(folded) || SECRET_KEY.test(raw)) return 'secret';
+  return '';
+}
+
 function sanitizeDetail(value, depth = 0) {
   if (value == null) return value === undefined ? undefined : null;
   if (typeof value === 'string') {
     const text = value.trim();
-    if (/^data:/i.test(text) || (text.length > 400 && /^[A-Za-z0-9+/=\s]+$/.test(text.slice(0, 80)))) return '[contenu omis]';
-    return clip(text, 500);
+    if (/^data:/i.test(text)) return '[contenu omis]';
+    if (looksLikeSecret(text)) return 'masqué';
+    return maskEmbeddedSecrets(clip(text, 500));
   }
   if (typeof value === 'number' || typeof value === 'boolean') return value;
   if (depth > 5) return '[contenu omis]';
@@ -174,13 +244,30 @@ function sanitizeDetail(value, depth = 0) {
   return clip(value, 120);
 }
 
+function detailBytes(detail) {
+  return Buffer.byteLength(JSON.stringify(detail), 'utf8');
+}
+
 function fitDetail(detail) {
   let safe = sanitizeDetail(detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {}) || {};
-  if (JSON.stringify(safe).length <= 20000) return safe;
+  if (!Array.isArray(safe.changes)) safe.changes = undefined;
+  if (safe.changes === undefined) delete safe.changes;
+  if (detailBytes(safe) <= DETAIL_MAX_BYTES) return safe;
   if (Array.isArray(safe.changes)) {
-    safe = Object.assign({}, safe, { changes: safe.changes.slice(0, 12), truncated: true });
+    let extra = 0;
+    const match = String(safe.more_label || '').match(/\+(\d+)/);
+    if (match) extra = Number(match[1]) || 0;
+    while (safe.changes.length && detailBytes(safe) > DETAIL_MAX_BYTES) {
+      safe.changes.pop();
+      extra += 1;
+      safe.more_label = `+${extra} autres champs modifiés`;
+      safe.truncated = true;
+    }
+    if (!safe.changes.length) delete safe.changes;
   }
-  if (JSON.stringify(safe).length > 20000) return { truncated: true, summary: 'Détail trop volumineux, contenu omis.' };
+  if (detailBytes(safe) > DETAIL_MAX_BYTES) {
+    safe = { truncated: true, summary: 'Détail tronqué.' };
+  }
   return safe;
 }
 
@@ -209,6 +296,7 @@ function buildEventRow(input) {
     actor_license_type: clip(actor.licenseType, 40),
     origin: source.origin === 'pad' ? 'pad' : 'supervision',
     device_label: clip(source.deviceLabel, 160),
+    idempotency_key: source.idempotencyKey ? clip(source.idempotencyKey, 160) : null,
     detail: fitDetail(source.detail)
   };
 }
@@ -232,11 +320,7 @@ function isFileType(type) {
 }
 
 function looksBinary(value) {
-  if (typeof value === 'string') {
-    const text = value.trim();
-    if (/^data:/i.test(text)) return true;
-    return text.length > 400 && /^[A-Za-z0-9+/=\s]+$/.test(text.slice(0, 120));
-  }
+  if (typeof value === 'string') return /^data:/i.test(value.trim());
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return Boolean(value.data || value.dataUrl || value.data_url || value.content || value.base64 || value.blob);
   }
@@ -309,6 +393,13 @@ function plain(value) {
   return clip(value, 500);
 }
 
+function displayValue(value) {
+  const text = plain(value);
+  if (!text) return '';
+  if (looksLikeSecret(text)) return 'masqué';
+  return maskEmbeddedSecrets(text);
+}
+
 function diffValues(before, after, fields) {
   const defs = indexFields(fields);
   const left = before && typeof before === 'object' && !Array.isArray(before) ? before : {};
@@ -319,9 +410,12 @@ function diffValues(before, after, fields) {
     if (!key || key.startsWith('_') || key.length > 80) continue;
     const def = defs.get(key);
     const label = def ? def.label : key;
-    if (SECRET_KEY.test(key) || SECRET_KEY.test(label)) {
+    const typeMask = def ? maskKindForType(def.type) : '';
+    if (isSensitiveField(key, label) || typeMask) {
       if (JSON.stringify(left[key] ?? null) !== JSON.stringify(right[key] ?? null)) {
-        changes.push({ key, label, kind: 'redacted', change: 'updated' });
+        const row = { key, label, kind: 'redacted', change: 'updated', before: 'masqué', after: 'masqué' };
+        if (typeMask === 'signature') row.signature = true;
+        changes.push(row);
       }
       continue;
     }
@@ -349,13 +443,24 @@ function diffValues(before, after, fields) {
       }
       continue;
     }
-    const beforeText = plain(left[key]);
-    const afterText = plain(right[key]);
+    const beforeText = displayValue(left[key]);
+    const afterText = displayValue(right[key]);
     if (beforeText !== afterText) {
       changes.push({ key, label, kind: 'text', change: 'updated', before: beforeText, after: afterText });
     }
   }
-  return changes.slice(0, 80);
+  const omitted = Math.max(0, changes.length - CHANGE_LIMIT);
+  const limited = changes.slice(0, CHANGE_LIMIT);
+  limited.omitted = omitted;
+  return limited;
+}
+
+function packDetail(detail, changes) {
+  const list = Array.isArray(changes) ? changes : [];
+  const next = Object.assign({}, detail || {}, { changes: list.slice(0, CHANGE_LIMIT) });
+  const omitted = list.omitted || Math.max(0, list.length - CHANGE_LIMIT);
+  if (omitted > 0) next.more_label = `+${omitted} autres champs modifiés`;
+  return next;
 }
 
 function statusText(status) {
@@ -404,28 +509,25 @@ function eventsForSubmission({ before, beforeValues, afterValues, fields, priorD
   if (!before) {
     events.push({
       eventType: priorDeleted ? 'restored' : 'created',
-      detail: priorDeleted ? { previous: 'deleted', changes } : { changes }
+      detail: packDetail(priorDeleted ? { previous: 'deleted' } : {}, changes)
     });
-  } else {
-    events.push({ eventType: 'updated', detail: { changes } });
+  } else if (changes.length) {
+    events.push({ eventType: 'updated', detail: packDetail({}, changes) });
   }
   for (const change of changes) {
-    if (change.kind === 'file' && change.signature) {
-      events.push({
-        eventType: 'signed',
-        detail: {
-          label: change.label,
-          key: change.key,
-          change: change.change,
-          name: change.name,
-          size: change.size,
-          previous_name: change.previous_name,
-          previous_size: change.previous_size
-        }
-      });
-    }
+    if (change.signature) events.push({ eventType: 'signed', detail: signedDetail(change) });
   }
   return events;
+}
+
+function signedDetail(change) {
+  const detail = { label: change.label, key: change.key, change: change.change };
+  if (change.kind === 'redacted') return detail;
+  detail.name = change.name;
+  detail.size = change.size;
+  if (change.previous_name) detail.previous_name = change.previous_name;
+  if (change.previous_size != null) detail.previous_size = change.previous_size;
+  return detail;
 }
 
 function eventsForInstance({ before, after, service, fields }) {
@@ -458,20 +560,19 @@ function eventsForInstance({ before, after, service, fields }) {
       });
     }
     const changes = diffValues(before.form_data || {}, row.form_data || {}, fields);
-    if (changes.length) events.push({ eventType: 'updated', detail: { changes } });
+    if (changes.length) events.push({ eventType: 'updated', detail: packDetail({}, changes) });
     for (const change of changes) {
-      if (change.kind === 'file' && change.signature) {
-        events.push({ eventType: 'signed', detail: { label: change.label, key: change.key, change: change.change, name: change.name, size: change.size } });
-      }
+      if (change.signature) events.push({ eventType: 'signed', detail: signedDetail(change) });
     }
   }
   const fresh = newClientEvents(before && before.events, row.events);
   const comment = fresh.find((item) => item && item.type === 'commented');
-  const commentText = clip(comment && comment.payload && comment.payload.comment, 2000);
-  if (commentText) {
+  const commentText = maskEmbeddedSecrets(clip(comment && comment.payload && comment.payload.comment, 500));
+  const safeComment = looksLikeSecret(commentText) ? 'masqué' : commentText;
+  if (safeComment) {
     const statusEvent = events.find((item) => STEP_TYPES.includes(item.eventType));
-    if (statusEvent) statusEvent.detail.comment = commentText;
-    events.push({ eventType: 'commented', detail: { comment: commentText } });
+    if (statusEvent) statusEvent.detail.comment = safeComment;
+    events.push({ eventType: 'commented', detail: { comment: safeComment } });
   }
   for (const item of fresh) {
     if (!item || item.type === 'commented' || item.type === 'status_changed' || item.type === 'assigned' || item.type === 'created') continue;
@@ -560,12 +661,39 @@ function legacyEvents(submission, instance) {
   return events;
 }
 
+function annotateEvents(events) {
+  const chrono = events.slice().sort((a, b) => String(a.occurred_at || '').localeCompare(String(b.occurred_at || '')) || String(a.id || '').localeCompare(String(b.id || '')));
+  let lastStep = null;
+  let deletedAt = null;
+  for (const event of chrono) {
+    if (DEVICE_DECLARED.has(event.event_type)) {
+      event.declared_by_device = true;
+      event.declared_label = 'déclaré par l’appareil';
+    }
+    if (event.event_type === 'deleted') deletedAt = event.occurred_at;
+    if (event.event_type === 'created' && deletedAt && String(event.occurred_at) > String(deletedAt)) {
+      event.event_type = 'restored';
+      event.label = EVENT_LABELS.restored;
+      deletedAt = null;
+    }
+    if (STEP_TYPES.includes(event.event_type)) {
+      if (lastStep) {
+        const seconds = Math.max(0, Math.round((new Date(event.occurred_at).getTime() - new Date(lastStep).getTime()) / 1000));
+        event.detail = Object.assign({}, event.detail, { step_seconds: seconds, step_label: formatDuration(seconds) });
+      }
+      lastStep = event.occurred_at;
+    }
+  }
+  return events;
+}
+
 function composeTimeline(stored, submission, instance) {
   const rows = Array.isArray(stored) ? stored : [];
   const detailed = rows.some((row) => DETAILED_TYPES.has(row.event_type));
   const events = rows.map((row) => presentEvent(row));
   if (!detailed) events.push(...legacyEvents(submission, instance));
   events.sort((a, b) => String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')) || String(b.id || '').localeCompare(String(a.id || '')));
+  annotateEvents(events);
   return {
     legacy: !detailed,
     notice: detailed ? null : LEGACY_NOTICE,
@@ -576,7 +704,7 @@ function composeTimeline(stored, submission, instance) {
 function changeLine(change) {
   if (!change || typeof change !== 'object') return '';
   const label = change.label || change.key || 'Champ';
-  if (change.kind === 'redacted') return `${label} : valeur masquée`;
+  if (change.kind === 'redacted') return `${label} : masqué`;
   if (change.kind === 'file') {
     const size = formatSize(change.size);
     const name = change.name || 'fichier';
@@ -591,23 +719,35 @@ function changeLine(change) {
   return `${label} : ${before} -> ${after}`;
 }
 
-function toPdfLines(timeline) {
+function toPdfLines(timeline, limit = PDF_TRACE_LIMIT) {
+  const events = annotateEvents((timeline?.events || []).map((event) => Object.assign({}, event, { detail: Object.assign({}, event.detail) })));
+  events.sort((a, b) => String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')));
+  const cap = Math.max(0, Number(limit) || 0);
+  const shown = events.slice(0, cap);
+  const older = Math.max(0, events.length - shown.length);
   const lines = [];
   if (timeline?.notice) lines.push(timeline.notice);
-  for (const event of (timeline?.events || []).slice(0, 30)) {
+  if (older > 0) lines.push(`${older} événements plus anciens non affichés`);
+  for (const event of shown) {
     const who = [event.actor_name, event.actor_id, event.actor_role, event.actor_license_type].filter(Boolean).join(' · ');
     const device = event.device_label ? ` · ${event.device_label}` : '';
     lines.push(`${event.occurred_at_paris || formatParis(event.occurred_at)} — ${event.label} — ${who || '—'} — ${event.origin_label}${device}`);
+    if (event.declared_label) lines.push(`  ${event.declared_label}`);
     if (event.detail?.from_status || event.detail?.to_status) {
       lines.push(`  ${(event.detail.from_status || '—')} -> ${(event.detail.to_status || '—')}`);
     }
     if (event.detail?.action) lines.push(`  ${event.detail.action}`);
     if (event.detail?.comment) lines.push(`  Commentaire : ${event.detail.comment}`);
     if (event.detail?.step_label) lines.push(`  Temps à l'étape précédente : ${event.detail.step_label}`);
+    if (event.detail?.more_label) lines.push(`  ${event.detail.more_label}`);
     if (event.device_captured_at) lines.push(`  Saisie appareil : ${event.device_captured_at_paris || formatParis(event.device_captured_at)}`);
     for (const change of (event.detail?.changes || []).slice(0, 12)) lines.push(`  ${changeLine(change)}`);
   }
   return lines;
+}
+
+function pdfLineSets(timeline) {
+  return [toPdfLines(timeline, PDF_TRACE_LIMIT), []];
 }
 
 function prependEvent(timeline, row) {
@@ -616,10 +756,40 @@ function prependEvent(timeline, row) {
   return { legacy: Boolean(timeline?.legacy) && row.event_type !== 'created', notice: timeline?.notice || null, events };
 }
 
-async function insertEvent(serviceRest, req, row) {
+function auditBudget(req) {
+  const host = req || {};
+  if (!host.picoAuditBudget) {
+    const start = Date.now();
+    host.picoAuditBudget = {
+      timeoutFor() {
+        const left = JOURNAL_BUDGET_MS - (Date.now() - start);
+        if (left <= 50) return 0;
+        return Math.min(JOURNAL_CALL_MS, left);
+      }
+    };
+    if (req) req.picoAuditBudget = host.picoAuditBudget;
+  }
+  return host.picoAuditBudget;
+}
+
+async function journalCall(serviceRest, req, path, options) {
+  const timeoutMs = auditBudget(req).timeoutFor();
+  if (timeoutMs <= 0) {
+    console.error('[submission-audit] budget journal épuisé');
+    throw new Error('budget journal épuisé');
+  }
+  return serviceRest(path, Object.assign({}, options, { req, timeoutMs }));
+}
+
+async function insertEvents(serviceRest, req, rows) {
+  const list = (Array.isArray(rows) ? rows : []).filter((row) => row && EVENT_TYPES.includes(row.event_type));
+  if (!list.length) return false;
   try {
-    if (!row || mutationBlocked('POST') || !EVENT_TYPES.includes(row.event_type)) return false;
-    await serviceRest(TABLE, { method: 'POST', body: row, prefer: 'return=minimal', req });
+    const idempotent = list.every((row) => row.idempotency_key);
+    const path = idempotent ? `${TABLE}?on_conflict=environment_code,idempotency_key` : TABLE;
+    const prefer = idempotent ? 'return=minimal,resolution=ignore-duplicates' : 'return=minimal';
+    const body = list.length === 1 ? list[0] : list;
+    await journalCall(serviceRest, req, path, { method: 'POST', body, prefer });
     return true;
   } catch (err) {
     console.error('[submission-audit] écriture journal impossible', err && (err.message || err));
@@ -627,30 +797,27 @@ async function insertEvent(serviceRest, req, row) {
   }
 }
 
-async function enrichActor(serviceRest, req, user, profile, env) {
-  const actor = actorFromSession(user, profile);
-  if (actor.name && actor.name !== String(profile?.email || '')) return actor;
-  const id = cleanId(user?.id || profile?.id);
-  if (!id || !env) return actor;
-  try {
-    const rows = await serviceRest(
-      `user_profiles?id=eq.${enc(id)}&environment_code=eq.${enc(env)}&select=id,email,label,firstname,lastname,first_name,last_name,role,license_type&limit=1`,
-      { method: 'GET', prefer: '', req }
-    );
-    const row = Array.isArray(rows) ? rows[0] : null;
-    if (!row) return actor;
-    return actorFromSession(user, Object.assign({}, profile, row));
-  } catch (err) {
-    console.error('[submission-audit] lecture auteur impossible', err && (err.message || err));
-    return actor;
-  }
+async function insertEvent(serviceRest, req, row) {
+  return insertEvents(serviceRest, req, [row]);
+}
+
+function stageEvents(req, rows) {
+  if (!req) return;
+  if (!Array.isArray(req.picoAuditStage)) req.picoAuditStage = [];
+  for (const row of rows || []) req.picoAuditStage.push(row);
+}
+
+async function flushAudit(req, serviceRest) {
+  const rows = req && Array.isArray(req.picoAuditStage) ? req.picoAuditStage.splice(0) : [];
+  if (!rows.length || !serviceRest) return false;
+  return insertEvents(serviceRest, req, rows);
 }
 
 async function readLog(serviceRest, req, env, submissionId) {
   try {
-    const rows = await serviceRest(
+    const rows = await journalCall(serviceRest, req,
       `${TABLE}?environment_code=eq.${enc(env)}&submission_id=eq.${enc(submissionId)}&select=${SELECT_COLUMNS}&order=occurred_at.desc&limit=500`,
-      { method: 'GET', prefer: '', req }
+      { method: 'GET', prefer: '' }
     );
     return Array.isArray(rows) ? rows.filter((row) => String(row?.environment_code || '') === env) : [];
   } catch (err) {
@@ -659,53 +826,33 @@ async function readLog(serviceRest, req, env, submissionId) {
   }
 }
 
-async function hadDeleted(serviceRest, req, env, submissionId) {
-  try {
-    const rows = await serviceRest(
-      `${TABLE}?environment_code=eq.${enc(env)}&submission_id=eq.${enc(submissionId)}&event_type=eq.deleted&select=id&limit=1`,
-      { method: 'GET', prefer: '', req }
-    );
-    return Array.isArray(rows) && rows.length > 0;
-  } catch (_) {
-    return false;
-  }
-}
-
-async function lastStepAt(serviceRest, req, env, submissionId, fallback) {
-  try {
-    const rows = await serviceRest(
-      `${TABLE}?environment_code=eq.${enc(env)}&submission_id=eq.${enc(submissionId)}&event_type=in.(${STEP_TYPES.join(',')})&select=occurred_at&order=occurred_at.desc&limit=1`,
-      { method: 'GET', prefer: '', req }
-    );
-    const at = Array.isArray(rows) && rows[0] && rows[0].occurred_at;
-    if (at) return at;
-  } catch (_) {}
-  return fallback || null;
-}
-
-async function writeEvents(serviceRest, req, base, events) {
+function rowsFromEvents(base, events) {
   const now = new Date();
+  const rows = [];
   for (let index = 0; index < events.length; index += 1) {
     const item = events[index];
-    let detail = item.detail || {};
-    if (item.step && base.submissionId) {
-      const previous = await lastStepAt(serviceRest, req, base.environmentCode, base.submissionId, base.stepFallback);
-      if (previous) {
-        const seconds = Math.max(0, Math.round((now.getTime() - new Date(previous).getTime()) / 1000));
-        detail = Object.assign({}, detail, { step_seconds: seconds, step_label: formatDuration(seconds) });
-      }
-    }
     try {
-      const row = buildEventRow(Object.assign({}, base, item, {
-        detail,
+      rows.push(buildEventRow(Object.assign({}, base, item, {
+        detail: item.detail || {},
         now: new Date(now.getTime() + index),
-        deviceCapturedAt: item.deviceCapturedAt
-      }));
-      await insertEvent(serviceRest, req, row);
+        deviceCapturedAt: item.deviceCapturedAt,
+        idempotencyKey: item.idempotencyKey
+      })));
     } catch (err) {
       console.error('[submission-audit] écriture journal impossible', err && (err.message || err));
     }
   }
+  return rows;
+}
+
+async function writeEvents(serviceRest, req, base, events, options) {
+  const rows = rowsFromEvents(base, events);
+  if (!rows.length) return false;
+  if (options && options.stage) {
+    stageEvents(req, rows);
+    return true;
+  }
+  return insertEvents(serviceRest, req, rows);
 }
 
 async function recordSave(req, ctx) {
@@ -715,35 +862,32 @@ async function recordSave(req, ctx) {
     const env = clip(ctx.env || saved.environment_code, 80);
     const submissionId = cleanId(ctx.entity === 'submissions' ? (saved.id || ctx.id) : (saved.submission_id || ctx.record?.submission_id || saved.id || ctx.id));
     if (!env || !submissionId) return;
-    const actor = await enrichActor(ctx.serviceRest, req, ctx.user, ctx.profile, env);
+    const actor = actorFromSession(ctx.user, ctx.profile);
     const base = {
       environmentCode: env,
       submissionId,
       serviceInstanceId: ctx.entity === 'service_instances' ? (saved.id || ctx.id) : '',
       actor,
       origin: originForProfile(ctx.profile),
-      deviceLabel: deviceLabel(req, ctx.profile, saved.device || ctx.record?.device),
-      stepFallback: ctx.before && (ctx.before.updated_at || ctx.before.created_at)
+      deviceLabel: deviceLabel(req, ctx.profile, saved.device || ctx.record?.device)
     };
     let events = [];
     if (ctx.entity === 'submissions') {
       const fields = Array.isArray(ctx.form?.fields) ? ctx.form.fields : [];
-      const priorDeleted = !ctx.before ? await hadDeleted(ctx.serviceRest, req, env, submissionId) : false;
       events = eventsForSubmission({
         before: ctx.before,
         beforeValues: ctx.before && ctx.before.values,
         afterValues: saved.values || ctx.record?.values || {},
-        fields,
-        priorDeleted
+        fields
       });
     } else if (ctx.entity === 'service_instances') {
-      let fields = [];
+      let fields = Array.isArray(ctx.form?.fields) ? ctx.form.fields : [];
       const formId = cleanId(ctx.service?.form_id);
-      if (formId) {
+      if (!fields.length && formId) {
         try {
           const forms = await ctx.serviceRest(
             `forms?id=eq.${enc(formId)}&environment_code=eq.${enc(env)}&select=id,fields,environment_code&limit=1`,
-            { method: 'GET', prefer: '', req }
+            { method: 'GET', prefer: '', req, timeoutMs: JOURNAL_CALL_MS }
           );
           const form = Array.isArray(forms) ? forms[0] : null;
           if (form && String(form.environment_code || '') === env) fields = Array.isArray(form.fields) ? form.fields : [];
@@ -758,13 +902,39 @@ async function recordSave(req, ctx) {
   }
 }
 
+async function eraseSubmissionJournal(serviceRest, req, env, submissionIds) {
+  const ids = [];
+  const seen = new Set();
+  for (const value of Array.isArray(submissionIds) ? submissionIds : [submissionIds]) {
+    const id = cleanId(value);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= 100) break;
+  }
+  const environment = clip(env, 80);
+  if (!environment || !ids.length) return false;
+  try {
+    await journalCall(serviceRest, req, 'rpc/purge_submission_audit_log', {
+      method: 'POST',
+      body: { target_environment: environment, target_submissions: ids },
+      prefer: 'return=minimal'
+    });
+    return true;
+  } catch (err) {
+    console.error('[submission-audit] effacement journal impossible', err && (err.message || err));
+    return false;
+  }
+}
+
 async function recordDelete(req, ctx) {
   try {
     const env = clip(ctx.env, 80);
     const existing = ctx.existing || {};
     const submissionId = cleanId(ctx.entity === 'submissions' ? ctx.id : (existing.submission_id || ctx.id));
     if (!env || !submissionId) return;
-    const actor = await enrichActor(ctx.serviceRest, req, ctx.user, ctx.profile, env);
+    if (ctx.entity === 'submissions') await eraseSubmissionJournal(ctx.serviceRest, req, env, submissionId);
+    const actor = actorFromSession(ctx.user, ctx.profile);
     const row = buildEventRow({
       eventType: 'deleted',
       environmentCode: env,
@@ -785,28 +955,40 @@ async function recordDelete(req, ctx) {
 async function recordFormCascade(req, ctx) {
   try {
     const formId = cleanId(ctx.formId);
-    if (!formId) return;
-    let path = `submissions?form_id=eq.${enc(formId)}&select=id,environment_code,device&limit=100`;
-    if (ctx.env) path += `&environment_code=eq.${enc(ctx.env)}`;
-    const rows = await ctx.serviceRest(path, { method: 'GET', prefer: '', req });
-    const actor = await enrichActor(ctx.serviceRest, req, ctx.user, ctx.profile, ctx.env || (Array.isArray(rows) && rows[0] && rows[0].environment_code) || '');
-    for (const row of Array.isArray(rows) ? rows : []) {
+    const rows = Array.isArray(ctx.rows) ? ctx.rows : [];
+    if (!formId || !rows.length) return;
+    const actor = actorFromSession(ctx.user, ctx.profile);
+    const ids = [];
+    for (const row of rows) {
       const submissionId = cleanId(row?.id);
       const env = clip(row?.environment_code || ctx.env, 80);
       if (!submissionId || !env) continue;
       if (ctx.env && env !== ctx.env) continue;
-      const event = buildEventRow({
-        eventType: 'deleted',
-        environmentCode: env,
-        submissionId,
-        actor,
-        origin: originForProfile(ctx.profile),
-        deviceLabel: deviceLabel(req, ctx.profile, row.device),
-        detail: { via: 'form_delete', form_id: formId },
-        now: new Date()
-      });
-      await insertEvent(ctx.serviceRest, req, event);
+      ids.push(submissionId);
     }
+    if (ctx.env) await eraseSubmissionJournal(ctx.serviceRest, req, ctx.env, ids);
+    const built = [];
+    for (const row of rows) {
+      const submissionId = cleanId(row?.id);
+      const env = clip(row?.environment_code || ctx.env, 80);
+      if (!submissionId || !env) continue;
+      if (ctx.env && env !== ctx.env) continue;
+      try {
+        built.push(buildEventRow({
+          eventType: 'deleted',
+          environmentCode: env,
+          submissionId,
+          actor,
+          origin: originForProfile(ctx.profile),
+          deviceLabel: deviceLabel(req, ctx.profile, row.device),
+          detail: { via: 'form_delete', form_id: formId },
+          now: new Date()
+        }));
+      } catch (err) {
+        console.error('[submission-audit] écriture journal impossible', err && (err.message || err));
+      }
+    }
+    await insertEvents(ctx.serviceRest, req, built);
   } catch (err) {
     console.error('[submission-audit] écriture journal impossible', err && (err.message || err));
   }
@@ -819,7 +1001,7 @@ async function loadTimeline(req, serviceRest, env, submissionId, submission, ins
     try {
       const rows = await serviceRest(
         `service_instances?submission_id=eq.${enc(submissionId)}&environment_code=eq.${enc(env)}&select=id,created_at,updated_at,environment_code&order=updated_at.desc&limit=1`,
-        { method: 'GET', prefer: '', req }
+        { method: 'GET', prefer: '', req, timeoutMs: JOURNAL_CALL_MS }
       );
       const row = Array.isArray(rows) ? rows[0] : null;
       if (row && String(row.environment_code || '') === env) linked = row;
@@ -829,7 +1011,7 @@ async function loadTimeline(req, serviceRest, env, submissionId, submission, ins
 }
 
 async function prepareExportTrace(req, ctx) {
-  const actor = await enrichActor(ctx.serviceRest, req, ctx.user, ctx.profile, ctx.env);
+  const actor = actorFromSession(ctx.user, ctx.profile);
   const row = buildEventRow({
     eventType: 'exported',
     environmentCode: ctx.env,
@@ -846,7 +1028,7 @@ async function prepareExportTrace(req, ctx) {
     merged.notice = LEGACY_NOTICE;
     merged.legacy = true;
   }
-  return { row, lines: toPdfLines(merged) };
+  return { row, lines: toPdfLines(merged), lineSets: pdfLineSets(merged), timeline: merged };
 }
 
 function recentView(rows, actorId, now) {
@@ -893,33 +1075,72 @@ async function handleTrace(req, body, deps) {
   }
   const stored = await readLog(deps.serviceRest, req, env, id);
   if (body.record_view === true && !recentView(stored, user.id, Date.now())) {
-    const actor = await enrichActor(deps.serviceRest, req, user, profile, env);
-    const row = buildEventRow({
-      eventType: 'viewed',
-      environmentCode: env,
-      submissionId: id,
-      actor,
-      origin: originForProfile(profile),
-      deviceLabel: deviceLabel(req, profile, submission.device),
-      detail: {},
-      now: new Date()
-    });
-    if (await insertEvent(deps.serviceRest, req, row)) stored.unshift(row);
-  }
-  const timeline = await loadTimeline(req, deps.serviceRest, env, id, submission, null);
-  if (body.record_view === true) {
-    const known = new Set((timeline.events || []).map((event) => event.id));
-    for (const row of stored) {
-      if (row.event_type === 'viewed' && !known.has(row.id)) timeline.events.unshift(presentEvent(row));
+    const actor = actorFromSession(user, profile);
+    try {
+      const row = buildEventRow({
+        eventType: 'viewed',
+        environmentCode: env,
+        submissionId: id,
+        actor,
+        origin: originForProfile(profile),
+        deviceLabel: deviceLabel(req, profile, submission.device),
+        detail: {},
+        now: new Date()
+      });
+      if (await insertEvent(deps.serviceRest, req, row)) stored.unshift(row);
+    } catch (err) {
+      console.error('[submission-audit] écriture journal impossible', err && (err.message || err));
     }
-    timeline.events.sort((a, b) => String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')));
   }
+  const timeline = composeTimeline(stored, submission, null);
   return {
     submission_id: id,
     environment_code: env,
     legacy: timeline.legacy,
     notice: timeline.notice,
     events: timeline.events
+  };
+}
+
+function cleanActionId(value) {
+  const id = String(value ?? '').trim();
+  return /^[A-Za-z0-9_.:-]{1,120}$/.test(id) ? id : '';
+}
+
+async function claimPadAction(rest, env, actionId, withInstance) {
+  const key = cleanActionId(actionId);
+  const environmentCode = clip(env, 80);
+  if (!key || !environmentCode) return { duplicate: false, reserved: false, actionId: '' };
+  const submissionId = crypto.randomUUID();
+  const instanceId = withInstance ? crypto.randomUUID() : null;
+  const inserted = await rest(`${RECEIPTS}?on_conflict=environment_code,action_id`, {
+    method: 'POST',
+    prefer: 'return=representation,resolution=ignore-duplicates',
+    body: {
+      environment_code: environmentCode,
+      action_id: key,
+      submission_id: submissionId,
+      service_instance_id: instanceId
+    }
+  });
+  const row = Array.isArray(inserted) ? inserted[0] : null;
+  if (row && row.submission_id === submissionId) {
+    return { duplicate: false, reserved: true, submissionId, instanceId, actionId: key };
+  }
+  const existingRows = await rest(
+    `${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=eq.${enc(key)}&select=submission_id,service_instance_id,action_id&limit=1`,
+    { method: 'GET', prefer: '' }
+  );
+  const existing = Array.isArray(existingRows) ? existingRows[0] : null;
+  if (!existing || !existing.submission_id) {
+    return { duplicate: false, reserved: true, submissionId, instanceId, actionId: key };
+  }
+  return {
+    duplicate: true,
+    reserved: true,
+    submissionId: existing.submission_id,
+    instanceId: existing.service_instance_id || null,
+    actionId: key
   };
 }
 
@@ -937,12 +1158,16 @@ async function recordPadSync(req, ctx) {
       licenseType: interpretedLicenseType(license.license_type || 'pad') || 'pad'
     };
     const deviceCapturedAt = parseDeviceTime(ctx.deviceCapturedAt);
+    const actionKey = cleanActionId(ctx.actionId);
     const events = eventsForPadSync({
       deviceCapturedAt,
       instance: ctx.instance,
       service: null,
       fields: []
-    });
+    }).map((event) => Object.assign({}, event, {
+      deviceCapturedAt: event.eventType === 'pad_synced' ? deviceCapturedAt : undefined,
+      idempotencyKey: actionKey ? `pad:${actionKey}:${event.eventType}` : undefined
+    }));
     await writeEvents(ctx.rest, req, {
       environmentCode: env,
       submissionId,
@@ -950,9 +1175,7 @@ async function recordPadSync(req, ctx) {
       actor,
       origin: 'pad',
       deviceLabel: clip(license.device_name, 160) || 'PAD'
-    }, events.map((event) => Object.assign({}, event, {
-      deviceCapturedAt: event.eventType === 'pad_synced' ? deviceCapturedAt : undefined
-    })));
+    }, events, { stage: true });
   } catch (err) {
     console.error('[submission-audit] écriture journal impossible', err && (err.message || err));
   }
@@ -978,6 +1201,13 @@ module.exports = {
   sanitizeDetail,
   actorFromSession,
   originForProfile,
+  JOURNAL_CALL_MS,
+  JOURNAL_BUDGET_MS,
+  DETAIL_MAX_BYTES,
+  looksLikeSecret,
+  pdfLineSets,
+  claimPadAction,
+  flushAudit,
   insertEvent,
   recordSave,
   recordDelete,
