@@ -2,9 +2,10 @@ const crypto = require('crypto');
 const { sendJson, setCors, verifyToken, sbRest } = require('./_pad-security');
 const submissionAudit = require('./_submission-audit');
 
+const REQUEST_DEADLINE_MS = 14000;
 const READ_COLUMNS = {
-  submissions: 'id,form_id,values,device,created_at,environment_code',
-  service_instances: 'id,service_id,submission_id,ref,form_data,status_id,priority,events,device,created_at,updated_at,assigned_to,environment_code,created_by,current_status_id,reference'
+  submissions: 'id,form_id,values,device,created_at,environment_code,idempotency_key',
+  service_instances: 'id,service_id,submission_id,ref,form_data,status_id,priority,events,device,created_at,updated_at,assigned_to,environment_code,created_by,current_status_id,reference,idempotency_key'
 };
 const INSTANCE_FIELDS = ['ref', 'form_data', 'status_id', 'priority', 'events', 'assigned_to', 'created_by', 'current_status_id', 'reference'];
 
@@ -23,20 +24,61 @@ function isPadAuthError(err) {
     || message === 'Licence PAD inactive ou supprimée';
 }
 
-async function insertSubmission(req, environmentCode, payload) {
+function actionKey(actionId) {
+  const id = String(actionId ?? '').trim();
+  if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(id)) return '';
+  return `pad:${id}`;
+}
+
+function clock(req) {
+  if (req && typeof req.picoNow === 'function') return req.picoNow();
+  return Date.now();
+}
+
+function deadlineFor(req) {
+  const fromReq = Number(req && req.picoDeadlineMs);
+  if (fromReq > 0) return fromReq;
+  const fromHandler = Number(handler.deadlineMs);
+  return fromHandler > 0 ? fromHandler : REQUEST_DEADLINE_MS;
+}
+
+function firstRow(value) {
+  if (Array.isArray(value)) return value.find((row) => row && row.id != null) || null;
+  if (value && typeof value === 'object' && value.id != null) return value;
+  return null;
+}
+
+async function writeIdempotent(req, table, row, key) {
+  if (!key) throw new Error('Clé d’idempotence manquante');
+  const inserted = await sbRest(req, `${table}?on_conflict=environment_code,idempotency_key`, {
+    method: 'POST',
+    prefer: 'return=representation,resolution=ignore-duplicates',
+    body: Object.assign({}, row, { idempotency_key: key })
+  });
+  const created = firstRow(inserted);
+  if (created) return { row: created, duplicate: false };
+  const found = await sbRest(
+    req,
+    `${table}?environment_code=eq.${encodeURIComponent(row.environment_code)}&idempotency_key=eq.${encodeURIComponent(key)}&select=${READ_COLUMNS[table]}&limit=1`,
+    { method: 'GET', prefer: '' }
+  );
+  const existing = firstRow(found);
+  if (existing) return { row: existing, duplicate: true };
+  throw new Error('Saisie introuvable après conflit d’idempotence');
+}
+
+async function insertSubmission(req, environmentCode, payload, actionId) {
   const formId = payload.formId ?? payload.form_id;
   if (formId == null || formId === '') throw new Error('Formulaire manquant dans la synchronisation PAD');
-  const row = {
+  return writeIdempotent(req, 'submissions', {
     environment_code: environmentCode,
     form_id: formId,
     values: payload.values || {},
     device: 'pad'
-  };
-  const rows = await sbRest(req, 'submissions', { method: 'POST', body: row });
-  return Array.isArray(rows) ? rows[0] : rows;
+  }, actionKey(actionId));
 }
 
-async function insertServiceInstance(req, environmentCode, payload, submission) {
+async function insertServiceInstance(req, environmentCode, payload, submission, actionId) {
   const inst = payload.instance && typeof payload.instance === 'object' ? payload.instance : {};
   const serviceId = inst.service_id || payload.serviceId || payload.service_id;
   if (serviceId == null || serviceId === '') throw new Error('Service manquant dans la synchronisation PAD');
@@ -50,25 +92,27 @@ async function insertServiceInstance(req, environmentCode, payload, submission) 
   for (const field of INSTANCE_FIELDS) {
     if (inst[field] !== undefined) row[field] = inst[field];
   }
-  const rows = await sbRest(req, 'service_instances', { method: 'POST', body: row });
-  return Array.isArray(rows) ? rows[0] : rows;
+  return writeIdempotent(req, 'service_instances', row, actionKey(actionId));
 }
 
-async function existingRow(req, table, id, environmentCode) {
-  const columns = READ_COLUMNS[table];
-  if (!columns || id == null || id === '') return null;
-  const rows = await sbRest(req, `${table}?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=${columns}&limit=1`, { method: 'GET', prefer: '' });
-  return Array.isArray(rows) ? rows[0] : null;
+function appliedResult(item, extra) {
+  return Object.assign({
+    actionId: item.id,
+    type: item.type,
+    status: 'applied',
+    duplicate: false,
+    already_applied: false
+  }, extra);
 }
 
-async function rowOrStored(req, table, id, environmentCode) {
-  try {
-    const row = await existingRow(req, table, id, environmentCode);
-    if (row) return row;
-  } catch (err) {
-    console.error('[pad-sync] lecture de la saisie déjà appliquée', err && (err.message || err));
-  }
-  return { id, environment_code: environmentCode };
+function retryResult(item) {
+  return {
+    actionId: item.id,
+    type: item.type,
+    status: 'retry',
+    duplicate: false,
+    already_applied: false
+  };
 }
 
 async function handler(req, res) {
@@ -77,6 +121,9 @@ async function handler(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'Méthode non autorisée' });
 
   const rest = (path, opts) => sbRest(req, path, opts);
+  // Les créations n'ouvrent pas de reçu. Cette réserve ne concerne qu'une action
+  // qui ne crée aucune saisie, et la file actuelle n'en a pas. On ne retire une
+  // action qu'une fois le reçu réellement libéré.
   const pendingOwned = new Set();
   let environmentCode = '';
   try {
@@ -95,56 +142,55 @@ async function handler(req, res) {
       const item = cleanAction(action);
       return { item, payload: item.payload || {} };
     });
-    const claims = await submissionAudit.claimPadBatch(rest, environmentCode, prepared.map((row) => ({ id: row.item.id })), req);
-    const claimById = new Map(claims.map((claim) => [claim.actionId, claim]));
-    for (const claim of claims) {
-      if (claim.reserved && !claim.duplicate) pendingOwned.add(claim.actionId);
-    }
-
+    const startedAt = clock(req);
+    const limit = deadlineFor(req);
     const results = [];
-    let sawBusy = false;
+    const retry = [];
     for (const { item, payload } of prepared) {
-      const claim = claimById.get(String(item.id || '').trim()) || { duplicate: false, reserved: false, degraded: true, actionId: '' };
-      if (claim.busy) {
-        sawBusy = true;
+      if (clock(req) - startedAt >= limit) {
+        retry.push(item.id);
+        results.push(retryResult(item));
         continue;
       }
+      if (!actionKey(item.id)) throw new Error('Action PAD invalide');
       if (item.type === 'form_submission') {
-        let row = claim.duplicate
-          ? await rowOrStored(req, 'submissions', claim.submissionId, environmentCode)
-          : await insertSubmission(req, environmentCode, payload);
-        if (!claim.duplicate && row && row.id != null) {
-          await submissionAudit.completePadReceipt(rest, environmentCode, claim.actionId || item.id, row.id, null, req);
-          pendingOwned.delete(claim.actionId || item.id);
-        }
+        const written = await insertSubmission(req, environmentCode, payload, item.id);
+        const row = written.row;
         await submissionAudit.recordPadSync(req, {
           rest, environmentCode, licenseId: session.licenseId, license,
-          deviceCapturedAt: item.created_at, submission: row, actionId: claim.actionId || item.id
+          deviceCapturedAt: item.created_at, submission: row, actionId: item.id
         });
-        results.push({ actionId: item.id, type: item.type, row, duplicate: !!claim.duplicate, already_applied: !!claim.duplicate });
+        results.push(appliedResult(item, { row, duplicate: written.duplicate, already_applied: written.duplicate }));
       } else if (item.type === 'service_instance') {
-        let sub = claim.duplicate
-          ? await rowOrStored(req, 'submissions', claim.submissionId, environmentCode)
-          : await insertSubmission(req, environmentCode, payload);
-        let inst = claim.duplicate && claim.instanceId
-          ? await rowOrStored(req, 'service_instances', claim.instanceId, environmentCode)
-          : null;
-        if (!inst) inst = await insertServiceInstance(req, environmentCode, payload, sub);
-        if (!claim.duplicate && sub && sub.id != null) {
-          await submissionAudit.completePadReceipt(rest, environmentCode, claim.actionId || item.id, sub.id, inst && inst.id, req);
-          pendingOwned.delete(claim.actionId || item.id);
-        }
+        const submission = await insertSubmission(req, environmentCode, payload, item.id);
+        const instance = await insertServiceInstance(req, environmentCode, payload, submission.row, item.id);
+        const duplicate = submission.duplicate && instance.duplicate;
         await submissionAudit.recordPadSync(req, {
           rest, environmentCode, licenseId: session.licenseId, license,
-          deviceCapturedAt: item.created_at, submission: sub, instance: inst, actionId: claim.actionId || item.id
+          deviceCapturedAt: item.created_at, submission: submission.row, instance: instance.row, actionId: item.id
         });
-        results.push({ actionId: item.id, type: item.type, row: inst, submission: sub, duplicate: !!claim.duplicate, already_applied: !!claim.duplicate });
+        results.push(appliedResult(item, {
+          row: instance.row,
+          submission: submission.row,
+          duplicate,
+          already_applied: duplicate
+        }));
       } else {
         throw new Error('Type de file PAD inconnu : ' + item.type);
       }
     }
-    if (sawBusy) throw new Error('reservation en cours');
     await submissionAudit.flushAudit(req, rest);
+    if (retry.length) {
+      const requestId = crypto.randomUUID();
+      console.warn('[pad-sync] délai de requête, actions non commencées', requestId, retry.join(','));
+      return sendJson(res, 503, {
+        ok: false,
+        error: 'Synchronisation momentanément indisponible.',
+        request_id: requestId,
+        retry,
+        results
+      });
+    }
 
     await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}`, { method: 'PATCH', body: { last_seen: new Date().toISOString() } }).catch(() => null);
     return sendJson(res, 200, { ok: true, synced: results.length, results });
@@ -153,7 +199,8 @@ async function handler(req, res) {
     console.error('[pad-sync]', requestId, err && (err.stack || err.message || err));
     await submissionAudit.flushAudit(req, rest).catch(() => {});
     for (const actionId of pendingOwned) {
-      await submissionAudit.releasePadReceipt(rest, environmentCode, actionId, req).catch(() => {});
+      const released = await submissionAudit.releasePadReceipt(rest, environmentCode, actionId, req).then((ok) => ok === true).catch(() => false);
+      if (released) pendingOwned.delete(actionId);
     }
     if (isPadAuthError(err)) {
       return sendJson(res, 401, { ok: false, error: 'Synchronisation PAD refusée', request_id: requestId });
@@ -163,4 +210,6 @@ async function handler(req, res) {
 }
 
 handler.readColumns = READ_COLUMNS;
+handler.deadlineMs = REQUEST_DEADLINE_MS;
+handler.REQUEST_DEADLINE_MS = REQUEST_DEADLINE_MS;
 module.exports = handler;

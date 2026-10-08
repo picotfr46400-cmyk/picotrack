@@ -59,6 +59,7 @@ jobs:
           psql -v ON_ERROR_STOP=1 -c "grant authenticated to postgres;"
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008221500_submission_audit_log.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008233000_submission_audit_idempotence_purge.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008234500_business_idempotency_key.sql
       - name: Contraintes du journal
         env:
           PGPASSWORD: postgres

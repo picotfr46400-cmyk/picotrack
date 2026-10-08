@@ -4,8 +4,8 @@ const http = require('http');
 const { execFileSync } = require('child_process');
 
 const TABLES = {
-  submissions: ['id', 'form_id', 'values', 'device', 'created_at', 'tenant_id', 'environment_code'],
-  service_instances: ['id', 'service_id', 'ref', 'form_data', 'status_id', 'priority', 'events', 'device', 'created_at', 'updated_at', 'tenant_id', 'assigned_to', 'environment_code', 'created_by', 'current_status_id', 'reference', 'submission_id'],
+  submissions: ['id', 'form_id', 'values', 'device', 'created_at', 'tenant_id', 'environment_code', 'idempotency_key'],
+  service_instances: ['id', 'service_id', 'ref', 'form_data', 'status_id', 'priority', 'events', 'device', 'created_at', 'updated_at', 'tenant_id', 'assigned_to', 'environment_code', 'created_by', 'current_status_id', 'reference', 'submission_id', 'idempotency_key'],
   licenses: ['id', 'label', 'email', 'role', 'license_type', 'device_name', 'active', 'environment_code', 'last_seen'],
   pad_sync_receipts: ['environment_code', 'action_id', 'submission_id', 'service_instance_id', 'status', 'created_at', 'updated_at'],
   submission_audit_log: ['id', 'environment_code', 'submission_id', 'service_instance_id', 'event_type', 'occurred_at', 'device_captured_at', 'actor_id', 'actor_name', 'actor_role', 'actor_license_type', 'origin', 'device_label', 'detail', 'created_at', 'idempotency_key']
@@ -203,9 +203,12 @@ async function handle(req, res, env) {
   return send(res, 405, { message: 'méthode refusée' });
 }
 
-function start(env) {
+function start(env, options = {}) {
+  const pace = options && typeof options === 'object' ? options : {};
   const server = http.createServer(async (req, res) => {
     try {
+      const wait = Number(pace.delayMs) || 0;
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
       await handle(req, res, env);
     } catch (err) {
       console.error('[pad-rest]', err && (err.stack || err.message || err));

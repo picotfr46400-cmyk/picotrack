@@ -908,14 +908,21 @@ test('une synchro PAD rejouée ne duplique ni la saisie ni l’événement', asy
       }
       if (u.includes('/rest/v1/submissions') && method === 'POST') {
         const body = JSON.parse(options.body);
+        const key = body.idempotency_key;
+        if (key && submissions.has(key)) return jsonResponse(200, []);
         const id = body.id || seq++;
         const row = Object.assign({ environment_code: 'EFC', device: 'pad' }, body, { id });
-        submissions.set(String(id), row);
+        submissions.set(key || String(id), row);
         return jsonResponse(200, [row]);
       }
       if (u.includes('/rest/v1/submissions') && method === 'GET') {
+        const byKey = decoded.match(/idempotency_key=eq\.([^&]+)/);
+        if (byKey) {
+          const row = submissions.get(decodeURIComponent(byKey[1]));
+          return jsonResponse(200, row ? [row] : []);
+        }
         const match = decoded.match(/id=eq\.([^&]+)/);
-        const row = match && submissions.get(match[1]);
+        const row = match && [...submissions.values()].find((item) => String(item.id) === match[1]);
         return jsonResponse(200, row ? [row] : []);
       }
       if (u.includes('/rest/v1/service_instances') && method === 'GET') return jsonResponse(200, []);
@@ -938,9 +945,14 @@ test('une synchro PAD rejouée ne duplique ni la saisie ni l’événement', asy
     assert.equal(String(second.payload.results[0].row.id), originId);
     assert.equal(second.payload.results[0].duplicate, true);
     const submissionPosts = writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submissions'));
-    assert.equal(submissionPosts.length, 1);
+    assert.equal(submissions.size, 1);
+    assert.equal(submissionPosts.length, 2);
+    assert.equal(submissionPosts.every((row) => row.body.idempotency_key === 'pad:act-1'), true);
+    assert.equal(submissionPosts.every((row) => row.url.includes('on_conflict=environment_code,idempotency_key')), true);
+    assert.equal(submissionPosts.every((row) => String(row.prefer).includes('resolution=ignore-duplicates')), true);
     assert.equal(submissionPosts[0].body.submission_id, undefined);
     assert.equal(submissionPosts[0].body.service_id, undefined);
+    assert.equal(writes.some((row) => row.url.includes('pad_sync_receipts')), false);
     const audits = writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submission_audit_log'));
     assert.equal(audits.length, 2);
     const ids = audits.map((row) => {
@@ -967,8 +979,7 @@ test('une synchro PAD rejouée ne duplique ni la saisie ni l’événement', asy
     assert.equal(String(mixed.payload.results[0].row.id), originId);
     assert.equal(mixed.payload.results[0].already_applied, true);
     assert.notEqual(String(mixed.payload.results[1].row.id), originId);
-    const mixedPosts = writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submissions'));
-    assert.equal(mixedPosts.length, 1);
+    assert.equal(submissions.size, 2);
     const replay = await callJson(padSync, {
       pad: body.pad,
       actions: [
@@ -978,7 +989,7 @@ test('une synchro PAD rejouée ne duplique ni la saisie ni l’événement', asy
     });
     assert.equal(replay.status, 200, replay.payload.error || '');
     assert.equal(replay.payload.results.every((row) => row.duplicate), true);
-    assert.equal(writes.filter((row) => row.method === 'POST' && row.url.includes('/rest/v1/submissions')).length, 1);
+    assert.equal(submissions.size, 2);
   });
 });
 
@@ -1009,7 +1020,7 @@ test('la suppression d’une saisie efface son journal via la fonction service_r
   assert.match(purgeSql, /status text not null default 'pending'/);
   assert.match(purgeSql, /60 secondes/);
   assert.match(purgeSql, /grant select, insert, update, delete on table public\.pad_sync_receipts to service_role/i);
-  assert.equal(padSync.readColumns.submissions, 'id,form_id,values,device,created_at,environment_code');
+  assert.equal(padSync.readColumns.submissions, 'id,form_id,values,device,created_at,environment_code,idempotency_key');
   assert.equal(padSync.readColumns.submissions.includes('submission_id'), false);
   assert.equal(padSync.readColumns.submissions.includes('service_id'), false);
   assert.equal(padSync.readColumns.service_instances.includes('form_id'), false);
@@ -1020,6 +1031,14 @@ test('la suppression d’une saisie efface son journal via la fonction service_r
   assert.match(architecture, /\[pad-sync\] receipts table missing, idempotence degraded/);
   assert.match(architecture, /zéro occurrence/);
   assert.match(architecture, /\[pad-sync\] receipts timeout or 5xx, idempotence degraded/);
+  assert.match(architecture, /idempotency_key/);
+  assert.match(architecture, /14 s/);
+  const businessKey = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261008234500_business_idempotency_key.sql'), 'utf8');
+  assert.equal((businessKey.match(/add column if not exists idempotency_key/gi) || []).length, 2);
+  const indexes = businessKey.match(/create unique index if not exists[\s\S]*?nulls distinct/gi) || [];
+  assert.equal(indexes.length, 2);
+  assert.equal(indexes.every((statement) => !/\bwhere\b/i.test(statement)), true);
+  assert.equal(/\bupdate\s+public\.(submissions|service_instances)\b/i.test(businessKey), false);
   const src = fs.readFileSync(path.join(__dirname, '_submission-audit.js'), 'utf8');
   assert.match(src, /rpc\/purge_submission_audit_log/);
   assert.equal(src.includes('interval \'3 years\''), false);
@@ -1176,7 +1195,9 @@ test('les clés camelCase et un emoji en limite de coupe restent sûrs', () => {
     { id: 'codeAcces', nom: 'Repère', type: 'text' },
     { id: 'codeConfidentiel', nom: 'Info', type: 'text' },
     { id: 'pwd', nom: 'Indice', type: 'text' },
-    { id: 'passwd', nom: 'Suite', type: 'text' }
+    { id: 'passwd', nom: 'Suite', type: 'text' },
+    { id: 'motdepasse', nom: 'Repère', type: 'text' },
+    { id: 'secretLibre', nom: 'MOTDEPASSE', type: 'text' }
   ];
   const changes = audit.diffValues({}, {
     motDePasse: 'clair-1',
@@ -1184,10 +1205,12 @@ test('les clés camelCase et un emoji en limite de coupe restent sûrs', () => {
     codeAcces: 'clair-3',
     codeConfidentiel: 'clair-4',
     pwd: 'clair-5',
-    passwd: 'clair-6'
+    passwd: 'clair-6',
+    motdepasse: 'clair-12',
+    secretLibre: 'clair-13'
   }, fields);
   const blob = JSON.stringify(changes);
-  for (const secret of ['clair-1', 'clair-2', 'clair-3', 'clair-4', 'clair-5', 'clair-6']) {
+  for (const secret of ['clair-1', 'clair-2', 'clair-3', 'clair-4', 'clair-5', 'clair-6', 'clair-12', 'clair-13']) {
     assert.equal(blob.includes(secret), false, secret);
   }
   assert.equal(changes.every((row) => row.after === 'masqué'), true);
@@ -1259,46 +1282,43 @@ test('une table de reçus absente ou trop lente ne refuse pas la synchro PAD', a
       assert.equal(missing.status, 200, missing.payload.error || '');
       assert.equal(missing.payload.ok, true);
       assert.equal(writes.some((row) => row.method === 'POST' && row.url.includes('/rest/v1/submissions')), true);
+      assert.equal(writes.some((row) => row.url.includes('pad_sync_receipts')), false);
+      warnings.length = 0;
+      await audit.claimPadBatch(async () => {
+        throw new Error('Supabase 404: {"code":"42P01","message":"relation does not exist"}');
+      }, 'EFC', [{ id: 'act-absent' }], {});
       assert.equal(warnings.some((line) => line.includes(`${missingPrefix} 42P01`)), true);
       assert.equal(warnings.some((line) => line.includes(upstreamPrefix)), false);
 
-      writes.length = 0;
       warnings.length = 0;
-      global.fetch = async (url, options = {}) => {
-        const u = String(url);
-        const method = options.method || 'GET';
-        if (u.includes('pad_sync_receipts')) return hangUntilAbort(options);
-        if (u.includes('/rest/v1/licenses?')) return license();
-        if (u.includes('/rest/v1/submissions') && method === 'POST') {
-          return jsonResponse(200, [{ id: 'sub-slow', form_id: 'form-1', environment_code: 'EFC', device: 'pad' }]);
-        }
-        if (u.includes('submission_audit_log')) return jsonResponse(200, []);
-        if (method === 'PATCH') return jsonResponse(200, []);
-        return jsonResponse(200, []);
-      };
+      const owned = new Set(['act-1']);
+      let completeCalls = 0;
       const started = Date.now();
-      const slow = await callJson(padSync, body);
+      const slowComplete = await audit.completePadReceipt(async (_path, opts) => {
+        completeCalls += 1;
+        await new Promise((_resolve, reject) => {
+          setTimeout(() => reject(Object.assign(new Error('Délai dépassé vers la base.'), { status: 504 })), opts.timeoutMs);
+        });
+      }, 'EFC', 'act-1', '12', null, {});
       const elapsed = Date.now() - started;
-      assert.equal(slow.status, 200, slow.payload.error || '');
-      assert.ok(elapsed < 4000, `reçu ${elapsed}ms`);
-      assert.equal(warnings.some((line) => line.includes(`${upstreamPrefix} 504`)), true);
+      assert.equal(slowComplete, false);
+      if (slowComplete) owned.delete('act-1');
+      assert.equal(owned.has('act-1'), true);
+      assert.ok(elapsed < 4000, `complétion ${elapsed}ms`);
       assert.equal(warnings.some((line) => line.includes(missingPrefix)), false);
+      const closed = await audit.completePadReceipt(async () => {
+        completeCalls += 1;
+        return [];
+      }, 'EFC', 'act-1', '12', null, {});
+      assert.equal(closed, true);
+      assert.equal(completeCalls, 2);
+      if (closed) owned.delete('act-1');
+      assert.equal(owned.has('act-1'), false);
 
       warnings.length = 0;
-      global.fetch = async (url, options = {}) => {
-        const u = String(url);
-        const method = options.method || 'GET';
-        if (u.includes('/rest/v1/licenses?')) return license();
-        if (u.includes('pad_sync_receipts')) return jsonResponse(503, { code: '57014', message: 'canceling statement due to statement timeout' });
-        if (u.includes('/rest/v1/submissions') && method === 'POST') {
-          return jsonResponse(200, [{ id: 'sub-5xx', form_id: 'form-1', environment_code: 'EFC', device: 'pad' }]);
-        }
-        if (u.includes('submission_audit_log')) return jsonResponse(200, []);
-        if (method === 'PATCH') return jsonResponse(200, []);
-        return jsonResponse(200, []);
-      };
-      const upstream = await callJson(padSync, body);
-      assert.equal(upstream.status, 200, upstream.payload.error || '');
+      await audit.claimPadBatch(async () => {
+        throw new Error('Supabase 503: {"code":"57014","message":"canceling statement due to statement timeout"}');
+      }, 'EFC', [{ id: 'act-up' }], {});
       assert.equal(warnings.some((line) => line.includes(`${upstreamPrefix} 503`)), true);
       assert.equal(warnings.some((line) => line.includes(missingPrefix)), false);
 
@@ -1335,9 +1355,9 @@ test('une table de reçus absente ou trop lente ne refuse pas la synchro PAD', a
       assert.equal(batch.status, 200, batch.payload.error || '');
       assert.equal(batch.payload.synced, 25);
       assert.ok(batchElapsed < 10000, `lot ${batchElapsed}ms`);
-      assert.equal(receiptCalls, 1);
+      assert.equal(receiptCalls, 0);
       assert.equal(auditCalls, 1);
-      assert.equal(warnings.filter((line) => line.includes(upstreamPrefix)).length, 1);
+      assert.equal(warnings.filter((line) => line.includes(upstreamPrefix)).length, 0);
       assert.equal(warnings.some((line) => line.includes(missingPrefix)), false);
     } finally {
       console.warn = previousWarn;
@@ -1383,6 +1403,89 @@ test('une erreur Postgres de synchro PAD répond 503 sans le message SQL', async
       assert.equal(logs.some((line) => line.includes(failed.payload.request_id) && line.includes('42703')), true);
     } finally {
       console.error = previousError;
+    }
+  });
+});
+
+test('le client PAD garde une action tant que la synchro ne répond pas OK', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
+  const start = src.indexOf('pt_pad_offline_queue_v17');
+  const slice = src.slice(start, start + 4500);
+  assert.ok(start >= 0);
+  assert.match(slice, /status:"pending"/);
+  assert.match(slice, /actions:\[e\]/);
+  assert.match(slice, /await p\(t\),t\.status="synced"/);
+  assert.match(slice, /t\.status="error"/);
+  assert.match(slice, /"synced"!==e\.status/);
+});
+
+test('une limite de temps en milieu de lot laisse les actions non commencées à renvoyer', async () => {
+  await withSupabase(async () => {
+    const submissions = new Map();
+    let seq = 1;
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      const decoded = decodeURIComponent(String(url));
+      if (u.includes('/rest/v1/licenses?')) {
+        return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', device_name: 'Tab', active: true, environment_code: 'EFC' }]);
+      }
+      if (u.includes('/rest/v1/submissions') && method === 'POST') {
+        const body = JSON.parse(options.body);
+        if (submissions.has(body.idempotency_key)) return jsonResponse(200, []);
+        const row = Object.assign({ environment_code: 'EFC', device: 'pad' }, body, { id: seq++ });
+        submissions.set(body.idempotency_key, row);
+        return jsonResponse(200, [row]);
+      }
+      if (u.includes('/rest/v1/submissions') && method === 'GET') {
+        const byKey = decoded.match(/idempotency_key=eq\.([^&]+)/);
+        const row = byKey && submissions.get(decodeURIComponent(byKey[1]));
+        return jsonResponse(200, row ? [row] : []);
+      }
+      if (u.includes('submission_audit_log')) return jsonResponse(200, []);
+      if (method === 'PATCH') return jsonResponse(200, []);
+      return jsonResponse(200, []);
+    };
+    const token = signPayload({ headers: { host: 'localhost' } }, {
+      typ: 'pad', licenseId: 'lic-1', environmentCode: 'EFC', exp: Date.now() + 60_000
+    });
+    const actions = Array.from({ length: 25 }, (_, index) => ({
+      id: `cut-${index + 1}`,
+      type: 'form_submission',
+      created_at: '2026-10-08T08:00:00.000Z',
+      payload: { formId: 'form-1', values: { client: `c${index}` } }
+    }));
+    let ticks = 0;
+    const paced = {
+      method: 'POST',
+      headers: { host: 'localhost' },
+      body: { pad: { sessionToken: token }, actions },
+      picoDeadlineMs: 5000,
+      picoNow: () => (ticks++ < 4 ? 1000 : 20000)
+    };
+    try {
+      const res = {
+        statusCode: 0,
+        headers: {},
+        body: '',
+        setHeader() {},
+        end(payload) { this.body = payload == null ? '' : String(payload); }
+      };
+      await padSync(paced, res);
+      const partial = { status: res.statusCode, payload: JSON.parse(res.body || '{}') };
+      assert.equal(partial.status, 503, partial.payload.error || '');
+      assert.equal(partial.payload.ok, false);
+      assert.ok(partial.payload.retry.length > 0 && partial.payload.retry.length < 25);
+      assert.equal(partial.payload.results.filter((row) => row.status === 'retry').length, partial.payload.retry.length);
+      const started = submissions.size;
+      assert.equal(started, 25 - partial.payload.retry.length);
+      assert.equal(partial.payload.results.filter((row) => row.status === 'applied').length, started);
+      const again = await callJson(padSync, { pad: { sessionToken: token }, actions });
+      assert.equal(again.status, 200, again.payload.error || '');
+      assert.equal(submissions.size, 25);
+      assert.equal(again.payload.results.filter((row) => row.already_applied).length, started);
+    } finally {
+      ticks = 0;
     }
   });
 });

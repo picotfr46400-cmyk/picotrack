@@ -39,7 +39,7 @@ const DETAILED_TYPES = new Set(EVENT_TYPES.filter((type) => type !== 'viewed' &&
 const FILE_TYPES = new Set(['photo', 'image', 'file', 'fichier', 'signature', 'sign', 'camera', 'piece', 'pj', 'upload', 'video', 'audio', 'son']);
 const SECRET_FIELD_TYPES = new Set(['password', 'passwd', 'secret', 'hidden', 'pin', 'otp']);
 const SECRET_KEY = /password|passwd|token|secret|authorization|cookie|api[_-]?key|license[_-]?key|session|supa[_-]?(key|url)|bearer/i;
-const SENSITIVE_TEXT = /mot de passe|\bpassword\b|\bpasswd\b|\bpwd\b|\bmdp\b|code confidentiel|code\s*(?:d['\s]*)?acces|digicode|code pin|\bpin\b|\botp\b|code de verification|verification code|\btoken\b|\bsecret\b|api ?key|\biban\b|carte bancaire|numero de carte|credit card|card number|\bcvv\b|\bcvc\b|cryptogramme/;
+const SENSITIVE_TEXT = /motdepasse|mot de passe|\bpassword\b|\bpasswd\b|\bpwd\b|\bmdp\b|code confidentiel|code\s*(?:d['\s]*)?acces|digicode|code pin|\bpin\b|\botp\b|code de verification|verification code|\btoken\b|\bsecret\b|api ?key|\biban\b|carte bancaire|numero de carte|credit card|card number|\bcvv\b|\bcvc\b|cryptogramme/;
 const DEVICE_DECLARED = new Set(['email_sent', 'db_updated', 'form_filled', 'commented']);
 const SELECT_COLUMNS = 'id,environment_code,submission_id,service_instance_id,event_type,occurred_at,device_captured_at,actor_id,actor_name,actor_role,actor_license_type,origin,device_label,detail,idempotency_key';
 const JOURNAL_CALL_MS = 2000;
@@ -1122,6 +1122,7 @@ function cleanActionId(value) {
 const RECEIPTS_MISSING_LOG = '[pad-sync] receipts table missing, idempotence degraded';
 const RECEIPTS_UPSTREAM_LOG = '[pad-sync] receipts timeout or 5xx, idempotence degraded';
 const RECEIPT_BUDGET_MS = 3000;
+const RECEIPT_COMPLETE_MS = 2000;
 const RECEIPT_TTL_MS = 60 * 1000;
 
 function receiptMessage(err) {
@@ -1312,22 +1313,15 @@ async function claimPadAction(rest, env, actionId, withInstance, req) {
 }
 
 async function completePadReceipt(rest, env, actionId, submissionId, instanceId, req) {
-  const budget = receiptBudget(req);
-  if (budget.degraded) return false;
   const key = cleanActionId(actionId);
   const environmentCode = clip(env, 80);
   const submission = cleanId(submissionId);
   if (!key || !environmentCode || !submission) return false;
-  const timeoutMs = budget.timeoutFor();
-  if (!timeoutMs) {
-    warnReceipts(req, upstreamTimeout(), 'upstream');
-    return false;
-  }
   try {
     await rest(`${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=eq.${enc(key)}`, {
       method: 'PATCH',
       prefer: 'return=minimal',
-      timeoutMs,
+      timeoutMs: RECEIPT_COMPLETE_MS,
       req,
       body: {
         status: 'applied',
@@ -1338,25 +1332,19 @@ async function completePadReceipt(rest, env, actionId, submissionId, instanceId,
     });
     return true;
   } catch (err) {
-    const kind = receiptFailureKind(err);
-    if (kind) warnReceipts(req, err, kind);
-    else console.error('[pad-sync] reçu non clos', err && (err.message || err));
+    console.error('[pad-sync] reçu non clos', err && (err.message || err));
     return false;
   }
 }
 
 async function releasePadReceipt(rest, env, actionId, req) {
-  const budget = receiptBudget(req);
-  if (budget.degraded) return false;
   const key = cleanActionId(actionId);
   const environmentCode = clip(env, 80);
   if (!key || !environmentCode) return false;
-  const timeoutMs = budget.timeoutFor();
-  if (!timeoutMs) return false;
   try {
     await rest(
       `${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=eq.${enc(key)}&status=eq.pending`,
-      { method: 'DELETE', prefer: 'return=minimal', timeoutMs, req }
+      { method: 'DELETE', prefer: 'return=minimal', timeoutMs: RECEIPT_COMPLETE_MS, req }
     );
     return true;
   } catch (err) {
@@ -1425,6 +1413,7 @@ module.exports = {
   originForProfile,
   JOURNAL_CALL_MS,
   JOURNAL_BUDGET_MS,
+  RECEIPT_COMPLETE_MS,
   DETAIL_MAX_BYTES,
   looksLikeSecret,
   pdfLineSets,
