@@ -19,7 +19,17 @@ Le journal `submission_audit_log` est en ajout seul. Ni le code ni cette documen
 Le balayage par durée n’est pas appelé par l’application. Un opérateur l’exécute avec la clé `service_role` :
 
 ```sql
-select public.purge_submission_audit_log(interval '3 years');
+select public.purge_submission_audit_log(interval '3 years', 'CODE_ENVIRONNEMENT');
 ```
 
+Ce balayage ne supprime que les lignes de cet `environment_code`.
+
 La suppression d’une saisie (ou des saisies d’un formulaire supprimé) efface aussi les données personnelles de son journal. Le serveur appelle la même fonction, toujours en `service_role`, avec la saisie ciblée. C’est le seul chemin qui peut modifier ou supprimer le journal : le trigger d’ajout seul ne laisse passer l’opération que le temps de cet appel. Les valeurs des champs ne sont pas recopiées dans l’événement de suppression.
+
+## Reçus PAD pendant le déploiement
+
+Le mode tolérant de `claimPadAction` ne sert que pendant la fenêtre de déploiement, tant que la migration `supabase/migrations/20261008233000_submission_audit_idempotence_purge.sql` n’est pas appliquée et que la table `pad_sync_receipts` est donc absente. La synchro continue alors sans dédoublonnage des reçus. Ce mode disparaît une fois la migration appliquée.
+
+Chaque passage écrit un `console.warn` dont le préfixe stable est `[pad-sync] receipts table missing, idempotence degraded`, suivi du code d’erreur (`42P01`, `PGRST205` ou `404`). Pour vérifier que le mode a disparu : zéro occurrence de ce préfixe dans les logs.
+
+Un délai dépassé ou une erreur 5xx de la table n’est pas une table absente. Ces cas restent tolérés dans le budget de 2 s de l’appel, mais avec un préfixe distinct : `[pad-sync] receipts timeout or 5xx, idempotence degraded`, suivi du code HTTP.

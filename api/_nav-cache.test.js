@@ -14,7 +14,7 @@ test('index.html : Babel absent, React conservé, cache-buster 20261008a', () =>
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
   assert.match(html, /app\.secured\.js\?v=20261008a/);
-  assert.match(html, /core-supervision\.js\?v=20261008c/);
+  assert.match(html, /core-supervision\.js\?v=20261008f/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);

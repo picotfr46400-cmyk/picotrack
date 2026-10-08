@@ -3,8 +3,9 @@
 --
 -- Durée de conservation par défaut : 3 ans.
 -- Aucune durée n'est définie pour les saisies ; le journal prend la même.
--- Balayage opérateur, jamais appelé par l'application :
---   select public.purge_submission_audit_log(interval '3 years');
+-- Balayage opérateur, jamais appelé par l'application.
+-- Le deuxième argument filtre environment_code :
+--   select public.purge_submission_audit_log(interval '3 years', 'EFC');
 --
 -- Effacement RGPD : après suppression d'une saisie, le serveur appelle
 -- la même fonction avec target_environment et target_submissions.
@@ -22,9 +23,10 @@ alter table public.submission_audit_log
   add constraint submission_audit_log_idem_len
   check (idempotency_key is null or char_length(idempotency_key) between 1 and 160);
 
-create unique index if not exists submission_audit_log_idem_idx
-  on public.submission_audit_log (environment_code, idempotency_key)
-  where idempotency_key is not null;
+drop index if exists public.submission_audit_log_idem_idx;
+
+create unique index submission_audit_log_idem_idx
+  on public.submission_audit_log (environment_code, idempotency_key);
 
 create table if not exists public.pad_sync_receipts (
   environment_code text not null,
@@ -50,7 +52,7 @@ grant select, insert on table public.pad_sync_receipts to service_role;
 create or replace function public.submission_audit_log_append_only()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = public, pg_temp
 as $$
 begin
   if (tg_op = 'UPDATE' or tg_op = 'DELETE')
@@ -78,16 +80,12 @@ create or replace function public.purge_submission_audit_log(
 returns integer
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
 declare
-  actor text := coalesce(nullif(current_setting('request.jwt.claim.role', true), ''), session_user);
   removed integer := 0;
   erasure boolean := target_submissions is not null;
 begin
-  if actor not in ('service_role', 'postgres', 'supabase_admin') then
-    raise exception 'purge réservée à service_role' using errcode = '42501';
-  end if;
   if erasure then
     if target_environment is null or char_length(btrim(target_environment)) < 1 then
       raise exception 'environnement d''effacement invalide' using errcode = '22023';
@@ -112,15 +110,22 @@ begin
   if retention is null or retention < interval '1 day' then
     raise exception 'durée de conservation invalide' using errcode = '22023';
   end if;
+  if target_environment is null or char_length(btrim(target_environment)) < 1 then
+    raise exception 'environnement de purge invalide' using errcode = '22023';
+  end if;
   perform set_config('picotrack.audit_purge', 'on', true);
   delete from public.submission_audit_log
-   where occurred_at < now() - retention
-      or submission_id in (
-        select submission_id
-          from public.submission_audit_log
-         where event_type = 'deleted'
-           and occurred_at < now() - retention
-      );
+   where environment_code = target_environment
+     and (
+       occurred_at < now() - retention
+       or submission_id in (
+         select submission_id
+           from public.submission_audit_log
+          where environment_code = target_environment
+            and event_type = 'deleted'
+            and occurred_at < now() - retention
+       )
+     );
   get diagnostics removed = row_count;
   return removed;
 end;
@@ -132,4 +137,4 @@ revoke all on function public.purge_submission_audit_log(interval, text, text[])
 grant execute on function public.purge_submission_audit_log(interval, text, text[]) to service_role;
 
 comment on function public.purge_submission_audit_log(interval, text, text[]) is
-  'Purge du journal, service_role seulement. Durée par défaut : 3 ans, identique aux saisies faute d''autre durée définie. Le balayage par durée n''est pas appelé par l''application. L''effacement d''une saisie cible target_submissions et anonymise ses lignes. Seuls UPDATE et DELETE passent le trigger d''ajout seul pendant cet appel.';
+  'Purge du journal. EXECUTE est réservé à service_role par les GRANT. Durée par défaut : 3 ans. Le balayage par durée filtre environment_code et n''est pas appelé par l''application. L''effacement d''une saisie cible target_submissions et anonymise ses lignes. Seuls UPDATE et DELETE passent le trigger d''ajout seul pendant cet appel, quand picotrack.audit_purge vaut on.';

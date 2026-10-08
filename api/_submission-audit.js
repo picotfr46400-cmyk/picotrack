@@ -39,7 +39,7 @@ const DETAILED_TYPES = new Set(EVENT_TYPES.filter((type) => type !== 'viewed' &&
 const FILE_TYPES = new Set(['photo', 'image', 'file', 'fichier', 'signature', 'sign', 'camera', 'piece', 'pj', 'upload', 'video', 'audio', 'son']);
 const SECRET_FIELD_TYPES = new Set(['password', 'passwd', 'secret', 'hidden', 'pin', 'otp']);
 const SECRET_KEY = /password|passwd|token|secret|authorization|cookie|api[_-]?key|license[_-]?key|session|supa[_-]?(key|url)|bearer/i;
-const SENSITIVE_TEXT = /mot de passe|\bpassword\b|\bpasswd\b|\bmdp\b|code d.?acces|digicode|code pin|\bpin\b|\botp\b|code de verification|verification code|\btoken\b|\bsecret\b|api ?key|\biban\b|carte bancaire|numero de carte|credit card|card number|\bcvv\b|\bcvc\b|cryptogramme/;
+const SENSITIVE_TEXT = /mot de passe|\bpassword\b|\bpasswd\b|\bpwd\b|\bmdp\b|code confidentiel|code\s*(?:d['\s]*)?acces|digicode|code pin|\bpin\b|\botp\b|code de verification|verification code|\btoken\b|\bsecret\b|api ?key|\biban\b|carte bancaire|numero de carte|credit card|card number|\bcvv\b|\bcvc\b|cryptogramme/;
 const DEVICE_DECLARED = new Set(['email_sent', 'db_updated', 'form_filled', 'commented']);
 const SELECT_COLUMNS = 'id,environment_code,submission_id,service_instance_id,event_type,occurred_at,device_captured_at,actor_id,actor_name,actor_role,actor_license_type,origin,device_label,detail,idempotency_key';
 const JOURNAL_CALL_MS = 2000;
@@ -59,8 +59,9 @@ function mutationBlocked(method) {
 
 function clip(value, max) {
   const text = String(value ?? '').replace(/[\u0000-\u001F]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (text.length <= max) return text;
-  return text.slice(0, Math.max(0, max - 1)) + '…';
+  const chars = Array.from(text);
+  if (chars.length <= max) return chars.join('');
+  return chars.slice(0, Math.max(0, max - 1)).join('') + '…';
 }
 
 function cleanId(value) {
@@ -201,9 +202,19 @@ function maskEmbeddedSecrets(text) {
     });
 }
 
+function normalizeSecretText(value) {
+  const spaced = String(value ?? '')
+    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_.\-/]+/g, ' ');
+  return foldText(spaced).replace(/\s+/g, ' ').trim();
+}
+
 function isSensitiveField(key, label) {
-  const blob = foldText(`${key} ${label}`).replace(/[_-]+/g, ' ');
-  return SENSITIVE_TEXT.test(blob) || SECRET_KEY.test(String(key || '')) || SECRET_KEY.test(String(label || ''));
+  const blob = normalizeSecretText(`${key} ${label}`);
+  const keyText = normalizeSecretText(key);
+  const labelText = normalizeSecretText(label);
+  return SENSITIVE_TEXT.test(blob) || SECRET_KEY.test(keyText) || SECRET_KEY.test(labelText);
 }
 
 function isSignatureType(type) {
@@ -215,8 +226,8 @@ function maskKindForType(type) {
   const raw = String(type || '').trim();
   if (!raw) return '';
   if (isSignatureType(raw)) return 'signature';
-  const folded = foldText(raw).replace(/[_-]+/g, ' ');
-  if (SECRET_FIELD_TYPES.has(folded) || SENSITIVE_TEXT.test(folded) || SECRET_KEY.test(raw)) return 'secret';
+  const folded = normalizeSecretText(raw);
+  if (SECRET_FIELD_TYPES.has(folded) || SENSITIVE_TEXT.test(folded) || SECRET_KEY.test(folded)) return 'secret';
   return '';
 }
 
@@ -671,7 +682,10 @@ function annotateEvents(events) {
       event.declared_label = 'déclaré par l’appareil';
     }
     if (event.event_type === 'deleted') deletedAt = event.occurred_at;
-    if (event.event_type === 'created' && deletedAt && String(event.occurred_at) > String(deletedAt)) {
+    if (event.event_type === 'restored') {
+      event.label = EVENT_LABELS.restored;
+      deletedAt = null;
+    } else if (event.event_type === 'created' && deletedAt && String(event.occurred_at) > String(deletedAt)) {
       event.event_type = 'restored';
       event.label = EVENT_LABELS.restored;
       deletedAt = null;
@@ -922,7 +936,7 @@ async function eraseSubmissionJournal(serviceRest, req, env, submissionIds) {
     });
     return true;
   } catch (err) {
-    console.error('[submission-audit] effacement journal impossible', err && (err.message || err));
+    console.error('[submission-audit] effacement journal impossible', err && (err.status || ''), err && (err.message || err));
     return false;
   }
 }
@@ -1107,41 +1121,108 @@ function cleanActionId(value) {
   return /^[A-Za-z0-9_.:-]{1,120}$/.test(id) ? id : '';
 }
 
-async function claimPadAction(rest, env, actionId, withInstance) {
+const RECEIPTS_MISSING_LOG = '[pad-sync] receipts table missing, idempotence degraded';
+const RECEIPTS_UPSTREAM_LOG = '[pad-sync] receipts timeout or 5xx, idempotence degraded';
+
+function receiptMessage(err) {
+  return String(err && (err.message || err) || '');
+}
+
+function receiptStatus(err) {
+  const status = Number(err && err.status) || 0;
+  if (status) return status;
+  const match = receiptMessage(err).match(/Supabase (\d{3})\b/);
+  return match ? Number(match[1]) : 0;
+}
+
+function receiptErrorCode(err) {
+  const message = receiptMessage(err);
+  const status = receiptStatus(err);
+  if (status >= 500 && status <= 599) return String(status);
+  const jsonCode = message.match(/"code"\s*:\s*"([A-Za-z0-9]+)"/);
+  if (jsonCode) return jsonCode[1];
+  if (status) return String(status);
+  if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return err.name;
+  if (/Délai dépassé|timed out/i.test(message)) return '504';
+  return 'unknown';
+}
+
+function receiptFailureKind(err) {
+  const status = receiptStatus(err);
+  const message = receiptMessage(err);
+  const timedOut = Boolean(err && (err.name === 'TimeoutError' || err.name === 'AbortError'))
+    || status === 504
+    || /Délai dépassé|timed out/i.test(message);
+  if (timedOut || (status >= 500 && status <= 599)) return 'upstream';
+  const code = receiptErrorCode(err);
+  if (status === 404 || code === '42P01' || code === 'PGRST205' || /schema cache|does not exist|n'existe pas/i.test(message)) {
+    return 'missing';
+  }
+  return '';
+}
+
+function degradedClaim(actionId) {
+  return { duplicate: false, reserved: false, actionId, degraded: true };
+}
+
+async function claimPadAction(rest, env, actionId, withInstance, req) {
   const key = cleanActionId(actionId);
   const environmentCode = clip(env, 80);
   if (!key || !environmentCode) return { duplicate: false, reserved: false, actionId: '' };
   const submissionId = crypto.randomUUID();
   const instanceId = withInstance ? crypto.randomUUID() : null;
-  const inserted = await rest(`${RECEIPTS}?on_conflict=environment_code,action_id`, {
-    method: 'POST',
-    prefer: 'return=representation,resolution=ignore-duplicates',
-    body: {
-      environment_code: environmentCode,
-      action_id: key,
-      submission_id: submissionId,
-      service_instance_id: instanceId
-    }
-  });
-  const row = Array.isArray(inserted) ? inserted[0] : null;
-  if (row && row.submission_id === submissionId) {
-    return { duplicate: false, reserved: true, submissionId, instanceId, actionId: key };
-  }
-  const existingRows = await rest(
-    `${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=eq.${enc(key)}&select=submission_id,service_instance_id,action_id&limit=1`,
-    { method: 'GET', prefer: '' }
-  );
-  const existing = Array.isArray(existingRows) ? existingRows[0] : null;
-  if (!existing || !existing.submission_id) {
-    return { duplicate: false, reserved: true, submissionId, instanceId, actionId: key };
-  }
-  return {
-    duplicate: true,
-    reserved: true,
-    submissionId: existing.submission_id,
-    instanceId: existing.service_instance_id || null,
-    actionId: key
+  const started = Date.now();
+  const claimTimeout = () => {
+    const left = JOURNAL_CALL_MS - (Date.now() - started);
+    return left > 50 ? left : 0;
   };
+  const giveUp = (err, kind) => {
+    const prefix = kind === 'missing' ? RECEIPTS_MISSING_LOG : RECEIPTS_UPSTREAM_LOG;
+    console.warn(prefix, receiptErrorCode(err));
+    return degradedClaim(key);
+  };
+  const upstreamTimeout = () => Object.assign(new Error('Délai dépassé vers la base.'), { status: 504 });
+  try {
+    const timeoutMs = claimTimeout();
+    if (!timeoutMs) return giveUp(upstreamTimeout(), 'upstream');
+    const inserted = await rest(`${RECEIPTS}?on_conflict=environment_code,action_id`, {
+      method: 'POST',
+      prefer: 'return=representation,resolution=ignore-duplicates',
+      timeoutMs,
+      req,
+      body: {
+        environment_code: environmentCode,
+        action_id: key,
+        submission_id: submissionId,
+        service_instance_id: instanceId
+      }
+    });
+    const row = Array.isArray(inserted) ? inserted[0] : null;
+    if (row && row.submission_id === submissionId) {
+      return { duplicate: false, reserved: true, submissionId, instanceId, actionId: key };
+    }
+    const lookupMs = claimTimeout();
+    if (!lookupMs) return giveUp(upstreamTimeout(), 'upstream');
+    const existingRows = await rest(
+      `${RECEIPTS}?environment_code=eq.${enc(environmentCode)}&action_id=eq.${enc(key)}&select=submission_id,service_instance_id,action_id&limit=1`,
+      { method: 'GET', prefer: '', timeoutMs: lookupMs, req }
+    );
+    const existing = Array.isArray(existingRows) ? existingRows[0] : null;
+    if (!existing || !existing.submission_id) {
+      return { duplicate: false, reserved: true, submissionId, instanceId, actionId: key };
+    }
+    return {
+      duplicate: true,
+      reserved: true,
+      submissionId: existing.submission_id,
+      instanceId: existing.service_instance_id || null,
+      actionId: key
+    };
+  } catch (err) {
+    const kind = receiptFailureKind(err);
+    if (kind) return giveUp(err, kind);
+    throw err;
+  }
 }
 
 async function recordPadSync(req, ctx) {
@@ -1190,6 +1271,7 @@ module.exports = {
   mutationBlocked,
   formatParis,
   formatDuration,
+  clip,
   diffValues,
   classifyStatus,
   buildEventRow,

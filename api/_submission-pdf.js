@@ -123,8 +123,11 @@ function extractPdfText(pdf) {
 
 function clip(value, max) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
-  if (text.length <= max) return text;
-  return text.slice(0, Math.max(0, max - 3)) + '...';
+  const chars = Array.from(text);
+  if (chars.length <= max) return chars.join('');
+  const ellipsis = '...';
+  const room = Math.max(0, max - ellipsis.length);
+  return chars.slice(0, room).join('') + (room < chars.length ? ellipsis : '');
 }
 
 function num(value) {
@@ -883,7 +886,10 @@ function buildSubmissionPdfWithinLimit(doc, lineSets, limit = PDF_BYTE_LIMIT) {
     if (Buffer.byteLength(list.join('\n'), 'utf8') > room) continue;
     attempts.push({ lines: list, omitImages: false });
   }
+  const omitted = ['Traçabilité non incluse (taille)'];
+  attempts.push({ lines: omitted, omitImages: false });
   attempts.push({ lines: [], omitImages: false });
+  attempts.push({ lines: omitted, omitImages: true });
   attempts.push({ lines: [], omitImages: true });
   let last = null;
   for (const attempt of attempts) {

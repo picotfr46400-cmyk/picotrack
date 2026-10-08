@@ -63,7 +63,7 @@ module.exports = async function handler(req, res) {
     for (const action of actions) {
       const item = cleanAction(action);
       const payload = item.payload || {};
-      const claim = await submissionAudit.claimPadAction(rest, session.environmentCode, item.id, item.type === 'service_instance');
+      const claim = await submissionAudit.claimPadAction(rest, session.environmentCode, item.id, item.type === 'service_instance', req);
       if (item.type === 'form_submission') {
         let row = claim.duplicate ? await existingRow(req, 'submissions', claim.submissionId, session.environmentCode) : null;
         if (!row) row = await insertSubmission(req, session.environmentCode, payload, claim.submissionId);

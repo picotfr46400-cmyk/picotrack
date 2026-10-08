@@ -556,7 +556,7 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
 test('la frise de traçabilité interroge le serveur et filtre sans réécrire l’historique', () => {
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /core-supervision\.js\?v=20261008c/);
+  assert.match(html, /core-supervision\.js\?v=20261008f/);
   assert.match(overlay, /action: 'submission_trace'/);
   assert.match(overlay, /Europe\/Paris/);
   assert.match(overlay, /data-pt-trace-filter/);
@@ -919,11 +919,18 @@ test('la suppression d’une saisie efface son journal via la fonction service_r
   const profile = actor();
   const purgeSql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261008233000_submission_audit_idempotence_purge.sql'), 'utf8');
   assert.match(purgeSql, /security definer/i);
-  assert.match(purgeSql, /purge réservée à service_role/);
+  assert.match(purgeSql, /set search_path = public, pg_temp/);
+  assert.equal(purgeSql.includes('request.jwt.claim.role'), false);
   assert.match(purgeSql, /grant execute on function public\.purge_submission_audit_log\(interval, text, text\[\]\) to service_role/i);
   assert.equal(/grant execute on function public\.purge_submission_audit_log[\s\S]*to (anon|authenticated)/i.test(purgeSql), false);
   assert.match(purgeSql, /revoke all on function public\.purge_submission_audit_log\(interval, text, text\[\]\) from public/i);
+  assert.match(purgeSql, /revoke all on function public\.purge_submission_audit_log\(interval, text, text\[\]\) from anon/i);
   assert.match(purgeSql, /revoke all on function public\.purge_submission_audit_log\(interval, text, text\[\]\) from authenticated/i);
+  const indexSql = purgeSql.match(/create unique index submission_audit_log_idem_idx[\s\S]*?;/i);
+  assert.ok(indexSql);
+  assert.match(indexSql[0], /\(environment_code, idempotency_key\)/);
+  assert.equal(/\bwhere\b/i.test(indexSql[0]), false);
+  assert.match(purgeSql, /environment_code = target_environment/);
   assert.match(purgeSql, /tg_op = 'UPDATE'/);
   assert.match(purgeSql, /tg_op = 'DELETE'/);
   assert.match(purgeSql, /picotrack\.audit_purge/);
@@ -935,6 +942,9 @@ test('la suppression d’une saisie efface son journal via la fonction service_r
   const architecture = fs.readFileSync(path.join(__dirname, '../docs/ARCHITECTURE.md'), 'utf8');
   assert.match(architecture, /3 ans/);
   assert.match(architecture, /purge_submission_audit_log/);
+  assert.match(architecture, /\[pad-sync\] receipts table missing, idempotence degraded/);
+  assert.match(architecture, /zéro occurrence/);
+  assert.match(architecture, /\[pad-sync\] receipts timeout or 5xx, idempotence degraded/);
   const src = fs.readFileSync(path.join(__dirname, '_submission-audit.js'), 'utf8');
   assert.match(src, /rpc\/purge_submission_audit_log/);
   assert.equal(src.includes('interval \'3 years\''), false);
@@ -1075,5 +1085,130 @@ test('l’export PDF borne la frise puis retire les images', async () => {
   assert.match(shownText, /12 événements plus anciens non affichés/);
   const dropped = pdf.buildSubmissionPdfWithinLimit(doc, [long, []], withoutImages.length);
   assert.equal(dropped.includes(marker), false);
+  const noteOnly = pdf.buildSubmissionPdf(Object.assign({}, plain, { traceLines: ['Traçabilité non incluse (taille)'] }), { enforceLimit: false, omitImages: false });
+  assert.ok(noteOnly.length < full.length);
+  const noted = pdf.buildSubmissionPdfWithinLimit(plain, [long], noteOnly.length);
+  const notedText = pdf.extractPdfText(noted);
+  assert.match(notedText, /Traçabilité non incluse \(taille\)/);
+  assert.equal(notedText.includes('EVT-0029'), false);
   assert.throws(() => pdf.buildSubmissionPdfWithinLimit(doc, [[]], 80), (err) => err.status === 413);
+});
+
+test('les clés camelCase et un emoji en limite de coupe restent sûrs', () => {
+  const fields = [
+    { id: 'motDePasse', nom: 'Note interne', type: 'text' },
+    { id: 'mot_de_passe', nom: 'Commentaire', type: 'text' },
+    { id: 'codeAcces', nom: 'Repère', type: 'text' },
+    { id: 'codeConfidentiel', nom: 'Info', type: 'text' },
+    { id: 'pwd', nom: 'Indice', type: 'text' },
+    { id: 'passwd', nom: 'Suite', type: 'text' }
+  ];
+  const changes = audit.diffValues({}, {
+    motDePasse: 'clair-1',
+    mot_de_passe: 'clair-2',
+    codeAcces: 'clair-3',
+    codeConfidentiel: 'clair-4',
+    pwd: 'clair-5',
+    passwd: 'clair-6'
+  }, fields);
+  const blob = JSON.stringify(changes);
+  for (const secret of ['clair-1', 'clair-2', 'clair-3', 'clair-4', 'clair-5', 'clair-6']) {
+    assert.equal(blob.includes(secret), false, secret);
+  }
+  assert.equal(changes.every((row) => row.after === 'masqué'), true);
+  const emoji = '😀';
+  assert.equal(audit.clip(`abcd${emoji}`, 5), `abcd${emoji}`);
+  const cut = audit.clip(`abcde${emoji}`, 5);
+  assert.equal(cut, 'abcd…');
+  assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(cut), false);
+  const kept = audit.composeTimeline([
+    { id: 'd1', event_type: 'deleted', occurred_at: '2026-10-08T09:00:00.000Z', origin: 'supervision', detail: {} },
+    { id: 'r1', event_type: 'restored', occurred_at: '2026-10-08T10:00:00.000Z', origin: 'supervision', detail: { previous: 'deleted' } }
+  ], null, null);
+  const restored = kept.events.find((row) => row.id === 'r1');
+  assert.equal(restored.event_type, 'restored');
+  assert.equal(restored.label, 'Restauration');
+});
+
+test('une table de reçus absente ou trop lente ne refuse pas la synchro PAD', async () => {
+  await withSupabase(async () => {
+    const writes = [];
+    const warnings = [];
+    const previousWarn = console.warn;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    const token = signPayload({ headers: { host: 'localhost' } }, {
+      typ: 'pad', licenseId: 'lic-1', environmentCode: 'EFC', exp: Date.now() + 60_000
+    });
+    const body = {
+      pad: { sessionToken: token },
+      actions: [{ id: 'act-absent', type: 'form_submission', created_at: '2026-10-08T08:00:00.000Z', payload: { formId: 'form-1', values: { client: 'Hors ligne' } } }]
+    };
+    const license = () => jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
+    const missingPrefix = '[pad-sync] receipts table missing, idempotence degraded';
+    const upstreamPrefix = '[pad-sync] receipts timeout or 5xx, idempotence degraded';
+    try {
+      global.fetch = async (url, options = {}) => {
+        const u = String(url);
+        const method = options.method || 'GET';
+        if (method !== 'GET' && options.body) writes.push({ url: u, method, body: JSON.parse(options.body) });
+        if (u.includes('/rest/v1/licenses?')) return license();
+        if (u.includes('pad_sync_receipts')) return jsonResponse(404, { code: '42P01', message: 'relation "public.pad_sync_receipts" does not exist' });
+        if (u.includes('/rest/v1/submissions') && method === 'POST') {
+          const posted = JSON.parse(options.body);
+          return jsonResponse(200, [{ id: posted.id || 'sub-pad', form_id: 'form-1', environment_code: 'EFC', device: 'pad' }]);
+        }
+        if (u.includes('submission_audit_log')) return jsonResponse(200, []);
+        if (method === 'PATCH') return jsonResponse(200, []);
+        return jsonResponse(200, []);
+      };
+      const missing = await callJson(padSync, body);
+      assert.equal(missing.status, 200, missing.payload.error || '');
+      assert.equal(missing.payload.ok, true);
+      assert.equal(writes.some((row) => row.method === 'POST' && row.url.includes('/rest/v1/submissions')), true);
+      assert.equal(warnings.some((line) => line.includes(`${missingPrefix} 42P01`)), true);
+      assert.equal(warnings.some((line) => line.includes(upstreamPrefix)), false);
+
+      writes.length = 0;
+      warnings.length = 0;
+      global.fetch = async (url, options = {}) => {
+        const u = String(url);
+        const method = options.method || 'GET';
+        if (u.includes('pad_sync_receipts')) return hangUntilAbort(options);
+        if (u.includes('/rest/v1/licenses?')) return license();
+        if (u.includes('/rest/v1/submissions') && method === 'POST') {
+          return jsonResponse(200, [{ id: 'sub-slow', form_id: 'form-1', environment_code: 'EFC', device: 'pad' }]);
+        }
+        if (u.includes('submission_audit_log')) return jsonResponse(200, []);
+        if (method === 'PATCH') return jsonResponse(200, []);
+        return jsonResponse(200, []);
+      };
+      const started = Date.now();
+      const slow = await callJson(padSync, body);
+      const elapsed = Date.now() - started;
+      assert.equal(slow.status, 200, slow.payload.error || '');
+      assert.ok(elapsed < 4000, `reçu ${elapsed}ms`);
+      assert.equal(warnings.some((line) => line.includes(`${upstreamPrefix} 504`)), true);
+      assert.equal(warnings.some((line) => line.includes(missingPrefix)), false);
+
+      warnings.length = 0;
+      global.fetch = async (url, options = {}) => {
+        const u = String(url);
+        const method = options.method || 'GET';
+        if (u.includes('/rest/v1/licenses?')) return license();
+        if (u.includes('pad_sync_receipts')) return jsonResponse(503, { code: '57014', message: 'canceling statement due to statement timeout' });
+        if (u.includes('/rest/v1/submissions') && method === 'POST') {
+          return jsonResponse(200, [{ id: 'sub-5xx', form_id: 'form-1', environment_code: 'EFC', device: 'pad' }]);
+        }
+        if (u.includes('submission_audit_log')) return jsonResponse(200, []);
+        if (method === 'PATCH') return jsonResponse(200, []);
+        return jsonResponse(200, []);
+      };
+      const upstream = await callJson(padSync, body);
+      assert.equal(upstream.status, 200, upstream.payload.error || '');
+      assert.equal(warnings.some((line) => line.includes(`${upstreamPrefix} 503`)), true);
+      assert.equal(warnings.some((line) => line.includes(missingPrefix)), false);
+    } finally {
+      console.warn = previousWarn;
+    }
+  });
 });
