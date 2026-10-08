@@ -1,0 +1,121 @@
+name: PAD Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_host:
+        description: "Origine https du client (une base = un APK). Défaut EFC."
+        required: false
+        default: "https://efc.picotrack.fr"
+  pull_request:
+    branches: [v2]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/pad-android-apk.yml"
+      - ".well-known/**"
+      - "pad-device.js"
+      - "index.html"
+      - "build.js"
+      - "vercel.json"
+      - "assets/app.secured.js"
+      - "app.secured-v45.js"
+  push:
+    branches: [v2]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/pad-android-apk.yml"
+      - ".well-known/**"
+      - "pad-device.js"
+      - "index.html"
+      - "build.js"
+      - "vercel.json"
+      - "assets/app.secured.js"
+      - "app.secured-v45.js"
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Android SDK
+        run: |
+          set -euo pipefail
+          SDK_ROOT="$HOME/android-sdk"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          curl -fsSL -o /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
+          rm -rf "$SDK_ROOT/cmdline-tools/latest"
+          mv /tmp/cmdtools/cmdline-tools "$SDK_ROOT/cmdline-tools/latest"
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
+          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" "platforms;android-36" "build-tools;35.0.0" "platform-tools"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Test tenant config and GPS bridge
+        run: node --test mobile/configure.test.mjs mobile/pad-device.test.mjs
+
+      - name: Configure tenant and build debug APK
+        env:
+          PAD_HOST: ${{ github.event.inputs.tenant_host || 'https://efc.picotrack.fr' }}
+          ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+          ANDROID_DEBUG_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_DEBUG_KEYSTORE_PASSWORD }}
+          ANDROID_DEBUG_KEY_ALIAS: ${{ secrets.ANDROID_DEBUG_KEY_ALIAS }}
+          ANDROID_DEBUG_KEY_PASSWORD: ${{ secrets.ANDROID_DEBUG_KEY_PASSWORD }}
+        run: ./mobile/build-apk.sh
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: picotrack-pad-debug
+          path: mobile/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Decode release keystore when secrets are present
+        id: release
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/picotrack-release.keystore"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "path=$RUNNER_TEMP/picotrack-release.keystore" >> "$GITHUB_OUTPUT"
+            keytool -list -v -keystore "$RUNNER_TEMP/picotrack-release.keystore" -alias "$ANDROID_KEY_ALIAS" -storepass "$ANDROID_KEYSTORE_PASSWORD" | awk -F': ' '/SHA256:/{print "Release SHA256: "$2; exit}'
+            echo "Ajoutez cette empreinte au tableau sha256_cert_fingerprints de .well-known/assetlinks.json pour le package de ce client."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Secrets de signature release absents : APK release non produite."
+          fi
+
+      - name: Build release APK
+        if: steps.release.outputs.enabled == 'true'
+        working-directory: mobile/android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.release.outputs.path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Upload release APK
+        if: steps.release.outputs.enabled == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: picotrack-pad-release
+          path: mobile/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error

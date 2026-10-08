@@ -123,6 +123,19 @@
           "value": "public, max-age=300, must-revalidate"
         }
       ]
+    },
+    {
+      "source": "/.well-known/assetlinks.json",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=300, must-revalidate"
+        }
+      ]
     }
   ],
   "rewrites": [
@@ -143,7 +156,7 @@
       "destination": "/public/index.html"
     },
     {
-      "source": "/((?!api(?:/|$)|assets(?:/|$)|icons(?:/|$)|public(?:\\.html)?(?:/|$)|sw\\.js$|manifest\\.json$|style\\.css$|pad\\.css$|pad-mode\\.js$).*)",
+      "source": "/((?!api(?:/|$)|assets(?:/|$)|icons(?:/|$)|\\.well-known(?:/|$)|public(?:\\.html)?(?:/|$)|sw\\.js$|manifest\\.json$|style\\.css$|pad\\.css$|pad-mode\\.js$|pad-device\\.js$).*)",
       "destination": "/index.html"
     }
   ],

@@ -1,0 +1,91 @@
+plugins {
+    id 'com.android.application'
+}
+
+def tenant = new Properties()
+def tenantFile = rootProject.file('tenant.properties')
+if (!tenantFile.exists()) {
+    throw new GradleException('tenant.properties introuvable. Exécutez : node mobile/configure.mjs')
+}
+tenantFile.withInputStream { tenant.load(it) }
+
+def appId = tenant.getProperty('applicationId', '').trim()
+def hostName = tenant.getProperty('hostName', '').trim()
+if (!(appId ==~ /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$/)) {
+    throw new GradleException('applicationId invalide : ' + appId)
+}
+if (hostName.contains('/') || hostName.contains(' ') || !hostName.contains('.')) {
+    throw new GradleException('hostName invalide : ' + hostName)
+}
+
+def debugKeystorePath = System.getenv('ANDROID_DEBUG_KEYSTORE_PATH')
+def debugStorePassword = System.getenv('ANDROID_DEBUG_KEYSTORE_PASSWORD')
+def debugKeyAlias = System.getenv('ANDROID_DEBUG_KEY_ALIAS')
+def debugKeyPassword = System.getenv('ANDROID_DEBUG_KEY_PASSWORD')
+def hasDebugKey = debugKeystorePath && debugStorePassword && debugKeyAlias && debugKeyPassword && file(debugKeystorePath).exists()
+if (!hasDebugKey) {
+    throw new GradleException('Signature debug absente. Lancez ./mobile/build-apk.sh : il utilise les secrets debug, ou génère une clé éphémère.')
+}
+
+def releaseKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH')
+def releaseKeystorePassword = System.getenv('ANDROID_KEYSTORE_PASSWORD')
+def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('ANDROID_KEY_PASSWORD')
+def hasReleaseKey = releaseKeystorePath && releaseKeystorePassword && releaseKeyAlias && releaseKeyPassword && file(releaseKeystorePath).exists()
+
+android {
+    namespace 'fr.picotrack.pad'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId appId
+        minSdk 24
+        targetSdk 35
+        versionCode tenant.getProperty('versionCode', '1').toInteger()
+        versionName tenant.getProperty('versionName', '1.0.0')
+    }
+
+    signingConfigs {
+        debug {
+            storeFile file(debugKeystorePath)
+            storePassword debugStorePassword
+            keyAlias debugKeyAlias
+            keyPassword debugKeyPassword
+        }
+        if (hasReleaseKey) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            minifyEnabled false
+            if (hasReleaseKey) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.6.2'
+    implementation 'com.google.androidbrowserhelper:locationdelegation:1.1.2'
+}

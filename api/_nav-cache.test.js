@@ -9,17 +9,19 @@ const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision
 const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
 const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
 
-test('index.html : Babel absent, React conservé, cache-buster 20261003f', () => {
+test('index.html : Babel absent, React conservé, cache-buster 20261003g', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.match(html, /app\.secured\.js\?v=20261003f/);
-  assert.match(html, /core-supervision\.js\?v=20261003f/);
+  assert.match(html, /app\.secured\.js\?v=20261003g/);
+  assert.match(html, /core-supervision\.js\?v=20261003g/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);
   assert.equal(html.includes('20261003a'), false);
   assert.equal(html.includes('20261003b'), false);
   assert.equal(html.includes('20261003d'), false);
+  assert.equal(html.includes('20261003e'), false);
+  assert.equal(html.includes('20261003f'), false);
 });
 
 test('hotfix saisie: case groupe inchangé dans le bundle', () => {
