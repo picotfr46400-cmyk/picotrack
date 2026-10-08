@@ -1790,7 +1790,7 @@
         throw err;
       }
       if (ret && typeof ret.then === 'function') {
-        Promise.resolve(ret).catch(function () { disarmSubmitPushHook(); });
+        Promise.resolve(ret).then(()=>{ if(!window.__ptSubmittingSaisie) disarmSubmitPushHook(); }).catch(function () { disarmSubmitPushHook(); });
       } else if (!window.__ptSubmittingSaisie) {
         disarmSubmitPushHook();
       }

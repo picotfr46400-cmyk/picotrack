@@ -9,17 +9,19 @@ const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision
 const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
 const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
 
-test('index.html : Babel absent, React conservé, cache-buster 20261003e', () => {
+test('index.html : Babel absent, React conservé, cache-buster 20261003g', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.match(html, /app\.secured\.js\?v=20261003e/);
-  assert.match(html, /core-supervision\.js\?v=20261003e/);
+  assert.match(html, /app\.secured\.js\?v=20261003g/);
+  assert.match(html, /core-supervision\.js\?v=20261003g/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);
   assert.equal(html.includes('20261003a'), false);
   assert.equal(html.includes('20261003b'), false);
   assert.equal(html.includes('20261003d'), false);
+  assert.equal(html.includes('20261003e'), false);
+  assert.equal(html.includes('20261003f'), false);
 });
 
 test('hotfix saisie: case groupe inchangé dans le bundle', () => {
@@ -330,16 +332,19 @@ function bootOverlayVm(opts) {
   const FORMS_DATA = [form].concat(extra);
   const SUBMISSIONS_DATA = opts.subs || [];
   const timers = [];
+  const clock = opts.clock || null;
   const ctx = {
     console,
     Promise,
     setTimeout(fn, ms) {
       if (ms === 400 || ms === 1200) return 0;
+      if (clock) return clock.setTimeout(fn, ms);
       const id = setTimeout(fn, ms);
       timers.push(id);
       return id;
     },
     clearTimeout(id) {
+      if (clock) return clock.clearTimeout(id);
       clearTimeout(id);
     },
     document: {
@@ -370,7 +375,8 @@ function bootOverlayVm(opts) {
     form,
     FORMS_DATA,
     SUBMISSIONS_DATA,
-    dispose() { timers.forEach((id) => clearTimeout(id)); }
+    dispose() { if (!clock) timers.forEach((id) => clearTimeout(id)); },
+    clock
   };
 }
 
@@ -565,6 +571,84 @@ test('vm overlay async : échec absorbé puis submitServiceInstance donne 0', as
   env.ctx.submitServiceInstance();
   assert.equal(env.form.resp, 100);
   env.dispose();
+});
+
+function createFakeTimers() {
+  let now = 0;
+  let seq = 1;
+  const queue = [];
+  return {
+    setTimeout(fn, ms) {
+      const id = seq++;
+      queue.push({ id, fn, at: now + (Number(ms) || 0) });
+      return id;
+    },
+    clearTimeout(id) {
+      const i = queue.findIndex((item) => item.id === id);
+      if (i >= 0) queue.splice(i, 1);
+    },
+    tick(ms) {
+      now += ms;
+      for (;;) {
+        const due = queue
+          .filter((item) => item.at <= now)
+          .sort((a, b) => a.at - b.at || a.id - b.id);
+        if (!due.length) break;
+        const item = due[0];
+        const i = queue.indexOf(item);
+        if (i >= 0) queue.splice(i, 1);
+        item.fn();
+      }
+    }
+  };
+}
+
+test('vm overlay async : échec absorbé désarme le hook tout de suite', async () => {
+  const env = bootOverlayVm({
+    async submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+      await Promise.resolve();
+      this.__ptSubmittingSaisie = false;
+    }
+  });
+  const nativePush = env.SUBMISSIONS_DATA.push;
+  try {
+    env.ctx.window.ptApplyRespFloorToForm(env.form);
+    await env.ctx.window.submitSaisie();
+    await Promise.resolve();
+    assert.equal(env.SUBMISSIONS_DATA.push, nativePush, 'hook désarmé dès que la promesse se résout en échec');
+    env.ctx.__ptSubmittingSaisie = true;
+    env.SUBMISSIONS_DATA.push({ id: 'after-fail', formId: 2708, values: { a: 1 } });
+    assert.equal(env.form.resp, 100, 'un push après échec ne compte pas');
+  } finally {
+    env.dispose();
+  }
+});
+
+test('vm overlay : le hook submit se désarme au bout de 60 s (fake timers)', () => {
+  const clock = createFakeTimers();
+  const env = bootOverlayVm({
+    clock,
+    submitSaisie() {
+      if (this.__ptSubmittingSaisie) return;
+      this.__ptSubmittingSaisie = true;
+    }
+  });
+  const nativePush = env.SUBMISSIONS_DATA.push;
+  try {
+    env.ctx.window.ptApplyRespFloorToForm(env.form);
+    env.ctx.window.submitSaisie();
+    assert.notEqual(env.SUBMISSIONS_DATA.push, nativePush, 'hook armé pendant la saisie');
+    clock.tick(59999);
+    assert.notEqual(env.SUBMISSIONS_DATA.push, nativePush, 'toujours armé juste avant 60 s');
+    clock.tick(1);
+    assert.equal(env.SUBMISSIONS_DATA.push, nativePush, 'désarmé à 60 s');
+    env.SUBMISSIONS_DATA.push({ id: 'after-timeout', formId: 2708, values: { a: 1 } });
+    assert.equal(env.form.resp, 100, 'un push après le timeout ne compte pas');
+  } finally {
+    env.dispose();
+  }
 });
 
 test('Pluriel réponse / réponses selon le compteur', () => {
