@@ -1051,6 +1051,8 @@ test('l’export PDF borne la frise puis retire les images', async () => {
     }],
     traceLines: []
   };
+  assert.equal(pdf.MAX_EMBEDDED_BUDGET, pdf.PDF_BYTE_LIMIT - pdf.TEXT_BYTE_MARGIN);
+  assert.equal(typeof pdf.renderSubmissionPdf, 'function');
   const withImages = pdf.buildSubmissionPdf(doc, { enforceLimit: false, omitImages: false });
   const withoutImages = pdf.buildSubmissionPdf(doc, { enforceLimit: false, omitImages: true });
   assert.equal(withImages.includes(marker), true);

@@ -1,6 +1,6 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
-const { formatSubmissionDocument, buildSubmissionPdfWithinLimit } = require('./_submission-pdf');
+const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType } = require('./_license-type');
 const submissionAudit = require('./_submission-audit');
 
@@ -1227,6 +1227,9 @@ async function handleExportSubmissionPdf(req, body) {
     reference: id
   });
   const pdf = buildSubmissionPdfWithinLimit(document, lineSets);
+  if (!pdf || pdf.length > PDF_BYTE_LIMIT) {
+    throw Object.assign(new Error('Export PDF impossible.'), { status: 413 });
+  }
   if (exportRow) await submissionAudit.insertEvent(serviceRest, req, exportRow);
   return {
     filename: `saisie-${id}.pdf`,
