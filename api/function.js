@@ -160,9 +160,10 @@ async function upsertUserProfile(url, serviceRole, authUser, payload, options = 
     scope: cleanString(payload.scope || 'environment'),
     environment_code: environmentCode,
     active: payload.active !== false,
-    license_type: cleanString(payload.license_type || 'supervision'),
     updated_at: new Date().toISOString()
   };
+  const providedLicenseType = cleanString(partial ? (clientSent('license_type') ? payload.license_type : '') : payload.license_type);
+  if (providedLicenseType) profile.license_type = providedLicenseType;
   if (!partial) profile.roles = safeArray(payload.roles);
   else if (Array.isArray(payload.roles)) profile.roles = payload.roles;
 
@@ -361,19 +362,16 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
 }
 
 function updateAddsActiveSeat(current, next) {
-  const willBeActive = next?.active !== false;
-  if (!willBeActive) return false;
-  const wasActive = current?.active !== false;
-  const prevType = normalizeLicenseType(current?.license_type);
-  const nextType = normalizeLicenseType(next?.license_type || current?.license_type);
-  if (!wasActive) return true;
-  return prevType !== nextType;
+  if (next?.active === false) return false;
+  const beforeActive = !!(current && current.active !== false);
+  if (!beforeActive) return true;
+  return seatLicenseType(current) !== seatLicenseType(next);
 }
 
 async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null) {
   const environmentCode = normalizeEnvironmentCode(payload.environment_code || '');
   if (!environmentCode || environmentCode === 'GLOBAL') throw Object.assign(new Error('Environnement actif invalide pour créer un utilisateur.'), { status: 400 });
-  const licenseType = normalizeLicenseType(payload.license_type);
+  const licenseType = seatLicenseType(payload);
   const limits = await getLicenseLimitsForEnvironment(url, serviceRole, environmentCode);
   if (!limits) throw Object.assign(new Error(`Aucun quota configuré pour l’environnement ${environmentCode}.`), { status: 400 });
   const max = licenseType === 'pad' ? Number(limits.pad_limit || 0) : Number(limits.supervision_limit || 0);
@@ -524,7 +522,8 @@ function clampAssignedPrivileges(payload, requester, context = {}) {
   }
   if (isPlatformOperatorProfile(requester)) {
     if (Object.prototype.hasOwnProperty.call(next, 'license_type')) {
-      next.license_type = canonicalizeStoredLicenseType(next.license_type, { keepPlatformTypes: true });
+      if (!normalizePrivilegeToken(next.license_type)) delete next.license_type;
+      else next.license_type = canonicalizeStoredLicenseType(next.license_type, { keepPlatformTypes: true });
     }
     return next;
   }
@@ -537,7 +536,8 @@ function clampAssignedPrivileges(payload, requester, context = {}) {
   }
   next.scope = 'environment';
   if (Object.prototype.hasOwnProperty.call(next, 'license_type')) {
-    next.license_type = normalizeLicenseType(next.license_type);
+    if (!normalizePrivilegeToken(next.license_type)) delete next.license_type;
+    else next.license_type = normalizeLicenseType(next.license_type);
   }
   delete next.resolved_permissions;
   delete next.password_hash;
@@ -772,10 +772,12 @@ async function handleCreateUser(req, url, serviceRole, payload) {
   const safePayload = clampAssignedPrivileges(payload, profile, { catalog, existingRoles: [] });
   const environmentCode = assertSameEnvironmentOrPlatform(profile, safePayload.environment_code || safePayload.active_env || profileEnvironmentCode(profile));
   const quota = await assertQuotaAvailable(url, serviceRole, { ...safePayload, environment_code: environmentCode }, null);
-  const authUser = await createAuthUserWithPassword(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  const storedLicenseType = normalizePrivilegeToken(safePayload.license_type) ? safePayload.license_type : quota.licenseType;
+  const creating = { ...safePayload, license_type: storedLicenseType, environment_code: quota.environmentCode };
+  const authUser = await createAuthUserWithPassword(url, serviceRole, creating);
   const tenantId = await resolveCreateTenantId(url, serviceRole, quota.environmentCode, profile);
-  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode }, { tenantId });
-  await insertLicenseBestEffort(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, creating, { tenantId });
+  await insertLicenseBestEffort(url, serviceRole, creating);
   return { ok: true, success: true, mode: 'direct-create', quota, user: { id: authUser.id, email: authUser.email || payload.email }, profile: createdProfile };
 }
 
@@ -807,15 +809,64 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   }
   const catalog = isPlatformOperatorProfile(profileRequester) ? [] : await loadActiveAppRoles(url, serviceRole, profileEnvironmentCode(profileRequester));
   const safePayload = clampAssignedPrivileges(payload, profileRequester, { catalog, existingRoles: current.roles });
-  const merged = { ...current, ...safePayload, environment_code: safePayload.environment_code || current.environment_code, license_type: safePayload.license_type || current.license_type };
+  const merged = {
+    ...current,
+    ...safePayload,
+    environment_code: safePayload.environment_code || current.environment_code
+  };
+  if (!Object.prototype.hasOwnProperty.call(safePayload, 'license_type')) merged.license_type = current.license_type;
+  if (!Object.prototype.hasOwnProperty.call(safePayload, 'role')) merged.role = current.role;
+  if (!Object.prototype.hasOwnProperty.call(safePayload, 'roles')) merged.roles = current.roles;
+  if (!Object.prototype.hasOwnProperty.call(safePayload, 'active')) merged.active = current.active;
   if (updateAddsActiveSeat(current, merged)) await assertQuotaAvailable(url, serviceRole, merged, id);
   await updateAuthUserPassword(url, serviceRole, id, payload);
   const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged, { partial: true, requested: payload });
+  if (Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === false) {
+    const licenseEmail = normalizeEmail(current.email || '');
+    const licenseEnv = normalizeEnvironmentCode(current.environment_code || '');
+    if (licenseEmail && licenseEnv && licenseEnv !== 'GLOBAL') {
+      await supabaseFetch(url, serviceRole, `/rest/v1/licenses?email=eq.${encodeURIComponent(licenseEmail)}&environment_code=eq.${encodeURIComponent(licenseEnv)}`, {
+        method: 'PATCH',
+        prefer: 'return=minimal',
+        body: { active: false }
+      });
+    }
+  }
   return { ok: true, success: true, mode: 'direct-update', profile };
 }
 
 function isUuidLike(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cleanString(value, 80));
+}
+
+function linkedLicenseUserId(license) {
+  return cleanString(license?.user_id || license?.profile_id || license?.user_profile_id || '', 80);
+}
+
+async function deleteStandaloneLicense(url, serviceRole, requester, licenseId) {
+  const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseId)}&select=*&limit=1`, { method: 'GET' }).catch(() => []);
+  const licenseRow = Array.isArray(rows) ? rows[0] : null;
+  if (!licenseRow?.id || String(licenseRow.id) !== String(licenseId)) {
+    throw Object.assign(new Error('Licence introuvable.'), { status: 404 });
+  }
+  if (isPlatformOperatorProfile(licenseRow) || normalizeEnvironmentCode(licenseRow.environment_code) === 'GLOBAL') {
+    throw Object.assign(new Error('Suppression d’un compte plateforme refusée.'), { status: 403 });
+  }
+  if (linkedLicenseUserId(licenseRow)) {
+    throw Object.assign(new Error('Cette licence est rattachée à un utilisateur. Supprimez le compte utilisateur.'), { status: 409 });
+  }
+  const licenseEnv = normalizeEnvironmentCode(licenseRow.environment_code);
+  const ownEnv = profileEnvironmentCode(requester);
+  if (!licenseEnv || licenseEnv === 'GLOBAL') {
+    throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
+  }
+  if (!isPlatformOperatorProfile(requester) && licenseEnv !== ownEnv) {
+    throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
+  }
+  await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseRow.id)}&environment_code=eq.${encodeURIComponent(licenseEnv)}`, {
+    method: 'DELETE',
+    prefer: 'return=minimal'
+  });
 }
 
 async function handleDeleteUser(req, url, serviceRole, payload) {
@@ -840,14 +891,22 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
   }
 
   // Le front envoie l'UUID d'une licence autonome dans id / user_id, pas dans license_id.
-  // On ne le cherche dans licenses que si ce n'est pas déjà un profil.
+  // On ne le cherche dans licenses que si ce n'est pas déjà un profil, et seulement par id.
   const licenseIdToTry = rawLicenseId || (!current?.id && rawId ? rawId : '');
+  if (licenseIdToTry && !current?.id) {
+    const probed = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseIdToTry)}&select=id&limit=1`, { method: 'GET' }).catch(() => []);
+    const probedRow = Array.isArray(probed) ? probed[0] : null;
+    if (probedRow?.id && String(probedRow.id) === String(licenseIdToTry)) {
+      await deleteStandaloneLicense(url, serviceRole, profileRequester, licenseIdToTry);
+      return { ok: true, success: true };
+    }
+  }
   if (licenseIdToTry) {
     const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseIdToTry)}&select=*&limit=1`, { method: 'GET' }).catch(() => []);
     licenseRow = Array.isArray(rows) ? rows[0] : null;
   }
 
-  const lookupEmail = licenseRow?.id ? normalizeEmail(licenseRow.email || '') : email;
+  const lookupEmail = email;
   const lookupEnv = normalizeEnvironmentCode(licenseRow?.environment_code || requestedEnv);
 
   if (!current && lookupEmail) {

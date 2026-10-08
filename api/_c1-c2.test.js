@@ -1608,8 +1608,9 @@ test('handler : delete-user autorise une licence seule du même environnement', 
     authPlatform = true;
     calls.length = 0;
     const tied = await callJson(functions, { functionName: 'delete-user', payload: { license_id: 'lic-authplat' } }, authHeaders());
-    assert.equal(tied.status, 403, tied.payload.error || '');
-    assert.equal(calls.some(call => call.method === 'DELETE'), false);
+    assert.equal(tied.status, 200, tied.payload.error || '');
+    assert.equal(calls.some(call => call.method === 'DELETE' && call.url.includes('licenses?id=eq.lic-authplat')), true);
+    assert.equal(calls.some(call => call.method === 'DELETE' && (call.url.includes('user_profiles') || call.url.includes('/auth/'))), false);
   });
   await withSupabase(async () => {
     const { calls } = installActor(pad, {
