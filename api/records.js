@@ -547,8 +547,8 @@ function profileRoleKeys(profile) {
   const keys = [];
   const add = v => { const s = String(v || '').trim(); if (s) keys.push(s.toLowerCase()); };
   add(profile?.role);
-  const license = interpretedLicenseType(profile?.license_type);
-  if (license) keys.push(license);
+  add(profile?.license_type);
+  if (normalizeLicenseType(profile?.license_type) === 'pad') keys.push('pad');
   for (const r of parseRoleArray(profile?.roles)) add(r);
   const uniq = [...new Set(keys)];
   if (uniq.includes('super_admin') || uniq.includes('platform_admin')) uniq.push('administrateur', 'admin');
