@@ -2,7 +2,7 @@ const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, ser
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdf, PDF_BYTE_LIMIT } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
-const { assertQuotaAvailable, updateAddsActiveSeat } = require('./function');
+const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile } = require('./function');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -871,6 +871,9 @@ function projectClientResult(action, body, result, profile) {
 }
 
 async function handleSave(req, body) {
+  let companionLicenses = null;
+  let companionActivating = false;
+  let profileSnapshot = null;
   const entity = cleanEntity(body.entity);
   if (!entity) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
   const user = await requireAuth(req);
@@ -992,6 +995,19 @@ async function handleSave(req, body) {
           active: true
         }, entity === 'user_profiles' ? (id || null) : null);
       }
+      const explicitActive = Object.prototype.hasOwnProperty.call(record, 'active') && (record.active === true || record.active === false);
+      const turningOn = explicitActive && record.active === true && existingRow?.active === false;
+      const turningOff = explicitActive && record.active === false && existingRow?.active !== false;
+      if (entity === 'user_profiles' && id && existingRow && (turningOn || turningOff)) {
+        const { url, serviceRole } = getSupabaseConfig(req);
+        profileSnapshot = snapshotUserProfile(existingRow);
+        companionActivating = turningOn;
+        companionLicenses = await prepareCompanionLicenseChange(url, serviceRole, {
+          id: existingRow.id,
+          email: existingRow.email,
+          environment_code: existingRow.environment_code || record.environment_code
+        }, turningOn);
+      }
     }
   }
   if (entitiesWithEnvironmentCode.has(entity) && !persistedEnvironmentCode(record.environment_code)) {
@@ -1009,7 +1025,12 @@ async function handleSave(req, body) {
 
   // Les écritures passent côté serveur avec clé service après authentification + whitelist + normalisation.
   // Cela évite les pertes silencieuses dues aux politiques RLS incomplètes, sans exposer la clé au navigateur.
-  return await serviceRest(path, { method, body: record, prefer: 'return=representation', req });
+  const saved = await serviceRest(path, { method, body: record, prefer: 'return=representation', req });
+  if (companionLicenses && companionLicenses.length) {
+    const { url, serviceRole } = getSupabaseConfig(req);
+    await commitCompanionLicenseChange(url, serviceRole, profileSnapshot, companionLicenses, companionActivating);
+  }
+  return saved;
 }
 
 async function handleDelete(req, body) {

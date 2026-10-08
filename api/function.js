@@ -31,6 +31,10 @@ function normalizeEmail(value) {
   return cleanString(value, 320).toLowerCase();
 }
 
+function licenseEmailKey(value) {
+  return String(value ?? '').replace(/\s+/g, '').toLowerCase();
+}
+
 function normalizeEnvironmentCode(value) {
   const v = cleanString(value || '', 80).toUpperCase();
   return v === '*' ? 'GLOBAL' : v;
@@ -279,10 +283,8 @@ function envCandidates(env) {
   return [...new Set([upper, raw, raw.toLowerCase()].filter(Boolean))];
 }
 
-function quotaReadError(err) {
-  const upstream = Number(err?.status);
-  const status = upstream >= 500 && upstream <= 599 ? upstream : 503;
-  return Object.assign(new Error('Lecture du quota indisponible.'), { status });
+function quotaReadError() {
+  return Object.assign(new Error('Lecture du quota indisponible.'), { status: 503 });
 }
 
 async function quotaRead(url, serviceRole, path) {
@@ -795,12 +797,140 @@ async function handleInviteUser(url, serviceRole, payload) {
 }
 
 
+function snapshotUserProfile(row) {
+  if (!row?.id) return null;
+  const permissions = row.resolved_permissions;
+  return {
+    id: row.id,
+    email: row.email ?? null,
+    environment_code: row.environment_code ?? null,
+    license_type: row.license_type ?? null,
+    role: row.role ?? null,
+    roles: Array.isArray(row.roles) ? row.roles.slice() : (row.roles ?? null),
+    scope: row.scope ?? null,
+    resolved_permissions: permissions && typeof permissions === 'object' && !Array.isArray(permissions) ? { ...permissions } : (permissions ?? null),
+    active: row.active !== false,
+    firstname: row.firstname ?? null,
+    first_name: row.first_name ?? null,
+    lastname: row.lastname ?? null,
+    last_name: row.last_name ?? null,
+    username: row.username ?? null,
+    login_user: row.login_user ?? null,
+    label: row.label ?? null,
+    license_key: row.license_key ?? null
+  };
+}
+
+function licenseBelongsToProfile(license, profileId) {
+  const id = cleanString(profileId, 80);
+  if (!id) return false;
+  return [license?.user_id, license?.profile_id, license?.user_profile_id].some(value => cleanString(value, 80) === id);
+}
+
+function companionLicenseSnapshot(license) {
+  return {
+    id: license.id,
+    environment_code: normalizeEnvironmentCode(license.environment_code),
+    active: license.active !== false
+  };
+}
+
+async function listEnvironmentLicenses(url, serviceRole, environmentCode) {
+  try {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&limit=1000`, { method: 'GET' });
+    if (!Array.isArray(rows)) throw Object.assign(new Error('Lecture de la licence impossible.'), { status: 503 });
+    return rows;
+  } catch (err) {
+    if (err && err.message === 'Lecture de la licence impossible.') throw err;
+    throw Object.assign(new Error('Lecture de la licence impossible.'), { status: 503 });
+  }
+}
+
+async function prepareCompanionLicenseChange(url, serviceRole, profile, activating) {
+  const environmentCode = normalizeEnvironmentCode(profile?.environment_code || '');
+  if (!environmentCode || environmentCode === 'GLOBAL') {
+    if (activating) throw Object.assign(new Error('Aucune licence ne correspond à ce compte.'), { status: 409 });
+    return [];
+  }
+  const visible = (await listEnvironmentLicenses(url, serviceRole, environmentCode)).filter(row => {
+    if (!row?.id) return false;
+    if (normalizeEnvironmentCode(row.environment_code) !== environmentCode) return false;
+    if (isPlatformOperatorProfile(row)) return false;
+    return true;
+  });
+  const linked = visible.filter(row => licenseBelongsToProfile(row, profile.id));
+  if (linked.length) return linked.map(companionLicenseSnapshot);
+  const email = licenseEmailKey(profile?.email || '');
+  const byEmail = email ? visible.filter(row => licenseEmailKey(row.email) === email) : [];
+  if (byEmail.length === 1) return byEmail.map(companionLicenseSnapshot);
+  if (activating || byEmail.length > 1) {
+    throw Object.assign(new Error(byEmail.length > 1
+      ? 'Plusieurs licences correspondent à ce compte.'
+      : 'Aucune licence ne correspond à ce compte.'), { status: 409 });
+  }
+  return [];
+}
+
+async function patchLicenseActive(url, serviceRole, license, active) {
+  const environmentCode = normalizeEnvironmentCode(license.environment_code);
+  const updated = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(license.id)}&environment_code=eq.${encodeURIComponent(environmentCode)}`, {
+    method: 'PATCH',
+    prefer: 'return=representation',
+    body: { active: active === true }
+  });
+  if (!Array.isArray(updated) || !updated.length) {
+    throw Object.assign(new Error('Mise à jour de la licence impossible.'), { status: 503 });
+  }
+}
+
+async function restoreUserProfileSnapshot(url, serviceRole, snapshot) {
+  if (!snapshot?.id) return;
+  await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(snapshot.id)}`, {
+    method: 'PATCH',
+    prefer: 'return=minimal',
+    body: {
+      email: snapshot.email,
+      environment_code: snapshot.environment_code,
+      license_type: snapshot.license_type,
+      role: snapshot.role,
+      roles: snapshot.roles,
+      scope: snapshot.scope,
+      resolved_permissions: snapshot.resolved_permissions,
+      active: snapshot.active === true,
+      firstname: snapshot.firstname,
+      first_name: snapshot.first_name,
+      lastname: snapshot.lastname,
+      last_name: snapshot.last_name,
+      username: snapshot.username,
+      login_user: snapshot.login_user,
+      label: snapshot.label,
+      license_key: snapshot.license_key
+    }
+  });
+}
+
+async function commitCompanionLicenseChange(url, serviceRole, profileSnapshot, licenses, active) {
+  const applied = [];
+  try {
+    for (const license of licenses) {
+      await patchLicenseActive(url, serviceRole, license, active === true);
+      applied.push(license);
+    }
+  } catch (_) {
+    for (const license of applied.reverse()) {
+      await patchLicenseActive(url, serviceRole, license, license.active === true).catch(() => {});
+    }
+    await restoreUserProfileSnapshot(url, serviceRole, profileSnapshot).catch(() => {});
+    throw Object.assign(new Error('Mise à jour de la licence impossible.'), { status: 503 });
+  }
+}
+
 async function handleUpdateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const profileRequester = await requireUserCreator(req, url, serviceRole);
   const id = cleanString(payload.user_id || payload.id, 80);
   if (!id) throw Object.assign(new Error('ID utilisateur manquant.'), { status: 400 });
-  const currentRows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,email,environment_code,license_type,role,roles,scope,resolved_permissions,active&limit=1`, { method: 'GET' });
+  const currentRows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(id)}&select=id,email,environment_code,license_type,role,roles,scope,resolved_permissions,active,firstname,first_name,lastname,last_name,username,login_user,label,license_key&limit=1`, { method: 'GET' });
   const current = Array.isArray(currentRows) ? currentRows[0] : null;
   if (!current?.id) throw Object.assign(new Error('Utilisateur introuvable.'), { status: 404 });
   assertSameEnvironmentOrPlatform(profileRequester, current.environment_code);
@@ -818,19 +948,17 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'role')) merged.role = current.role;
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'roles')) merged.roles = current.roles;
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'active')) merged.active = current.active;
+  const turningOn = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === true && current.active === false;
+  const turningOff = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === false && current.active !== false;
   if (updateAddsActiveSeat(current, merged)) await assertQuotaAvailable(url, serviceRole, merged, id);
+  const companions = (turningOn || turningOff)
+    ? await prepareCompanionLicenseChange(url, serviceRole, current, turningOn)
+    : null;
+  const profileSnapshot = snapshotUserProfile(current);
   await updateAuthUserPassword(url, serviceRole, id, payload);
   const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged, { partial: true, requested: payload });
-  if (Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === false) {
-    const licenseEmail = normalizeEmail(current.email || '');
-    const licenseEnv = normalizeEnvironmentCode(current.environment_code || '');
-    if (licenseEmail && licenseEnv && licenseEnv !== 'GLOBAL') {
-      await supabaseFetch(url, serviceRole, `/rest/v1/licenses?email=eq.${encodeURIComponent(licenseEmail)}&environment_code=eq.${encodeURIComponent(licenseEnv)}`, {
-        method: 'PATCH',
-        prefer: 'return=minimal',
-        body: { active: false }
-      });
-    }
+  if (companions && companions.length) {
+    await commitCompanionLicenseChange(url, serviceRole, profileSnapshot, companions, turningOn);
   }
   return { ok: true, success: true, mode: 'direct-update', profile };
 }
@@ -843,10 +971,25 @@ function linkedLicenseUserId(license) {
   return cleanString(license?.user_id || license?.profile_id || license?.user_profile_id || '', 80);
 }
 
-async function deleteStandaloneLicense(url, serviceRole, requester, licenseId) {
-  const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseId)}&select=*&limit=1`, { method: 'GET' }).catch(() => []);
-  const licenseRow = Array.isArray(rows) ? rows[0] : null;
-  if (!licenseRow?.id || String(licenseRow.id) !== String(licenseId)) {
+async function readLicenseByIdStrict(url, serviceRole, licenseId) {
+  try {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseId)}&select=*&limit=1`, { method: 'GET' });
+    if (!Array.isArray(rows)) throw Object.assign(new Error('Lecture de la licence impossible.'), { status: 503 });
+    const row = rows[0] || null;
+    if (!row?.id || String(row.id) !== String(licenseId)) return null;
+    return row;
+  } catch (err) {
+    if (err && err.message === 'Lecture de la licence impossible.') throw err;
+    if (Number(err?.status) === 404) return null;
+    throw Object.assign(new Error('Lecture de la licence impossible.'), { status: 503 });
+  }
+}
+
+async function deleteStandaloneLicense(url, serviceRole, requester, licenseId, preloaded) {
+  const licenseRow = preloaded && String(preloaded.id) === String(licenseId)
+    ? preloaded
+    : await readLicenseByIdStrict(url, serviceRole, licenseId);
+  if (!licenseRow?.id) {
     throw Object.assign(new Error('Licence introuvable.'), { status: 404 });
   }
   if (isPlatformOperatorProfile(licenseRow) || normalizeEnvironmentCode(licenseRow.environment_code) === 'GLOBAL') {
@@ -894,16 +1037,13 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
   // On ne le cherche dans licenses que si ce n'est pas déjà un profil, et seulement par id.
   const licenseIdToTry = rawLicenseId || (!current?.id && rawId ? rawId : '');
   if (licenseIdToTry && !current?.id) {
-    const probed = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseIdToTry)}&select=id&limit=1`, { method: 'GET' }).catch(() => []);
-    const probedRow = Array.isArray(probed) ? probed[0] : null;
-    if (probedRow?.id && String(probedRow.id) === String(licenseIdToTry)) {
-      await deleteStandaloneLicense(url, serviceRole, profileRequester, licenseIdToTry);
+    const probedRow = await readLicenseByIdStrict(url, serviceRole, licenseIdToTry);
+    if (probedRow?.id) {
+      await deleteStandaloneLicense(url, serviceRole, profileRequester, licenseIdToTry, probedRow);
       return { ok: true, success: true };
     }
-  }
-  if (licenseIdToTry) {
-    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseIdToTry)}&select=*&limit=1`, { method: 'GET' }).catch(() => []);
-    licenseRow = Array.isArray(rows) ? rows[0] : null;
+  } else if (licenseIdToTry) {
+    licenseRow = await readLicenseByIdStrict(url, serviceRole, licenseIdToTry);
   }
 
   const lookupEmail = email;
@@ -1073,4 +1213,7 @@ handler.verifiedActor = verifiedActor;
 handler.clampAssignedPrivileges = clampAssignedPrivileges;
 handler.assertQuotaAvailable = assertQuotaAvailable;
 handler.updateAddsActiveSeat = updateAddsActiveSeat;
+handler.prepareCompanionLicenseChange = prepareCompanionLicenseChange;
+handler.commitCompanionLicenseChange = commitCompanionLicenseChange;
+handler.snapshotUserProfile = snapshotUserProfile;
 module.exports = handler;

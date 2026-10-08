@@ -471,7 +471,10 @@ test('handler : delete-user, save et delete refusent une cible plateforme', asyn
       if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: requester.id, email: requester.email });
       if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
       if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [requester]);
-      if (u.includes(`user_profiles?id=eq.${targetId}`) || u.includes(`licenses?id=eq.${targetId}`) || u.includes('licenses?id=eq.lic-platform')) {
+      if (u.includes('licenses?id=eq.lic-platform')) {
+        return jsonResponse(200, [{ id: 'lic-platform', email: 'root@efc.picotrack.fr', active: true, environment_code: 'EFC', ...shape }]);
+      }
+      if (u.includes(`user_profiles?id=eq.${targetId}`) || u.includes(`licenses?id=eq.${targetId}`)) {
         return jsonResponse(200, [{ id: targetId, email: 'root@efc.picotrack.fr', active: true, environment_code: 'EFC', ...shape }]);
       }
       return jsonResponse(200, []);
@@ -1838,7 +1841,8 @@ test('handler : au-dessus du quota, seule une place active en plus est bloquée'
     }, authHeaders());
     assert.equal(deactivated.status, 200, deactivated.payload.error || '');
     assert.equal(saved.active, false);
-    assert.equal(quotaReads.length, 0);
+    assert.equal(quotaReads.some(url => url.includes('environment_license_limits')), false);
+    assert.equal(quotaReads.some(url => url.includes('/rest/v1/user_profiles?')), false);
     bob.active = false;
 
     const reactivated = await callJson(functions, {
