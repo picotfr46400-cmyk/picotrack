@@ -680,6 +680,10 @@ async function handleListUsers(req, url, serviceRole, payload) {
   const requester = await getRequestUserProfile(req, url, serviceRole);
   const showLicenseKey = isPlatformOperatorProfile(requester) || isClientAdminProfile(requester);
   const showPermissions = isPlatformOperatorProfile(requester);
+  const licenseStatus = licenseListStatus(payload.license_status || payload.status);
+  if (licenseStatus !== 'active' && !(isPlatformOperatorProfile(requester) || isClientAdminProfile(requester))) {
+    throw Object.assign(new Error('Droit insuffisant pour lire les licences.'), { status: 403 });
+  }
 
   function isPlatform(row) {
     const role = String(row?.role || '').toLowerCase();
@@ -722,25 +726,32 @@ async function handleListUsers(req, url, serviceRole, payload) {
   const rows = [];
   const seen = new Set();
 
-  for (const env of envCandidates(environmentCode)) {
-    const profiles = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, { method: 'GET' }).catch(() => []);
-    for (const row of Array.isArray(profiles) ? profiles : []) {
-      if (!row || isPlatform(row)) continue;
-      const normalized = normalizeUserRow(row, 'user_profiles');
-      const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      rows.push(normalized);
-    }
+  function pushDeduped(row, source) {
+    if (!row || isPlatform(row)) return;
+    const normalized = normalizeUserRow(row, source);
+    const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    rows.push(normalized);
+  }
 
-    const licenses = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, { method: 'GET' }).catch(() => []);
-    for (const row of Array.isArray(licenses) ? licenses : []) {
-      if (!row || isPlatform(row)) continue;
-      const normalized = normalizeUserRow(row, 'licenses');
-      const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      rows.push(normalized);
+  function pushLicense(row) {
+    if (!row || isPlatform(row)) return;
+    rows.push(normalizeUserRow(row, 'licenses'));
+  }
+
+  for (const env of envCandidates(environmentCode)) {
+    if (licenseStatus !== 'inactive') {
+      const profiles = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, { method: 'GET' }).catch(() => []);
+      for (const row of Array.isArray(profiles) ? profiles : []) pushDeduped(row, 'user_profiles');
+      const licenses = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, { method: 'GET' }).catch(() => []);
+      for (const row of Array.isArray(licenses) ? licenses : []) pushDeduped(row, 'licenses');
+    }
+    if (licenseStatus !== 'active') {
+      const profiles = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.false&select=*`, { method: 'GET' }).catch(() => []);
+      for (const row of Array.isArray(profiles) ? profiles : []) pushDeduped(row, 'user_profiles');
+      const licenses = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.false&select=*`, { method: 'GET' }).catch(() => []);
+      for (const row of Array.isArray(licenses) ? licenses : []) pushLicense(row);
     }
   }
 
@@ -835,6 +846,30 @@ function companionLicenseSnapshot(license) {
   };
 }
 
+function describePublicLicense(license) {
+  const id = cleanString(license?.id, 80);
+  const type = seatLicenseType(license);
+  const state = license?.active === false ? 'inactif' : 'actif';
+  const label = cleanString(license?.label || '', 120);
+  return label
+    ? `${id}, type ${type}, état ${state}, libellé ${label}`
+    : `${id}, type ${type}, état ${state}`;
+}
+
+function ambiguousLicenseError(licenses) {
+  const details = licenses.map(describePublicLicense).join(' ; ');
+  return Object.assign(new Error(
+    `Plusieurs licences correspondent à ce compte. Ouvrez le filtre Inactives pour en supprimer une, ou réactivez avec license_id. Licences : ${details}.`
+  ), { status: 409 });
+}
+
+function licenseListStatus(value) {
+  const raw = cleanString(value || 'active', 40).toLowerCase();
+  if (raw === 'inactive' || raw === 'inactives' || raw === 'inactif' || raw === 'inactifs') return 'inactive';
+  if (raw === 'all' || raw === 'toutes' || raw === 'tous') return 'all';
+  return 'active';
+}
+
 async function listEnvironmentLicenses(url, serviceRole, environmentCode) {
   try {
     const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&limit=1000`, { method: 'GET' });
@@ -846,7 +881,12 @@ async function listEnvironmentLicenses(url, serviceRole, environmentCode) {
   }
 }
 
-async function prepareCompanionLicenseChange(url, serviceRole, profile, activating) {
+async function prepareCompanionLicenseChange(url, serviceRole, profile, activating, options = {}) {
+  const requestedId = cleanString(options.licenseId || '', 80);
+  if (activating && requestedId) {
+    const chosen = await resolveReactivationLicense(url, serviceRole, profile, requestedId);
+    return [companionLicenseSnapshot(chosen)];
+  }
   const environmentCode = normalizeEnvironmentCode(profile?.environment_code || '');
   if (!environmentCode || environmentCode === 'GLOBAL') return [];
   const visible = (await listEnvironmentLicenses(url, serviceRole, environmentCode)).filter(row => {
@@ -870,10 +910,38 @@ async function prepareCompanionLicenseChange(url, serviceRole, profile, activati
     return all;
   }
   if (linked.length) return linked.map(companionLicenseSnapshot);
-  if (byEmail.length > 1) {
-    throw Object.assign(new Error('Plusieurs licences correspondent à ce compte.'), { status: 409 });
-  }
+  if (byEmail.length > 1) throw ambiguousLicenseError(byEmail);
   return byEmail.map(companionLicenseSnapshot);
+}
+
+async function resolveReactivationLicense(url, serviceRole, profile, licenseId) {
+  const requested = cleanString(licenseId, 80);
+  const refuse = () => {
+    throw Object.assign(new Error('Cette licence ne correspond pas à ce compte.'), { status: 403 });
+  };
+  if (!requested) refuse();
+  const row = await readLicenseByIdStrict(url, serviceRole, requested);
+  if (!row?.id) refuse();
+  const environmentCode = normalizeEnvironmentCode(profile?.environment_code || '');
+  const email = licenseEmailKey(profile?.email || '');
+  const licenseEnv = normalizeEnvironmentCode(row.environment_code);
+  if (!environmentCode || environmentCode === 'GLOBAL' || !email) refuse();
+  if (isPlatformOperatorProfile(row) || !licenseEnv || licenseEnv === 'GLOBAL') refuse();
+  if (licenseEnv !== environmentCode) refuse();
+  if (licenseEmailKey(row.email) !== email) refuse();
+  return row;
+}
+
+async function assertExplicitLicenseQuota(url, serviceRole, account, license, excludeId = null) {
+  if (!license) return;
+  if (seatLicenseType(license) === seatLicenseType(account)) return;
+  await assertQuotaAvailable(url, serviceRole, {
+    environment_code: account?.environment_code,
+    license_type: license.license_type,
+    role: license.role,
+    roles: license.roles,
+    active: true
+  }, excludeId);
 }
 
 async function patchLicenseActive(url, serviceRole, license, active) {
@@ -955,9 +1023,14 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'active')) merged.active = current.active;
   const turningOn = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === true && current.active === false;
   const turningOff = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === false && current.active !== false;
+  const requestedLicenseId = cleanString(payload.license_id, 80);
+  const explicitLicense = turningOn && requestedLicenseId
+    ? await resolveReactivationLicense(url, serviceRole, current, requestedLicenseId)
+    : null;
   if (updateAddsActiveSeat(current, merged)) await assertQuotaAvailable(url, serviceRole, merged, id);
+  if (explicitLicense) await assertExplicitLicenseQuota(url, serviceRole, merged, explicitLicense, id);
   const companions = (turningOn || turningOff)
-    ? await prepareCompanionLicenseChange(url, serviceRole, current, turningOn)
+    ? await prepareCompanionLicenseChange(url, serviceRole, current, turningOn, { licenseId: turningOn ? requestedLicenseId : '' })
     : null;
   const profileSnapshot = snapshotUserProfile(current);
   await updateAuthUserPassword(url, serviceRole, id, payload);
@@ -1221,4 +1294,6 @@ handler.updateAddsActiveSeat = updateAddsActiveSeat;
 handler.prepareCompanionLicenseChange = prepareCompanionLicenseChange;
 handler.commitCompanionLicenseChange = commitCompanionLicenseChange;
 handler.snapshotUserProfile = snapshotUserProfile;
+handler.resolveReactivationLicense = resolveReactivationLicense;
+handler.assertExplicitLicenseQuota = assertExplicitLicenseQuota;
 module.exports = handler;

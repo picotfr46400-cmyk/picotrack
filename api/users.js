@@ -73,6 +73,13 @@ function normalizeUserRow(row, source, environmentCode, options = {}) {
   return normalized;
 }
 
+function requestedLicenseStatus(body) {
+  const raw = cleanString(body?.license_status || body?.status || 'active', 40).toLowerCase();
+  if (raw === 'inactive' || raw === 'inactives' || raw === 'inactif' || raw === 'inactifs') return 'inactive';
+  if (raw === 'all' || raw === 'toutes' || raw === 'tous') return 'all';
+  return 'active';
+}
+
 function sameEnv(profile, environmentCode) {
   const profileEnv = normalizeEnvironmentCode(profile?.environment_code || '');
   const requestedEnv = normalizeEnvironmentCode(environmentCode || '');
@@ -133,6 +140,12 @@ async function handleSummary(req, body) {
 
   const revealLicenseKey = canReadLicenseKey(profile);
   const revealPermissions = isPlatformProfile(profile);
+  const licenseStatus = requestedLicenseStatus(body);
+  if (licenseStatus !== 'active' && !canReadLicenseKey(profile)) {
+    const err = new Error('Droit insuffisant pour lire les licences.');
+    err.status = 403;
+    throw err;
+  }
   let profileSelect = 'id,email,role,roles,scope,environment_code,active,created_at,updated_at,label,firstname,lastname,first_name,last_name,login_user,username,license_type';
   let licenseSelect = 'id,email,role,roles,scope,environment_code,active,created_at,label,license_type';
   if (revealLicenseKey) {
@@ -142,10 +155,14 @@ async function handleSummary(req, body) {
   if (revealPermissions) profileSelect += ',resolved_permissions';
   const roleSelect = 'id,name,description,permissions,active,created_at,updated_at,environment_code';
 
-  const [limitsRows, profilesRows, licensesRows, rolesRows] = await Promise.all([
+  const profileQuery = activeEq => serviceRest(`user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=${activeEq}&select=${profileSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []);
+  const licenseQuery = activeEq => serviceRest(`licenses?environment_code=eq.${encodeURIComponent(env)}&active=${activeEq}&select=${licenseSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []);
+  const [limitsRows, profilesRows, licensesRows, inactiveProfiles, inactiveLicenses, rolesRows] = await Promise.all([
     serviceRest(`environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,lecture_limit&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []),
-    serviceRest(`user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${profileSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []),
-    serviceRest(`licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${licenseSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []),
+    licenseStatus === 'inactive' ? Promise.resolve([]) : profileQuery('eq.true'),
+    licenseStatus === 'inactive' ? Promise.resolve([]) : licenseQuery('eq.true'),
+    licenseStatus === 'active' ? Promise.resolve([]) : profileQuery('eq.false'),
+    licenseStatus === 'active' ? Promise.resolve([]) : licenseQuery('eq.false'),
     serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=name.asc&limit=100`, { method: 'GET', prefer: '', req }).catch(() => [])
   ]);
 
@@ -159,9 +176,15 @@ async function handleSummary(req, body) {
     seen.add(key);
     rows.push(normalized);
   }
+  function pushLicense(row) {
+    if (!row || isPlatformRow(row)) return;
+    rows.push(normalizeUserRow(row, 'licenses', env, { revealLicenseKey, revealPermissions }));
+  }
 
   for (const row of Array.isArray(profilesRows) ? profilesRows : []) push(row, 'user_profiles');
   for (const row of Array.isArray(licensesRows) ? licensesRows : []) push(row, 'licenses');
+  for (const row of Array.isArray(inactiveProfiles) ? inactiveProfiles : []) push(row, 'user_profiles');
+  for (const row of Array.isArray(inactiveLicenses) ? inactiveLicenses : []) pushLicense(row);
 
   rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
 
@@ -171,6 +194,7 @@ async function handleSummary(req, body) {
   const readonlyLimit = Number(limits.readonly_limit ?? limits.lecture_limit ?? 0) || 0;
 
   const counts = rows.reduce((acc, row) => {
+    if (row.active === false) return acc;
     const type = seatLicenseType(row);
     acc[type] = (acc[type] || 0) + 1;
     acc.total += 1;
