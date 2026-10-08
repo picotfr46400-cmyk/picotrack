@@ -1,6 +1,6 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
-const { formatSubmissionDocument, buildSubmissionPdf } = require('./_submission-pdf');
+const { formatSubmissionDocument, buildSubmissionPdf, PDF_BYTE_LIMIT } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType } = require('./_license-type');
 
 const ENTITIES = new Set([
@@ -1180,7 +1180,7 @@ async function handleExportSubmissionPdf(req, body) {
     reference: id
   });
   const pdf = buildSubmissionPdf(document);
-  if (!pdf || pdf.length > 3_000_000) {
+  if (!pdf || pdf.length > PDF_BYTE_LIMIT) {
     throw Object.assign(new Error('Export PDF impossible.'), { status: 413 });
   }
   return {

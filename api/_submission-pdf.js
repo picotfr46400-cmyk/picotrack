@@ -18,6 +18,9 @@ const PDF_BYTE_LIMIT = 3_000_000;
 const TEXT_BYTE_MARGIN = 300_000;
 // Flux réellement écrits (JPEG copiés + PNG recompressés), sous le plafond moins le texte.
 const MAX_EMBEDDED_BUDGET = PDF_BYTE_LIMIT - TEXT_BYTE_MARGIN;
+const IMAGE_TIME_BUDGET_MS = 8_000;
+// En dessous de ce ratio, un PNG recompressé ne peut pas tenir dans le budget intégré.
+const EMBEDDED_LOWER_DIVISOR = 8;
 const MAX_DIMENSION = 4096;
 const MAX_PIXELS = 16_000_000;
 const MAX_DECODED_BYTES = 64 * 1024 * 1024;
@@ -363,7 +366,65 @@ function decodeImageBuffer(buf, room = MAX_DECODED_BYTES) {
 }
 
 function createImageBudget() {
-  return { kept: 0, attempts: 0, decodedBytes: 0, slots: 0, jpegBytes: 0, embeddedBytes: 0 };
+  return {
+    kept: 0,
+    attempts: 0,
+    decodedBytes: 0,
+    slots: 0,
+    jpegBytes: 0,
+    embeddedBytes: 0,
+    startedAt: Date.now(),
+    closed: false
+  };
+}
+
+function imageBudgetExhausted(budget) {
+  return budget.closed
+    || budget.decodedBytes >= MAX_DECODED_BYTES
+    || budget.embeddedBytes >= MAX_EMBEDDED_BUDGET
+    || Date.now() - budget.startedAt >= IMAGE_TIME_BUDGET_MS;
+}
+
+function pngHeaderCost(buf) {
+  const info = readPngParts(buf);
+  if (!info) return null;
+  const channels = pngChannels(info.colorType);
+  if (info.bitDepth !== 8 || info.interlace !== 0 || !channels) return { undecodable: true };
+  if (!withinRasterLimits(info.width, info.height)) return { undecodable: true };
+  const rgbBytes = info.width * info.height * 3;
+  const maxOutputLength = info.height * (1 + info.width * channels);
+  if (rgbBytes <= 0 || maxOutputLength <= 0) return { undecodable: true };
+  return {
+    kind: 'png',
+    rgbBytes,
+    maxOutputLength,
+    embeddedLowerBound: Math.ceil(rgbBytes / EMBEDDED_LOWER_DIVISOR)
+  };
+}
+
+function headerCost(buf) {
+  const kind = sniffImage(buf);
+  if (kind === 'png') return pngHeaderCost(buf);
+  if (kind === 'jpeg') {
+    if (buf.length < 4 || buf[0] !== 0xFF || buf[1] !== 0xD8 || buf.length > MAX_IMAGE_BYTES) return { undecodable: true };
+    return { kind: 'jpeg', rgbBytes: buf.length, embeddedLowerBound: buf.length, jpegBytes: buf.length };
+  }
+  return { undecodable: true };
+}
+
+function headerExceedsBudget(cost, budget) {
+  const decodeRoom = MAX_DECODED_BYTES - budget.decodedBytes;
+  if (cost.maxOutputLength > decodeRoom || cost.rgbBytes > decodeRoom) return true;
+  if (budget.embeddedBytes + cost.embeddedLowerBound > MAX_EMBEDDED_BUDGET) return true;
+  if (cost.kind === 'jpeg' && budget.jpegBytes + cost.jpegBytes > MAX_JPEG_BUDGET) return true;
+  return false;
+}
+
+function embeddedLowerBound(image) {
+  if (!image) return MAX_EMBEDDED_BUDGET + 1;
+  if (image.kind === 'jpeg') return image.buf.length;
+  const raw = image.rgb ? image.rgb.length : image.decodedBytes;
+  return Math.ceil(raw / EMBEDDED_LOWER_DIVISOR);
 }
 
 function imageStream(image) {
@@ -379,14 +440,19 @@ function imageStream(image) {
   return image.payload.length ? image.payload : null;
 }
 
+function omitImage(out, budget) {
+  if (imageBudgetExhausted(budget)) budget.closed = true;
+  out.push({ omitted: true });
+  return true;
+}
+
 function acceptImageSource(value, out, budget) {
   const text = String(value || '').trim();
   if (!/^data:image\/(png|jpe?g);base64,/i.test(text)) return false;
   if (budget.slots >= MAX_IMAGE_SLOTS) return true;
   budget.slots += 1;
-  if (budget.kept >= MAX_IMAGES || budget.attempts >= MAX_DECODE_ATTEMPTS) {
-    out.push({ omitted: true });
-    return true;
+  if (budget.kept >= MAX_IMAGES || budget.attempts >= MAX_DECODE_ATTEMPTS || imageBudgetExhausted(budget)) {
+    return omitImage(out, budget);
   }
   const match = text.match(/^data:image\/(png|jpe?g);base64,([a-z0-9+/=\s]+)$/i);
   let buf = null;
@@ -394,26 +460,30 @@ function acceptImageSource(value, out, budget) {
     try { buf = Buffer.from(match[2].replace(/\s+/g, ''), 'base64'); }
     catch (_) { buf = null; }
   }
+  if (!buf || !buf.length || buf.length > MAX_IMAGE_BYTES) {
+    budget.attempts += 1;
+    return omitImage(out, budget);
+  }
+  const cost = headerCost(buf);
+  if (cost && cost.undecodable) {
+    budget.attempts += 1;
+    return omitImage(out, budget);
+  }
+  if (cost && headerExceedsBudget(cost, budget)) return omitImage(out, budget);
+  if (imageBudgetExhausted(budget)) return omitImage(out, budget);
   budget.attempts += 1;
-  const image = buf && buf.length && buf.length <= MAX_IMAGE_BYTES
-    ? decodeImageBuffer(buf, MAX_DECODED_BYTES - budget.decodedBytes)
-    : null;
-  if (!image || budget.decodedBytes + image.decodedBytes > MAX_DECODED_BYTES) {
-    out.push({ omitted: true });
-    return true;
-  }
-  if (image.kind === 'jpeg' && budget.jpegBytes + image.buf.length > MAX_JPEG_BUDGET) {
-    out.push({ omitted: true });
-    return true;
-  }
-  const payload = imageStream(image);
-  if (!payload || budget.embeddedBytes + payload.length > MAX_EMBEDDED_BUDGET) {
-    out.push({ omitted: true });
-    return true;
-  }
+  const image = decodeImageBuffer(buf, MAX_DECODED_BYTES - budget.decodedBytes);
+  if (!image) return omitImage(out, budget);
   budget.decodedBytes += image.decodedBytes;
+  if (budget.decodedBytes >= MAX_DECODED_BYTES) budget.closed = true;
+  if (image.kind === 'jpeg' && budget.jpegBytes + image.buf.length > MAX_JPEG_BUDGET) return omitImage(out, budget);
+  if (budget.embeddedBytes + embeddedLowerBound(image) > MAX_EMBEDDED_BUDGET) return omitImage(out, budget);
+  if (imageBudgetExhausted(budget)) return omitImage(out, budget);
+  const payload = imageStream(image);
+  if (!payload || budget.embeddedBytes + payload.length > MAX_EMBEDDED_BUDGET) return omitImage(out, budget);
   if (image.kind === 'jpeg') budget.jpegBytes += image.buf.length;
   budget.embeddedBytes += payload.length;
+  if (budget.embeddedBytes >= MAX_EMBEDDED_BUDGET) budget.closed = true;
   budget.kept += 1;
   out.push(image);
   return true;
@@ -577,6 +647,23 @@ function modelWithoutImages(model) {
       return { ...field, images: field.images.map(() => ({ omitted: true })) };
     })
   };
+}
+
+function omitLastIncludedImage(model) {
+  const fields = (model.fields || []).map((field) => (
+    field && Array.isArray(field.images) ? { ...field, images: field.images.slice() } : field
+  ));
+  for (let f = fields.length - 1; f >= 0; f--) {
+    const images = fields[f] && fields[f].images;
+    if (!Array.isArray(images)) continue;
+    for (let i = images.length - 1; i >= 0; i--) {
+      if (images[i] && !images[i].omitted) {
+        images[i] = { omitted: true };
+        return { ...model, fields };
+      }
+    }
+  }
+  return null;
 }
 
 function renderSubmissionPdf(doc) {
@@ -744,16 +831,25 @@ function renderSubmissionPdf(doc) {
 
 // Rend le PDF dans le plafond de records.js. Les images sont bornées à
 // PDF_BYTE_LIMIT − TEXT_BYTE_MARGIN. Si le fichier dépasse quand même,
-// un second rendu sans images remplace le 413.
-// options.omitImages force ce second rendu.
+// les dernières images sont retirées une par une, puis toutes s'il le faut.
+// options.omitImages force un rendu sans images.
 // options.enforceLimit === false rend une seule fois, pour enchaîner un autre repli avant.
 function buildSubmissionPdf(doc, options) {
   const omitImages = !!(options && options.omitImages);
   const enforceLimit = !(options && options.enforceLimit === false);
   const source = doc && doc.fields ? doc : formatSubmissionDocument(doc);
   const model = omitImages ? modelWithoutImages(source) : source;
-  const binary = renderSubmissionPdf(model);
+  let binary = renderSubmissionPdf(model);
   if (!enforceLimit || omitImages || binary.length <= PDF_BYTE_LIMIT || !hasIncludedImages(model)) return binary;
+  let current = model;
+  const started = Date.now();
+  for (let step = 0; step < MAX_IMAGES && Date.now() - started < 2_000; step++) {
+    const next = omitLastIncludedImage(current);
+    if (!next) break;
+    current = next;
+    binary = renderSubmissionPdf(current);
+    if (binary.length <= PDF_BYTE_LIMIT || !hasIncludedImages(current)) return binary;
+  }
   return renderSubmissionPdf(modelWithoutImages(model));
 }
 
@@ -762,6 +858,7 @@ module.exports = {
   TEXT_BYTE_MARGIN,
   MAX_EMBEDDED_BUDGET,
   MAX_JPEG_BUDGET,
+  IMAGE_TIME_BUDGET_MS,
   formatSubmissionDate,
   deviceAuthor,
   formatSubmissionDocument,
