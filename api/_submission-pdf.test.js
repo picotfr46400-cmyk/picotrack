@@ -301,6 +301,235 @@ test('export PDF relit la saisie dans l’environnement de la session', async ()
   });
 });
 
+function zlibBomb(matches) {
+  class BitWriter {
+    constructor() { this.bytes = []; this.bit = 0; this.cur = 0; }
+    write(value, n) {
+      for (let i = 0; i < n; i++) {
+        if ((value >>> i) & 1) this.cur |= 1 << this.bit;
+        this.bit += 1;
+        if (this.bit === 8) { this.bytes.push(this.cur); this.cur = 0; this.bit = 0; }
+      }
+    }
+    huff(code, len) {
+      for (let i = len - 1; i >= 0; i--) this.write((code >> i) & 1, 1);
+    }
+    finish() {
+      if (this.bit) this.bytes.push(this.cur);
+      return Buffer.from(this.bytes);
+    }
+  }
+  const w = new BitWriter();
+  w.write(1, 1);
+  w.write(2, 2);
+  w.write(286 - 257, 5);
+  w.write(0, 5);
+  w.write(14, 4);
+  const order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1];
+  const clLen = { 18: 1, 2: 2, 1: 2 };
+  for (const sym of order) w.write(clLen[sym] || 0, 3);
+  const emitZeros = (count) => {
+    while (count > 0) {
+      const n = Math.min(138, count);
+      w.huff(0, 1);
+      w.write(n - 11, 7);
+      count -= n;
+    }
+  };
+  w.huff(3, 2);
+  emitZeros(255);
+  w.huff(3, 2);
+  emitZeros(28);
+  w.huff(2, 2);
+  w.huff(2, 2);
+  w.huff(2, 2);
+  for (let i = 0; i < matches; i++) {
+    w.huff(0, 1);
+    w.huff(0, 1);
+  }
+  w.huff(3, 2);
+  const raw = w.finish();
+  const total = 1 + matches * 258;
+  const adler = Buffer.alloc(4);
+  adler.writeUInt32BE((total % 65521) * 65536 + 1);
+  return Buffer.concat([Buffer.from([0x78, 0x9c]), raw, adler]);
+}
+
+function pngSized(width, height, idat) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', idat),
+    pngChunk('IEND', Buffer.alloc(0))
+  ]);
+}
+
+test('une PNG bombe sous le plafond compressé est écartée sans s’étendre', () => {
+  const matches = Math.ceil((1_150_000_000 - 1) / 258);
+  const png = pngSized(1, 1, zlibBomb(matches));
+  assert.ok(png.length < 1_200_000, String(png.length));
+  assert.ok(png.length > 1_000_000, String(png.length));
+  assert.equal(pdf.decodeImageBuffer(pngSized(4097, 1, zlib.deflateSync(Buffer.from([0, 1, 2, 3])))), null);
+  assert.equal(pdf.decodeImageBuffer(pngSized(4000, 4001, zlib.deflateSync(Buffer.from([0, 1, 2, 3])))), null);
+  const before = process.memoryUsage().heapUsed;
+  const started = Date.now();
+  const image = pdf.decodeImageBuffer(png);
+  const elapsed = Date.now() - started;
+  const delta = process.memoryUsage().heapUsed - before;
+  assert.equal(image, null);
+  assert.ok(elapsed < 500, `décodage trop lent: ${elapsed} ms`);
+  assert.ok(delta < 16 * 1024 * 1024, `mémoire non bornée: ${delta}`);
+  const doc = pdf.formatSubmissionDocument({
+    fields: [{ id: 'photo', nom: 'Photo', type: 'photo' }],
+    values: { photo: `data:image/png;base64,${png.toString('base64')}` }
+  });
+  assert.equal(doc.imageStats.kept, 0);
+  assert.equal(doc.imageStats.attempts, 1);
+  assert.equal(doc.imageStats.decodedBytes, 0);
+  const binary = pdf.buildSubmissionPdf(doc);
+  assert.equal(pdf.extractPdfText(binary).includes('image non incluse'), true);
+  assert.equal((binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length, 0);
+});
+
+test('un PNG tronqué reste dans l’export avec la mention, sans erreur interne', async () => {
+  const broken = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', Buffer.from([0x00])),
+    pngChunk('IEND', Buffer.alloc(0))
+  ]);
+  assert.equal(pdf.decodeImageBuffer(broken), null);
+  const shortJpeg = Buffer.alloc(11);
+  shortJpeg[0] = 0xFF;
+  shortJpeg[1] = 0xD8;
+  shortJpeg[2] = 0xFF;
+  shortJpeg[3] = 0xC0;
+  shortJpeg.writeUInt16BE(7, 4);
+  assert.equal(pdf.decodeImageBuffer(shortJpeg), null);
+  const actor = {
+    id: 'sup-1',
+    email: 'sup@efc.picotrack.fr',
+    role: 'supervision_user',
+    license_type: 'supervision',
+    environment_code: 'EFC',
+    active: true
+  };
+  const dataUrl = `data:image/png;base64,${broken.toString('base64')}`;
+  await withSupabase(async () => {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: actor.id, email: actor.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [actor]);
+      if (u.includes('/rest/v1/submissions?')) {
+        return jsonResponse(200, [{
+          id: 'sub-broken',
+          form_id: 'form-1',
+          environment_code: 'EFC',
+          device: 'bureau',
+          created_at: '2026-10-08T09:15:00.000Z',
+          values: { photo: dataUrl }
+        }]);
+      }
+      if (u.includes('/rest/v1/forms?')) {
+        return jsonResponse(200, [{
+          id: 'form-1',
+          nom: 'Contrôle',
+          environment_code: 'EFC',
+          fields: [{ id: 'photo', nom: 'Photo', type: 'photo' }]
+        }]);
+      }
+      if (u.includes('/rest/v1/tenants?')) return jsonResponse(200, [{ nom: 'EFC', code: 'EFC' }]);
+      return jsonResponse(200, []);
+    };
+    const out = await callJson({ action: 'export_submission_pdf', id: 'sub-broken' }, authHeaders());
+    assert.equal(out.status, 200, out.payload.error || '');
+    assert.equal(out.payload.error, undefined);
+    const raw = JSON.stringify(out.payload);
+    assert.equal(raw.includes('ERR_OUT_OF_RANGE'), false);
+    assert.equal(raw.includes('RangeError'), false);
+    assert.equal(/out of range/i.test(raw), false);
+    const text = pdf.extractPdfText(Buffer.from(out.payload.content, 'base64'));
+    assert.equal(text.includes('image non incluse'), true);
+  });
+});
+
+test('au plus 8 images sont décodées', () => {
+  const dataUrl = `data:image/png;base64,${redPixelPng().toString('base64')}`;
+  const fields = [];
+  const values = {};
+  for (let i = 0; i < 10; i++) {
+    fields.push({ id: `p${i}`, nom: `Photo ${i}`, type: 'photo' });
+    values[`p${i}`] = dataUrl;
+  }
+  const doc = pdf.formatSubmissionDocument({ fields, values, environmentName: 'EFC' });
+  assert.equal(doc.imageStats.kept, 8);
+  assert.equal(doc.imageStats.attempts, 8);
+  assert.equal(doc.fields.filter((field) => field.images.some((image) => image && image.rgb)).length, 8);
+  assert.equal(doc.fields.filter((field) => field.images.some((image) => image && image.omitted)).length, 2);
+  const binary = pdf.buildSubmissionPdf(doc);
+  assert.equal((binary.toString('latin1').match(/\/Subtype \/Image/g) || []).length, 8);
+  assert.equal(pdf.extractPdfText(binary).includes('image non incluse'), true);
+});
+
+test('le PDF déclare WinAnsiEncoding et conserve les accents', () => {
+  const doc = pdf.formatSubmissionDocument({
+    environmentName: 'Été',
+    fields: [{ id: 'note', nom: 'Note', type: 'text' }],
+    values: { note: 'éèàçô«»€☺' },
+    formName: 'Contrôle',
+    author: 'Joël',
+    status: 'Validée'
+  });
+  const binary = pdf.buildSubmissionPdf(doc);
+  const latin = binary.toString('latin1');
+  assert.equal((latin.match(/\/Encoding \/WinAnsiEncoding/g) || []).length, 2);
+  assert.match(latin, /\/BaseFont \/Helvetica \/Encoding \/WinAnsiEncoding/);
+  assert.match(latin, /\/BaseFont \/Helvetica-Bold \/Encoding \/WinAnsiEncoding/);
+  const expected = Buffer.from([0xE9, 0xE8, 0xE0, 0xE7, 0xF4, 0xAB, 0xBB, 0x80, 0x3F]);
+  assert.equal(binary.includes(expected), true);
+  const text = pdf.extractPdfText(binary);
+  assert.equal(text.includes('éèàçô«»€?'), true);
+  assert.equal(text.includes('Été'), true);
+  assert.equal(text.includes('Joël'), true);
+  assert.equal(text.includes('Validée'), true);
+});
+
+test('export PDF refuse un compte pad_user', async () => {
+  const actor = {
+    id: 'pad-1',
+    email: 'pad@efc.picotrack.fr',
+    role: 'pad_user',
+    license_type: 'pad',
+    environment_code: 'EFC',
+    active: true
+  };
+  await withSupabase(async () => {
+    const calls = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      calls.push(u);
+      if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: actor.id, email: actor.email });
+      if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (u.includes('user_profiles?id=eq.pad-1')) return jsonResponse(200, [actor]);
+      if (u.includes('/rest/v1/submissions')) {
+        return jsonResponse(200, [{ id: 'sub-1', environment_code: 'EFC', values: { secret: 'SECRET-PAD' } }]);
+      }
+      return jsonResponse(200, []);
+    };
+    const out = await callJson({ action: 'export_submission_pdf', id: 'sub-1', environment_code: 'EFC' }, authHeaders());
+    assert.equal(out.status, 403);
+    assert.equal(out.payload.error, 'Export PDF réservé à la supervision.');
+    assert.equal(out.payload.content, undefined);
+    assert.equal(JSON.stringify(out.payload).includes('SECRET-PAD'), false);
+    assert.equal(calls.some((u) => u.includes('/rest/v1/submissions')), false);
+  });
+});
+
 test('le détail supervision expose Exporter en PDF via /api/records', async () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
   assert.match(html, /core-supervision\.js\?v=20261008a/);

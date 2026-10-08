@@ -1123,10 +1123,26 @@ async function authorFromCreatedBy(req, createdBy, env) {
   return raw;
 }
 
+const PDF_EXPORT_ROLES = new Set(['supervision_user', 'admin', 'client_admin', 'environment_admin', 'gestionnaire', 'manager', 'superviseur']);
+const PDF_EXPORT_DENIED = new Set(['pad_user', 'operator', 'operateur', 'pad']);
+
+function canExportSubmissionPdf(profile) {
+  if (!profile || profile.active === false) return false;
+  if (isPlatformLicenseManagerProfile(profile)) return true;
+  const role = normalizePrivilegeToken(profile.role);
+  const type = normalizePrivilegeToken(profile.license_type);
+  if (PDF_EXPORT_DENIED.has(role) || PDF_EXPORT_DENIED.has(type)) return false;
+  if (PDF_EXPORT_ROLES.has(role) || type === 'supervision') return true;
+  return profileRoleKeys(profile).some((key) => PDF_EXPORT_ROLES.has(key));
+}
+
 async function handleExportSubmissionPdf(req, body) {
   const user = await requireAuth(req);
   const profile = await getUserProfile(user.id, req);
   req.picoReaderProfile = profile;
+  if (!canExportSubmissionPdf(profile)) {
+    throw Object.assign(new Error('Export PDF réservé à la supervision.'), { status: 403 });
+  }
   const platform = isPlatformLicenseManagerProfile(profile);
   const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, platform ? body.environment_code : profile?.environment_code), 'DEMO');
   const requested = normalizeEnvCode(body.environment_code);
@@ -1237,6 +1253,7 @@ async function handler(req, res) {
 
 handler.normalizeRecord = normalizeRecord;
 handler.canManageUsers = canManageUsers;
+handler.canExportSubmissionPdf = canExportSubmissionPdf;
 handler.demotePrivilegedFields = demotePrivilegedFields;
 handler.assertEntityWrite = assertEntityWrite;
 handler.effectiveEnvironmentCode = effectiveEnvironmentCode;

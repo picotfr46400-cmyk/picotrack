@@ -9,8 +9,13 @@ const RIGHT = 547;
 const TEXT_W = RIGHT - LEFT;
 const MAX_PAGES = 30;
 const MAX_IMAGES = 8;
+const MAX_DECODE_ATTEMPTS = 16;
+const MAX_IMAGE_SLOTS = 16;
 const MAX_IMAGE_BYTES = 1_200_000;
-const MAX_PIXELS = 1_200_000;
+const MAX_DIMENSION = 4096;
+const MAX_PIXELS = 16_000_000;
+const MAX_DECODED_BYTES = 64 * 1024 * 1024;
+const OMITTED_IMAGE = 'image non incluse';
 const SKIP_TYPES = new Set(['separator', 'sep', 'image', 'titre', 'title', 'groupe', 'group', 'son', 'sound', 'video']);
 
 const WIN_EXTRA = new Map([
@@ -194,145 +199,210 @@ function sniffImage(buf) {
   return '';
 }
 
-function decodeJpeg(buf) {
-  if (buf.length < 4 || buf[0] !== 0xFF || buf[1] !== 0xD8) return null;
-  if (buf.length > MAX_IMAGE_BYTES) return null;
-  let i = 2;
-  let width = 0;
-  let height = 0;
-  let components = 0;
-  while (i + 3 < buf.length) {
-    if (buf[i] !== 0xFF) { i += 1; continue; }
-    while (buf[i] === 0xFF && i < buf.length) i += 1;
-    const marker = buf[i];
-    i += 1;
-    if (marker === 0xD9 || marker === 0xDA) break;
-    if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) continue;
-    if (i + 1 >= buf.length) return null;
-    const len = buf.readUInt16BE(i);
-    if (len < 2 || i + len > buf.length) return null;
-    if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
-      height = buf.readUInt16BE(i + 3);
-      width = buf.readUInt16BE(i + 5);
-      components = buf[i + 7];
-      break;
-    }
-    i += len;
-  }
-  if (!width || !height || width > 8000 || height > 8000) return null;
-  if (width * height > MAX_PIXELS * 4) return null;
-  const colorSpace = components === 1 ? '/DeviceGray' : (components === 4 ? '/DeviceCMYK' : '/DeviceRGB');
-  return { kind: 'jpeg', width, height, buf, colorSpace };
+function withinRasterLimits(width, height) {
+  return width > 0 && height > 0
+    && width <= MAX_DIMENSION
+    && height <= MAX_DIMENSION
+    && width * height <= MAX_PIXELS;
 }
 
-function decodePng(buf) {
-  if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504E47) return null;
-  if (buf.length > MAX_IMAGE_BYTES) return null;
+function decodeJpeg(buf, room) {
+  try {
+    if (!Buffer.isBuffer(buf) || buf.length < 4 || buf[0] !== 0xFF || buf[1] !== 0xD8) return null;
+    if (buf.length > MAX_IMAGE_BYTES) return null;
+    let i = 2;
+    let width = 0;
+    let height = 0;
+    let components = 0;
+    while (i + 1 < buf.length) {
+      if (buf[i] !== 0xFF) { i += 1; continue; }
+      while (i < buf.length && buf[i] === 0xFF) i += 1;
+      if (i >= buf.length) return null;
+      const marker = buf[i];
+      i += 1;
+      if (marker === 0xD9 || marker === 0xDA) break;
+      if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) continue;
+      if (i + 1 >= buf.length) return null;
+      const len = buf.readUInt16BE(i);
+      if (len < 2 || i + len > buf.length) return null;
+      if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+        if (len < 8 || i + 7 >= buf.length) return null;
+        height = buf.readUInt16BE(i + 3);
+        width = buf.readUInt16BE(i + 5);
+        components = buf[i + 7];
+        break;
+      }
+      i += len;
+    }
+    if (!withinRasterLimits(width, height) || ![1, 3, 4].includes(components)) return null;
+    const limit = Math.min(MAX_DECODED_BYTES, room);
+    if (buf.length > limit) return null;
+    const colorSpace = components === 1 ? '/DeviceGray' : (components === 4 ? '/DeviceCMYK' : '/DeviceRGB');
+    return { kind: 'jpeg', width, height, buf, colorSpace, decodedBytes: buf.length };
+  } catch (_) {
+    return null;
+  }
+}
+
+function pngChannels(colorType) {
+  return { 0: 1, 2: 3, 4: 2, 6: 4 }[colorType] || 0;
+}
+
+function readPngParts(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 8 || buf.length > MAX_IMAGE_BYTES) return null;
+  if (buf.readUInt32BE(0) !== 0x89504E47) return null;
   let offset = 8;
-  let width = 0;
-  let height = 0;
-  let bitDepth = 0;
-  let colorType = 0;
-  let interlace = 0;
+  let info = null;
   const idat = [];
   while (offset + 8 <= buf.length) {
     const len = buf.readUInt32BE(offset);
+    if (!Number.isFinite(len) || len < 0 || len > buf.length || offset + 12 + len > buf.length) return null;
     const type = buf.toString('ascii', offset + 4, offset + 8);
-    if (offset + 12 + len > buf.length) return null;
     const data = buf.subarray(offset + 8, offset + 8 + len);
     if (type === 'IHDR') {
-      width = data.readUInt32BE(0);
-      height = data.readUInt32BE(4);
-      bitDepth = data[8];
-      colorType = data[9];
-      interlace = data[12];
-    } else if (type === 'IDAT') idat.push(data);
-    else if (type === 'IEND') break;
+      if (data.length < 13) return null;
+      info = {
+        width: data.readUInt32BE(0),
+        height: data.readUInt32BE(4),
+        bitDepth: data[8],
+        colorType: data[9],
+        interlace: data[12]
+      };
+    } else if (type === 'IDAT') {
+      idat.push(data);
+    } else if (type === 'IEND') break;
     offset += 12 + len;
   }
-  if (!width || !height || bitDepth !== 8 || interlace !== 0) return null;
-  if (![0, 2, 4, 6].includes(colorType)) return null;
-  if (width > 4000 || height > 4000 || width * height > MAX_PIXELS) return null;
-  const channels = { 0: 1, 2: 3, 4: 2, 6: 4 }[colorType];
-  const stride = width * channels;
-  let raw;
-  try { raw = zlib.inflateSync(Buffer.concat(idat)); }
-  catch (_) { return null; }
-  if (raw.length < height * (stride + 1)) return null;
-  const rgb = Buffer.alloc(width * height * 3);
-  let src = 0;
-  let prev = Buffer.alloc(stride);
-  for (let y = 0; y < height; y++) {
-    const filter = raw[src];
-    src += 1;
-    const row = Buffer.alloc(stride);
-    for (let i = 0; i < stride; i++) {
-      const left = i >= channels ? row[i - channels] : 0;
-      const up = prev[i];
-      const ul = i >= channels ? prev[i - channels] : 0;
-      const x = raw[src + i];
-      let v = x;
-      if (filter === 1) v = (x + left) & 255;
-      else if (filter === 2) v = (x + up) & 255;
-      else if (filter === 3) v = (x + Math.floor((left + up) / 2)) & 255;
-      else if (filter === 4) v = (x + paeth(left, up, ul)) & 255;
-      else if (filter !== 0) return null;
-      row[i] = v;
+  if (!info) return null;
+  return { ...info, idat };
+}
+
+function decodePng(buf, room) {
+  try {
+    const info = readPngParts(buf);
+    if (!info) return null;
+    const { width, height, bitDepth, colorType, interlace, idat } = info;
+    const channels = pngChannels(colorType);
+    if (bitDepth !== 8 || interlace !== 0 || !channels) return null;
+    if (!withinRasterLimits(width, height)) return null;
+    const bytesPerPixel = channels;
+    const maxOutputLength = height * (1 + width * bytesPerPixel);
+    const rgbBytes = width * height * 3;
+    const limit = Math.min(MAX_DECODED_BYTES, room);
+    if (!idat.length || maxOutputLength <= 0 || rgbBytes <= 0) return null;
+    if (maxOutputLength > limit || rgbBytes > limit) return null;
+    let raw;
+    try {
+      raw = zlib.inflateSync(Buffer.concat(idat), { maxOutputLength });
+    } catch (_) {
+      return null;
     }
-    src += stride;
-    for (let x = 0; x < width; x++) {
-      const o = x * channels;
-      let r;
-      let g;
-      let b;
-      let a = 255;
-      if (colorType === 2) { r = row[o]; g = row[o + 1]; b = row[o + 2]; }
-      else if (colorType === 6) { r = row[o]; g = row[o + 1]; b = row[o + 2]; a = row[o + 3]; }
-      else if (colorType === 0) { r = g = b = row[o]; }
-      else { r = g = b = row[o]; a = row[o + 1]; }
-      const alpha = a / 255;
-      const dst = (y * width + x) * 3;
-      rgb[dst] = Math.round(r * alpha + 255 * (1 - alpha));
-      rgb[dst + 1] = Math.round(g * alpha + 255 * (1 - alpha));
-      rgb[dst + 2] = Math.round(b * alpha + 255 * (1 - alpha));
+    if (!raw || raw.length !== maxOutputLength) return null;
+    const stride = width * channels;
+    const rgb = Buffer.alloc(rgbBytes);
+    let src = 0;
+    let prev = Buffer.alloc(stride);
+    for (let y = 0; y < height; y++) {
+      const filter = raw[src];
+      src += 1;
+      if (filter > 4 || src + stride > raw.length) return null;
+      const row = Buffer.alloc(stride);
+      for (let i = 0; i < stride; i++) {
+        const left = i >= channels ? row[i - channels] : 0;
+        const up = prev[i];
+        const ul = i >= channels ? prev[i - channels] : 0;
+        const x = raw[src + i];
+        let v = x;
+        if (filter === 1) v = (x + left) & 255;
+        else if (filter === 2) v = (x + up) & 255;
+        else if (filter === 3) v = (x + Math.floor((left + up) / 2)) & 255;
+        else if (filter === 4) v = (x + paeth(left, up, ul)) & 255;
+        row[i] = v;
+      }
+      src += stride;
+      for (let x = 0; x < width; x++) {
+        const o = x * channels;
+        let r;
+        let g;
+        let b;
+        let a = 255;
+        if (colorType === 2) { r = row[o]; g = row[o + 1]; b = row[o + 2]; }
+        else if (colorType === 6) { r = row[o]; g = row[o + 1]; b = row[o + 2]; a = row[o + 3]; }
+        else if (colorType === 0) { r = g = b = row[o]; }
+        else { r = g = b = row[o]; a = row[o + 1]; }
+        const alpha = a / 255;
+        const dst = (y * width + x) * 3;
+        rgb[dst] = Math.round(r * alpha + 255 * (1 - alpha));
+        rgb[dst + 1] = Math.round(g * alpha + 255 * (1 - alpha));
+        rgb[dst + 2] = Math.round(b * alpha + 255 * (1 - alpha));
+      }
+      prev = row;
     }
-    prev = row;
+    return { kind: 'png', width, height, rgb, colorSpace: '/DeviceRGB', decodedBytes: rgbBytes };
+  } catch (_) {
+    return null;
   }
-  return { kind: 'png', width, height, rgb, colorSpace: '/DeviceRGB' };
 }
 
-function decodeImageBuffer(buf) {
-  const kind = sniffImage(buf);
-  if (kind === 'jpeg') return decodeJpeg(buf);
-  if (kind === 'png') return decodePng(buf);
-  return null;
+function decodeImageBuffer(buf, room = MAX_DECODED_BYTES) {
+  try {
+    if (!Buffer.isBuffer(buf) || !buf.length || buf.length > MAX_IMAGE_BYTES) return null;
+    const kind = sniffImage(buf);
+    if (kind === 'jpeg') return decodeJpeg(buf, room);
+    if (kind === 'png') return decodePng(buf, room);
+    return null;
+  } catch (_) {
+    return null;
+  }
 }
 
-function parseDataImage(value) {
+function createImageBudget() {
+  return { kept: 0, attempts: 0, decodedBytes: 0, slots: 0 };
+}
+
+function acceptImageSource(value, out, budget) {
   const text = String(value || '').trim();
+  if (!/^data:image\/(png|jpe?g);base64,/i.test(text)) return false;
+  if (budget.slots >= MAX_IMAGE_SLOTS) return true;
+  budget.slots += 1;
+  if (budget.kept >= MAX_IMAGES || budget.attempts >= MAX_DECODE_ATTEMPTS) {
+    out.push({ omitted: true });
+    return true;
+  }
   const match = text.match(/^data:image\/(png|jpe?g);base64,([a-z0-9+/=\s]+)$/i);
-  if (!match) return null;
-  const buf = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
-  if (!buf.length || buf.length > MAX_IMAGE_BYTES) return null;
-  return decodeImageBuffer(buf);
+  let buf = null;
+  if (match) {
+    try { buf = Buffer.from(match[2].replace(/\s+/g, ''), 'base64'); }
+    catch (_) { buf = null; }
+  }
+  budget.attempts += 1;
+  const image = buf && buf.length && buf.length <= MAX_IMAGE_BYTES
+    ? decodeImageBuffer(buf, MAX_DECODED_BYTES - budget.decodedBytes)
+    : null;
+  if (!image || budget.decodedBytes + image.decodedBytes > MAX_DECODED_BYTES) {
+    out.push({ omitted: true });
+    return true;
+  }
+  budget.decodedBytes += image.decodedBytes;
+  budget.kept += 1;
+  out.push(image);
+  return true;
 }
 
-function collectImages(value, out) {
-  if (out.length >= MAX_IMAGES) return;
-  if (!value) return;
+function collectImages(value, out, budget) {
+  if (!value || budget.slots >= MAX_IMAGE_SLOTS) return;
   if (typeof value === 'string') {
-    const image = parseDataImage(value);
-    if (image) out.push(image);
+    acceptImageSource(value, out, budget);
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((item) => collectImages(item, out));
+    value.forEach((item) => collectImages(item, out, budget));
     return;
   }
   if (typeof value === 'object') {
     const direct = value.dataUrl || value.data_url || value.url || '';
-    if (typeof direct === 'string') collectImages(direct, out);
-    if (Array.isArray(value.files)) value.files.forEach((item) => collectImages(item, out));
+    if (typeof direct === 'string') collectImages(direct, out, budget);
+    if (Array.isArray(value.files)) value.files.forEach((item) => collectImages(item, out, budget));
   }
 }
 
@@ -375,7 +445,7 @@ function plainText(value) {
   return '';
 }
 
-function formatAnswer(type, value, images) {
+function formatAnswer(type, value, images, budget) {
   const kind = String(type || '').toLowerCase();
   if (value == null || value === '') return '—';
   if (kind === 'checkbox' || kind === 'boolean') {
@@ -385,7 +455,7 @@ function formatAnswer(type, value, images) {
   if (kind === 'appointment') return appointmentText(value);
   if (kind === 'photo' || kind === 'sign' || kind === 'signature' || kind === 'file') {
     const before = images.length;
-    collectImages(value, images);
+    collectImages(value, images, budget);
     const names = [];
     const pushName = (item) => {
       const name = fileName(item);
@@ -398,7 +468,7 @@ function formatAnswer(type, value, images) {
     return text || '—';
   }
   const before = images.length;
-  collectImages(value, images);
+  collectImages(value, images, budget);
   const text = plainText(value);
   if (text) return text;
   if (images.length > before) return 'Image';
@@ -411,6 +481,7 @@ function formatSubmissionDocument(input) {
   const fields = Array.isArray(source.fields) ? source.fields : [];
   const used = new Set();
   const rows = [];
+  const budget = createImageBudget();
   fields.forEach((field) => {
     if (!field || typeof field !== 'object') return;
     const type = String(field.type || '').toLowerCase();
@@ -421,7 +492,7 @@ function formatSubmissionDocument(input) {
     const images = [];
     rows.push({
       label: clip(field.nom || field.label || field.name || id || 'Champ', 160) || 'Champ',
-      value: formatAnswer(type, raw, images),
+      value: formatAnswer(type, raw, images, budget),
       images
     });
   });
@@ -430,7 +501,7 @@ function formatSubmissionDocument(input) {
     const images = [];
     rows.push({
       label: clip(key, 160) || 'Champ',
-      value: formatAnswer('', values[key], images),
+      value: formatAnswer('', values[key], images, budget),
       images
     });
   });
@@ -443,7 +514,12 @@ function formatSubmissionDocument(input) {
     author: clip(source.author, 120) || deviceAuthor(source.device),
     status: clip(source.status, 80) || 'Enregistrée',
     reference: clip(source.reference, 80) || '—',
-    fields: rows
+    fields: rows,
+    imageStats: {
+      kept: budget.kept,
+      attempts: budget.attempts,
+      decodedBytes: budget.decodedBytes
+    }
   };
 }
 
@@ -535,8 +611,8 @@ function buildSubmissionPdf(doc) {
       writeLines(wrapLine(field.value, 10), 10, false, [71, 85, 105], 3);
     }
     images.forEach((image) => {
-      if (!image || imageCount >= MAX_IMAGES) {
-        writeLines(['Image supplémentaire non intégrée'], 9, false, [100, 116, 139], 3);
+      if (!image || image.omitted || imageCount >= MAX_IMAGES) {
+        writeLines([OMITTED_IMAGE], 9, false, [100, 116, 139], 3);
         return;
       }
       const scale = Math.min(260 / image.width, 160 / image.height, 1);
@@ -570,8 +646,8 @@ function buildSubmissionPdf(doc) {
 
   const objects = [];
   objects[1] = Buffer.from('<< /Type /Catalog /Pages 2 0 R >>');
-  objects[3] = Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
-  objects[4] = Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>');
+  objects[3] = Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  objects[4] = Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
   let next = 5;
   const pageIds = [];
   pages.forEach((item) => {
