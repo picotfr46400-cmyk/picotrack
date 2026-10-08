@@ -521,6 +521,9 @@ function formatSubmissionDocument(input) {
     status: clip(source.status, 80) || 'Enregistrée',
     reference: clip(source.reference, 80) || '—',
     fields: rows,
+    traceLines: Array.isArray(source.traceLines)
+      ? source.traceLines.map((line) => clip(line, 220)).filter(Boolean).slice(0, 40)
+      : [],
     imageStats: {
       kept: budget.kept,
       attempts: budget.attempts,
@@ -638,6 +641,17 @@ function buildSubmissionPdf(doc) {
       y -= 14;
     }
   });
+
+  const trace = Array.isArray(model.traceLines) ? model.traceLines : [];
+  if (trace.length && need(22)) {
+    textAt(LEFT, y, 'Traçabilité', 13, true, [5, 150, 105]);
+    y -= 8;
+    rule(y);
+    y -= 16;
+    trace.forEach((line) => {
+      writeLines(wrapLine(line, 9), 9, false, [15, 23, 42], 2);
+    });
+  }
 
   if (page) {
     page.chunks.push(Buffer.from(

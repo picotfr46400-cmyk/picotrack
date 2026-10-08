@@ -2,6 +2,7 @@ const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, ser
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdf } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType } = require('./_license-type');
+const submissionAudit = require('./_submission-audit');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -857,6 +858,9 @@ function projectClientResult(action, body, result, profile) {
 }
 
 async function handleSave(req, body) {
+  if (submissionAudit.isAuditEntity(body && body.entity)) {
+    throw Object.assign(new Error('Journal de traçabilité en ajout seul.'), { status: 403 });
+  }
   const entity = cleanEntity(body.entity);
   if (!entity) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
   const user = await requireAuth(req);
@@ -898,17 +902,19 @@ async function handleSave(req, body) {
     const existing = await readOneById(req, 'services', id, env);
     if (existing) assertRecordAllowed('services', existing, 'edit', profile, 'Modification du service refusée par les rôles.');
   }
+  let auditForm = null;
+  let auditService = null;
   if (entity === 'submissions') {
-    const form = await readFormForSubmission(req, record.form_id || source?.formId, env);
-    if (form) assertRecordAllowed('forms', form, 'submit', profile, 'Saisie du formulaire refusée par les rôles.');
+    auditForm = await readFormForSubmission(req, record.form_id || source?.formId, env);
+    if (auditForm) assertRecordAllowed('forms', auditForm, 'submit', profile, 'Saisie du formulaire refusée par les rôles.');
   }
   if (entity === 'appointments') {
     const form = await readFormForSubmission(req, record.form_id || source?.formId, env);
     if (form) assertRecordAllowed('forms', form, 'submit', profile, 'Réservation refusée par les rôles du formulaire.');
   }
   if (entity === 'service_instances') {
-    const service = await readServiceForInstance(req, record.service_id || source?.serviceId, env);
-    if (service) assertRecordAllowed('services', service, 'create', profile, 'Création de demande refusée par les rôles du service.');
+    auditService = await readServiceForInstance(req, record.service_id || source?.serviceId, env);
+    if (auditService) assertRecordAllowed('services', auditService, 'create', profile, 'Création de demande refusée par les rôles du service.');
   }
 
   if (!isPlatformLicenseManagerProfile(profile) && (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles')) {
@@ -930,10 +936,23 @@ async function handleSave(req, body) {
 
   // Les écritures passent côté serveur avec clé service après authentification + whitelist + normalisation.
   // Cela évite les pertes silencieuses dues aux politiques RLS incomplètes, sans exposer la clé au navigateur.
-  return await serviceRest(path, { method, body: record, prefer: 'return=representation', req });
+  const auditBefore = (entity === 'submissions' || entity === 'service_instances') && id
+    ? await readOneById(req, entity, id, record.environment_code || env).catch(() => null)
+    : null;
+  const saved = await serviceRest(path, { method, body: record, prefer: 'return=representation', req });
+  if (entity === 'submissions' || entity === 'service_instances') {
+    await submissionAudit.recordSave(req, {
+      serviceRest, user, profile, entity, id, record, env,
+      before: auditBefore, form: auditForm, service: auditService, saved
+    });
+  }
+  return saved;
 }
 
 async function handleDelete(req, body) {
+  if (submissionAudit.isAuditEntity(body && body.entity)) {
+    throw Object.assign(new Error('Journal de traçabilité en ajout seul.'), { status: 403 });
+  }
   const entity = cleanEntity(body.entity);
   const id = String(body.id || '').trim();
   if (!entity || !id) throw Object.assign(new Error('Suppression invalide'), { status: 400 });
@@ -974,14 +993,25 @@ async function handleDelete(req, body) {
     }
   }
 
+  const deleteEnv = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
+  if (entity === 'submissions' || entity === 'service_instances') {
+    const existing = await readOneById(req, entity, id, isPlatform ? null : deleteEnv).catch(() => null);
+    await submissionAudit.recordDelete(req, {
+      serviceRest, user, profile, entity, id, env: deleteEnv, existing
+    });
+  }
+
   // Suppression métier d'un formulaire : on nettoie d'abord les soumissions liées
   // pour éviter les blocages de contrainte et les données orphelines.
   if (entity === 'forms') {
     let subPath = `submissions?form_id=eq.${encodeURIComponent(id)}`;
     if (!isPlatform) {
-      const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
+      const env = deleteEnv;
       if (env && env !== 'GLOBAL') subPath += `&environment_code=eq.${encodeURIComponent(env)}`;
     }
+    await submissionAudit.recordFormCascade(req, {
+      serviceRest, user, profile, formId: id, env: isPlatform ? '' : deleteEnv
+    });
     await serviceRest(subPath, { method: 'DELETE', prefer: 'return=minimal', req }).catch(() => []);
   }
 
@@ -1167,6 +1197,17 @@ async function handleExportSubmissionPdf(req, body) {
     environmentDisplayName(req, env)
   ]);
   const safeForm = form && normalizeEnvCode(form.environment_code) === env ? form : null;
+  let traceLines = [];
+  let exportRow = null;
+  try {
+    const packed = await submissionAudit.prepareExportTrace(req, {
+      serviceRest, user, profile, env, submissionId: id, submission
+    });
+    traceLines = packed.lines;
+    exportRow = packed.row;
+  } catch (err) {
+    console.error('[submission-audit] préparation PDF', err && (err.message || err));
+  }
   const document = formatSubmissionDocument({
     environmentName,
     environmentCode: env,
@@ -1177,12 +1218,14 @@ async function handleExportSubmissionPdf(req, body) {
     device: submission.device,
     author: workflow.author,
     status: workflow.status,
-    reference: id
+    reference: id,
+    traceLines
   });
   const pdf = buildSubmissionPdf(document);
   if (!pdf || pdf.length > 3_000_000) {
     throw Object.assign(new Error('Export PDF impossible.'), { status: 413 });
   }
+  if (exportRow) await submissionAudit.insertEvent(serviceRest, req, exportRow);
   return {
     filename: `saisie-${id}.pdf`,
     contentType: 'application/pdf',
@@ -1220,6 +1263,20 @@ async function handler(req, res) {
         break;
       case 'export_submission_pdf':
         result = await handleExportSubmissionPdf(req, body);
+        break;
+      case 'submission_trace':
+        result = await submissionAudit.handleTrace(req, body, {
+          requireAuth,
+          getUserProfile,
+          serviceRest,
+          isPlatform: isPlatformLicenseManagerProfile,
+          effectiveEnvironmentCode,
+          normalizeEnvRecordValue,
+          normalizeEnvCode,
+          cleanSubmissionId,
+          readFormForSubmission,
+          assertRecordAllowed
+        });
         break;
       case 'save':
         result = await handleSave(req, body);

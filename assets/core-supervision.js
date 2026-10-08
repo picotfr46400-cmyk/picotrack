@@ -1898,6 +1898,217 @@
     }
   };
 
+  var traceViewed = Object.create(null);
+  var TRACE_LABELS = {
+    created: 'Création', updated: 'Modification', status_changed: 'Changement d’étape',
+    validated: 'Validation', refused: 'Refus', returned: 'Renvoi', assigned: 'Assignation',
+    reassigned: 'Réassignation', commented: 'Commentaire', signed: 'Signature', closed: 'Clôture',
+    reopened: 'Réouverture', archived: 'Archivage', deleted: 'Suppression', restored: 'Restauration',
+    viewed: 'Consultation', exported: 'Export PDF', pad_synced: 'Synchronisation tablette',
+    email_sent: 'Email', form_filled: 'Formulaire lié', db_updated: 'Mise à jour base'
+  };
+
+  function formatParis(iso) {
+    var date = new Date(iso);
+    if (!iso || isNaN(date.getTime())) return '';
+    try {
+      var parts = new Intl.DateTimeFormat('fr-FR', {
+        timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+      }).formatToParts(date);
+      function pick(type) {
+        for (var i = 0; i < parts.length; i++) if (parts[i].type === type) return parts[i].value;
+        return '';
+      }
+      return pick('day') + '/' + pick('month') + '/' + pick('year') + ' ' + pick('hour') + ':' + pick('minute') + ':' + pick('second');
+    } catch (_) {
+      return String(iso);
+    }
+  }
+
+  function formatSize(bytes) {
+    var n = Number(bytes);
+    if (!isFinite(n) || n <= 0) return '';
+    if (n < 1024) return Math.round(n) + ' o';
+    if (n < 1048576) return Math.round(n / 1024) + ' Ko';
+    return (n / 1048576).toFixed(1) + ' Mo';
+  }
+
+  function changeText(change) {
+    if (!change) return '';
+    if (change.kind === 'redacted') return 'valeur masquée';
+    if (change.kind === 'file') {
+      var size = formatSize(change.size);
+      var name = change.name || 'fichier';
+      var tail = size ? ' · ' + size : '';
+      if (change.change === 'removed') return 'suppression · ' + name + tail;
+      if (change.change === 'replaced') {
+        var prev = change.previous_name ? ' (auparavant ' + change.previous_name + ')' : '';
+        return 'remplacement · ' + name + prev + tail;
+      }
+      return 'ajout · ' + name + tail;
+    }
+    var before = change.before == null || change.before === '' ? '∅' : String(change.before);
+    var after = change.after == null || change.after === '' ? '∅' : String(change.after);
+    return before + ' → ' + after;
+  }
+
+  function paintTrace(el, payload) {
+    if (!el) return;
+    var events = payload && Array.isArray(payload.events) ? payload.events : [];
+    var filter = el._ptTraceFilter || '';
+    var types = [];
+    events.forEach(function (event) {
+      if (event && event.event_type && types.indexOf(event.event_type) < 0) types.push(event.event_type);
+    });
+    var options = '<option value="">Tous les événements</option>';
+    types.forEach(function (type) {
+      options += '<option value="' + html(type) + '"' + (type === filter ? ' selected' : '') + '>' + html(TRACE_LABELS[type] || type) + '</option>';
+    });
+    var visible = events.filter(function (event) { return !filter || event.event_type === filter; });
+    var items = visible.map(function (event) {
+      var when = event.occurred_at_paris || formatParis(event.occurred_at);
+      var who = [event.actor_name, event.actor_id, event.actor_role, event.actor_license_type].filter(Boolean).map(html).join(' · ');
+      var origin = html(event.origin_label || (event.origin === 'pad' ? 'Tablette PAD' : 'Supervision web'));
+      var device = event.device_label ? ' · ' + html(event.device_label) : '';
+      var detail = event.detail || {};
+      var extra = '';
+      if (detail.from_status || detail.to_status) {
+        extra += '<div style="margin-top:3px">' + html(detail.from_status || '—') + ' → ' + html(detail.to_status || '—') + '</div>';
+      }
+      if (detail.from || detail.to) {
+        extra += '<div style="margin-top:3px">' + html(detail.from || '—') + ' → ' + html(detail.to || '—') + '</div>';
+      }
+      if (detail.comment) extra += '<div style="margin-top:3px;font-style:italic">« ' + html(detail.comment) + ' »</div>';
+      if (detail.step_label) extra += '<div style="margin-top:3px">Temps à l’étape précédente : ' + html(detail.step_label) + '</div>';
+      if (event.event_type === 'pad_synced' && event.device_captured_at) {
+        extra += '<div style="margin-top:3px">Saisie appareil : ' + html(event.device_captured_at_paris || formatParis(event.device_captured_at)) + '<br>Réception serveur : ' + html(when) + '</div>';
+      }
+      if (detail.action) extra += '<div style="margin-top:3px">' + html(detail.action) + '</div>';
+      var changes = Array.isArray(detail.changes) ? detail.changes : [];
+      if (changes.length) {
+        extra += '<ul style="margin:6px 0 0;padding-left:16px">';
+        changes.forEach(function (change) {
+          extra += '<li style="margin:2px 0"><b>' + html(change.label || change.key || 'Champ') + '</b> · ' + html(changeText(change)) + '</li>';
+        });
+        extra += '</ul>';
+      } else if (detail.summary) {
+        extra += '<div style="margin-top:3px">' + html(detail.summary) + '</div>';
+      }
+      return '<article style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--bg)">' +
+        '<div style="width:8px;height:8px;border-radius:99px;background:#059669;margin-top:4px;flex-shrink:0"></div>' +
+        '<div style="min-width:0;flex:1">' +
+        '<div style="font-size:12px;font-weight:800">' + html(event.label || TRACE_LABELS[event.event_type] || event.event_type || 'Événement') + '</div>' +
+        '<div style="font-size:11px;color:var(--tl);margin-top:2px">' + html(when) + '</div>' +
+        '<div style="font-size:11px;color:var(--tm);margin-top:2px">' + (who || 'Auteur non renseigné') + '</div>' +
+        '<div style="font-size:11px;color:var(--tl);margin-top:2px">' + origin + device + '</div>' +
+        extra +
+        '</div></article>';
+    }).join('');
+    var notice = payload && payload.notice
+      ? '<p style="font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px;margin:0 0 10px">' + html(payload.notice) + '</p>'
+      : '';
+    el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px">' +
+      '<div style="font-size:10.5px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">Traçabilité</div>' +
+      notice +
+      '<label style="display:block;font-size:11px;color:var(--tl);margin-bottom:8px">Type d’événement' +
+      '<select data-pt-trace-filter style="display:block;width:100%;margin-top:4px;border:1.5px solid var(--bd);border-radius:7px;padding:6px 8px;font:inherit;background:#fff">' + options + '</select>' +
+      '</label>' +
+      '<div>' + (items || '<div style="font-size:12px;color:var(--tl)">Aucun événement.</div>') + '</div>' +
+      '</div>';
+    var select = el.querySelector && el.querySelector('[data-pt-trace-filter]');
+    if (select) {
+      select.addEventListener('change', function () {
+        el._ptTraceFilter = select.value || '';
+        paintTrace(el, payload);
+      });
+    }
+  }
+
+  function mountTrace(elementId, submissionId, recordView) {
+    var el = document.getElementById(elementId);
+    var sid = String(submissionId == null ? '' : submissionId).trim();
+    if (!el || !sid) return;
+    el.style.width = 'min(340px, 100%)';
+    el.setAttribute('data-pt-trace-root', '1');
+    el.setAttribute('data-pt-submission', sid);
+    var record = recordView !== false && !traceViewed[sid];
+    if (record) traceViewed[sid] = true;
+    el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:var(--tl)">Chargement de la traçabilité…</div>';
+    var req;
+    try {
+      req = apiPost('/api/records', {
+        action: 'submission_trace',
+        id: sid,
+        record_view: !!record,
+        environment_code: envCode()
+      });
+    } catch (err) {
+      if (record) delete traceViewed[sid];
+      el.innerHTML = '<div style="font-size:12px;color:#b91c1c">Traçabilité indisponible.</div>';
+      return;
+    }
+    Promise.resolve(req).then(function (res) {
+      if (el.getAttribute('data-pt-submission') !== sid) return;
+      if (!res || res.error || !Array.isArray(res.events)) throw new Error((res && res.error) || 'Traçabilité indisponible');
+      paintTrace(el, res);
+    }).catch(function (err) {
+      if (record) delete traceViewed[sid];
+      if (el.getAttribute('data-pt-submission') !== sid) return;
+      try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
+      el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:#b91c1c">Traçabilité indisponible.</div>';
+    });
+  }
+
+  function refreshVisibleTrace() {
+    if (!document.querySelectorAll) return;
+    document.querySelectorAll('[data-pt-trace-root]').forEach(function (el) {
+      var sid = el.getAttribute('data-pt-submission');
+      if (sid && el.id) mountTrace(el.id, sid, false);
+    });
+  }
+
+  function wrapTrace() {
+    if (typeof window.renderSubmissionDetail === 'function' && !window.renderSubmissionDetail.__ptTrace) {
+      var origDetail = window.renderSubmissionDetail;
+      window.renderSubmissionDetail = function (sub) {
+        var ret = origDetail.apply(this, arguments);
+        try { mountTrace('sd-history', sub && (sub.id || sub.submission_id)); } catch (err) {
+          try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
+        }
+        return ret;
+      };
+      window.renderSubmissionDetail.__ptTrace = true;
+      if (origDetail.__ptPdf) window.renderSubmissionDetail.__ptPdf = true;
+    }
+    if (typeof window.renderInstanceHistory === 'function' && !window.renderInstanceHistory.__ptTrace) {
+      var origHistory = window.renderInstanceHistory;
+      window.renderInstanceHistory = function (inst) {
+        var ret = origHistory.apply(this, arguments);
+        try {
+          mountTrace('sid-history', inst && (inst.submissionId || inst.submission_id || inst.id));
+        } catch (err) {
+          try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
+        }
+        return ret;
+      };
+      window.renderInstanceHistory.__ptTrace = true;
+    }
+  }
+
+  function wrapDbAudit() {
+    if (typeof DB === 'undefined' || !DB || typeof DB.save !== 'function' || DB.save.__ptAudit) return;
+    var orig = DB.save;
+    DB.save = function (entity) {
+      var ret = orig.apply(this, arguments);
+      if (entity === 'submissions' || entity === 'service_instances') {
+        Promise.resolve(ret).then(function () { refreshVisibleTrace(); }).catch(function () {});
+      }
+      return ret;
+    };
+    DB.save.__ptAudit = true;
+  }
+
   function boot() {
     window._prodServicesAssignee = window._prodServicesAssignee || 'all';
     window._prodServicesExtra = window._prodServicesExtra || { sla: 'all', waiting: false, unassigned: false };
@@ -1912,6 +2123,8 @@
     wrapApiEndpoints();
     wrapNavCache();
     wrapSubmissionPdf();
+    wrapTrace();
+    wrapDbAudit();
     wireImporterButton();
     hideInternalDatabases();
     if (ready) return;

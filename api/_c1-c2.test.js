@@ -911,9 +911,10 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
       record: { form_id: 'form-1', values: { client: 'EFC Nord' }, device: 'desktop', environment_code: 'ACME', tenant_id: 'autre' }
     }, authHeaders());
     assert.equal(submission.status, 200, submission.payload.error || '');
-    assert.equal(writes.at(-1).body.values.client, 'EFC Nord');
-    assert.equal(writes.at(-1).body.environment_code, 'EFC');
-    assert.equal(writes.at(-1).body.tenant_id, undefined);
+    const submissionWrite = writes.filter((row) => row.url.includes('/rest/v1/submissions') && !row.url.includes('submission_audit_log')).at(-1);
+    assert.equal(submissionWrite.body.values.client, 'EFC Nord');
+    assert.equal(submissionWrite.body.environment_code, 'EFC');
+    assert.equal(submissionWrite.body.tenant_id, undefined);
 
     const createdSlot = await callJson(records, {
       action: 'save',
@@ -981,9 +982,10 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
       record: { values: { client: 'Saisie PAD' }, device: 'pad' }
     }, authHeaders());
     assert.equal(padSubmission.status, 200, padSubmission.payload.error || '');
-    assert.equal(writes.at(-1).body.values.client, 'Saisie PAD');
-    assert.equal(writes.at(-1).body.environment_code, 'EFC');
-    assert.equal(writes.at(-1).body.device, 'pad');
+    const padWrite = writes.filter((row) => row.url.includes('/rest/v1/submissions') && !row.url.includes('submission_audit_log')).at(-1);
+    assert.equal(padWrite.body.values.client, 'Saisie PAD');
+    assert.equal(padWrite.body.environment_code, 'EFC');
+    assert.equal(padWrite.body.device, 'pad');
   });
 });
 
@@ -1252,7 +1254,8 @@ test('handler : tenant_id est posé seulement sur les tables qui ont la colonne,
             : { nom: 'Visite' };
       const out = await callJson(records, { action: 'save', entity, record }, authHeaders());
       assert.equal(out.status, 200, `${entity} ${out.payload.error || ''}`);
-      assert.equal(writes.at(-1).tenant_id, 'ten-1', entity);
+      const business = writes.filter((row) => !row.event_type).at(-1);
+      assert.equal(business.tenant_id, 'ten-1', entity);
     }
     writes.length = 0;
     const license = await callJson(records, {

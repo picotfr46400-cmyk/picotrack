@@ -1,4 +1,5 @@
 const { sendJson, setCors, verifyToken, sbRest } = require('./_pad-security');
+const submissionAudit = require('./_submission-audit');
 
 function cleanAction(action){
   const out = { ...(action || {}) };
@@ -45,8 +46,9 @@ module.exports = async function handler(req, res) {
     const session = verifyToken(req, token);
     if (session.typ !== 'pad' || !session.licenseId || !session.environmentCode) throw new Error('Session PAD invalide');
 
-    const licenseRows = await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}&environment_code=eq.${encodeURIComponent(session.environmentCode)}&active=eq.true&select=id&limit=1`, { method:'GET', prefer:'' });
+    const licenseRows = await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}&environment_code=eq.${encodeURIComponent(session.environmentCode)}&active=eq.true&select=id,label,email,role,license_type,device_name&limit=1`, { method:'GET', prefer:'' });
     if (!Array.isArray(licenseRows) || !licenseRows.length) throw new Error('Licence PAD inactive ou supprimée');
+    const license = licenseRows[0];
 
     const actions = Array.isArray(body.actions) ? body.actions.slice(0, 25) : [];
     const results = [];
@@ -54,10 +56,28 @@ module.exports = async function handler(req, res) {
       const item = cleanAction(action);
       const payload = item.payload || {};
       if (item.type === 'form_submission') {
-        results.push({ actionId:item.id, type:item.type, row: await insertSubmission(req, session.environmentCode, payload) });
+        const row = await insertSubmission(req, session.environmentCode, payload);
+        await submissionAudit.recordPadSync(req, {
+          rest: (path, opts) => sbRest(req, path, opts),
+          environmentCode: session.environmentCode,
+          licenseId: session.licenseId,
+          license,
+          deviceCapturedAt: item.created_at,
+          submission: row
+        });
+        results.push({ actionId:item.id, type:item.type, row });
       } else if (item.type === 'service_instance') {
         const sub = await insertSubmission(req, session.environmentCode, payload);
         const inst = await insertServiceInstance(req, session.environmentCode, payload, sub);
+        await submissionAudit.recordPadSync(req, {
+          rest: (path, opts) => sbRest(req, path, opts),
+          environmentCode: session.environmentCode,
+          licenseId: session.licenseId,
+          license,
+          deviceCapturedAt: item.created_at,
+          submission: sub,
+          instance: inst
+        });
         results.push({ actionId:item.id, type:item.type, row:inst, submission:sub });
       } else {
         throw new Error('Type de file PAD inconnu : ' + item.type);
