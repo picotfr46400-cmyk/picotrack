@@ -148,35 +148,49 @@ async function inviteAuthUser(url, serviceRole, payload) {
 async function upsertUserProfile(url, serviceRole, authUser, payload, options = {}) {
   if (!authUser?.id) throw new Error('Compte Auth créé mais ID utilisateur introuvable.');
   const partial = options.partial === true;
+  const requested = options.requested && typeof options.requested === 'object' ? options.requested : payload;
+  const clientSent = key => Object.prototype.hasOwnProperty.call(requested, key);
   const environmentCode = normalizeEnvironmentCode(payload.environment_code || 'DEMO');
   const email = normalizeEmail(payload.email || authUser.email);
-  const sent = key => Object.prototype.hasOwnProperty.call(payload, key);
   const profile = {
     id: authUser.id,
     email,
-    username: cleanString(payload.username || payload.login_user || email),
-    login_user: cleanString(payload.login_user || payload.username || email),
     role: cleanString(payload.role || 'supervision_user'),
-    roles: safeArray(payload.roles),
     scope: cleanString(payload.scope || 'environment'),
     environment_code: environmentCode,
     active: payload.active !== false,
     license_type: cleanString(payload.license_type || 'supervision'),
     updated_at: new Date().toISOString()
   };
-  if (!partial || sent('label')) {
-    profile.label = cleanString(payload.label || `${payload.firstname || ''} ${payload.lastname || ''}`.trim());
-  }
-  if (!partial || sent('firstname') || sent('first_name')) {
+  if (!partial) profile.roles = safeArray(payload.roles);
+  else if (Array.isArray(payload.roles)) profile.roles = payload.roles;
+
+  if (!partial) {
+    profile.username = cleanString(payload.username || payload.login_user || email);
+    profile.login_user = cleanString(payload.login_user || payload.username || email);
+    profile.label = cleanString(payload.label || `${payload.firstname || payload.first_name || ''} ${payload.lastname || payload.last_name || ''}`.trim());
     profile.firstname = cleanString(payload.firstname || payload.first_name || '');
     profile.first_name = cleanString(payload.firstname || payload.first_name || '');
-  }
-  if (!partial || sent('lastname') || sent('last_name')) {
     profile.lastname = cleanString(payload.lastname || payload.last_name || '');
     profile.last_name = cleanString(payload.lastname || payload.last_name || '');
-  }
-  if (!partial || sent('license_key')) {
     profile.license_key = payload.license_key || null;
+    if (options.tenantId === null) profile.tenant_id = null;
+    else if (options.tenantId) profile.tenant_id = cleanString(options.tenantId, 80);
+  } else {
+    if (clientSent('username')) profile.username = cleanString(requested.username);
+    if (clientSent('login_user')) profile.login_user = cleanString(requested.login_user);
+    if (clientSent('label')) profile.label = cleanString(requested.label);
+    if (clientSent('firstname') || clientSent('first_name')) {
+      const value = cleanString((clientSent('firstname') ? requested.firstname : '') || requested.first_name || '');
+      profile.firstname = value;
+      profile.first_name = value;
+    }
+    if (clientSent('lastname') || clientSent('last_name')) {
+      const value = cleanString((clientSent('lastname') ? requested.lastname : '') || requested.last_name || '');
+      profile.lastname = value;
+      profile.last_name = value;
+    }
+    if (clientSent('license_key')) profile.license_key = requested.license_key || null;
   }
   if (payload.resolved_permissions && typeof payload.resolved_permissions === 'object' && !Array.isArray(payload.resolved_permissions)) {
     profile.resolved_permissions = payload.resolved_permissions;
@@ -270,17 +284,36 @@ function envCandidates(env) {
   return [...new Set([upper, raw, raw.toLowerCase()].filter(Boolean))];
 }
 
+function quotaReadError(err) {
+  const upstream = Number(err?.status);
+  const status = upstream >= 500 && upstream <= 599 ? upstream : 503;
+  return Object.assign(new Error('Lecture du quota indisponible.'), { status });
+}
+
+async function quotaRead(url, serviceRole, path) {
+  try {
+    const rows = await supabaseFetch(url, serviceRole, path, { method: 'GET' });
+    if (!Array.isArray(rows)) throw quotaReadError(null);
+    return rows;
+  } catch (err) {
+    if (err && err.message === 'Lecture du quota indisponible.') throw err;
+    throw quotaReadError(err);
+  }
+}
+
 async function getLicenseLimitsForEnvironment(url, serviceRole, environmentCode) {
   for (const env of envCandidates(environmentCode)) {
-    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit&limit=1`, { method: 'GET' }).catch(() => []);
-    if (Array.isArray(rows) && rows[0]) return rows[0];
+    const rows = await quotaRead(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,tenant_id&limit=1`);
+    if (rows[0]) return rows[0];
   }
   return null;
 }
 
 async function countActiveUsersForType(url, serviceRole, environmentCode, licenseType, excludeId) {
   let total = 0;
-  const seen = new Set();
+  const seenEmails = new Set();
+  const seenProfiles = new Set();
+  const seenLicenses = new Set();
 
   function isPlatform(row) {
     const role = String(row?.role || '').toLowerCase();
@@ -294,36 +327,53 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
     return normalizeLicenseType(row?.license_type || (Array.isArray(row?.roles) && row.roles.includes('pad_user') ? 'pad' : 'supervision'));
   }
 
-  function mark(row, prefix) {
-    const key = String(row?.id || row?.email || row?.login_user || row?.username || row?.license_key || '').toLowerCase();
-    return key ? `${prefix}:${key}` : '';
+  function emailKey(row) {
+    return normalizeEmail(row?.email || '');
   }
 
+  // Schéma licenses : pas de login_user ni de username. Une licence dont l'e-mail
+  // correspond à un profil du même environnement (actif ou non) n'est pas une place de plus :
+  // la désactivation ne retire pas la ligne licenses.
+  const licenseSelect = 'id,environment_code,license_key,license_type,active,email,role,scope,roles';
+  const profileSelect = 'id,email,role,license_type,roles,scope,resolved_permissions,active,environment_code';
+
   for (const env of envCandidates(environmentCode)) {
-    const profiles = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,login_user,username,role,license_type,roles,scope,resolved_permissions`, { method: 'GET' }).catch(() => []);
-    for (const row of Array.isArray(profiles) ? profiles : []) {
-      if (!row || isPlatform(row)) continue;
+    const profiles = await quotaRead(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=${profileSelect}`);
+    for (const row of profiles) {
+      if (!row) continue;
+      const email = emailKey(row);
+      if (email) seenEmails.add(email);
+      if (isPlatform(row) || row.active === false) continue;
       if (excludeId && String(row.id) === String(excludeId)) continue;
-      const key = mark(row, 'user');
-      const emailKey = row.email ? `email:${String(row.email).toLowerCase()}` : '';
-      if ((key && seen.has(key)) || (emailKey && seen.has(emailKey))) continue;
-      if (key) seen.add(key);
-      if (emailKey) seen.add(emailKey);
+      const idKey = String(row.id || '').toLowerCase();
+      if (idKey && seenProfiles.has(idKey)) continue;
+      if (idKey) seenProfiles.add(idKey);
       if (rowType(row) === licenseType) total += 1;
     }
 
-    const licenses = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,login_user,username,license_key,role,license_type,roles,scope`, { method: 'GET' }).catch(() => []);
-    for (const row of Array.isArray(licenses) ? licenses : []) {
-      if (!row || isPlatform(row)) continue;
-      const emailKey = row.email ? `email:${String(row.email).toLowerCase()}` : '';
-      const licKey = row.license_key ? `license:${String(row.license_key).toLowerCase()}` : mark(row, 'license');
-      if ((emailKey && seen.has(emailKey)) || (licKey && seen.has(licKey))) continue;
-      if (emailKey) seen.add(emailKey);
-      if (licKey) seen.add(licKey);
+    const licenses = await quotaRead(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${licenseSelect}`);
+    for (const row of licenses) {
+      if (!row || isPlatform(row) || row.active === false) continue;
+      const email = emailKey(row);
+      if (email && seenEmails.has(email)) continue;
+      const licKey = String(row.license_key || row.id || '').toLowerCase();
+      if (licKey && seenLicenses.has(licKey)) continue;
+      if (email) seenEmails.add(email);
+      if (licKey) seenLicenses.add(licKey);
       if (rowType(row) === licenseType) total += 1;
     }
   }
   return total;
+}
+
+function updateAddsActiveSeat(current, next) {
+  const willBeActive = next?.active !== false;
+  if (!willBeActive) return false;
+  const wasActive = current?.active !== false;
+  const prevType = normalizeLicenseType(current?.license_type);
+  const nextType = normalizeLicenseType(next?.license_type || current?.license_type);
+  if (!wasActive) return true;
+  return prevType !== nextType;
 }
 
 async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null) {
@@ -453,14 +503,37 @@ function mergeAssignedRoles(existingValue, submittedValue, catalog) {
   return out;
 }
 
+function preservedRoleList(existingValue) {
+  if (existingValue == null) return null;
+  const source = Array.isArray(existingValue) ? existingValue : parseSubmittedRoles(existingValue);
+  if (!Array.isArray(source)) return null;
+  const out = [];
+  const seen = new Set();
+  for (const token of source) {
+    const cleaned = String(token ?? '').replace(/[\t\r\n\f\v]/g, '').trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  return out;
+}
+
 function clampAssignedPrivileges(payload, requester, context = {}) {
   const next = Object.assign({}, payload || {});
+  let rolesUnchanged = false;
+  if (Object.prototype.hasOwnProperty.call(next, 'roles') && !Array.isArray(next.roles)) {
+    rolesUnchanged = true;
+    if (Array.isArray(context.existingRoles)) next.roles = context.existingRoles.slice();
+    else delete next.roles;
+  }
   if (isPlatformOperatorProfile(requester)) return next;
   if (Object.prototype.hasOwnProperty.call(next, 'role')) {
     const role = normalizePrivilegeToken(next.role);
     next.role = ASSIGNABLE_CLIENT_ROLES.has(role) ? role : 'supervision_user';
   }
-  if (Object.prototype.hasOwnProperty.call(next, 'roles')) {
+  if (Object.prototype.hasOwnProperty.call(next, 'roles') && !rolesUnchanged) {
     next.roles = mergeAssignedRoles(context.existingRoles, next.roles, context.catalog || []);
   }
   next.scope = 'environment';
@@ -674,6 +747,25 @@ async function handleListUsers(req, url, serviceRole, payload) {
   return { ok: true, success: true, environment_code: environmentCode, rows };
 }
 
+async function resolveCreateTenantId(url, serviceRole, environmentCode, requester) {
+  const env = normalizeEnvironmentCode(environmentCode);
+  const requesterEnv = profileEnvironmentCode(requester);
+  const ownTenant = cleanString(requester?.tenant_id || '', 80);
+  if (requesterEnv && requesterEnv === env) return ownTenant;
+  if (!isPlatformOperatorProfile(requester)) return ownTenant;
+  try {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=tenant_id&limit=50`, { method: 'GET' });
+    const found = (Array.isArray(rows) ? rows : []).map(row => cleanString(row?.tenant_id || '', 80)).find(Boolean);
+    if (found) return found;
+  } catch (_) {}
+  try {
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=tenant_id&limit=1`, { method: 'GET' });
+    const found = cleanString((Array.isArray(rows) ? rows[0] : null)?.tenant_id || '', 80);
+    if (found) return found;
+  } catch (_) {}
+  return null;
+}
+
 async function handleCreateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const profile = await requireUserCreator(req, url, serviceRole);
@@ -682,7 +774,8 @@ async function handleCreateUser(req, url, serviceRole, payload) {
   const environmentCode = assertSameEnvironmentOrPlatform(profile, safePayload.environment_code || safePayload.active_env || profileEnvironmentCode(profile));
   const quota = await assertQuotaAvailable(url, serviceRole, { ...safePayload, environment_code: environmentCode }, null);
   const authUser = await createAuthUserWithPassword(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
-  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
+  const tenantId = await resolveCreateTenantId(url, serviceRole, quota.environmentCode, profile);
+  const createdProfile = await upsertUserProfile(url, serviceRole, authUser, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode }, { tenantId });
   await insertLicenseBestEffort(url, serviceRole, { ...safePayload, license_type: quota.licenseType, environment_code: quota.environmentCode });
   return { ok: true, success: true, mode: 'direct-create', quota, user: { id: authUser.id, email: authUser.email || payload.email }, profile: createdProfile };
 }
@@ -716,9 +809,9 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   const catalog = isPlatformOperatorProfile(profileRequester) ? [] : await loadActiveAppRoles(url, serviceRole, profileEnvironmentCode(profileRequester));
   const safePayload = clampAssignedPrivileges(payload, profileRequester, { catalog, existingRoles: current.roles });
   const merged = { ...current, ...safePayload, environment_code: safePayload.environment_code || current.environment_code, license_type: safePayload.license_type || current.license_type };
-  await assertQuotaAvailable(url, serviceRole, merged, id);
+  if (updateAddsActiveSeat(current, merged)) await assertQuotaAvailable(url, serviceRole, merged, id);
   await updateAuthUserPassword(url, serviceRole, id, payload);
-  const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged, { partial: true });
+  const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged, { partial: true, requested: payload });
   return { ok: true, success: true, mode: 'direct-update', profile };
 }
 
@@ -753,13 +846,13 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
     licenseRow = Array.isArray(rows) ? rows[0] : null;
   }
 
-  const lookupEmail = email || normalizeEmail(licenseRow?.email || '');
+  const lookupEmail = licenseRow?.id ? normalizeEmail(licenseRow.email || '') : email;
   const lookupEnv = normalizeEnvironmentCode(licenseRow?.environment_code || requestedEnv);
 
   if (!current && lookupEmail) {
     const profilePaths = [];
     if (lookupEnv) profilePaths.push(`/rest/v1/user_profiles?email=eq.${encodeURIComponent(lookupEmail)}&environment_code=eq.${encodeURIComponent(lookupEnv)}&select=*&limit=1`);
-    profilePaths.push(`/rest/v1/user_profiles?email=eq.${encodeURIComponent(lookupEmail)}&select=*&limit=1`);
+    if (!licenseRow?.id) profilePaths.push(`/rest/v1/user_profiles?email=eq.${encodeURIComponent(lookupEmail)}&select=*&limit=1`);
     for (const path of profilePaths) {
       const rows = await supabaseFetch(url, serviceRole, path, { method: 'GET' }).catch(() => []);
       current = Array.isArray(rows) ? rows[0] : null;
@@ -788,19 +881,27 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
 
   const targetEnv = normalizeEnvironmentCode(current?.environment_code || licenseRow?.environment_code || lookupEnv);
   if (profileInEnv || licenseRow?.id) assertSameEnvironmentOrPlatform(profileRequester, targetEnv);
+  const standaloneLicense = !current?.id && !!licenseRow?.id;
+  const licenseEnv = normalizeEnvironmentCode(licenseRow?.environment_code);
+  const licenseTiedToPlatform = isPlatformOperatorProfile(licenseRow) || authMetadataIsPlatform(authUser);
   if (!isPlatformOperatorProfile(profileRequester)) {
-    if (!profileInEnv) {
-      throw Object.assign(new Error('Profil introuvable dans cet environnement.'), { status: 403 });
-    }
-    if (!authUser?.id || authMetadataIsPlatform(authUser) || isPlatformOperatorProfile(current) || isPlatformOperatorProfile(licenseRow)) {
-      throw Object.assign(new Error('Suppression d’un compte plateforme refusée.'), { status: 403 });
-    }
-    if (licenseIdToTry) {
-      const licenseEnv = normalizeEnvironmentCode(licenseRow?.environment_code);
-      const targetEmail = normalizeEmail(current?.email || '');
-      const licenseEmail = normalizeEmail(licenseRow?.email || '');
-      if (!licenseRow?.id || licenseEnv !== requesterEnv || !targetEmail || licenseEmail !== targetEmail) {
-        throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
+    if (standaloneLicense) {
+      if (!licenseEnv || licenseEnv !== requesterEnv || licenseTiedToPlatform) {
+        throw Object.assign(new Error(licenseTiedToPlatform ? 'Suppression d’un compte plateforme refusée.' : 'Suppression de licence refusée.'), { status: 403 });
+      }
+    } else {
+      if (!profileInEnv) {
+        throw Object.assign(new Error('Profil introuvable dans cet environnement.'), { status: 403 });
+      }
+      if (!authUser?.id || authMetadataIsPlatform(authUser) || isPlatformOperatorProfile(current) || isPlatformOperatorProfile(licenseRow)) {
+        throw Object.assign(new Error('Suppression d’un compte plateforme refusée.'), { status: 403 });
+      }
+      if (licenseIdToTry) {
+        const targetEmail = normalizeEmail(current?.email || '');
+        const licenseEmail = normalizeEmail(licenseRow?.email || '');
+        if (!licenseRow?.id || licenseEnv !== requesterEnv || !targetEmail || licenseEmail !== targetEmail) {
+          throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
+        }
       }
     }
   }

@@ -452,7 +452,12 @@ function demotePrivilegedFields(record, options = {}) {
     record.role = SYSTEM_ASSIGNABLE_ROLES.has(role) ? role : 'supervision_user';
   }
   if (Object.prototype.hasOwnProperty.call(record, 'roles')) {
-    record.roles = mergeAssignedRoles(options.existingRoles, record.roles, options.catalog || []);
+    if (!Array.isArray(record.roles)) {
+      if (Array.isArray(options.existingRoles)) record.roles = options.existingRoles.slice();
+      else delete record.roles;
+    } else {
+      record.roles = mergeAssignedRoles(options.existingRoles, record.roles, options.catalog || []);
+    }
   }
   if (entity === 'user_profiles' || entity === 'licenses' || (!entity && ('role' in record || 'license_type' in record || 'scope' in record))) {
     record.scope = 'environment';
