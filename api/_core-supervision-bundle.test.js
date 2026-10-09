@@ -13,10 +13,17 @@ test('hotfix saisie: case groupe conserve un break valide', () => {
   assert.equal(bundle.includes('brea;'), false);
 });
 
+test('file tablette : un refus 403 ou 404 sort de la file avec un message', () => {
+  const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
+  assert.match(bundle, /\/api\/pad-sync/);
+  assert.match(bundle, /ptDrop/);
+  assert.match(bundle, /status="dropped"/);
+});
+
 test('cache-buster et overlay core-supervision sont branchés', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/app\.secured\.js\?v=20261008n/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008f/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008o/g) || []).length, 2);
+  assert.match(html, /core-supervision\.js\?v=20261008i/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);
@@ -45,6 +52,19 @@ test('Importer / filtres / étiquette ne sont plus des no-op dans le bundle', ()
   assert.match(bundle, /id="exec-responsable"/);
   assert.match(bundle, /Impression navigateur/);
   assert.equal(bundle.includes('"Disponible","goAutomations()","Configurer"'), false);
+});
+
+test('accès par rôle : écrans et badge dans l’overlay', () => {
+  const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
+  assert.match(overlay, /Accès par rôle/);
+  assert.match(overlay, /Masqué pour/);
+  assert.match(overlay, /Gérer les utilisateurs/);
+  assert.match(overlay, /Voir comme ce rôle/);
+  assert.match(overlay, /Par défaut/);
+  assert.match(overlay, /ptSetViewAsRole/);
+  const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
+  assert.match(bundle, /window\.__ptSvc=/);
+  assert.match(bundle, /window\.__ptFormId=/);
 });
 
 test('intégrations restent dans /api/records (limite Hobby 12 fonctions)', () => {

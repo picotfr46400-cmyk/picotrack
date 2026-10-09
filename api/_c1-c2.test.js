@@ -446,11 +446,7 @@ test('handler : les rôles espacés et la chaîne postgres ne deviennent pas adm
       entity: 'app_roles',
       record: { name: 'Agent', permissions: { manage_users: true, platform_admin: true, manage_global_licenses: true, view: ['pad_user'] } }
     }, authHeaders());
-    assert.equal(appRole.status, 200, appRole.payload.error || '');
-    assert.equal(saved.permissions.manage_users, undefined);
-    assert.equal(saved.permissions.platform_admin, undefined);
-    assert.equal(saved.permissions.manage_global_licenses, undefined);
-    assert.deepEqual(saved.permissions.view, ['pad_user']);
+    assert.equal(appRole.status, 403, appRole.payload.error || '');
   });
 });
 
@@ -968,6 +964,7 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
     assert.equal(storedUser.license_type, 'supervision');
     assert.deepEqual(storedUser.roles, [MANAGER_LEGACY, MANAGER_ROLE]);
 
+    actor = { ...supervisionUser, role: 'environment_admin' };
     const role = await callJson(records, {
       action: 'save',
       entity: 'app_roles',
@@ -978,7 +975,8 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
     assert.equal(writes.at(-1).body.name, 'Chef équipe');
     assert.equal(writes.at(-1).body.environment_code, 'EFC');
     assert.deepEqual(writes.at(-1).body.permissions.view, ['pad_user']);
-    assert.equal(writes.at(-1).body.permissions.manage_users, undefined);
+    assert.equal(writes.at(-1).body.permissions.manage_users, true);
+    assert.deepEqual(writes.at(-1).body.permissions.access, { forms: {}, services: {}, statuses: {} });
 
     actor = pad;
     await listed('forms', { select: '*', order: 'created_at.asc', limit: 500 });
@@ -1232,13 +1230,14 @@ test('handler : la liste envoyée retire un rôle ordinaire et conserve seulemen
 });
 
 test('handler : tenant_id est posé seulement sur les tables qui ont la colonne, et les nouvelles colonnes passent', async () => {
-  const actor = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true, tenant_id: 'ten-1' };
+  const actor = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'environment_admin', license_type: 'supervision', environment_code: 'EFC', active: true, tenant_id: 'ten-1' };
   await withSupabase(async () => {
     const writes = [];
     installActor(actor, {
       onFetch(u, method, options) {
         if (method !== 'GET' && options.body) writes.push(JSON.parse(options.body));
         if (u.includes('forms?id=')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', permissions: {} }]);
+        if (u.includes('services?id=')) return jsonResponse(200, [{ id: 'svc-1', nom: 'Visite', environment_code: 'EFC', permissions: {} }]);
         if (method !== 'GET') return jsonResponse(200, [{ id: 'saved-1' }]);
         return null;
       }
@@ -1274,7 +1273,9 @@ test('handler : tenant_id est posé seulement sur les tables qui ont la colonne,
           ? { title: 'Visite', form_id: 'form-1', capacity_limit: 3 }
           : entity === 'app_roles'
             ? { name: 'Agent', permissions: { view: true }, active: true }
-            : { nom: 'Visite' };
+            : entity === 'service_instances'
+              ? { nom: 'Visite', service_id: 'svc-1' }
+              : { nom: 'Visite' };
       const out = await callJson(records, { action: 'save', entity, record }, authHeaders());
       assert.equal(out.status, 200, `${entity} ${out.payload.error || ''}`);
       const business = writes.filter((row) => !row.event_type).at(-1);

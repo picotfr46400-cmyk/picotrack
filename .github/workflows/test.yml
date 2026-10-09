@@ -19,7 +19,37 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
+      - run: npm install --no-save --ignore-scripts eslint@9.36.0
+      - run: npx eslint api
       - run: npm test
+
+  schema-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: pico
+          POSTGRES_DB: picotrack
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: npm install --no-save --ignore-scripts pg@8.13.1
+      - run: npm test
+        env:
+          DATABASE_URL: postgres://postgres:pico@localhost:5432/picotrack
+          PICO_SCHEMA_REQUIRED: '1'
 
   audit-postgres:
     runs-on: ubuntu-latest

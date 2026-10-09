@@ -563,7 +563,7 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
 test('la frise de traçabilité interroge le serveur et filtre sans réécrire l’historique', () => {
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /core-supervision\.js\?v=20261008f/);
+  assert.match(html, /core-supervision\.js\?v=20261008i/);
   assert.match(overlay, /action: 'submission_trace'/);
   assert.match(overlay, /Europe\/Paris/);
   assert.match(overlay, /data-pt-trace-filter/);

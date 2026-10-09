@@ -47,3 +47,33 @@ Chaque passage de ce mode écrit un `console.warn` dont le préfixe stable est `
 Un délai dépassé ou une erreur 5xx de la table de reçus n’est pas une table absente. Ces cas restent tolérés pour la réservation, avec un préfixe distinct : `[pad-sync] receipts timeout or 5xx, idempotence degraded`, suivi du code HTTP. Après le premier délai ou 5xx, le reste des réservations passe en mode dégradé sans nouvel appel, et un seul avertissement est écrit. Ce budget n’est pas celui du journal, et il ne s’applique pas aux créations.
 
 Une erreur de synchronisation répond 503 (401 seulement si la session ou la licence est refusée) avec un message générique et un `request_id`. Le détail, y compris le message Postgres, ne part pas au client : il est écrit dans les logs serveur avec le même `request_id`.
+
+## Accès par rôle
+
+Les rôles personnalisés vivent dans `app_roles`. Le champ JSON `permissions.access` décrit, pour un rôle, ce qu’il peut voir :
+
+```json
+{
+  "forms": { "<formId>": "hidden" },
+  "services": { "<serviceId>": "read" },
+  "statuses": { "<serviceId>": { "<statusId>": "write" } }
+}
+```
+
+Les niveaux sont `hidden` (masqué), `read` (lecture) et `write` (écriture). L’absence de clé `access` (absente ou `null`) laisse le défaut historique (`permissions.view`, `permissions.submit`, `permissions.edit`, `permissions.delete`, « Visible par »). Le masquage ne s’applique qu’à un rôle dont l’objet `access` est présent : une ressource sans règle, un objet vide `{}`, une valeur illisible ou `hidden` restent masqués. Entre plusieurs rôles, le plus permissif gagne. Un rôle historique sans clé `access` compte comme ce défaut. Un rôle en lecture plus un rôle dont `access` est vide reste donc en lecture.
+
+Les rôles de place (`supervision_user`, `pad_user`, `operator`, `admin`, …) ne comptent pas comme un rôle catalogue. Les comptes plateforme ne sont pas concernés par le masquage des données.
+
+Un formulaire sans entrée propre prend le niveau le plus permissif des workflows qui portent une règle explicite. Un workflow sans règle n’ouvre pas le formulaire. Une entrée propre sur ce formulaire gagne sur cet héritage. Le formulaire et le workflow sont relus en base à partir de l’élément visé : omettre ou falsifier un paramètre ne change pas le contrôle. Un élément masqué répond 404, en lecture comme en modification ou en suppression. Un workflow en lecture seule refuse toute saisie, modification ou suppression, y compris depuis la tablette.
+
+Si la lecture des rôles ou des permissions échoue, le serveur répond 503 et refuse. Il n’ouvre pas l’accès par défaut. Personne ne modifie ses propres rôles ou permissions. On n’accorde un rôle qu’avec `manage_users`, et seulement si, pour chaque ressource explicite, le niveau du rôle est inférieur ou égal au niveau effectif de l’auteur (masqué, puis lecture, puis écriture). Il peut donc accorder son propre rôle. Une ressource sans règle n’est pas comptée comme une écriture. Un compte plateforme reste hors de portée. Désactiver un rôle encore assigné répond 409, comme sa suppression. Un compte sans `manage_users` ne reçoit que son propre rôle et ses permissions. Un compte avec `manage_users` reçoit les rôles de son environnement, sans les rôles plateforme, et sans les formulaires ni les workflows qui lui sont masqués dans le détail des permissions.
+
+Un statut `hidden` rend les dossiers dans ce statut invisibles et interdit d’y faire passer un dossier. Un statut `read` laisse lire le dossier mais interdit de le modifier tant qu’il est dans ce statut. Un service `hidden` plafonne aussi ses statuts.
+
+Le serveur est la seule autorité. `api/_access.js` est appliqué aux listes, compteurs, recherches, lectures directes (404 si masqué), écritures (403 en lecture seule, 404 si masqué), transitions, export PDF, rendez-vous, frise de traçabilité et synchro tablette (`pad-sync`, qui applique aussi les listes historiques). Les contrôles de droits précèdent l’insertion idempotente. Un refus 403 ou 404 sur une action de la tablette ne coupe pas le reste du lot. `filterTraceRows` retire d’un export ou des `mail_logs` toute ligne dont le formulaire, le workflow ou le statut est masqué, et l’export PDF refuse le dossier avant la frise.
+
+Une licence `lecture` / `readonly` est en lecture seule côté serveur : aucune saisie, aucun workflow, aucune administration. Son quota est la colonne `lecture_limit`, distincte de `supervision_limit`. Il n’existe pas de colonne `readonly_limit`. La gestion des utilisateurs est réservée aux administrateurs d’environnement (`environment_admin`, `admin`, `client_admin`) et aux rôles dont `permissions.manage_users` est vrai. Le rôle système `supervision_user` garde cette permission. Une licence lecture ne l’a jamais. `operator` et `pad` ne l’ont pas. Les clés API et webhooks (`integrations_*`) sont réservés aux administrateurs d’environnement, jamais à une licence pad. Écrire `app_roles` ou `permissions.access` est refusé à tout autre profil. Créer un formulaire sans id vérifie le droit d’édition historique.
+
+Le relevé des colonnes publiques est dans `supabase/schema/public-columns.sql`. Ce n’est pas une migration : il n’est appliqué à aucune base distante. La CI le charge dans un Postgres de service pour les tests de quota, de réactivation et de rôles. Un `select` ou une colonne écrite qui n’y figure pas casse la CI. `services` n’a pas `visible_roles` (`forms` l’a). `licenses` n’a pas de `user_id`.
+
+Aucune migration n’est nécessaire : `permissions` est déjà un JSON. Les écrans (Administration → Rôles & Permissions, studio formulaire, éditeur de workflow et onglet Statuts) sont réservés aux administrateurs d’environnement. L’aperçu « Voir comme ce rôle » est local au navigateur et n’envoie rien au serveur.

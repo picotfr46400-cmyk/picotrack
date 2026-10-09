@@ -1,6 +1,7 @@
 const { getSupabaseConfig, json, setCors, bearer, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
 const { interpretedLicenseType, seatLicenseType } = require('./_license-type');
 const { normalizeEmail } = require('./_email');
+const { canManageUsers, isPlatform, projectAppRoles, unavailable } = require('./_access');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
@@ -133,6 +134,16 @@ async function readBody(req) {
   });
 }
 
+async function readCatalog(req, path) {
+  try {
+    const rows = await serviceRest(path, { method: 'GET', prefer: '', req });
+    if (!Array.isArray(rows)) throw unavailable();
+    return rows;
+  } catch (err) {
+    throw unavailable(err);
+  }
+}
+
 async function handleSummary(req, body) {
   const { profile } = await requireProfile(req);
   const environmentCode = sameEnv(profile, body.environment_code || body.env || profile.environment_code);
@@ -163,8 +174,11 @@ async function handleSummary(req, body) {
     licenseStatus === 'inactive' ? Promise.resolve([]) : licenseQuery('eq.true'),
     licenseStatus === 'active' ? Promise.resolve([]) : profileQuery('eq.false'),
     licenseStatus === 'active' ? Promise.resolve([]) : licenseQuery('eq.false'),
-    serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=name.asc&limit=100`, { method: 'GET', prefer: '', req }).catch(() => [])
+    readCatalog(req, `app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=name.asc&limit=100`)
   ]);
+  const roleServices = canManageUsers(profile, rolesRows) && !isPlatform(profile)
+    ? await readCatalog(req, `services?environment_code=eq.${encodeURIComponent(env)}&select=id,form_id&limit=500`)
+    : [];
 
   const rows = [];
   const seen = new Set();
@@ -208,7 +222,7 @@ async function handleSummary(req, body) {
     success: true,
     environment_code: env,
     rows,
-    roles: Array.isArray(rolesRows) ? rolesRows : [],
+    roles: projectAppRoles(profile, rolesRows, roleServices),
     counts,
     limits: {
       environment_code: normalizeEnvironmentCode(limits.environment_code || env),

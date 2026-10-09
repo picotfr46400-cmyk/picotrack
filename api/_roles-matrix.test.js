@@ -6,13 +6,13 @@
 // Extension rôles personnalisés : ne pas dupliquer les cas. Appeler
 // casesForCustomRole({ roleId, forms, services, statuses }) et concaténer le
 // résultat à CUSTOM_ROLE_CASES. Les niveaux sont hidden | read | write.
-// Une ressource absente de la carte signifie « accès normal » (les autres rôles
-// ne sont pas masqués). hidden = absent des listes et des comptages, lecture
+// Une ressource absente de la carte n'est pas générée. Sans clé access, le
+// défaut historique reste. Un objet access, même vide, masque ce qui n'est pas écrit.
+// hidden = absent des listes et des comptages, lecture
 // directe 403/404, pas d'export PDF, pas de synchro tablette, pas de trace.
 // read = listes et PDF, écriture 403. write = listes, PDF et écriture.
-// Le serveur n'applique pas encore ces niveaux : CUSTOM_ROLE_CASES reste vide
-// tant que le branchement n'est pas fait. Dès qu'une ligne y est ajoutée, ce
-// fichier échoue si le handler ne la respecte pas.
+// CUSTOM_ROLE_CASES est exécuté sur les vrais handlers (liste, lecture, compteur,
+// recherche, écriture, PDF, pad-sync).
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -49,6 +49,7 @@ function accessForLevel(level, action) {
     return 404;
   }
   if (level === 'read') return action === 'save' || action === 'pad-sync' ? 403 : 200;
+  if (level === 'write' && action === 'pad-sync') return 'applied';
   if (level === 'write') return 200;
   return 'normal';
 }
@@ -82,7 +83,31 @@ function casesForCustomRole(spec) {
   return out;
 }
 
-const CUSTOM_ROLE_CASES = [];
+const ROLE_H = '11111111-1111-4111-8111-111111111111';
+const ROLE_R = '22222222-2222-4222-8222-222222222222';
+const ROLE_W = '33333333-3333-4333-8333-333333333333';
+const ROLE_OPEN = '44444444-4444-4444-8444-444444444444';
+
+const CUSTOM_ROLE_CASES = [
+  ...casesForCustomRole({
+    roleId: ROLE_H,
+    forms: { 'form-h': 'hidden' },
+    services: { 'svc-h': 'hidden' },
+    statuses: { 'svc-st-h': { 'st-h': 'hidden' } }
+  }),
+  ...casesForCustomRole({
+    roleId: ROLE_R,
+    forms: { 'form-r': 'read' },
+    services: { 'svc-r': 'read' },
+    statuses: { 'svc-st-r': { 'st-r': 'read' } }
+  }),
+  ...casesForCustomRole({
+    roleId: ROLE_W,
+    forms: { 'form-w': 'write' },
+    services: { 'svc-w': 'write' },
+    statuses: { 'svc-st-w': { 'st-w': 'write' } }
+  })
+];
 
 function baseProfile(extra) {
   return {
@@ -230,6 +255,12 @@ function installWorld(world) {
     if (method === 'GET' && world.failQuotaRead && u.includes('/rest/v1/environment_license_limits')) {
       return jsonResponse(500, { message: 'quota down' });
     }
+    if (method === 'GET' && world.failAppRoles && u.includes('/rest/v1/app_roles')) {
+      return jsonResponse(500, { message: 'roles down' });
+    }
+    if (method === 'GET' && world.failPermissions && (u.includes('/rest/v1/forms') || u.includes('/rest/v1/services'))) {
+      return jsonResponse(500, { message: 'permissions down' });
+    }
     if (method === 'PATCH' && world.failLicensePatch && u.includes('/rest/v1/licenses')) {
       return jsonResponse(500, { message: 'license write failed' });
     }
@@ -360,10 +391,7 @@ test('référence des niveaux masqué / lecture / écriture pour les rôles pers
   assert.equal(generated.find(row => row.resource === 'service' && row.action === 'save').expect, 403);
   assert.equal(generated.find(row => row.resource === 'status' && row.action === 'save').expect, 200);
   assert.equal(generated.find(row => row.resource === 'status').parentId, 'svc-1');
-  assert.equal(CUSTOM_ROLE_CASES.length, 0);
-  for (const row of CUSTOM_ROLE_CASES) {
-    assert.fail(`Niveau personnalisé non branché sur les handlers : ${row.resource} ${row.id} ${row.action}`);
-  }
+  assert.equal(CUSTOM_ROLE_CASES.length, 63);
 });
 
 test('classement des places : le type explicite gagne, pad_user ne rattrape que les lignes sans type', () => {
@@ -402,10 +430,10 @@ test('matrice : handlers selon le rôle et la licence', async () => {
     ['supervision', 'function', { functionName: 'list-users', payload: { environment_code: 'EFC', license_status: 'inactive' } }, 200],
     ['operator_pad', 'records', { action: 'list', entity: 'licenses' }, 403],
     ['supervision', 'records', { action: 'list', entity: 'licenses', environment_code: 'ACME' }, 200],
-    ['operator_supervision', 'records', { action: 'list', entity: 'licenses' }, 200],
-    ['readonly', 'records', { action: 'list', entity: 'licenses' }, 200],
-    ['lecture', 'records', { action: 'list', entity: 'licenses' }, 200],
-    ['gestionnaire', 'records', { action: 'list', entity: 'licenses' }, 200],
+    ['operator_supervision', 'records', { action: 'list', entity: 'licenses' }, 403],
+    ['readonly', 'records', { action: 'list', entity: 'licenses' }, 403],
+    ['lecture', 'records', { action: 'list', entity: 'licenses' }, 403],
+    ['gestionnaire', 'records', { action: 'list', entity: 'licenses' }, 403],
     ['pad', 'records', { action: 'list', entity: 'tenants' }, 403],
     ['supervision', 'records', { action: 'list', entity: 'tenants' }, 403],
     ['platform', 'records', { action: 'list', entity: 'tenants' }, 200],
@@ -414,7 +442,7 @@ test('matrice : handlers selon le rôle et la licence', async () => {
     ['supervision', 'records', { action: 'list', entity: 'forms', environment_code: 'ACME' }, 200],
     ['platform', 'records', { action: 'list', entity: 'forms', environment_code: 'ACME' }, 200],
     ['pad', 'records', { action: 'save', entity: 'forms', record: { nom: 'Nouveau', environment_code: 'ACME' } }, 200],
-    ['readonly', 'records', { action: 'save', entity: 'forms', record: { nom: 'Lecture', environment_code: 'EFC' } }, 200],
+    ['readonly', 'records', { action: 'save', entity: 'forms', record: { nom: 'Lecture', environment_code: 'EFC' } }, 403],
     ['supervision', 'records', { action: 'save', entity: 'forms', id: 'form-locked', record: { nom: 'Privé modifié' } }, 403],
     ['manager', 'records', { action: 'save', entity: 'forms', id: 'form-locked', record: { nom: 'Privé modifié' } }, 200],
     ['platform', 'records', { action: 'save', entity: 'forms', id: 'form-locked', record: { nom: 'Privé plateforme' } }, 200],
@@ -436,8 +464,10 @@ test('matrice : handlers selon le rôle et la licence', async () => {
     ['pad', 'appointments', { action: 'create', environment_code: 'ACME', record: { form_id: 'form-open', field_id: 'slot', date: '2026-02-02', start_time: '09:00' } }, 200],
     ['inactive', 'mail', { to: 'a@efc.picotrack.fr', subject: 'Bonjour', text: 'Texte' }, 403],
     ['pad', 'mail', { to: 'a@efc.picotrack.fr', subject: 'Bonjour', text: 'Texte' }, 200],
-    ['pad', 'records', { action: 'integrations_save', config: { keys: [], webhooks: [] } }, 200],
-    ['supervision', 'records', { action: 'integrations_create_key', name: 'clé' }, 200]
+    ['pad', 'records', { action: 'integrations_save', config: { keys: [], webhooks: [] } }, 403],
+    ['supervision', 'records', { action: 'integrations_create_key', name: 'clé' }, 403],
+    ['client_admin', 'records', { action: 'integrations_save', config: { keys: [], webhooks: [] } }, 200],
+    ['environment_admin', 'records', { action: 'integrations_create_key', name: 'clé' }, 200]
   ];
 
   await withSupabase(async () => {
@@ -611,29 +641,29 @@ test('bug : records ne peut pas ajouter une place au-delà du quota', async () =
   });
 });
 
-test('constat : le pool lecture reste plafonné par supervision_limit', async () => {
+test('licence lecture : lecture_limit s’applique à la place de supervision_limit', async () => {
   await withSupabase(async () => {
-    const emptySupervision = worldFor('supervision', {
+    const openLecture = worldFor('supervision', {
       limits: [{ id: 'lim-efc', environment_code: 'EFC', supervision_limit: 0, pad_limit: 5, lecture_limit: 5 }]
     });
-    installWorld(emptySupervision);
-    const blocked = await callJson(functions, {
+    const { writes } = installWorld(openLecture);
+    const allowed = await callJson(functions, {
       functionName: 'create-user',
       payload: { email: 'lecteur@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'lecture', environment_code: 'EFC', firstname: 'Lise' }
     });
-    assert.equal(blocked.status, 403, blocked.payload.error || '');
-    assert.match(blocked.payload.error || '', /Supervision PC/);
+    assert.equal(allowed.status, 200, allowed.payload.error || '');
+    assert.equal(lastWrite(writes, 'user_profiles').body.license_type, 'readonly');
 
-    const openSupervision = worldFor('supervision', {
+    const emptyLecture = worldFor('supervision', {
       limits: [{ id: 'lim-efc', environment_code: 'EFC', supervision_limit: 5, pad_limit: 1, lecture_limit: 0 }]
     });
-    const { writes } = installWorld(openSupervision);
-    const allowed = await callJson(functions, {
+    installWorld(emptyLecture);
+    const blocked = await callJson(functions, {
       functionName: 'create-user',
       payload: { email: 'lecteur@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'readonly', environment_code: 'EFC', firstname: 'Lise' }
     });
-    assert.equal(allowed.status, 200, allowed.payload.error || '');
-    assert.equal(lastWrite(writes, 'user_profiles').body.license_type, 'readonly');
+    assert.equal(blocked.status, 403, blocked.payload.error || '');
+    assert.match(blocked.payload.error || '', /Lecture/);
   });
 });
 
@@ -2084,4 +2114,783 @@ test('panne GoTrue : une adresse avec espace reçoit le même 5xx ou 429', async
     assert.deepEqual(spacedLimited.payload, validLimited.payload);
   });
   resetRateLimits();
+});
+
+function rolePermissions(forms, services, statuses) {
+  return { access: { forms, services, statuses } };
+}
+
+function accessWorld(roleIds) {
+  const roles = Array.isArray(roleIds) ? roleIds.filter(Boolean) : [roleIds].filter(Boolean);
+  const world = worldFor('supervision');
+  world.actor.roles = roles.slice();
+  world.user_profiles[0] = world.actor;
+  world.app_roles = [
+    { id: MANAGER_ROLE, name: 'Manager', environment_code: 'EFC', active: true, permissions: {} },
+    // form-open et le workflow parent du statut sont des porteurs explicites :
+    // sans règle, la décision « rôle vide = rien » les masquerait et masquerait
+    // la ressource réellement sous test. Le statut garde sa règle propre.
+    { id: ROLE_H, name: 'Masqué', environment_code: 'EFC', active: true, permissions: rolePermissions({ 'form-h': 'hidden', 'form-open': 'write' }, { 'svc-h': 'hidden', 'svc-st-h': 'write' }, { 'svc-st-h': { 'st-h': 'hidden' } }) },
+    { id: ROLE_R, name: 'Lecture', environment_code: 'EFC', active: true, permissions: rolePermissions({ 'form-r': 'read', 'form-open': 'write' }, { 'svc-r': 'read', 'svc-st-r': 'write' }, { 'svc-st-r': { 'st-r': 'read' } }) },
+    { id: ROLE_W, name: 'Ecriture', environment_code: 'EFC', active: true, permissions: rolePermissions({ 'form-w': 'write', 'form-open': 'write' }, { 'svc-w': 'write', 'svc-st-w': 'write' }, { 'svc-st-w': { 'st-w': 'write' } }) },
+    { id: ROLE_OPEN, name: 'Ouvert', environment_code: 'EFC', active: true, permissions: { access: {} } }
+  ];
+  const extraForm = id => ({ id, nom: `Formulaire q-${id}`, environment_code: 'EFC', fields: [{ id: 'nom', label: 'Nom', type: 'text' }], permissions: {}, actif: true });
+  world.forms = [...world.forms, extraForm('form-h'), extraForm('form-r'), extraForm('form-w')];
+  const svc = (id, statuses) => ({ id, nom: `Service q-${id}`, environment_code: 'EFC', actif: true, permissions: {}, statuses });
+  world.services = [
+    svc('svc-h', [{ id: 'st-open-h', nom: 'Ouvert' }]),
+    svc('svc-r', [{ id: 'st-open-r', nom: 'Ouvert' }]),
+    svc('svc-w', [{ id: 'st-open-w', nom: 'Ouvert' }]),
+    svc('svc-st-h', [{ id: 'st-h', nom: 'Bloqué' }, { id: 'st-other-h', nom: 'Autre' }]),
+    svc('svc-st-r', [{ id: 'st-r', nom: 'Lu' }, { id: 'st-other-r', nom: 'Autre' }]),
+    svc('svc-st-w', [{ id: 'st-w', nom: 'Écrit' }, { id: 'st-other-w', nom: 'Autre' }])
+  ];
+  const submissions = [];
+  const instances = [];
+  for (const id of ['form-h', 'form-r', 'form-w']) {
+    submissions.push({ id: `sub-${id}`, form_id: id, values: { nom: `q-${id}` }, device: 'desktop', created_at: '2026-01-02T00:00:00.000Z', environment_code: 'EFC' });
+  }
+  for (const id of ['svc-h', 'svc-r', 'svc-w']) {
+    const submissionId = `sub-${id}`;
+    submissions.push({ id: submissionId, form_id: 'form-open', values: { nom: `q-${id}` }, device: 'desktop', created_at: '2026-01-03T00:00:00.000Z', environment_code: 'EFC' });
+    instances.push({ id: `inst-${id}`, service_id: id, submission_id: submissionId, reference: `q-${id}`, environment_code: 'EFC' });
+  }
+  for (const [serviceId, statusId] of [['svc-st-h', 'st-h'], ['svc-st-r', 'st-r'], ['svc-st-w', 'st-w']]) {
+    const submissionId = `sub-${statusId}`;
+    submissions.push({ id: submissionId, form_id: 'form-open', values: { nom: `q-${statusId}` }, device: 'desktop', created_at: '2026-01-04T00:00:00.000Z', environment_code: 'EFC' });
+    instances.push({ id: `inst-${statusId}`, service_id: serviceId, submission_id: submissionId, current_status_id: statusId, reference: `q-${statusId}`, environment_code: 'EFC' });
+  }
+  world.submissions = [...world.submissions, ...submissions];
+  world.service_instances = instances;
+  return world;
+}
+
+function listedIds(payload) {
+  const rows = Array.isArray(payload) ? payload : (payload?.rows || payload?.forms || payload?.serviceInstances || []);
+  return rows.map(row => row && row.id);
+}
+
+function assertListed(out, expect, id, label) {
+  assert.equal(out.status, 200, `${label} ${out.payload?.error || ''}`);
+  const present = listedIds(out.payload).includes(id);
+  if (expect === 'omit') assert.equal(present, false, label);
+  else assert.equal(present, true, label);
+}
+
+async function loginPad(world, roleId) {
+  const hash = 'ab'.repeat(32);
+  const email = `pad-${String(roleId).slice(0, 8)}@efc.picotrack.fr`;
+  world.licenses = [{
+    id: `lic-${String(roleId).slice(0, 8)}`,
+    email,
+    environment_code: 'EFC',
+    role: 'pad_user',
+    roles: [roleId],
+    license_type: 'pad',
+    active: true,
+    password_hash: hash,
+    label: 'Tablette'
+  }];
+  installWorld(world);
+  const login = await callJson(padAuth, { environment_code: 'EFC', login: email, password_hash: hash });
+  assert.equal(login.status, 200, login.payload.error || '');
+  return login.payload.padSessionToken;
+}
+
+test('rôles personnalisés : hidden, read et write sur les vrais handlers', async () => {
+  assert.equal(CUSTOM_ROLE_CASES.length, 63);
+  await withSupabase(async () => {
+    for (const row of CUSTOM_ROLE_CASES) {
+      const label = `${row.level} ${row.resource} ${row.id} ${row.action}`;
+      const world = accessWorld(row.roleId);
+      if (row.action === 'pad-sync') {
+        const token = await loginPad(world, row.roleId);
+        const action = row.resource === 'form'
+          ? { id: 'a1', type: 'form_submission', payload: { formId: row.id, values: { nom: 'pad' } } }
+          : {
+            id: 'a1',
+            type: 'service_instance',
+            payload: {
+              formId: 'form-open',
+              values: { nom: 'pad' },
+              instance: row.resource === 'status'
+                ? { service_id: row.parentId, current_status_id: row.id }
+                : { service_id: row.id }
+            }
+          };
+        const out = await callJson(padSync, { padSessionToken: token, actions: [action] });
+        assert.equal(out.status, 200, `${label} ${out.payload.error || ''}`);
+        const result = (out.payload.results || [])[0];
+        assert.ok(result, label);
+        assert.equal(result.status, row.expect, `${label} ${result.error || ''}`);
+        if (row.expect !== 200 && row.expect !== 'applied') assert.equal(result.ok, false, label);
+        continue;
+      }
+      installWorld(world);
+      if (row.action === 'list' || row.action === 'search') {
+        if (row.resource === 'status' && row.action === 'list') {
+          const instances = await callJson(records, { action: 'list', entity: 'service_instances' });
+          assertListed(instances, row.expect, `inst-${row.id}`, label);
+          const services = await callJson(records, { action: 'list', entity: 'services' });
+          assert.equal(services.status, 200, services.payload.error || '');
+          const parent = services.payload.find(service => service.id === row.parentId);
+          assert.ok(parent, label);
+          const statusIds = (parent.statuses || []).map(status => status.id);
+          assert.equal(statusIds.includes(row.id), row.expect !== 'omit', label);
+          continue;
+        }
+        const entity = row.resource === 'form' ? 'forms' : row.resource === 'service' ? 'services' : 'service_instances';
+        const target = row.resource === 'status' ? `inst-${row.id}` : row.id;
+        const body = { action: 'list', entity };
+        if (row.action === 'search') body.search = `q-${row.id}`;
+        const out = await callJson(records, body);
+        assertListed(out, row.expect, target, label);
+        continue;
+      }
+      if (row.action === 'read') {
+        const entity = row.resource === 'form' ? 'forms' : row.resource === 'service' ? 'services' : 'service_instances';
+        const id = row.resource === 'status' ? `inst-${row.id}` : row.id;
+        const out = await callJson(records, { action: 'list', entity, filters: [{ column: 'id', op: 'eq', value: id }] });
+        assert.equal(out.status, row.expect, `${label} ${out.payload.error || ''}`);
+        if (row.expect === 200) assert.equal(listedIds(out.payload).includes(id), true, label);
+        continue;
+      }
+      if (row.action === 'count') {
+        if (row.resource === 'form') {
+          const out = await callJson(records, { action: 'initial_load', scope: 'forms' });
+          assert.equal(out.status, 200, out.payload.error || '');
+          const count = out.payload.submissionCounts?.[row.id] || 0;
+          assert.equal(count > 0, row.expect !== 'omit', label);
+          const formIds = (out.payload.forms || []).map(form => form.id);
+          assert.equal(formIds.includes(row.id), row.expect !== 'omit', label);
+        } else {
+          const out = await callJson(records, { action: 'initial_load', scope: 'services' });
+          assert.equal(out.status, 200, out.payload.error || '');
+          const instances = out.payload.serviceInstances || [];
+          const present = row.resource === 'status'
+            ? instances.some(inst => inst.current_status_id === row.id)
+            : instances.some(inst => inst.id === `inst-${row.id}`);
+          assert.equal(present, row.expect !== 'omit', label);
+        }
+        continue;
+      }
+      if (row.action === 'save') {
+        const body = row.resource === 'form'
+          ? { action: 'save', entity: 'submissions', record: { form_id: row.id, values: { nom: 'saisie' } } }
+          : row.resource === 'service'
+            ? { action: 'save', entity: 'service_instances', record: { service_id: row.id } }
+            : { action: 'save', entity: 'service_instances', record: { service_id: row.parentId, current_status_id: row.id } };
+        const out = await callJson(records, body);
+        assert.equal(out.status, row.expect, `${label} ${out.payload.error || ''}`);
+        continue;
+      }
+      if (row.action === 'pdf') {
+        const out = await callJson(records, { action: 'export_submission_pdf', id: `sub-${row.id}`, environment_code: 'EFC' });
+        assert.equal(out.status, row.expect, `${label} ${out.payload.error || ''}`);
+      }
+    }
+  });
+});
+
+test('rôles personnalisés : le plus permissif gagne, un rôle vide n’ouvre pas l’écriture', async () => {
+  await withSupabase(async () => {
+    const both = accessWorld([ROLE_H, ROLE_W]);
+    both.app_roles.find(role => role.id === ROLE_W).permissions.access.forms['form-h'] = 'write';
+    installWorld(both);
+    const listed = await callJson(records, { action: 'list', entity: 'forms' });
+    assert.equal(listedIds(listed.payload).includes('form-h'), true);
+    const saved = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-h', values: { nom: 'ok' } } });
+    assert.equal(saved.status, 200, saved.payload.error || '');
+
+    const open = accessWorld([ROLE_R, ROLE_OPEN]);
+    installWorld(open);
+    const readable = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-r' }] });
+    assert.equal(readable.status, 200, readable.payload.error || '');
+    assert.equal(listedIds(readable.payload).includes('form-r'), true);
+    const denied = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-r', values: { nom: 'non' } } });
+    assert.equal(denied.status, 403, denied.payload.error || '');
+
+    const hidden = accessWorld([ROLE_H, ROLE_OPEN]);
+    installWorld(hidden);
+    const still = await callJson(records, { action: 'list', entity: 'forms' });
+    assert.equal(listedIds(still.payload).includes('form-h'), false);
+    const hiddenSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-h', values: { nom: 'non' } } });
+    assert.equal(hiddenSave.status, 404, hiddenSave.payload.error || '');
+
+    const plain = accessWorld([]);
+    installWorld(plain);
+    const untouched = await callJson(records, { action: 'list', entity: 'forms' });
+    assert.equal(listedIds(untouched.payload).includes('form-h'), true);
+    const plainSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-h', values: { nom: 'ok' } } });
+    assert.equal(plainSave.status, 200, plainSave.payload.error || '');
+  });
+});
+
+test('licence lecture : aucune écriture, même avec un rôle en écriture', async () => {
+  await withSupabase(async () => {
+    const world = accessWorld(ROLE_W);
+    world.actor = { ...ACTORS.lecture, roles: [ROLE_W] };
+    world.user_profiles[0] = world.actor;
+    installWorld(world);
+    const out = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-w', values: { nom: 'non' } } });
+    assert.equal(out.status, 403, out.payload.error || '');
+  });
+});
+
+test('app_roles et permissions.access : admins d’environnement seulement', async () => {
+  await withSupabase(async () => {
+    for (const actorName of ['supervision', 'pad', 'operator_supervision']) {
+      installWorld(worldFor(actorName));
+      const refused = await callJson(records, {
+        action: 'save',
+        entity: 'app_roles',
+        record: { name: 'Intrus', nom: 'Intrus', permissions: { access: { forms: { 'form-open': 'hidden' } } } }
+      });
+      assert.equal(refused.status, 403, `${actorName} ${refused.payload.error || ''}`);
+    }
+    const world = worldFor('client_admin');
+    const { writes } = installWorld(world);
+    const saved = await callJson(records, {
+      action: 'save',
+      entity: 'app_roles',
+      record: {
+        name: 'Technicien',
+        nom: 'Technicien',
+        permissions: { manage_users: true, platform_admin: true, access: { forms: { 'form-h': 'read' }, services: {}, statuses: {} } }
+      }
+    });
+    assert.equal(saved.status, 200, saved.payload.error || '');
+    const stored = lastWrite(writes, 'app_roles').body.permissions;
+    assert.equal(stored.manage_users, true);
+    assert.equal(stored.platform_admin, undefined);
+    assert.equal(stored.access.forms['form-h'], 'read');
+  });
+});
+
+test('pad-sync refuse un formulaire masqué et une liste de saisie verrouillée', async () => {
+  await withSupabase(async () => {
+    const hidden = accessWorld(ROLE_H);
+    const token = await loginPad(hidden, ROLE_H);
+    const refused = await callJson(padSync, {
+      padSessionToken: token,
+      actions: [{ id: 'a1', type: 'form_submission', payload: { formId: 'form-h', values: { nom: 'pad' } } }]
+    });
+    assert.equal(refused.status, 200, refused.payload.error || '');
+    assert.equal(refused.payload.results[0].status, 404);
+    assert.equal(refused.payload.results[0].ok, false);
+    assert.equal(hidden.submissions.some(row => row.values && row.values.nom === 'pad'), false);
+
+    const locked = worldFor('supervision');
+    const hash = 'cd'.repeat(32);
+    locked.licenses = [{
+      id: 'lic-locked', email: 'locked@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user',
+      roles: ['pad_user'], license_type: 'pad', active: true, password_hash: hash, label: 'Pad'
+    }];
+    installWorld(locked);
+    const login = await callJson(padAuth, { environment_code: 'EFC', login: 'locked@efc.picotrack.fr', password_hash: hash });
+    assert.equal(login.status, 200, login.payload.error || '');
+    const denied = await callJson(padSync, {
+      padSessionToken: login.payload.padSessionToken,
+      actions: [{ id: 'a2', type: 'form_submission', payload: { formId: 'form-locked', values: { nom: 'pad' } } }]
+    });
+    assert.equal(denied.status, 200, denied.payload.error || '');
+    assert.equal(denied.payload.results[0].status, 403);
+    assert.equal(denied.payload.results[0].ok, false);
+  });
+});
+
+test('créer un formulaire sans id vérifie le droit d’édition', async () => {
+  await withSupabase(async () => {
+    const body = { action: 'save', entity: 'forms', record: { nom: 'Nouveau', permissions: { edit: [MANAGER_ROLE] } } };
+    for (const actorName of ['pad', 'supervision']) {
+      installWorld(worldFor(actorName));
+      const refused = await callJson(records, body);
+      assert.equal(refused.status, 403, `${actorName} ${refused.payload.error || ''}`);
+    }
+    installWorld(worldFor('manager'));
+    const allowed = await callJson(records, body);
+    assert.equal(allowed.status, 200, allowed.payload.error || '');
+  });
+});
+
+test('supprimer un rôle encore assigné est refusé avec le nombre', async () => {
+  await withSupabase(async () => {
+    const world = worldFor('environment_admin', {
+      profiles: [{ id: 'tech-1', email: 'tech@efc.picotrack.fr', role: 'supervision_user', roles: [ROLE_H], environment_code: 'EFC', active: true, license_type: 'supervision' }]
+    });
+    world.app_roles = [
+      { id: ROLE_H, name: 'Masqué', environment_code: 'EFC', active: true, permissions: {} },
+      { id: ROLE_OPEN, name: 'Ouvert', environment_code: 'EFC', active: true, permissions: {} }
+    ];
+    installWorld(world);
+    const refused = await callJson(records, { action: 'delete', entity: 'app_roles', id: ROLE_H });
+    assert.equal(refused.status, 409, refused.payload.error || '');
+    assert.match(refused.payload.error || '', /1 utilisateur/);
+    assert.equal(world.app_roles.some(role => role.id === ROLE_H), true);
+
+    const deleted = await callJson(records, { action: 'delete', entity: 'app_roles', id: ROLE_OPEN });
+    assert.equal(deleted.status, 200, deleted.payload.error || '');
+    assert.equal(world.app_roles.some(role => role.id === ROLE_OPEN), false);
+  });
+});
+
+test('échec fermé : lecture des rôles ou des permissions en erreur → 503 sans écriture', async () => {
+  await withSupabase(async () => {
+    const rolesDown = worldFor('supervision');
+    rolesDown.failAppRoles = true;
+    const failedRoles = installWorld(rolesDown);
+    const refused = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-open', values: { nom: 'ouvert' } } });
+    assert.equal(refused.status, 503, refused.payload.error || '');
+    assert.match(refused.payload.error || '', /indisponible/);
+    assert.equal(failedRoles.writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+
+    const permsDown = worldFor('supervision');
+    permsDown.failPermissions = true;
+    const failedPerms = installWorld(permsDown);
+    const blocked = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-open', values: { nom: 'ouvert' } } });
+    assert.equal(blocked.status, 503, blocked.payload.error || '');
+    assert.equal(failedPerms.writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+  });
+});
+
+test('formulaire sans droit propre : le workflow le plus permissif décide', async () => {
+  function link(world, serviceId, level, roleId) {
+    const role = world.app_roles.find(row => row.id === roleId);
+    role.permissions.access.services[serviceId] = level;
+    world.services.push({ id: serviceId, nom: serviceId, environment_code: 'EFC', actif: true, permissions: {}, form_id: 'form-inherit', statuses: [] });
+  }
+  await withSupabase(async () => {
+    const readOnly = accessWorld(ROLE_R);
+    link(readOnly, 'svc-inherit-r', 'read', ROLE_R);
+    readOnly.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    installWorld(readOnly);
+    const readSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'non' } } });
+    assert.equal(readSave.status, 403, readSave.payload.error || '');
+
+    const hiddenOnly = accessWorld(ROLE_H);
+    link(hiddenOnly, 'svc-inherit-h', 'hidden', ROLE_H);
+    hiddenOnly.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    installWorld(hiddenOnly);
+    const hiddenSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'non' } } });
+    assert.equal(hiddenSave.status, 404, hiddenSave.payload.error || '');
+    const hiddenList = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-inherit' }] });
+    assert.equal(hiddenList.status, 404, hiddenList.payload.error || '');
+
+    const both = accessWorld(ROLE_W);
+    link(both, 'svc-inherit-r', 'read', ROLE_W);
+    link(both, 'svc-inherit-w', 'write', ROLE_W);
+    both.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    installWorld(both);
+    const allowed = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'oui' } } });
+    assert.equal(allowed.status, 200, allowed.payload.error || '');
+    const readFlow = await callJson(records, { action: 'save', entity: 'service_instances', record: { service_id: 'svc-inherit-r' } });
+    assert.equal(readFlow.status, 403, readFlow.payload.error || '');
+    const writeFlow = await callJson(records, { action: 'save', entity: 'service_instances', record: { service_id: 'svc-inherit-w' } });
+    assert.equal(writeFlow.status, 200, writeFlow.payload.error || '');
+
+    const explicit = accessWorld(ROLE_W);
+    explicit.app_roles.find(row => row.id === ROLE_W).permissions.access.forms['form-inherit'] = 'hidden';
+    link(explicit, 'svc-inherit-w', 'write', ROLE_W);
+    explicit.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    installWorld(explicit);
+    const ownEntry = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'non' } } });
+    assert.equal(ownEntry.status, 404, ownEntry.payload.error || '');
+
+    const open = accessWorld([ROLE_H, ROLE_OPEN]);
+    link(open, 'svc-inherit-h', 'hidden', ROLE_H);
+    open.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    installWorld(open);
+    const staysClosed = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'non' } } });
+    assert.equal(staysClosed.status, 404, staysClosed.payload.error || '');
+  });
+});
+
+test('ressource relue : mise à jour, suppression et paramètre falsifié', async () => {
+  await withSupabase(async () => {
+    const read = accessWorld(ROLE_R);
+    installWorld(read);
+    const updated = await callJson(records, { action: 'save', entity: 'submissions', id: 'sub-form-r', record: { values: { nom: 'x' } } });
+    assert.equal(updated.status, 403, updated.payload.error || '');
+    const forged = await callJson(records, { action: 'save', entity: 'submissions', id: 'sub-form-r', record: { form_id: 'form-w', values: { nom: 'x' } } });
+    assert.equal(forged.status, 403, forged.payload.error || '');
+    const removed = await callJson(records, { action: 'delete', entity: 'submissions', id: 'sub-form-r' });
+    assert.equal(removed.status, 403, removed.payload.error || '');
+    assert.equal(read.submissions.some(row => row.id === 'sub-form-r'), true);
+
+    const hidden = accessWorld(ROLE_H);
+    installWorld(hidden);
+    const hiddenUpdate = await callJson(records, { action: 'save', entity: 'submissions', id: 'sub-form-h', record: { values: { nom: 'x' } } });
+    assert.equal(hiddenUpdate.status, 404, hiddenUpdate.payload.error || '');
+    const hiddenDelete = await callJson(records, { action: 'delete', entity: 'submissions', id: 'sub-form-h' });
+    assert.equal(hiddenDelete.status, 404, hiddenDelete.payload.error || '');
+    const hiddenInstance = await callJson(records, { action: 'delete', entity: 'service_instances', id: 'inst-svc-h' });
+    assert.equal(hiddenInstance.status, 404, hiddenInstance.payload.error || '');
+
+    const move = accessWorld(ROLE_W);
+    move.app_roles.find(row => row.id === ROLE_W).permissions.access.forms['form-r'] = 'read';
+    installWorld(move);
+    const moved = await callJson(records, { action: 'save', entity: 'submissions', id: 'sub-form-w', record: { form_id: 'form-r' } });
+    assert.equal(moved.status, 403, moved.payload.error || '');
+
+    const dossier = accessWorld(ROLE_R);
+    dossier.service_instances.push({ id: 'inst-move', service_id: 'svc-st-r', current_status_id: 'st-other-r', environment_code: 'EFC', submission_id: 'sub-move' });
+    installWorld(dossier);
+    const transition = await callJson(records, { action: 'save', entity: 'service_instances', id: 'inst-move', record: { current_status_id: 'st-r' } });
+    assert.equal(transition.status, 403, transition.payload.error || '');
+    const forgedService = await callJson(records, { action: 'save', entity: 'service_instances', id: 'inst-st-r', record: { service_id: 'svc-w', current_status_id: 'st-w' } });
+    assert.equal(forgedService.status, 403, forgedService.payload.error || '');
+    assert.equal(dossier.service_instances.find(row => row.id === 'inst-st-r').service_id, 'svc-st-r');
+    const missingService = await callJson(records, { action: 'save', entity: 'service_instances', record: { current_status_id: 'st-w' } });
+    assert.equal(missingService.status, 400, missingService.payload.error || '');
+
+    const hiddenFlow = accessWorld(ROLE_H);
+    hiddenFlow.service_instances.push({ id: 'inst-move-h', service_id: 'svc-st-h', current_status_id: 'st-other-h', environment_code: 'EFC' });
+    installWorld(hiddenFlow);
+    const toHidden = await callJson(records, { action: 'save', entity: 'service_instances', id: 'inst-move-h', record: { current_status_id: 'st-h' } });
+    assert.equal(toHidden.status, 404, toHidden.payload.error || '');
+
+    const rows = accessWorld(ROLE_R);
+    rows.appointments = [{ id: 'appt-r', form_id: 'form-r', environment_code: 'EFC', field_id: 'f', date: '2026-10-09', start_time: '09:00:00' }];
+    rows.database_rows = [{ id: 'db-r', form_id: 'form-r', environment_code: 'EFC', database_id: 'db', values: {} }];
+    installWorld(rows);
+    const appointment = await callJson(records, { action: 'delete', entity: 'appointments', id: 'appt-r' });
+    const databaseRow = await callJson(records, { action: 'delete', entity: 'database_rows', id: 'db-r' });
+    assert.equal(appointment.status, 403, appointment.payload.error || '');
+    assert.equal(databaseRow.status, 403, databaseRow.payload.error || '');
+  });
+});
+
+test('workflow en lecture seule : saisie, modification, suppression et tablette sont refusées', async () => {
+  await withSupabase(async () => {
+    const world = accessWorld(ROLE_R);
+    world.app_roles.find(row => row.id === ROLE_R).permissions.access.services['svc-inherit-r'] = 'read';
+    world.services.push({ id: 'svc-inherit-r', nom: 'Lecture', environment_code: 'EFC', actif: true, permissions: {}, form_id: 'form-inherit', statuses: [] });
+    world.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    world.submissions.push({ id: 'sub-inherit', form_id: 'form-inherit', values: { nom: 'lu' }, environment_code: 'EFC' });
+    world.service_instances.push({ id: 'inst-inherit', service_id: 'svc-inherit-r', environment_code: 'EFC', submission_id: 'sub-inherit' });
+    const token = await loginPad(world, ROLE_R);
+    const tablet = await callJson(padSync, {
+      padSessionToken: token,
+      actions: [{ id: 'pad-r', type: 'form_submission', payload: { formId: 'form-inherit', values: { nom: 'tablette' } } }]
+    });
+    assert.equal(tablet.status, 200, tablet.payload.error || '');
+    assert.equal(tablet.payload.results[0].status, 403);
+    assert.equal(world.submissions.some(row => row.values && row.values.nom === 'tablette'), false);
+    const changed = await callJson(records, { action: 'save', entity: 'submissions', id: 'sub-inherit', record: { values: { nom: 'mod' } } });
+    const deleted = await callJson(records, { action: 'delete', entity: 'service_instances', id: 'inst-inherit' });
+    assert.equal(changed.status, 403, changed.payload.error || '');
+    assert.equal(deleted.status, 403, deleted.payload.error || '');
+  });
+});
+
+test('pad-sync : un refus n’annule pas le reste du lot', async () => {
+  await withSupabase(async () => {
+    const world = accessWorld(ROLE_H);
+    const token = await loginPad(world, ROLE_H);
+    const out = await callJson(padSync, {
+      padSessionToken: token,
+      actions: [
+        { id: 'ok', type: 'form_submission', payload: { formId: 'form-open', values: { nom: 'garde' } } },
+        { id: 'no', type: 'form_submission', payload: { formId: 'form-h', values: { nom: 'rejete' } } }
+      ]
+    });
+    assert.equal(out.status, 200, out.payload.error || '');
+    assert.equal(out.payload.results[0].status, 'applied');
+    assert.equal(out.payload.results[0].duplicate, false);
+    assert.equal(out.payload.results[1].status, 404);
+    assert.equal(out.payload.results[1].ok, false);
+    assert.equal(world.submissions.some(row => row.values && row.values.nom === 'garde'), true);
+    assert.equal(world.submissions.some(row => row.values && row.values.nom === 'rejete'), false);
+  });
+});
+
+test('pas d’auto-escalade : rôles propres, plafond, manage_users et compte plateforme', async () => {
+  await withSupabase(async () => {
+    const world = accessWorld(ROLE_R);
+    world.user_profiles.push({ id: 'tech-2', email: 'tech2@efc.picotrack.fr', role: 'supervision_user', roles: [], environment_code: 'EFC', active: true, license_type: 'supervision' });
+    const { writes } = installWorld(world);
+    const ownRoles = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'sup-1', record: { roles: [ROLE_W] } });
+    assert.equal(ownRoles.status, 403, ownRoles.payload.error || '');
+    const ownType = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'sup-1', record: { license_type: 'pad' } });
+    assert.equal(ownType.status, 403, ownType.payload.error || '');
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+    const tooMuch = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'tech-2', record: { roles: [ROLE_W] } });
+    assert.equal(tooMuch.status, 403, tooMuch.payload.error || '');
+    const same = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'tech-2', record: { roles: [ROLE_R] } });
+    assert.equal(same.status, 200, same.payload.error || '');
+
+    const admin = worldFor('environment_admin');
+    admin.app_roles = world.app_roles;
+    installWorld(admin);
+    const ownAdmin = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'ea-1', record: { roles: [ROLE_W] } });
+    assert.equal(ownAdmin.status, 403, ownAdmin.payload.error || '');
+
+    const plain = worldFor('supervision');
+    plain.app_roles = world.app_roles;
+    plain.user_profiles.push({ id: 'tech-3', email: 'tech3@efc.picotrack.fr', role: 'supervision_user', roles: [], environment_code: 'EFC', active: true, license_type: 'supervision' });
+    installWorld(plain);
+    const granted = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'tech-3', record: { roles: [ROLE_W] } });
+    assert.equal(granted.status, 200, granted.payload.error || '');
+
+    const gestionnaire = worldFor('gestionnaire');
+    installWorld(gestionnaire);
+    const needsFlag = await callJson(records, { action: 'save', entity: 'user_profiles', record: { email: 'neo@efc.picotrack.fr', role: 'supervision_user', firstname: 'Neo' } });
+    assert.equal(needsFlag.status, 403, needsFlag.payload.error || '');
+
+    const platform = worldFor('supervision', {
+      profiles: [{ id: 'plat-x', email: 'root@picotrack.fr', role: 'super_admin', license_type: 'super_admin', scope: 'platform', environment_code: 'EFC', active: true }]
+    });
+    installWorld(platform);
+    const untouched = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'plat-x', record: { firstname: 'Root' } });
+    assert.equal(untouched.status, 403, untouched.payload.error || '');
+  });
+});
+
+test('rôle assigné désactivé → 409, et la liste ne détaille que ses rôles', async () => {
+  await withSupabase(async () => {
+    const world = worldFor('environment_admin', {
+      profiles: [{ id: 'tech-1', email: 'tech@efc.picotrack.fr', role: 'supervision_user', roles: [ROLE_H], environment_code: 'EFC', active: true, license_type: 'supervision' }]
+    });
+    world.app_roles = [{ id: ROLE_H, name: 'Masqué', environment_code: 'EFC', active: true, permissions: {} }];
+    installWorld(world);
+    const off = await callJson(records, { action: 'save', entity: 'app_roles', id: ROLE_H, record: { active: false } });
+    assert.equal(off.status, 409, off.payload.error || '');
+    assert.match(off.payload.error || '', /1 utilisateur/);
+    assert.equal(world.app_roles.find(role => role.id === ROLE_H).active, true);
+
+    const reader = accessWorld(ROLE_R);
+    installWorld(reader);
+    const listed = await callJson(records, { action: 'list', entity: 'app_roles' });
+    assert.equal(listed.status, 200, listed.payload.error || '');
+    const own = listed.payload.find(role => role.id === ROLE_R);
+    const other = listed.payload.find(role => role.id === ROLE_W);
+    assert.equal(own.permissions.access.forms['form-r'], 'read');
+    assert.equal(other.name, 'Ecriture');
+    assert.equal(other.permissions.access.forms['form-w'], undefined);
+
+    const admin = worldFor('client_admin');
+    admin.app_roles = reader.app_roles;
+    installWorld(admin);
+    const full = await callJson(records, { action: 'list', entity: 'app_roles' });
+    assert.equal(full.payload.find(role => role.id === ROLE_W).permissions.access.forms['form-w'], 'write');
+  });
+});
+
+test('create-user et update-user : rôle ou service illisible → 503, rien n’est écrit', async () => {
+  await withSupabase(async () => {
+    const created = worldFor('supervision');
+    created.failAppRoles = true;
+    const failedCreate = installWorld(created);
+    const create = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'nouveau@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neo' }
+    });
+    assert.equal(create.status, 503, create.payload.error || '');
+    assert.equal(create.payload.error, 'Service indisponible.');
+    assert.equal(failedCreate.writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+
+    const updated = worldFor('supervision', {
+      profiles: [{ id: 'tech-2', email: 'tech2@efc.picotrack.fr', role: 'supervision_user', environment_code: 'EFC', active: true, license_type: 'supervision' }]
+    });
+    updated.failAppRoles = true;
+    const failedUpdate = installWorld(updated);
+    const update = await callJson(functions, { functionName: 'update-user', payload: { id: 'tech-2', firstname: 'Téo' } });
+    assert.equal(update.status, 503, update.payload.error || '');
+    assert.equal(update.payload.error, 'Service indisponible.');
+    assert.equal(failedUpdate.writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+
+    const servicesDown = worldFor('supervision', {
+      profiles: [{ id: 'tech-2', email: 'tech2@efc.picotrack.fr', role: 'supervision_user', environment_code: 'EFC', active: true, license_type: 'supervision' }]
+    });
+    servicesDown.failPermissions = true;
+    const failedServices = installWorld(servicesDown);
+    const updateServices = await callJson(functions, { functionName: 'update-user', payload: { id: 'tech-2', firstname: 'Téo' } });
+    assert.equal(updateServices.status, 503, updateServices.payload.error || '');
+    assert.equal(updateServices.payload.error, 'Service indisponible.');
+    assert.equal(/roles down|permissions down|access is not defined/.test(updateServices.payload.error || ''), false);
+    assert.equal(failedServices.writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+  });
+});
+
+test('liste des rôles : sans manage_users, avec un formulaire masqué, et compte plateforme', async () => {
+  const platformRole = {
+    id: '99999999-9999-4999-8999-999999999999',
+    name: 'Plateforme',
+    environment_code: 'EFC',
+    active: true,
+    permissions: { platform_admin: true, access: { forms: { 'form-h': 'write' }, services: {}, statuses: {} } }
+  };
+  function catalog() {
+    const world = accessWorld(ROLE_W);
+    world.app_roles.push(platformRole);
+    return world.app_roles;
+  }
+  await withSupabase(async () => {
+    const pad = worldFor('pad');
+    pad.actor.roles = [ROLE_R];
+    pad.user_profiles[0] = pad.actor;
+    pad.app_roles = catalog();
+    installWorld(pad);
+    const padList = await callJson(records, { action: 'list', entity: 'app_roles' });
+    assert.equal(padList.status, 200, padList.payload.error || '');
+    assert.deepEqual(padList.payload.map(role => role.id), [ROLE_R]);
+    assert.equal(padList.payload[0].permissions.access.forms['form-r'], 'read');
+    assert.equal(JSON.stringify(padList.payload).includes('Ecriture'), false);
+    assert.equal(JSON.stringify(padList.payload).includes('Plateforme'), false);
+    const padSummary = await callJson(usersApi, { action: 'summary', environment_code: 'EFC' });
+    assert.equal(padSummary.status, 200, padSummary.payload.error || '');
+    assert.deepEqual(padSummary.payload.roles.map(role => role.id), [ROLE_R]);
+
+    const admin = worldFor('environment_admin');
+    admin.actor.roles = [ROLE_W];
+    admin.user_profiles[0] = admin.actor;
+    admin.app_roles = catalog();
+    installWorld(admin);
+    const adminList = await callJson(records, { action: 'list', entity: 'app_roles' });
+    assert.equal(adminList.status, 200, adminList.payload.error || '');
+    const names = adminList.payload.map(role => role.name);
+    assert.equal(names.includes('Ecriture'), true);
+    assert.equal(names.includes('Masqué'), true);
+    assert.equal(names.includes('Plateforme'), false);
+    assert.equal(adminList.payload.some(role => role.permissions && role.permissions.access && role.permissions.access.forms['form-h']), false);
+    assert.equal(adminList.payload.find(role => role.id === ROLE_W).permissions.access.forms['form-w'], 'write');
+    const adminSummary = await callJson(usersApi, { action: 'summary', environment_code: 'EFC' });
+    assert.equal(adminSummary.payload.roles.some(role => role.name === 'Plateforme'), false);
+    assert.equal(adminSummary.payload.roles.some(role => role.permissions && role.permissions.access && role.permissions.access.forms['form-h']), false);
+
+    const platform = worldFor('platform');
+    platform.app_roles = catalog();
+    installWorld(platform);
+    const platformList = await callJson(records, { action: 'list', entity: 'app_roles', environment_code: 'EFC' });
+    assert.equal(platformList.status, 200, platformList.payload.error || '');
+    assert.equal(platformList.payload.find(role => role.name === 'Plateforme').permissions.access.forms['form-h'], 'write');
+    assert.equal(platformList.payload.find(role => role.id === ROLE_H).permissions.access.forms['form-h'], 'hidden');
+    const platformSummary = await callJson(usersApi, { action: 'summary', environment_code: 'EFC' });
+    assert.equal(platformSummary.payload.roles.find(role => role.id === ROLE_H).permissions.access.forms['form-h'], 'hidden');
+  });
+});
+
+test('plafond : le gestionnaire accorde son propre rôle, pas un niveau supérieur', async () => {
+  await withSupabase(async () => {
+    const holder = accessWorld(ROLE_R);
+    holder.app_roles.find(role => role.id === ROLE_R).permissions.access.services['svc-own'] = 'read';
+    holder.services.push({ id: 'svc-own', nom: 'Propre', environment_code: 'EFC', actif: true, permissions: {}, form_id: 'form-own', statuses: [] });
+    holder.forms.push({ id: 'form-own', nom: 'Propre', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    holder.user_profiles.push({ id: 'tech-4', email: 'tech4@efc.picotrack.fr', role: 'supervision_user', roles: [], environment_code: 'EFC', active: true, license_type: 'supervision' });
+    installWorld(holder);
+    const same = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'tech-4', record: { roles: [ROLE_R] } });
+    assert.equal(same.status, 200, same.payload.error || '');
+    const stronger = await callJson(records, { action: 'save', entity: 'user_profiles', id: 'tech-4', record: { roles: [ROLE_W] } });
+    assert.equal(stronger.status, 403, stronger.payload.error || '');
+  });
+});
+
+test('rôle sans clé access : historique conservé, clé invalide et hidden masqués', async () => {
+  const LEGACY = '55555555-5555-4555-8555-555555555555';
+  const PARTIAL = '66666666-6666-4666-8666-666666666666';
+  await withSupabase(async () => {
+    const legacy = accessWorld(LEGACY);
+    legacy.app_roles.push({ id: LEGACY, name: 'Historique', environment_code: 'EFC', active: true, permissions: {} });
+    installWorld(legacy);
+    const kept = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-open' }] });
+    assert.equal(kept.status, 200, kept.payload.error || '');
+    assert.equal(listedIds(kept.payload).includes('form-open'), true);
+    const keptSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-open', values: { nom: 'historique' } } });
+    assert.equal(keptSave.status, 200, keptSave.payload.error || '');
+
+    const invalid = accessWorld(PARTIAL);
+    invalid.app_roles.push({ id: PARTIAL, name: 'Partiel', environment_code: 'EFC', active: true, permissions: { access: { forms: { 'form-open': 'nawak' } } } });
+    installWorld(invalid);
+    const invalidRead = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-open' }] });
+    assert.equal(invalidRead.status, 404, invalidRead.payload.error || '');
+    const invalidSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-open', values: { nom: 'non' } } });
+    assert.equal(invalidSave.status, 404, invalidSave.payload.error || '');
+
+    const hidden = accessWorld(PARTIAL);
+    hidden.app_roles.push({ id: PARTIAL, name: 'Partiel', environment_code: 'EFC', active: true, permissions: { access: { forms: { 'form-open': 'hidden' } } } });
+    installWorld(hidden);
+    const hiddenRead = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-open' }] });
+    assert.equal(hiddenRead.status, 404, hiddenRead.payload.error || '');
+    const hiddenSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-open', values: { nom: 'non' } } });
+    assert.equal(hiddenSave.status, 404, hiddenSave.payload.error || '');
+
+    const partial = accessWorld(PARTIAL);
+    partial.app_roles.push({ id: PARTIAL, name: 'Partiel', environment_code: 'EFC', active: true, permissions: { access: { forms: { 'form-r': 'read' } } } });
+    installWorld(partial);
+    const readable = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-r' }] });
+    assert.equal(readable.status, 200, readable.payload.error || '');
+    const denied = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-r', values: { nom: 'non' } } });
+    assert.equal(denied.status, 403, denied.payload.error || '');
+    const unlisted = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-open' }] });
+    assert.equal(unlisted.status, 404, unlisted.payload.error || '');
+    const unlistedSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-w', values: { nom: 'non' } } });
+    assert.equal(unlistedSave.status, 404, unlistedSave.payload.error || '');
+
+    const mixed = accessWorld([LEGACY, PARTIAL]);
+    mixed.app_roles.push({ id: LEGACY, name: 'Historique', environment_code: 'EFC', active: true, permissions: {} });
+    mixed.app_roles.push({ id: PARTIAL, name: 'Partiel', environment_code: 'EFC', active: true, permissions: { access: { forms: { 'form-r': 'read', 'form-h': 'hidden' } } } });
+    installWorld(mixed);
+    const stillOpen = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-open', values: { nom: 'mixte' } } });
+    assert.equal(stillOpen.status, 200, stillOpen.payload.error || '');
+    const stillHidden = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-h' }] });
+    assert.equal(stillHidden.status, 200, stillHidden.payload.error || '');
+    const readRaised = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-r', values: { nom: 'mixte' } } });
+    assert.equal(readRaised.status, 200, readRaised.payload.error || '');
+  });
+});
+
+test('liste et sauvegarde des rôles : catalogue complet, puis filtre, jamais le détail masqué', async () => {
+  const MASK = '77777777-7777-4777-8777-777777777777';
+  const ECRIT = '88888888-8888-4888-8888-888888888888';
+  const FLOW = '99999999-9999-4999-8999-999999999991';
+  await withSupabase(async () => {
+    const admin = worldFor('client_admin');
+    admin.actor.roles = [MASK];
+    admin.user_profiles[0] = admin.actor;
+    admin.services = [{ id: '11', nom: 'Flux', environment_code: 'EFC', actif: true, permissions: {}, form_id: '4', statuses: [] }];
+    admin.app_roles = [
+      { id: MASK, name: 'Masque', environment_code: 'EFC', active: true, permissions: { access: { forms: { '4': 'hidden' }, services: { '11': 'hidden' } } } },
+      { id: ECRIT, name: 'EcritFH', environment_code: 'EFC', active: true, description: 'avant', permissions: { access: { forms: { '4': 'write' } } } },
+      { id: FLOW, name: 'MasqueW', environment_code: 'EFC', active: true, permissions: { access: { services: { '11': 'write' } } } },
+      { id: '99999999-9999-4999-8999-999999999999', name: 'Plateforme', environment_code: 'EFC', active: true, permissions: { platform_admin: true, access: { forms: { '4': 'write' } } } }
+    ];
+    installWorld(admin);
+    const byId = await callJson(records, { action: 'list', entity: 'app_roles', filters: [{ column: 'id', op: 'eq', value: ECRIT }] });
+    assert.equal(byId.status, 200, byId.payload.error || '');
+    assert.equal(byId.payload.length, 1);
+    assert.equal(byId.payload[0].permissions.access.forms['4'], undefined);
+    const byName = await callJson(records, { action: 'list', entity: 'app_roles', filters: [{ column: 'name', op: 'eq', value: 'MasqueW' }] });
+    assert.equal(byName.status, 200, byName.payload.error || '');
+    assert.equal(byName.payload[0].permissions.access.services['11'], undefined);
+    const narrow = await callJson(records, { action: 'list', entity: 'app_roles', filters: [{ column: 'id', op: 'eq', value: ECRIT }], select: 'id,name' });
+    assert.equal(narrow.status, 200, narrow.payload.error || '');
+    assert.equal(narrow.payload[0].id, ECRIT);
+    assert.equal(Object.prototype.hasOwnProperty.call(narrow.payload[0], 'permissions'), false);
+    const hiddenRole = await callJson(records, { action: 'list', entity: 'app_roles', filters: [{ column: 'name', op: 'eq', value: 'Plateforme' }] });
+    assert.equal(hiddenRole.status, 404, hiddenRole.payload.error || '');
+    assert.equal(JSON.stringify(hiddenRole.payload).includes('write'), false);
+
+    const saved = await callJson(records, { action: 'save', entity: 'app_roles', id: ECRIT, record: { description: 'note' } });
+    assert.equal(saved.status, 200, saved.payload.error || '');
+    assert.equal(saved.payload[0].description, 'note');
+    assert.equal(saved.payload[0].permissions.access.forms['4'], undefined);
+    assert.equal(admin.app_roles.find(role => role.id === ECRIT).description, 'note');
+
+    const pad = worldFor('pad');
+    pad.actor.roles = [MASK];
+    pad.user_profiles[0] = pad.actor;
+    pad.app_roles = admin.app_roles;
+    installWorld(pad);
+    const foreign = await callJson(records, { action: 'list', entity: 'app_roles', filters: [{ column: 'id', op: 'eq', value: ECRIT }] });
+    assert.equal(foreign.status, 404, foreign.payload.error || '');
+    assert.equal(JSON.stringify(foreign.payload).includes('EcritFH'), false);
+
+    const down = worldFor('client_admin');
+    down.failAppRoles = true;
+    installWorld(down);
+    const unavailable = await callJson(records, { action: 'list', entity: 'app_roles' });
+    assert.equal(unavailable.status, 503, unavailable.payload.error || '');
+    assert.equal(unavailable.payload.error, 'Service indisponible.');
+  });
 });
