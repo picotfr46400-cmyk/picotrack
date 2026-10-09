@@ -1,5 +1,7 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
 const { normalizeLicenseType, seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
+const { normalizeEmail, isValidEmail, assertWritableEmail } = require('./_email');
+const { shortLoginKey, conflictingShortLogin, shortLoginRpcBody, SHORT_LOGIN_RPC } = require('./_short-login');
 
 const INTERNAL_FUNCTIONS = new Set([
   'list-users',
@@ -25,12 +27,8 @@ function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
 }
 
-function normalizeEmail(value) {
-  return cleanString(value, 320).toLowerCase();
-}
-
 function licenseEmailKey(value) {
-  return String(value ?? '').replace(/\s+/g, '').toLowerCase();
+  return normalizeEmail(value);
 }
 
 function normalizeEnvironmentCode(value) {
@@ -105,7 +103,8 @@ async function findAuthUserByEmail(url, serviceRole, email) {
   for (let page = 1; page <= pagesToCheck; page += 1) {
     const payload = await supabaseFetch(url, serviceRole, `/auth/v1/admin/users?page=${page}&per_page=100`, { method: 'GET' });
     const users = Array.isArray(payload?.users) ? payload.users : Array.isArray(payload) ? payload : [];
-    const found = users.find(u => normalizeEmail(u.email) === email);
+    const wanted = normalizeEmail(email);
+    const found = users.find(u => normalizeEmail(u.email) === wanted);
     if (found) return found;
     if (!users.length || users.length < 100) break;
   }
@@ -113,10 +112,7 @@ async function findAuthUserByEmail(url, serviceRole, email) {
 }
 
 async function inviteAuthUser(url, serviceRole, payload) {
-  const email = normalizeEmail(payload.email || payload.login_user || payload.username);
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new Error('Adresse e-mail invalide pour la création du compte Supervision.');
-  }
+  const email = assertWritableEmail(payload.email || payload.login_user || payload.username);
 
   const redirectTo = cleanString(payload.redirect_to || '', 800);
   const userMetadata = {
@@ -155,6 +151,9 @@ async function upsertUserProfile(url, serviceRole, authUser, payload, options = 
   const clientSent = key => Object.prototype.hasOwnProperty.call(requested, key);
   const environmentCode = normalizeEnvironmentCode(payload.environment_code || 'DEMO');
   const email = normalizeEmail(payload.email || authUser.email);
+  if (email && !isValidEmail(email) && Object.prototype.hasOwnProperty.call(requested, 'email')) {
+    assertWritableEmail(requested.email);
+  }
   const profile = {
     id: authUser.id,
     email,
@@ -214,7 +213,7 @@ async function insertLicenseBestEffort(url, serviceRole, payload) {
     license_key: cleanString(payload.license_key || ''),
     license_type: cleanString(payload.license_type || 'supervision'),
     label: cleanString(payload.label || ''),
-    email: normalizeEmail(payload.email || payload.login_user || payload.username || ''),
+    email: assertWritableEmail(payload.email || payload.login_user || payload.username || ''),
     role: cleanString(payload.role || 'supervision_user'),
     roles: safeArray(payload.roles),
     scope: cleanString(payload.scope || 'environment'),
@@ -234,10 +233,8 @@ async function insertLicenseBestEffort(url, serviceRole, payload) {
 
 
 async function createAuthUserWithPassword(url, serviceRole, payload) {
-  const login = normalizeEmail(payload.email || '') || normalizeEmail(payload.login_user || payload.username || '');
-  const email = normalizeEmail(payload.email || login);
+  const email = assertWritableEmail(payload.email || payload.login_user || payload.username || '');
   const password = String(payload.password || payload.user_password || payload.plain_password || '').trim();
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw Object.assign(new Error('Adresse e-mail invalide pour la création du compte.'), { status: 400 });
   if (!password || password.length < 8) throw Object.assign(new Error('Le mot de passe doit contenir au moins 8 caractères.'), { status: 400 });
 
   const existing = await findAuthUserByEmail(url, serviceRole, email);
@@ -718,6 +715,9 @@ async function handleListUsers(req, url, serviceRole, payload) {
     };
     if (showLicenseKey) normalized.license_key = row?.license_key || null;
     if (showPermissions) normalized.resolved_permissions = safeObject(row?.resolved_permissions);
+    if (String(row?.email ?? '') !== '' && String(row?.email ?? '') !== normalizeEmail(row?.email || '')) {
+      normalized.email_unnormalized = true;
+    }
     return normalized;
   }
 
@@ -728,8 +728,10 @@ async function handleListUsers(req, url, serviceRole, payload) {
     if (!row || isPlatform(row)) return;
     const normalized = normalizeUserRow(row, source);
     const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
+    if (!normalized.email_unnormalized) {
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+    }
     rows.push(normalized);
   }
 
@@ -776,13 +778,51 @@ async function resolveCreateTenantId(url, serviceRole, environmentCode, requeste
   return null;
 }
 
+async function readShortLoginPage(url, serviceRole, environmentCode, rawLogin) {
+  let page;
+  try {
+    page = await supabaseFetch(url, serviceRole, `/rest/v1/${SHORT_LOGIN_RPC}`, {
+      method: 'POST',
+      body: shortLoginRpcBody(environmentCode, rawLogin)
+    });
+  } catch (_) {
+    throw Object.assign(new Error('Lecture des identifiants impossible.'), { status: 503 });
+  }
+  if (!Array.isArray(page) || page.length > 2) {
+    throw Object.assign(new Error('Lecture des identifiants impossible.'), { status: 503 });
+  }
+  return page;
+}
+
+async function assertShortLoginsAvailable(url, serviceRole, environmentCode, keys, exceptId) {
+  const wanted = [...new Set((keys || []).map(shortLoginKey).filter(Boolean))];
+  if (!wanted.length) return;
+  const rows = [];
+  const seen = new Set();
+  for (const key of wanted) {
+    for (const row of await readShortLoginPage(url, serviceRole, environmentCode, key)) {
+      if (!row?.id || seen.has(String(row.id))) continue;
+      seen.add(String(row.id));
+      rows.push(row);
+    }
+  }
+  if (conflictingShortLogin(rows, environmentCode, wanted, exceptId)) {
+    throw Object.assign(new Error('Cet identifiant est déjà utilisé.'), { status: 409 });
+  }
+}
+
 async function handleCreateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const profile = await requireUserCreator(req, url, serviceRole);
   const catalog = isPlatformOperatorProfile(profile) ? [] : await loadActiveAppRoles(url, serviceRole, profileEnvironmentCode(profile));
   const safePayload = clampAssignedPrivileges(payload, profile, { catalog, existingRoles: [] });
   const environmentCode = assertSameEnvironmentOrPlatform(profile, safePayload.environment_code || safePayload.active_env || profileEnvironmentCode(profile));
+  const email = assertWritableEmail(safePayload.email || payload.email || '');
+  safePayload.email = email;
+  const loginUser = cleanString(safePayload.login_user || safePayload.username || email);
+  const username = cleanString(safePayload.username || safePayload.login_user || email);
   const quota = await assertQuotaAvailable(url, serviceRole, { ...safePayload, environment_code: environmentCode }, null);
+  await assertShortLoginsAvailable(url, serviceRole, environmentCode, [loginUser, username], null);
   const storedLicenseType = normalizePrivilegeToken(safePayload.license_type) ? safePayload.license_type : quota.licenseType;
   const creating = { ...safePayload, license_type: storedLicenseType, environment_code: quota.environmentCode };
   const authUser = await createAuthUserWithPassword(url, serviceRole, creating);
@@ -840,8 +880,20 @@ function companionLicenseSnapshot(license) {
   return {
     id: license.id,
     environment_code: normalizeEnvironmentCode(license.environment_code),
-    active: license.active !== false
+    active: license.active !== false,
+    email: license.email ?? null
   };
+}
+
+function assertReactivationLicenseType(profile, licenses) {
+  const expected = seatLicenseType(profile);
+  for (const license of licenses) {
+    const explicit = String(license?.license_type ?? '').trim();
+    if (!explicit) continue;
+    if (normalizeLicenseType(license.license_type) !== expected) {
+      throw Object.assign(new Error('Type de licence différent du profil'), { status: 409 });
+    }
+  }
 }
 
 function describePublicLicense(license) {
@@ -868,6 +920,37 @@ function licenseListStatus(value) {
   return 'active';
 }
 
+async function findProfileByNormalizedEmail(url, serviceRole, email, environmentCode) {
+  const wanted = normalizeEmail(email);
+  if (!wanted) return null;
+  const env = normalizeEnvironmentCode(environmentCode);
+  const path = env && env !== 'GLOBAL'
+    ? `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=*&limit=1000`
+    : `/rest/v1/user_profiles?select=*&limit=1000`;
+  const rows = await supabaseFetch(url, serviceRole, path, { method: 'GET' }).catch(() => []);
+  return (Array.isArray(rows) ? rows : []).find(row => {
+    if (normalizeEmail(row?.email) !== wanted) return false;
+    if (!env || env === 'GLOBAL') return true;
+    return normalizeEnvironmentCode(row.environment_code) === env;
+  }) || null;
+}
+
+async function extinguishMatchingLicenses(url, serviceRole, email, environmentCode) {
+  const wanted = normalizeEmail(email);
+  const env = normalizeEnvironmentCode(environmentCode);
+  if (!wanted || !env || env === 'GLOBAL') return;
+  const rows = await listEnvironmentLicenses(url, serviceRole, env);
+  const matches = rows.filter(row => {
+    if (!row?.id) return false;
+    if (normalizeEnvironmentCode(row.environment_code) !== env) return false;
+    if (isPlatformOperatorProfile(row)) return false;
+    return normalizeEmail(row.email) === wanted;
+  });
+  for (const row of matches) {
+    await patchLicenseActive(url, serviceRole, row, false);
+  }
+}
+
 async function listEnvironmentLicenses(url, serviceRole, environmentCode) {
   try {
     const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&limit=1000`, { method: 'GET' });
@@ -883,6 +966,7 @@ async function prepareCompanionLicenseChange(url, serviceRole, profile, activati
   const requestedId = cleanString(options.licenseId || '', 80);
   if (activating && requestedId) {
     const chosen = await resolveReactivationLicense(url, serviceRole, profile, requestedId);
+    assertReactivationLicenseType(profile, [chosen]);
     return [companionLicenseSnapshot(chosen)];
   }
   const environmentCode = normalizeEnvironmentCode(profile?.environment_code || '');
@@ -907,8 +991,12 @@ async function prepareCompanionLicenseChange(url, serviceRole, profile, activati
     }
     return all;
   }
-  if (linked.length) return linked.map(companionLicenseSnapshot);
+  if (linked.length) {
+    assertReactivationLicenseType(profile, linked);
+    return linked.map(companionLicenseSnapshot);
+  }
   if (byEmail.length > 1) throw ambiguousLicenseError(byEmail);
+  if (byEmail.length) assertReactivationLicenseType(profile, byEmail);
   return byEmail.map(companionLicenseSnapshot);
 }
 
@@ -942,12 +1030,17 @@ async function assertExplicitLicenseQuota(url, serviceRole, account, license, ex
   }, excludeId);
 }
 
-async function patchLicenseActive(url, serviceRole, license, active) {
+async function patchLicenseActive(url, serviceRole, license, active, options = {}) {
   const environmentCode = normalizeEnvironmentCode(license.environment_code);
+  const body = { active: active === true };
+  if (license.email != null && String(license.email) !== '') {
+    if (options.restoreEmail) body.email = license.email;
+    else if (isValidEmail(license.email)) body.email = normalizeEmail(license.email);
+  }
   const updated = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(license.id)}&environment_code=eq.${encodeURIComponent(environmentCode)}`, {
     method: 'PATCH',
     prefer: 'return=representation',
-    body: { active: active === true }
+    body
   });
   if (!Array.isArray(updated) || !updated.length) {
     throw Object.assign(new Error('Mise à jour de la licence impossible.'), { status: 503 });
@@ -989,7 +1082,7 @@ async function commitCompanionLicenseChange(url, serviceRole, profileSnapshot, l
     }
   } catch (_) {
     for (const license of applied.reverse()) {
-      await patchLicenseActive(url, serviceRole, license, license.active === true).catch(() => {});
+      await patchLicenseActive(url, serviceRole, license, license.active === true, { restoreEmail: true }).catch(() => {});
     }
     await restoreUserProfileSnapshot(url, serviceRole, profileSnapshot).catch(() => {});
     throw Object.assign(new Error('Mise à jour de la licence impossible.'), { status: 503 });
@@ -1019,17 +1112,21 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'role')) merged.role = current.role;
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'roles')) merged.roles = current.roles;
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'active')) merged.active = current.active;
+  if (Object.prototype.hasOwnProperty.call(payload, 'email')) merged.email = assertWritableEmail(payload.email);
+  const nextLogin = Object.prototype.hasOwnProperty.call(payload, 'login_user') ? cleanString(payload.login_user) : current.login_user;
+  const nextUsername = Object.prototype.hasOwnProperty.call(payload, 'username') ? cleanString(payload.username) : current.username;
+  await assertShortLoginsAvailable(url, serviceRole, merged.environment_code || current.environment_code, [nextLogin, nextUsername], current.id);
   const turningOn = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === true && current.active === false;
   const turningOff = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === false && current.active !== false;
   const requestedLicenseId = cleanString(payload.license_id, 80);
-  const explicitLicense = turningOn && requestedLicenseId
-    ? await resolveReactivationLicense(url, serviceRole, current, requestedLicenseId)
-    : null;
-  if (updateAddsActiveSeat(current, merged)) await assertQuotaAvailable(url, serviceRole, merged, id);
-  if (explicitLicense) await assertExplicitLicenseQuota(url, serviceRole, merged, explicitLicense, id);
   const companions = (turningOn || turningOff)
     ? await prepareCompanionLicenseChange(url, serviceRole, current, turningOn, { licenseId: turningOn ? requestedLicenseId : '' })
     : null;
+  if (updateAddsActiveSeat(current, merged)) await assertQuotaAvailable(url, serviceRole, merged, id);
+  if (turningOn && requestedLicenseId) {
+    const explicitLicense = await resolveReactivationLicense(url, serviceRole, current, requestedLicenseId);
+    await assertExplicitLicenseQuota(url, serviceRole, merged, explicitLicense, id);
+  }
   const profileSnapshot = snapshotUserProfile(current);
   await updateAuthUserPassword(url, serviceRole, id, payload);
   const profile = await upsertUserProfile(url, serviceRole, { id, email: current.email || payload.email }, merged, { partial: true, requested: payload });
@@ -1126,13 +1223,9 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
   const lookupEnv = normalizeEnvironmentCode(licenseRow?.environment_code || requestedEnv);
 
   if (!current && lookupEmail) {
-    const profilePaths = [];
-    if (lookupEnv) profilePaths.push(`/rest/v1/user_profiles?email=eq.${encodeURIComponent(lookupEmail)}&environment_code=eq.${encodeURIComponent(lookupEnv)}&select=*&limit=1`);
-    if (!licenseRow?.id) profilePaths.push(`/rest/v1/user_profiles?email=eq.${encodeURIComponent(lookupEmail)}&select=*&limit=1`);
-    for (const path of profilePaths) {
-      const rows = await supabaseFetch(url, serviceRole, path, { method: 'GET' }).catch(() => []);
-      current = Array.isArray(rows) ? rows[0] : null;
-      if (current?.id) break;
+    current = await findProfileByNormalizedEmail(url, serviceRole, lookupEmail, lookupEnv);
+    if (!current?.id && !licenseRow?.id) {
+      current = await findProfileByNormalizedEmail(url, serviceRole, lookupEmail, '');
     }
   }
 
@@ -1188,6 +1281,10 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
     throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
   }
 
+  if (current?.id && deleteEmail && deleteEnv) {
+    await extinguishMatchingLicenses(url, serviceRole, deleteEmail, deleteEnv);
+  }
+
   if (current?.id) {
     await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(current.id)}`, {
       method: 'DELETE',
@@ -1197,17 +1294,10 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
     await supabaseFetch(url, serviceRole, `/auth/v1/admin/users/${encodeURIComponent(current.id)}`, {
       method: 'DELETE'
     }).catch(() => null);
-  }
-
-  if (licenseRow?.id) {
+  } else if (licenseRow?.id) {
     const licenseEnv = normalizeEnvironmentCode(licenseRow.environment_code);
     if (!licenseEnv) throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
     await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseRow.id)}&environment_code=eq.${encodeURIComponent(licenseEnv)}`, {
-      method: 'DELETE',
-      prefer: 'return=minimal'
-    }).catch(() => null);
-  } else if (deleteEmail && deleteEnv) {
-    await supabaseFetch(url, serviceRole, `/rest/v1/licenses?email=eq.${encodeURIComponent(deleteEmail)}&environment_code=eq.${encodeURIComponent(deleteEnv)}`, {
       method: 'DELETE',
       prefer: 'return=minimal'
     }).catch(() => null);
@@ -1285,4 +1375,6 @@ handler.commitCompanionLicenseChange = commitCompanionLicenseChange;
 handler.snapshotUserProfile = snapshotUserProfile;
 handler.resolveReactivationLicense = resolveReactivationLicense;
 handler.assertExplicitLicenseQuota = assertExplicitLicenseQuota;
+handler.licenseEmailKey = licenseEmailKey;
+handler.assertShortLoginsAvailable = assertShortLoginsAvailable;
 module.exports = handler;

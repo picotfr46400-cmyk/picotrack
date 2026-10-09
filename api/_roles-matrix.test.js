@@ -16,6 +16,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 const functions = require('./function');
 const records = require('./records');
 const padAuth = require('./pad-auth');
@@ -25,6 +27,7 @@ const appointmentsApi = require('./appointments');
 const authApi = require('./auth');
 const sendMail = require('./send-mail');
 const { seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
+const { resetRateLimits } = require('./_server-supabase');
 
 const SUPA = 'https://roles-matrix.supabase.co';
 const MANAGER_ROLE = '67baf9e4-8fe3-40f4-bebd-d2c8814a43b7';
@@ -202,6 +205,15 @@ function installWorld(world) {
     }
     if (u.includes('/auth/v1/token')) {
       return jsonResponse(200, { access_token: 'jwt', user: { id: world.actor.id, email: world.actor.email } });
+    }
+    if (method === 'POST' && u.includes('/rpc/match_short_logins')) {
+      const env = String(body?.p_environment_code || '').trim().toUpperCase();
+      const key = String(body?.p_login || '').trim().toLowerCase();
+      const found = tableOf(world, 'user_profiles').filter(row => {
+        if (String(row?.environment_code || '').trim().toUpperCase() !== env) return false;
+        return [row?.login_user, row?.username].some(value => String(value ?? '').trim().toLowerCase() === key && key);
+      }).sort((a, b) => String(a.id).localeCompare(String(b.id))).slice(0, 2);
+      return jsonResponse(200, found);
     }
     if (u.includes('api.resend.com')) return jsonResponse(200, { id: 'mail-1' });
     if (method === 'GET' && world.failReadId && decodeURIComponent(u).includes(`id=eq.${world.failReadId}`)) {
@@ -1011,8 +1023,8 @@ test('B6 : désactiver puis réactiver remet la licence, et refuse plafond ou do
     const world = worldFor('supervision', {
       profiles: [target],
       licenses: [
-        { id: 'lic-space', email: 'TERRAIN @EFC.PICOTRACK.FR', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true },
-        { id: 'lic-acme', email: 'TERRAIN @EFC.PICOTRACK.FR', environment_code: 'ACME', role: 'pad_user', license_type: 'pad', active: true }
+        { id: 'lic-space', email: ' TERRAIN@EFC.PICOTRACK.FR ', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true },
+        { id: 'lic-acme', email: ' TERRAIN@EFC.PICOTRACK.FR ', environment_code: 'ACME', role: 'pad_user', license_type: 'pad', active: true }
       ]
     });
     installWorld(world);
@@ -1268,34 +1280,49 @@ test('licences inactives : filtre d’environnement, suppression par id, license
 
   await withSupabase(async () => {
     const holder = { id: 'pad-full', email: 'full@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true };
-    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: false };
+    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: false };
     const world = worldFor('supervision', {
       profiles: [holder, target],
       licenses: [
+        { id: 'lic-sup', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'supervision_user', license_type: 'supervision', active: false },
         { id: 'lic-pad', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false }
       ],
       limits: [{ id: 'lim-efc', environment_code: 'EFC', supervision_limit: 10, pad_limit: 1, lecture_limit: 5 }]
     });
-    const { writes } = installWorld(world);
-    const ceiling = await callJson(functions, {
+    const { writes, calls } = installWorld(world);
+    const mismatch = await callJson(functions, {
       functionName: 'update-user',
-      payload: { id: 'pad-duo', active: true, license_id: 'lic-pad' }
+      payload: { id: 'pad-duo', active: true, license_id: 'lic-sup' }
     });
-    assert.equal(ceiling.status, 403, ceiling.payload.error || '');
-    assert.match(ceiling.payload.error || '', /PAD Terrain/);
+    assert.equal(mismatch.status, 409, mismatch.payload.error || '');
+    assert.match(mismatch.payload.error || '', /Type de licence différent du profil/);
     assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
-    assert.equal(world.licenses.find(row => row.id === 'lic-pad').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-sup').active, false);
     assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+    assert.equal(calls.some(call => call.url.includes('environment_license_limits')), false);
+    writes.length = 0;
+    calls.length = 0;
     const viaRecords = await callJson(records, {
       action: 'save',
       entity: 'user_profiles',
       id: 'pad-duo',
-      record: { active: true, license_id: 'lic-pad' }
+      record: { active: true, license_id: 'lic-sup' }
     });
-    assert.equal(viaRecords.status, 403, viaRecords.payload.error || '');
+    assert.equal(viaRecords.status, 409, viaRecords.payload.error || '');
+    assert.match(viaRecords.payload.error || '', /Type de licence différent du profil/);
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-sup').active, false);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+    assert.equal(calls.some(call => call.url.includes('environment_license_limits')), false);
+
+    const sameType = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'pad-duo', active: true, license_id: 'lic-pad' }
+    });
+    assert.equal(sameType.status, 403, sameType.payload.error || '');
+    assert.match(sameType.payload.error || '', /PAD Terrain/);
     assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
     assert.equal(world.licenses.find(row => row.id === 'lic-pad').active, false);
-    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
   });
 
   await withSupabase(async () => {
@@ -1342,4 +1369,719 @@ test('licences inactives : filtre d’environnement, suppression par id, license
     assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
     assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
   });
+});
+
+test('e-mail normalisé : un doublon espacé se rallume, se supprime, puis pad-auth accepte les majuscules', async () => {
+  const hash = 'cd'.repeat(32);
+  await withSupabase(async () => {
+    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: false };
+    const world = worldFor('supervision', {
+      profiles: [target],
+      licenses: [
+        { id: 'lic-raw', email: ' TERRAIN@EFC.PICOTRACK.FR ', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false, label: 'Brut', password_hash: hash },
+        { id: 'lic-copy', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false, label: 'Copie', password_hash: hash }
+      ]
+    });
+    installWorld(world);
+    const listed = await callJson(usersApi, { action: 'summary', environment_code: 'EFC', license_status: 'inactive' });
+    assert.equal(listed.status, 200, listed.payload.error || '');
+    const raw = listed.payload.rows.find(row => row.id === 'lic-raw');
+    assert.equal(raw.email_unnormalized, true);
+    assert.equal(listed.payload.rows.find(row => row.id === 'lic-copy').email_unnormalized, undefined);
+
+    const removed = await callJson(functions, { functionName: 'delete-user', payload: { id: 'lic-copy', user_id: 'lic-copy' } });
+    assert.equal(removed.status, 200, removed.payload.error || '');
+    assert.equal(world.licenses.some(row => row.id === 'lic-copy'), false);
+    assert.equal(world.licenses.some(row => row.id === 'lic-raw'), true);
+    assert.equal(world.user_profiles.some(row => row.id === 'pad-duo'), true);
+
+    const on = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'pad-duo', active: true, license_id: 'lic-raw' }
+    });
+    assert.equal(on.status, 200, on.payload.error || '');
+    const woken = world.licenses.find(row => row.id === 'lic-raw');
+    assert.equal(woken.active, true);
+    assert.equal(woken.email, 'terrain@efc.picotrack.fr');
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, true);
+
+    const upper = await callJson(padAuth, { environment_code: 'EFC', login: 'TERRAIN@EFC.PICOTRACK.FR', password_hash: hash });
+    assert.equal(upper.status, 200, upper.payload.error || '');
+    const edged = await callJson(padAuth, { environment_code: 'EFC', login: ' terrain@efc.picotrack.fr ', password_hash: hash });
+    assert.equal(edged.status, 200, edged.payload.error || '');
+    const internalSpace = await callJson(padAuth, { environment_code: 'EFC', login: 'terrain @efc.picotrack.fr', password_hash: hash });
+    assert.equal(internalSpace.status, 401, internalSpace.payload.error || '');
+    assert.equal((internalSpace.payload.error || '').includes('e-mail invalide'), false);
+  });
+});
+
+test('type effectif : NULL et nomade réactivent un PAD, un type explicite différent répond 409', async () => {
+  await withSupabase(async () => {
+    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: false };
+    const world = worldFor('supervision', {
+      profiles: [target],
+      licenses: [
+        { id: 'lic-null', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: null, active: false },
+        { id: 'lic-nomade', email: 'autre@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'nomade', active: false }
+      ],
+      limits: [{ id: 'lim-efc', environment_code: 'EFC', supervision_limit: 10, pad_limit: 5, lecture_limit: 5 }]
+    });
+    const { writes, calls } = installWorld(world);
+    const blank = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'pad-duo', active: true, license_id: 'lic-null' }
+    });
+    assert.equal(blank.status, 200, blank.payload.error || '');
+    assert.equal(world.licenses.find(row => row.id === 'lic-null').active, true);
+    assert.equal(calls.some(call => call.url.includes('environment_license_limits') && call.method !== 'GET'), false);
+  });
+
+  await withSupabase(async () => {
+    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: false };
+    const world = worldFor('supervision', {
+      profiles: [target],
+      licenses: [
+        { id: 'lic-nomade', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'nomade', active: false }
+      ],
+      limits: [{ id: 'lim-efc', environment_code: 'EFC', supervision_limit: 10, pad_limit: 5, lecture_limit: 5 }]
+    });
+    installWorld(world);
+    const nomade = await callJson(records, {
+      action: 'save', entity: 'user_profiles', id: 'pad-duo', record: { active: true, license_id: 'lic-nomade' }
+    });
+    assert.equal(nomade.status, 200, nomade.payload.error || '');
+    assert.equal(world.licenses.find(row => row.id === 'lic-nomade').active, true);
+  });
+
+  await withSupabase(async () => {
+    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: false };
+    const world = worldFor('supervision', {
+      profiles: [target],
+      licenses: [
+        { id: 'lic-sup', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'supervision_user', license_type: 'supervision', active: false }
+      ]
+    });
+    const { writes, calls } = installWorld(world);
+    const mismatch = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'pad-duo', active: true }
+    });
+    assert.equal(mismatch.status, 409, mismatch.payload.error || '');
+    assert.match(mismatch.payload.error || '', /Type de licence différent du profil/);
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-sup').active, false);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+    assert.equal(calls.some(call => call.url.includes('environment_license_limits')), false);
+  });
+});
+
+test('e-mail sale : suppression et désactivation éteignent la licence, pad-auth refuse', async () => {
+  const hash = 'ef'.repeat(32);
+  const profileId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab';
+  await withSupabase(async () => {
+    const target = { id: profileId, email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true };
+    const world = worldFor('supervision', {
+      profiles: [target],
+      licenses: [
+        { id: 'lic-dirty', email: ' TERRAIN@EFC.PICOTRACK.FR ', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true, password_hash: hash },
+        { id: 'lic-acme', email: ' TERRAIN@EFC.PICOTRACK.FR ', environment_code: 'ACME', role: 'pad_user', license_type: 'pad', active: true, password_hash: hash }
+      ]
+    });
+    installWorld(world);
+    const off = await callJson(functions, { functionName: 'update-user', payload: { id: profileId, active: false } });
+    assert.equal(off.status, 200, off.payload.error || '');
+    assert.equal(world.licenses.find(row => row.id === 'lic-dirty').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-acme').active, true);
+    const blocked = await callJson(padAuth, { environment_code: 'EFC', login: 'TERRAIN@EFC.PICOTRACK.FR', password_hash: hash });
+    assert.equal(blocked.status, 401, blocked.payload.error || '');
+  });
+
+  await withSupabase(async () => {
+    const target = { id: profileId, email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true };
+    const world = worldFor('supervision', {
+      profiles: [target],
+      licenses: [
+        { id: 'lic-dirty', email: ' TERRAIN@EFC.PICOTRACK.FR ', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true, password_hash: hash },
+        { id: 'lic-acme', email: ' TERRAIN@EFC.PICOTRACK.FR ', environment_code: 'ACME', role: 'pad_user', license_type: 'pad', active: true, password_hash: hash }
+      ]
+    });
+    world.auth_users = [{ id: profileId, email: target.email }];
+    const { calls } = installWorld(world);
+    const removed = await callJson(functions, { functionName: 'delete-user', payload: { id: profileId, email: 'attacker@evil.test' } });
+    assert.equal(removed.status, 200, removed.payload.error || '');
+    assert.equal(world.user_profiles.some(row => row.id === profileId), false);
+    const dirty = world.licenses.find(row => row.id === 'lic-dirty');
+    assert.equal(dirty.active, false);
+    assert.equal(dirty.email, 'terrain@efc.picotrack.fr');
+    assert.equal(world.licenses.find(row => row.id === 'lic-acme').active, true);
+    assert.equal(calls.some(call => call.method !== 'GET' && decodeURIComponent(call.url).includes('email=eq.')), false);
+    assert.equal(calls.some(call => decodeURIComponent(call.url).includes('attacker@evil.test')), false);
+    const refused = await callJson(padAuth, { environment_code: 'EFC', login: ' terrain@efc.picotrack.fr ', password_hash: hash });
+    assert.equal(refused.status, 401, refused.payload.error || '');
+  });
+});
+
+test('list-users affiche un doublon sale et un profil non normalisé', async () => {
+  await withSupabase(async () => {
+    const world = worldFor('supervision', {
+      profiles: [
+        { id: 'prof-dirty', email: ' TERRAIN@EFC.PICOTRACK.FR ', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true }
+      ],
+      licenses: [
+        { id: 'lic-clean', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true },
+        { id: 'lic-dirty', email: 'TERRAIN@EFC.PICOTRACK.FR', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true }
+      ]
+    });
+    installWorld(world);
+    const listed = await callJson(functions, { functionName: 'list-users', payload: { environment_code: 'EFC' } });
+    assert.equal(listed.status, 200, listed.payload.error || '');
+    const profile = listed.payload.rows.find(row => row.id === 'prof-dirty');
+    const dirty = listed.payload.rows.find(row => row.id === 'lic-dirty');
+    const clean = listed.payload.rows.find(row => row.id === 'lic-clean');
+    assert.ok(profile, 'profil sale masqué');
+    assert.equal(profile.email_unnormalized, true);
+    assert.ok(dirty, 'doublon sale masqué');
+    assert.equal(dirty.email_unnormalized, true);
+    assert.ok(clean);
+    assert.equal(clean.email_unnormalized, undefined);
+  });
+});
+
+test('création et modification refusent un espace interne, pad-auth trouve la bonne licence parmi 60', async () => {
+  const hash = 'ab'.repeat(32);
+  await withSupabase(async () => {
+    const world = worldFor('supervision', { profiles: [], licenses: [], limits: [{ id: 'lim-efc', environment_code: 'EFC', supervision_limit: 10, pad_limit: 5, lecture_limit: 5 }] });
+    const { writes } = installWorld(world);
+    const created = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'terr ain@efc.picotrack.fr', password: 'motdepasse', role: 'pad_user', license_type: 'pad', environment_code: 'EFC' }
+    });
+    assert.equal(created.status, 400, created.payload.error || '');
+    assert.match(created.payload.error || '', /e-mail invalide/);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+
+    const saved = await callJson(records, {
+      action: 'save', entity: 'licenses', record: { email: 'terr ain@efc.picotrack.fr', license_type: 'pad', environment_code: 'EFC', active: true }
+    });
+    assert.equal(saved.status, 400, saved.payload.error || '');
+    assert.match(saved.payload.error || '', /e-mail invalide/);
+
+    const cleaned = await callJson(records, {
+      action: 'save', entity: 'licenses', record: { email: ' TERRAIN@EFC.PICOTRACK.FR ', license_type: 'pad', environment_code: 'EFC', active: true, label: 'Propre' }
+    });
+    assert.equal(cleaned.status, 200, cleaned.payload.error || '');
+    assert.equal(world.licenses.some(row => row.email === 'terrain@efc.picotrack.fr'), true);
+  });
+
+  await withSupabase(async () => {
+    const licenses = [];
+    for (let i = 0; i < 60; i += 1) {
+      licenses.push({
+        id: `lic-${i}`,
+        email: i === 7 ? 'terrain@efc.picotrack.fr' : `autre${i}@efc.picotrack.fr`,
+        environment_code: 'EFC',
+        role: 'pad_user',
+        license_type: 'pad',
+        active: true,
+        password_hash: hash
+      });
+    }
+    const world = worldFor('supervision', { licenses });
+    const { calls } = installWorld(world);
+    const login = await callJson(padAuth, { environment_code: 'EFC', login: 'TERRAIN@EFC.PICOTRACK.FR', password_hash: hash });
+    assert.equal(login.status, 200, login.payload.error || '');
+    assert.equal(login.payload.license.id, 'lic-7');
+    const lookup = calls.find(call => call.method === 'GET' && call.url.includes('/rest/v1/licenses?'));
+    const url = decodeURIComponent(lookup.url);
+    assert.equal(url.includes('email=eq.terrain@efc.picotrack.fr'), true, url);
+    assert.equal(url.includes('environment_code=eq.EFC'), true, url);
+    assert.equal(url.includes('password_hash=eq.'), false, url);
+    assert.equal(url.includes('limit=50'), false, url);
+  });
+});
+
+test('limiteur : majuscules, espace de bord et NFKC partagent le compteur', async () => {
+  resetRateLimits();
+  const hash = '11'.repeat(32);
+  const fullwidth = '\uFF52\uFF41\uFF54\uFF45@efc.picotrack.fr';
+  await withSupabase(async () => {
+    const world = worldFor('supervision', { licenses: [] });
+    installWorld(world);
+    for (let i = 0; i < 8; i += 1) {
+      const failed = await callJson(padAuth, { environment_code: 'EFC', login: 'rate@efc.picotrack.fr', password_hash: hash });
+      assert.equal(failed.status, 401, failed.payload.error || '');
+    }
+    for (const login of ['RATE@EFC.PICOTRACK.FR', ' rate@efc.picotrack.fr ', fullwidth]) {
+      const blocked = await callJson(padAuth, { environment_code: 'EFC', login, password_hash: hash });
+      assert.equal(blocked.status, 429, `${login} -> ${blocked.status} ${blocked.payload.error || ''}`);
+    }
+    const spaced = await callJson(padAuth, { environment_code: 'EFC', login: 'ra te@efc.picotrack.fr', password_hash: hash });
+    assert.equal(spaced.status, 401, spaced.payload.error || '');
+    assert.equal((spaced.payload.error || '').includes('e-mail invalide'), false);
+  });
+
+  resetRateLimits();
+  await withSupabase(async () => {
+    let tokenCalls = 0;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/auth/v1/token')) {
+        tokenCalls += 1;
+        return { ok: false, status: 400, headers: { get: () => 'application/json' }, json: async () => ({ error_description: 'Invalid login credentials' }), text: async () => '{"error_description":"Invalid login credentials"}' };
+      }
+      if (u.includes('/rest/v1/user_profiles?')) {
+        return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => [], text: async () => '[]' };
+      }
+      return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => [], text: async () => '[]' };
+    };
+    for (let i = 0; i < 8; i += 1) {
+      const failed = await callJson(authApi, { action: 'signIn', email: 'bureau@efc.picotrack.fr', password: 'secret' });
+      assert.equal(failed.status, 400, failed.payload.error || '');
+      assert.equal(failed.payload.error, 'Identifiants invalides ou compte inactif');
+      assert.equal(JSON.stringify(failed.payload).includes('Invalid login credentials'), false);
+    }
+    const upper = await callJson(authApi, { action: 'signIn', email: ' BUREAU@EFC.PICOTRACK.FR ', password: 'secret' });
+    assert.equal(upper.status, 429, upper.payload.error || '');
+    const wide = await callJson(authApi, { action: 'signIn', email: '\uFF42\uFF55\uFF52\uFF45\uFF41\uFF55@efc.picotrack.fr', password: 'secret' });
+    assert.equal(wide.status, 429, wide.payload.error || '');
+    assert.equal(tokenCalls, 8);
+    const broken = await callJson(authApi, { action: 'signIn', email: 'terr ain@efc.picotrack.fr', password: 'secret' });
+    assert.equal(broken.status, 400, broken.payload.error || '');
+    assert.equal(broken.payload.error, 'Identifiants invalides ou compte inactif');
+    assert.equal(tokenCalls, 9);
+    const named = await callJson(authApi, { action: 'signIn', email: ' PadUser ', password: 'secret' });
+    assert.equal(named.status, 400, named.payload.error || '');
+    assert.equal(named.payload.error, 'Identifiants invalides ou compte inactif');
+  });
+  resetRateLimits();
+});
+
+test('bureau et tablette : pleine chasse acceptée, espace interne identique au mauvais mot de passe, login_user inchangé', async () => {
+  const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
+  const start = bundle.indexOf('function _ptDeskLogin');
+  const end = bundle.indexOf('async function ptSignIn');
+  assert.ok(start >= 0 && end > start, 'normaliseur client absent');
+  assert.match(bundle.slice(end, end + 240), /email:_ptDeskLogin\(e\)/);
+  const deskLogin = new Function(`${bundle.slice(start, end)}; return _ptDeskLogin;`)();
+  const wideEmail = '  \uFF42\uFF55\uFF52\uFF45\uFF41\uFF55\uFF20efc.picotrack.fr  ';
+  assert.equal(deskLogin(wideEmail), 'bureau@efc.picotrack.fr');
+  assert.equal(deskLogin(' PadUser '), 'PadUser');
+  assert.equal(deskLogin('terr ain@efc.picotrack.fr'), 'terr ain@efc.picotrack.fr');
+
+  const hash = '11'.repeat(32);
+  const otherHash = '22'.repeat(32);
+  resetRateLimits();
+  await withSupabase(async () => {
+    const world = worldFor('supervision', {
+      licenses: [{
+        id: 'lic-wide',
+        email: 'bureau@efc.picotrack.fr',
+        environment_code: 'EFC',
+        role: 'pad_user',
+        license_type: 'pad',
+        active: true,
+        password_hash: hash
+      }]
+    });
+    const { calls } = installWorld(world);
+    const wide = await callJson(padAuth, { environment_code: 'EFC', login: wideEmail, password_hash: hash });
+    assert.equal(wide.status, 200, wide.payload.error || '');
+    assert.equal(wide.payload.license.id, 'lic-wide');
+
+    const badPassword = await callJson(padAuth, { environment_code: 'EFC', login: 'bureau@efc.picotrack.fr', password_hash: otherHash });
+    const spaced = await callJson(padAuth, { environment_code: 'EFC', login: 'TERR AIN@EFC.PICOTRACK.FR', password_hash: hash });
+    assert.equal(spaced.status, badPassword.status);
+    assert.deepEqual(spaced.payload, badPassword.payload);
+    assert.equal(spaced.payload.error, 'Identifiants PAD invalides ou licence inactive');
+
+    const before = calls.length;
+    const shortPad = await callJson(padAuth, { environment_code: 'EFC', login: ' PadUser ', password_hash: hash });
+    assert.equal(shortPad.status, badPassword.status);
+    assert.deepEqual(shortPad.payload, badPassword.payload);
+    const lookedUp = calls.slice(before).some(call => decodeURIComponent(call.url).includes('email=eq.paduser'));
+    assert.equal(lookedUp, false);
+  });
+
+  resetRateLimits();
+  const previousDeskEnv = process.env.PICOTRACK_ENVIRONMENT_CODE;
+  process.env.PICOTRACK_ENVIRONMENT_CODE = 'EFC';
+  try {
+  await withSupabase(async () => {
+    const tokenEmails = [];
+    let waitMs = 0;
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      if (u.includes('/auth/v1/token')) {
+        const body = JSON.parse(options.body || '{}');
+        tokenEmails.push(body.email);
+        if (waitMs) await new Promise(resolve => setTimeout(resolve, waitMs));
+        if (body.email === 'bureau@efc.picotrack.fr' && body.password === 'secret') {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok', user: { id: 'user-1', email: body.email } }) };
+        }
+        if (body.email === 'pad.user@efc.picotrack.fr' && body.password === 'secret') {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok-pad', user: { id: 'user-2', email: body.email } }) };
+        }
+        if (String(body.email || '').includes(' ')) {
+          return { ok: false, status: 400, text: async () => JSON.stringify({ error_description: 'Unable to validate email address', error: 'invalid_email' }) };
+        }
+        return { ok: false, status: 401, text: async () => JSON.stringify({ error_description: 'Invalid login credentials' }) };
+      }
+      if (u.includes('/rpc/match_short_logins')) {
+        const rpcBody = JSON.parse(options.body || '{}');
+        assert.equal(u.includes('or=('), false, u);
+        assert.equal(u.includes('PadUser'), false, u);
+        assert.equal(rpcBody.p_environment_code, 'EFC');
+        return { ok: true, status: 200, text: async () => JSON.stringify([{ id: 'named-1', email: 'pad.user@efc.picotrack.fr', login_user: 'PadUser', username: 'PadUser', environment_code: 'EFC' }]) };
+      }
+      return { ok: true, status: 200, text: async () => '[]' };
+    };
+
+    const wide = await callJson(authApi, { action: 'signIn', email: wideEmail, password: 'secret' });
+    assert.equal(wide.status, 200, JSON.stringify(wide.payload));
+    assert.equal(wide.payload.session.access_token, 'tok');
+    assert.equal(tokenEmails[0], 'bureau@efc.picotrack.fr');
+
+    waitMs = 80;
+    const spacedStarted = performance.now();
+    const spaced = await callJson(authApi, { action: 'signIn', email: 'TERR AIN@EFC.PICOTRACK.FR', password: 'secret' });
+    const spacedMs = performance.now() - spacedStarted;
+    const wrongStarted = performance.now();
+    const wrong = await callJson(authApi, { action: 'signIn', email: 'bureau@efc.picotrack.fr', password: 'mauvais' });
+    const wrongMs = performance.now() - wrongStarted;
+    waitMs = 0;
+    assert.equal(spaced.status, wrong.status);
+    assert.equal(spaced.status, 400);
+    assert.deepEqual(spaced.payload, wrong.payload);
+    assert.equal(JSON.stringify(spaced.payload), JSON.stringify(wrong.payload));
+    assert.equal(spaced.payload.error, 'Identifiants invalides ou compte inactif');
+    assert.equal(JSON.stringify(spaced.payload).includes('Invalid login'), false);
+    assert.equal(JSON.stringify(spaced.payload).includes('validate email'), false);
+    assert.equal(tokenEmails.includes('terr ain@efc.picotrack.fr'), true);
+    assert.ok(spacedMs >= 60, `rejet anticipé ${spacedMs.toFixed(0)}ms`);
+    assert.ok(wrongMs >= 60, `mot de passe trop rapide ${wrongMs.toFixed(0)}ms`);
+    assert.ok(Math.abs(spacedMs - wrongMs) < 100, `écart ${Math.abs(spacedMs - wrongMs).toFixed(0)}ms`);
+
+    const named = await callJson(authApi, { action: 'signIn', email: ' PadUser ', password: 'secret' });
+    assert.equal(named.status, 200, JSON.stringify(named.payload));
+    assert.equal(tokenEmails.includes('pad.user@efc.picotrack.fr'), true);
+    assert.equal(tokenEmails.includes('paduser'), false);
+
+    for (let i = 0; i < 7; i += 1) {
+      const failed = await callJson(authApi, { action: 'signIn', email: 'terr ain@efc.picotrack.fr', password: 'secret' });
+      assert.equal(failed.status, 400, failed.payload.error || '');
+    }
+    const blocked = await callJson(authApi, { action: 'signIn', email: 'TERR\u3000AIN@EFC.PICOTRACK.FR', password: 'secret' });
+    assert.equal(blocked.status, 429, blocked.payload.error || '');
+
+  });
+  } finally {
+    if (previousDeskEnv === undefined) delete process.env.PICOTRACK_ENVIRONMENT_CODE;
+    else process.env.PICOTRACK_ENVIRONMENT_CODE = previousDeskEnv;
+  }
+  resetRateLimits();
+});
+
+test('login court : casse des deux côtés, doublon générique, 409, saisie sans injection', async () => {
+  resetRateLimits();
+  const previousEnv = process.env.PICOTRACK_ENVIRONMENT_CODE;
+  process.env.PICOTRACK_ENVIRONMENT_CODE = 'EFC';
+  try {
+  await withSupabase(async () => {
+    let rows = [];
+    const lookedUp = [];
+    const tokenEmails = [];
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      lookedUp.push(u);
+      if (u.includes('/auth/v1/token')) {
+        const body = JSON.parse(options.body || '{}');
+        tokenEmails.push(body.email);
+        if (body.password === 'secret' && body.email && body.email.endsWith('@efc.picotrack.fr')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok', user: { id: 'user-1', email: body.email } }) };
+        }
+        return { ok: false, status: 400, text: async () => JSON.stringify({ error_description: 'Invalid login credentials' }) };
+      }
+      if (u.includes('/rpc/match_short_logins')) {
+        const rpcBody = JSON.parse(options.body || '{}');
+        assert.equal(u.includes('or=('), false, u);
+        assert.equal(u.includes(String(rpcBody.p_login || '___absent___')), false, u);
+        assert.equal(rpcBody.p_environment_code, 'EFC');
+        return { ok: true, status: 200, text: async () => JSON.stringify(rows) };
+      }
+      return { ok: true, status: 200, text: async () => '[]' };
+    };
+
+    rows = [{ id: 'low-1', email: 'padtest@efc.picotrack.fr', login_user: 'paduser', username: 'paduser', environment_code: 'EFC' }];
+    const typedUpper = await callJson(authApi, { action: 'signIn', email: ' PadUser ', password: 'secret' });
+    assert.equal(typedUpper.status, 200, JSON.stringify(typedUpper.payload));
+
+    rows = [{ id: 'up-1', email: 'kept@efc.picotrack.fr', login_user: 'PadUser', username: 'PadUser', environment_code: 'EFC' }];
+    const typedSame = await callJson(authApi, { action: 'signIn', email: 'PadUser', password: 'secret' });
+    assert.equal(typedSame.status, 200, JSON.stringify(typedSame.payload));
+
+    rows = [{ id: 'cap-1', email: 'cap@efc.picotrack.fr', login_user: 'PADTEST', username: 'autre', environment_code: 'EFC' }];
+    const lowerIn = await callJson(authApi, { action: 'signIn', email: ' padtest ', password: 'secret' });
+    assert.equal(lowerIn.status, 200, JSON.stringify(lowerIn.payload));
+    assert.equal(lowerIn.payload.session.user.email, 'cap@efc.picotrack.fr');
+
+    rows = [{ id: 'low-2', email: 'low@efc.picotrack.fr', login_user: 'padtest', username: 'autre', environment_code: 'EFC' }];
+    const upperIn = await callJson(authApi, { action: 'signIn', email: 'PADTEST', password: 'secret' });
+    assert.equal(upperIn.status, 200, JSON.stringify(upperIn.payload));
+    assert.equal(upperIn.payload.session.user.email, 'low@efc.picotrack.fr');
+
+    rows = [
+      { id: 'a', email: 'a@efc.picotrack.fr', login_user: 'PADTEST', username: 'a', environment_code: 'EFC' },
+      { id: 'b', email: 'b@efc.picotrack.fr', login_user: 'padtest', username: 'b', environment_code: 'EFC' }
+    ];
+    tokenEmails.length = 0;
+    const ambiguous = await callJson(authApi, { action: 'signIn', email: 'Padtest', password: 'secret' });
+    const wrong = await callJson(authApi, { action: 'signIn', email: 'bureau@efc.picotrack.fr', password: 'mauvais' });
+    assert.equal(ambiguous.status, 400);
+    assert.deepEqual(ambiguous.payload, wrong.payload);
+    assert.equal(ambiguous.payload.error, 'Identifiants invalides ou compte inactif');
+    assert.equal(tokenEmails.includes('a@efc.picotrack.fr'), false);
+    assert.equal(tokenEmails.includes('b@efc.picotrack.fr'), false);
+
+    const literals = [
+      ['a,b', 'comma@efc.picotrack.fr'],
+      ['a*b', 'star@efc.picotrack.fr'],
+      ['a(b)', 'paren@efc.picotrack.fr'],
+      ['a"b', 'quote@efc.picotrack.fr']
+    ];
+    for (const [login, email] of literals) {
+      lookedUp.length = 0;
+      tokenEmails.length = 0;
+      rows = [{ id: `lit-${email}`, email, login_user: login, username: 'autre', environment_code: 'EFC' }];
+      const signed = await callJson(authApi, { action: 'signIn', email: ` ${login} `, password: 'secret' });
+      assert.equal(signed.status, 200, `${login} ${JSON.stringify(signed.payload)}`);
+      assert.equal(signed.payload.session.user.email, email);
+      const rpcUrls = lookedUp.filter(url => url.includes('/rpc/match_short_logins'));
+      assert.equal(rpcUrls.length, 1, login);
+      assert.equal(rpcUrls[0].includes(login), false, rpcUrls[0]);
+      assert.equal(rpcUrls[0].includes('or=('), false, rpcUrls[0]);
+    }
+
+    lookedUp.length = 0;
+    tokenEmails.length = 0;
+    rows = [
+      { id: 'wild-1', email: 'wild@efc.picotrack.fr', login_user: 'axb', username: 'wild', environment_code: 'EFC' },
+      { id: 'wild-2', email: 'other@efc.picotrack.fr', login_user: 'aab', username: 'other', environment_code: 'EFC' }
+    ];
+    const star = await callJson(authApi, { action: 'signIn', email: 'a*b', password: 'secret' });
+    const wrongStar = await callJson(authApi, { action: 'signIn', email: 'bureau@efc.picotrack.fr', password: 'mauvais' });
+    assert.equal(star.status, 400);
+    assert.deepEqual(star.payload, wrongStar.payload);
+    assert.equal(tokenEmails.includes('wild@efc.picotrack.fr'), false);
+    assert.equal(tokenEmails.includes('other@efc.picotrack.fr'), false);
+
+    const sql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261009120000_match_short_logins.sql'), 'utf8');
+    assert.match(sql, /order by up\.id/i);
+    assert.match(sql, /limit 2/i);
+    assert.match(sql, /security invoker/i);
+    assert.equal(/ilike|\blike\b/i.test(sql), false);
+  });
+
+  await withSupabase(async () => {
+    const kept = { id: 'cap-1', email: 'cap@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true, login_user: 'PADTEST', username: 'CAP' };
+    const other = { id: 'other-1', email: 'other@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true, login_user: 'libre', username: 'LIBRE' };
+    const world = worldFor('supervision', { profiles: [kept, other] });
+    const { writes, calls } = installWorld(world);
+    const created = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'neuf@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neuf', login_user: 'PADTEST' }
+    });
+    assert.equal(created.status, 409, created.payload.error || '');
+    assert.match(created.payload.error || '', /déjà utilisé/);
+    assert.equal(writes.some(entry => entry.url.includes('/auth/v1/admin/users') && entry.method === 'POST'), false);
+    assert.equal(kept.login_user, 'PADTEST');
+    const duplicateLookup = writes.find(entry => entry.method === 'POST' && entry.url.includes('/rpc/match_short_logins'));
+    assert.ok(duplicateLookup, 'rpc absente');
+    assert.equal(duplicateLookup.url.includes('or=('), false);
+    assert.equal(duplicateLookup.url.includes('padtest'), false);
+    assert.equal(duplicateLookup.body.p_environment_code, 'EFC');
+    assert.equal(duplicateLookup.body.p_login, 'padtest');
+
+    const createdUser = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'neuf@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neuf', username: 'cap' }
+    });
+    assert.equal(createdUser.status, 409, createdUser.payload.error || '');
+
+    const renamed = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'other-1', login_user: 'padtest' }
+    });
+    assert.equal(renamed.status, 409, renamed.payload.error || '');
+    assert.equal(other.login_user, 'libre');
+
+    const renamedUser = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'other-1', username: 'Cap' }
+    });
+    assert.equal(renamedUser.status, 409, renamedUser.payload.error || '');
+    assert.equal(other.username, 'LIBRE');
+
+    const fresh = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'neuf@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neuf', login_user: 'Neuf' }
+    });
+    assert.equal(fresh.status, 200, fresh.payload.error || '');
+    assert.equal(lastWrite(writes, 'user_profiles').body.login_user, 'Neuf');
+
+    const literal = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'litteral@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Lit', login_user: 'x,y)' }
+    });
+    assert.equal(literal.status, 200, literal.payload.error || '');
+    assert.equal(lastWrite(writes, 'user_profiles').body.login_user, 'x,y)');
+    const literalAgain = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'litteral2@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Lit', login_user: 'X,Y)' }
+    });
+    assert.equal(literalAgain.status, 409, literalAgain.payload.error || '');
+  });
+  } finally {
+    if (previousEnv === undefined) delete process.env.PICOTRACK_ENVIRONMENT_CODE;
+    else process.env.PICOTRACK_ENVIRONMENT_CODE = previousEnv;
+  }
+  resetRateLimits();
+});
+
+test('login court : même identifiant dans EFC et ACME, lecture en échec 503', async () => {
+  resetRateLimits();
+  const prefixed = ['EFC_SUPABASE_URL', 'EFC_SUPABASE_ANON_KEY', 'EFC_SUPABASE_SERVICE_ROLE_KEY', 'ACME_SUPABASE_URL', 'ACME_SUPABASE_ANON_KEY', 'ACME_SUPABASE_SERVICE_ROLE_KEY'];
+  const previousPrefixed = Object.fromEntries(prefixed.map(key => [key, process.env[key]]));
+  process.env.EFC_SUPABASE_URL = 'https://efc-fixture.supabase.co';
+  process.env.EFC_SUPABASE_ANON_KEY = 'anon-efc';
+  process.env.EFC_SUPABASE_SERVICE_ROLE_KEY = 'service-efc';
+  process.env.ACME_SUPABASE_URL = 'https://acme-fixture.supabase.co';
+  process.env.ACME_SUPABASE_ANON_KEY = 'anon-acme';
+  process.env.ACME_SUPABASE_SERVICE_ROLE_KEY = 'service-acme';
+  try {
+    await withSupabase(async () => {
+      global.fetch = async (url, options = {}) => {
+        const u = String(url);
+        if (u.includes('/auth/v1/token')) {
+          const body = JSON.parse(options.body || '{}');
+          if (body.password === 'secret' && body.email) {
+            return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok', user: { id: 'user-1', email: body.email } }) };
+          }
+          return { ok: false, status: 400, text: async () => '{"error_description":"Invalid login credentials"}' };
+        }
+        if (u.includes('/rpc/match_short_logins')) {
+          const rpcBody = JSON.parse(options.body || '{}');
+          assert.equal(u.includes('or=('), false, u);
+          assert.equal(u.includes('sharedlogin'), false, u);
+          assert.match(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261009120000_match_short_logins.sql'), 'utf8'), /limit 2/i);
+          if (rpcBody.p_environment_code === 'EFC') {
+            return { ok: true, status: 200, text: async () => JSON.stringify([{ id: 'efc-1', email: 'efc-user@efc.picotrack.fr', login_user: 'sharedlogin', username: 'sharedlogin', environment_code: 'EFC' }]) };
+          }
+          if (rpcBody.p_environment_code === 'ACME') {
+            return { ok: true, status: 200, text: async () => JSON.stringify([{ id: 'acme-1', email: 'acme-user@acme.picotrack.fr', login_user: 'sharedlogin', username: 'sharedlogin', environment_code: 'ACME' }]) };
+          }
+          return { ok: true, status: 200, text: async () => '[]' };
+        }
+        return { ok: true, status: 200, text: async () => '[]' };
+      };
+      const efc = await callJson(authApi, {
+        action: 'signIn', email: 'sharedlogin', password: 'secret', environment_code: 'ACME'
+      }, { ...authHeaders(), host: 'efc.client.picotrack.fr' });
+      assert.equal(efc.status, 200, JSON.stringify(efc.payload));
+      assert.equal(efc.payload.session.user.email, 'efc-user@efc.picotrack.fr');
+
+      const acme = await callJson(authApi, {
+        action: 'signIn', email: 'sharedlogin', password: 'secret', environment_code: 'EFC'
+      }, { ...authHeaders(), host: 'acme.picotrack.fr' });
+      assert.equal(acme.status, 200, JSON.stringify(acme.payload));
+      assert.equal(acme.payload.session.user.email, 'acme-user@acme.picotrack.fr');
+      assert.notEqual(efc.payload.session.user.email, acme.payload.session.user.email);
+    });
+
+    await withSupabase(async () => {
+      global.fetch = async (url) => {
+        if (String(url).includes('/rpc/match_short_logins')) {
+          return { ok: false, status: 500, text: async () => JSON.stringify({ message: 'db down' }) };
+        }
+        if (String(url).includes('/auth/v1/token')) {
+          return { ok: false, status: 400, text: async () => '{"error_description":"Invalid login credentials"}' };
+        }
+        return { ok: true, status: 200, text: async () => '[]' };
+      };
+      const failed = await callJson(authApi, { action: 'signIn', email: 'padtest', password: 'secret' });
+      assert.equal(failed.status, 503, failed.payload.error || '');
+      assert.equal(failed.payload.error, 'Connexion indisponible.');
+      assert.equal(JSON.stringify(failed.payload).includes('db down'), false);
+      assert.notEqual(failed.payload.error, 'Identifiants invalides ou compte inactif');
+    });
+
+    await withSupabase(async () => {
+      global.fetch = async (url) => {
+        if (String(url).includes('/rpc/match_short_logins')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify([
+            { id: 'a', email: 'a@efc.picotrack.fr', login_user: 'padtest', username: 'a', environment_code: 'EFC' },
+            { id: 'b', email: 'b@efc.picotrack.fr', login_user: 'PADTEST', username: 'b', environment_code: 'EFC' },
+            { id: 'c', email: 'c@efc.picotrack.fr', login_user: 'Padtest', username: 'c', environment_code: 'EFC' }
+          ]) };
+        }
+        if (String(url).includes('/auth/v1/token')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok', user: { id: 'user-1', email: 'a@efc.picotrack.fr' } }) };
+        }
+        return { ok: true, status: 200, text: async () => '[]' };
+      };
+      const ceiling = await callJson(authApi, { action: 'signIn', email: 'padtest', password: 'secret' });
+      assert.equal(ceiling.status, 503, ceiling.payload.error || '');
+      assert.equal(ceiling.payload.error, 'Connexion indisponible.');
+      assert.equal(ceiling.payload.session, undefined);
+    });
+
+    await withSupabase(async () => {
+      global.fetch = async (url) => {
+        if (String(url).includes('/rpc/match_short_logins')) {
+          return { ok: false, status: 500, text: async () => JSON.stringify({ message: 'db down' }) };
+        }
+        return { ok: true, status: 200, text: async () => '[]' };
+      };
+      await assert.rejects(
+        () => functions.assertShortLoginsAvailable(SUPA, 'service-test', 'EFC', ['padtest'], null),
+        (err) => {
+          assert.equal(err.status, 503);
+          assert.equal(err.message, 'Lecture des identifiants impossible.');
+          assert.equal(String(err.message).includes('db down'), false);
+          return true;
+        }
+      );
+    });
+  } finally {
+    for (const key of prefixed) {
+      if (previousPrefixed[key] === undefined) delete process.env[key];
+      else process.env[key] = previousPrefixed[key];
+    }
+  }
+  resetRateLimits();
+});
+
+test('panne GoTrue : une adresse avec espace reçoit le même 5xx ou 429', async () => {
+  resetRateLimits();
+  await withSupabase(async () => {
+    let upstreamStatus = 503;
+    global.fetch = async (url) => {
+      if (String(url).includes('/auth/v1/token')) {
+        return { ok: false, status: upstreamStatus, text: async () => JSON.stringify({ error_description: 'database unavailable' }) };
+      }
+      return { ok: true, status: 200, text: async () => '[]' };
+    };
+    const spaced = await callJson(authApi, { action: 'signIn', email: 'terr ain@efc.picotrack.fr', password: 'secret' });
+    const valid = await callJson(authApi, { action: 'signIn', email: 'bureau@efc.picotrack.fr', password: 'secret' });
+    assert.equal(spaced.status, 503);
+    assert.deepEqual(spaced.payload, valid.payload);
+    assert.equal(JSON.stringify(spaced.payload).includes('database'), false);
+    assert.notEqual(spaced.payload.error, 'Identifiants invalides ou compte inactif');
+
+    upstreamStatus = 429;
+    const spacedLimited = await callJson(authApi, { action: 'signIn', email: 'autre ain@efc.picotrack.fr', password: 'secret' });
+    const validLimited = await callJson(authApi, { action: 'signIn', email: 'autre@efc.picotrack.fr', password: 'secret' });
+    assert.equal(spacedLimited.status, 429);
+    assert.deepEqual(spacedLimited.payload, validLimited.payload);
+  });
+  resetRateLimits();
 });

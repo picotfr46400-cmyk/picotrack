@@ -2,8 +2,9 @@ const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, ser
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
-const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota } = require('./function');
+const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota, assertShortLoginsAvailable } = require('./function');
 const submissionAudit = require('./_submission-audit');
+const { assertWritableEmail } = require('./_email');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -247,6 +248,9 @@ function normalizeRecord(record, entity = '') {
   if (entity === 'app_roles') {
     if (record.nom && !out.name) out.name = record.nom;
     if (record.desc && !out.description) out.description = record.desc;
+  }
+  if ((entity === 'user_profiles' || entity === 'licenses') && typeof out.email === 'string') {
+    out.email = assertWritableEmail(out.email);
   }
   delete out.password_hash;
   delete out.supa_key;
@@ -995,18 +999,24 @@ async function handleSave(req, body) {
       const explicitActive = Object.prototype.hasOwnProperty.call(record, 'active') && (record.active === true || record.active === false);
       const turningOn = explicitActive && record.active === true && existingRow?.active === false;
       const turningOff = explicitActive && record.active === false && existingRow?.active !== false;
-      const accountForLicense = existingRow ? {
-        id: existingRow.id,
-        email: existingRow.email,
-        environment_code: existingRow.environment_code || record.environment_code,
-        license_type: after.license_type,
-        role: after.role,
-        roles: after.roles
-      } : null;
-      let explicitLicense = null;
-      if (entity === 'user_profiles' && turningOn && requestedLicenseId && accountForLicense) {
+      if (entity === 'user_profiles' && id && existingRow && (turningOn || turningOff)) {
         const { url, serviceRole } = getSupabaseConfig(req);
-        explicitLicense = await resolveReactivationLicense(url, serviceRole, accountForLicense, requestedLicenseId);
+        profileSnapshot = snapshotUserProfile(existingRow);
+        companionActivating = turningOn;
+        companionLicenses = await prepareCompanionLicenseChange(url, serviceRole, {
+          id: existingRow.id,
+          email: existingRow.email,
+          environment_code: existingRow.environment_code || record.environment_code,
+          license_type: existingRow.license_type,
+          role: existingRow.role,
+          roles: existingRow.roles
+        }, turningOn, { licenseId: turningOn ? requestedLicenseId : '' });
+      }
+      if (entity === 'user_profiles' && (Object.prototype.hasOwnProperty.call(record, 'login_user') || Object.prototype.hasOwnProperty.call(record, 'username'))) {
+        const { url, serviceRole } = getSupabaseConfig(req);
+        const loginValue = Object.prototype.hasOwnProperty.call(record, 'login_user') ? record.login_user : existingRow?.login_user;
+        const usernameValue = Object.prototype.hasOwnProperty.call(record, 'username') ? record.username : existingRow?.username;
+        await assertShortLoginsAvailable(url, serviceRole, record.environment_code, [loginValue, usernameValue], id || existingRow?.id || null);
       }
       if (updateAddsActiveSeat(creating ? { active: false } : existingRow, after)) {
         const { url, serviceRole } = getSupabaseConfig(req);
@@ -1018,19 +1028,18 @@ async function handleSave(req, body) {
           active: true
         }, entity === 'user_profiles' ? (id || null) : null);
       }
-      if (explicitLicense && accountForLicense) {
+      if (entity === 'user_profiles' && turningOn && requestedLicenseId && existingRow) {
         const { url, serviceRole } = getSupabaseConfig(req);
-        await assertExplicitLicenseQuota(url, serviceRole, accountForLicense, explicitLicense, id || null);
-      }
-      if (entity === 'user_profiles' && id && existingRow && (turningOn || turningOff)) {
-        const { url, serviceRole } = getSupabaseConfig(req);
-        profileSnapshot = snapshotUserProfile(existingRow);
-        companionActivating = turningOn;
-        companionLicenses = await prepareCompanionLicenseChange(url, serviceRole, {
+        const accountForLicense = {
           id: existingRow.id,
           email: existingRow.email,
-          environment_code: existingRow.environment_code || record.environment_code
-        }, turningOn, { licenseId: turningOn ? requestedLicenseId : '' });
+          environment_code: existingRow.environment_code || record.environment_code,
+          license_type: after.license_type,
+          role: after.role,
+          roles: after.roles
+        };
+        const explicitLicense = await resolveReactivationLicense(url, serviceRole, accountForLicense, requestedLicenseId);
+        await assertExplicitLicenseQuota(url, serviceRole, accountForLicense, explicitLicense, id || null);
       }
     }
   }

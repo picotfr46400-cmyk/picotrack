@@ -353,6 +353,49 @@ async function runPadHandler() {
   }
 }
 
+psql(`
+  create table if not exists public.user_profiles (
+    id uuid primary key,
+    email text,
+    login_user text,
+    username text,
+    environment_code text
+  );
+`);
+execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-f', 'supabase/migrations/20261009120000_match_short_logins.sql'], {
+  encoding: 'utf8',
+  env
+});
+execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-f', 'supabase/migrations/20261009120000_match_short_logins.sql'], {
+  encoding: 'utf8',
+  env
+});
+psql(`
+  delete from public.user_profiles where email like '%@fixture.test';
+  insert into public.user_profiles (id, email, login_user, username, environment_code) values
+    ('11111111-1111-4111-8111-111111111111', 'star@fixture.test', 'a*b', 'star', 'EFC'),
+    ('22222222-2222-4222-8222-222222222222', 'wild@fixture.test', 'axb', 'wild', 'EFC'),
+    ('33333333-3333-4333-8333-333333333333', 'comma@fixture.test', 'a,b', 'comma', 'EFC'),
+    ('44444444-4444-4444-8444-444444444444', 'paren@fixture.test', 'a(b)', 'paren', 'EFC'),
+    ('55555555-5555-4555-8555-555555555555', 'quote@fixture.test', 'a"b', 'quote', 'EFC'),
+    ('66666666-6666-4666-8666-666666666666', 'case@fixture.test', 'PadTest', 'case', 'acme'),
+    ('77777777-7777-4777-8777-777777777771', 'dup@fixture.test', 'dup', 'dup', 'EFC'),
+    ('77777777-7777-4777-8777-777777777772', 'dup2@fixture.test', 'DUP', 'dup2', 'EFC'),
+    ('77777777-7777-4777-8777-777777777773', 'dup3@fixture.test', 'Dup', 'dup3', 'EFC');
+`);
+assert.equal(psql(`select email from public.match_short_logins('EFC', 'A*B')`), 'star@fixture.test');
+assert.equal(psql(`select count(*) from public.match_short_logins('EFC', 'a*b') where email = 'wild@fixture.test'`), '0');
+assert.equal(psql(`select email from public.match_short_logins('EFC', 'a,b')`), 'comma@fixture.test');
+assert.equal(psql(`select email from public.match_short_logins('EFC', 'a(b)')`), 'paren@fixture.test');
+assert.equal(psql(`select email from public.match_short_logins('efc', 'a"b')`), 'quote@fixture.test');
+assert.equal(psql(`select email from public.match_short_logins('ACME', ' padtest ')`), 'case@fixture.test');
+assert.equal(psql(`select count(*) from public.match_short_logins('EFC', 'padtest')`), '0');
+assert.equal(psql(`select count(*) from public.match_short_logins('EFC', 'dup')`), '2');
+assert.equal(psql(`select prosecdef::text from pg_proc where proname = 'match_short_logins'`), 'false');
+assert.equal(psql(`select has_function_privilege('service_role', 'public.match_short_logins(text,text)', 'execute')`), 't');
+assert.equal(psql(`select has_function_privilege('anon', 'public.match_short_logins(text,text)', 'execute')`), 'f');
+assert.equal(psql(`select has_function_privilege('authenticated', 'public.match_short_logins(text,text)', 'execute')`), 'f');
+
 runPadHandler().then(async () => {
   console.log('journal postgres: ok');
   await require('./pad-client-e2e').run();
