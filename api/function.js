@@ -1,5 +1,6 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
 const { normalizeLicenseType, seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
+const { normalizeEmail, isValidEmail, assertWritableEmail } = require('./_email');
 
 const INTERNAL_FUNCTIONS = new Set([
   'list-users',
@@ -26,11 +27,7 @@ function cleanString(value, max = 255) {
 }
 
 function licenseEmailKey(value) {
-  return String(value ?? '').replace(/\s+/g, '').toLowerCase();
-}
-
-function normalizeEmail(value) {
-  return licenseEmailKey(value).slice(0, 320);
+  return normalizeEmail(value);
 }
 
 function normalizeEnvironmentCode(value) {
@@ -105,7 +102,8 @@ async function findAuthUserByEmail(url, serviceRole, email) {
   for (let page = 1; page <= pagesToCheck; page += 1) {
     const payload = await supabaseFetch(url, serviceRole, `/auth/v1/admin/users?page=${page}&per_page=100`, { method: 'GET' });
     const users = Array.isArray(payload?.users) ? payload.users : Array.isArray(payload) ? payload : [];
-    const found = users.find(u => normalizeEmail(u.email) === email);
+    const wanted = normalizeEmail(email);
+    const found = users.find(u => normalizeEmail(u.email) === wanted);
     if (found) return found;
     if (!users.length || users.length < 100) break;
   }
@@ -113,10 +111,7 @@ async function findAuthUserByEmail(url, serviceRole, email) {
 }
 
 async function inviteAuthUser(url, serviceRole, payload) {
-  const email = normalizeEmail(payload.email || payload.login_user || payload.username);
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new Error('Adresse e-mail invalide pour la création du compte Supervision.');
-  }
+  const email = assertWritableEmail(payload.email || payload.login_user || payload.username);
 
   const redirectTo = cleanString(payload.redirect_to || '', 800);
   const userMetadata = {
@@ -155,6 +150,9 @@ async function upsertUserProfile(url, serviceRole, authUser, payload, options = 
   const clientSent = key => Object.prototype.hasOwnProperty.call(requested, key);
   const environmentCode = normalizeEnvironmentCode(payload.environment_code || 'DEMO');
   const email = normalizeEmail(payload.email || authUser.email);
+  if (email && !isValidEmail(email) && Object.prototype.hasOwnProperty.call(requested, 'email')) {
+    assertWritableEmail(requested.email);
+  }
   const profile = {
     id: authUser.id,
     email,
@@ -214,7 +212,7 @@ async function insertLicenseBestEffort(url, serviceRole, payload) {
     license_key: cleanString(payload.license_key || ''),
     license_type: cleanString(payload.license_type || 'supervision'),
     label: cleanString(payload.label || ''),
-    email: normalizeEmail(payload.email || payload.login_user || payload.username || ''),
+    email: assertWritableEmail(payload.email || payload.login_user || payload.username || ''),
     role: cleanString(payload.role || 'supervision_user'),
     roles: safeArray(payload.roles),
     scope: cleanString(payload.scope || 'environment'),
@@ -234,10 +232,8 @@ async function insertLicenseBestEffort(url, serviceRole, payload) {
 
 
 async function createAuthUserWithPassword(url, serviceRole, payload) {
-  const login = normalizeEmail(payload.email || '') || normalizeEmail(payload.login_user || payload.username || '');
-  const email = normalizeEmail(payload.email || login);
+  const email = assertWritableEmail(payload.email || payload.login_user || payload.username || '');
   const password = String(payload.password || payload.user_password || payload.plain_password || '').trim();
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw Object.assign(new Error('Adresse e-mail invalide pour la création du compte.'), { status: 400 });
   if (!password || password.length < 8) throw Object.assign(new Error('Le mot de passe doit contenir au moins 8 caractères.'), { status: 400 });
 
   const existing = await findAuthUserByEmail(url, serviceRole, email);
@@ -718,7 +714,7 @@ async function handleListUsers(req, url, serviceRole, payload) {
     };
     if (showLicenseKey) normalized.license_key = row?.license_key || null;
     if (showPermissions) normalized.resolved_permissions = safeObject(row?.resolved_permissions);
-    if (source === 'licenses' && String(row?.email ?? '') !== licenseEmailKey(row?.email || '')) {
+    if (String(row?.email ?? '') !== '' && String(row?.email ?? '') !== normalizeEmail(row?.email || '')) {
       normalized.email_unnormalized = true;
     }
     return normalized;
@@ -731,8 +727,10 @@ async function handleListUsers(req, url, serviceRole, payload) {
     if (!row || isPlatform(row)) return;
     const normalized = normalizeUserRow(row, source);
     const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
+    if (!normalized.email_unnormalized) {
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+    }
     rows.push(normalized);
   }
 
@@ -785,6 +783,8 @@ async function handleCreateUser(req, url, serviceRole, payload) {
   const catalog = isPlatformOperatorProfile(profile) ? [] : await loadActiveAppRoles(url, serviceRole, profileEnvironmentCode(profile));
   const safePayload = clampAssignedPrivileges(payload, profile, { catalog, existingRoles: [] });
   const environmentCode = assertSameEnvironmentOrPlatform(profile, safePayload.environment_code || safePayload.active_env || profileEnvironmentCode(profile));
+  const email = assertWritableEmail(safePayload.email || payload.email || '');
+  safePayload.email = email;
   const quota = await assertQuotaAvailable(url, serviceRole, { ...safePayload, environment_code: environmentCode }, null);
   const storedLicenseType = normalizePrivilegeToken(safePayload.license_type) ? safePayload.license_type : quota.licenseType;
   const creating = { ...safePayload, license_type: storedLicenseType, environment_code: quota.environmentCode };
@@ -851,7 +851,9 @@ function companionLicenseSnapshot(license) {
 function assertReactivationLicenseType(profile, licenses) {
   const expected = seatLicenseType(profile);
   for (const license of licenses) {
-    if (normalizeLicenseType(license?.license_type) !== expected) {
+    const explicit = String(license?.license_type ?? '').trim();
+    if (!explicit) continue;
+    if (normalizeLicenseType(license.license_type) !== expected) {
       throw Object.assign(new Error('Type de licence différent du profil'), { status: 409 });
     }
   }
@@ -879,6 +881,37 @@ function licenseListStatus(value) {
   if (raw === 'inactive' || raw === 'inactives' || raw === 'inactif' || raw === 'inactifs') return 'inactive';
   if (raw === 'all' || raw === 'toutes' || raw === 'tous') return 'all';
   return 'active';
+}
+
+async function findProfileByNormalizedEmail(url, serviceRole, email, environmentCode) {
+  const wanted = normalizeEmail(email);
+  if (!wanted) return null;
+  const env = normalizeEnvironmentCode(environmentCode);
+  const path = env && env !== 'GLOBAL'
+    ? `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=*&limit=1000`
+    : `/rest/v1/user_profiles?select=*&limit=1000`;
+  const rows = await supabaseFetch(url, serviceRole, path, { method: 'GET' }).catch(() => []);
+  return (Array.isArray(rows) ? rows : []).find(row => {
+    if (normalizeEmail(row?.email) !== wanted) return false;
+    if (!env || env === 'GLOBAL') return true;
+    return normalizeEnvironmentCode(row.environment_code) === env;
+  }) || null;
+}
+
+async function extinguishMatchingLicenses(url, serviceRole, email, environmentCode) {
+  const wanted = normalizeEmail(email);
+  const env = normalizeEnvironmentCode(environmentCode);
+  if (!wanted || !env || env === 'GLOBAL') return;
+  const rows = await listEnvironmentLicenses(url, serviceRole, env);
+  const matches = rows.filter(row => {
+    if (!row?.id) return false;
+    if (normalizeEnvironmentCode(row.environment_code) !== env) return false;
+    if (isPlatformOperatorProfile(row)) return false;
+    return normalizeEmail(row.email) === wanted;
+  });
+  for (const row of matches) {
+    await patchLicenseActive(url, serviceRole, row, false);
+  }
 }
 
 async function listEnvironmentLicenses(url, serviceRole, environmentCode) {
@@ -964,7 +997,8 @@ async function patchLicenseActive(url, serviceRole, license, active, options = {
   const environmentCode = normalizeEnvironmentCode(license.environment_code);
   const body = { active: active === true };
   if (license.email != null && String(license.email) !== '') {
-    body.email = options.restoreEmail ? license.email : licenseEmailKey(license.email);
+    if (options.restoreEmail) body.email = license.email;
+    else if (isValidEmail(license.email)) body.email = normalizeEmail(license.email);
   }
   const updated = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(license.id)}&environment_code=eq.${encodeURIComponent(environmentCode)}`, {
     method: 'PATCH',
@@ -1041,6 +1075,7 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'role')) merged.role = current.role;
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'roles')) merged.roles = current.roles;
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'active')) merged.active = current.active;
+  if (Object.prototype.hasOwnProperty.call(payload, 'email')) merged.email = assertWritableEmail(payload.email);
   const turningOn = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === true && current.active === false;
   const turningOff = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === false && current.active !== false;
   const requestedLicenseId = cleanString(payload.license_id, 80);
@@ -1148,13 +1183,9 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
   const lookupEnv = normalizeEnvironmentCode(licenseRow?.environment_code || requestedEnv);
 
   if (!current && lookupEmail) {
-    const profilePaths = [];
-    if (lookupEnv) profilePaths.push(`/rest/v1/user_profiles?email=eq.${encodeURIComponent(lookupEmail)}&environment_code=eq.${encodeURIComponent(lookupEnv)}&select=*&limit=1`);
-    if (!licenseRow?.id) profilePaths.push(`/rest/v1/user_profiles?email=eq.${encodeURIComponent(lookupEmail)}&select=*&limit=1`);
-    for (const path of profilePaths) {
-      const rows = await supabaseFetch(url, serviceRole, path, { method: 'GET' }).catch(() => []);
-      current = Array.isArray(rows) ? rows[0] : null;
-      if (current?.id) break;
+    current = await findProfileByNormalizedEmail(url, serviceRole, lookupEmail, lookupEnv);
+    if (!current?.id && !licenseRow?.id) {
+      current = await findProfileByNormalizedEmail(url, serviceRole, lookupEmail, '');
     }
   }
 
@@ -1210,6 +1241,10 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
     throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
   }
 
+  if (current?.id && deleteEmail && deleteEnv) {
+    await extinguishMatchingLicenses(url, serviceRole, deleteEmail, deleteEnv);
+  }
+
   if (current?.id) {
     await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(current.id)}`, {
       method: 'DELETE',
@@ -1219,17 +1254,10 @@ async function handleDeleteUser(req, url, serviceRole, payload) {
     await supabaseFetch(url, serviceRole, `/auth/v1/admin/users/${encodeURIComponent(current.id)}`, {
       method: 'DELETE'
     }).catch(() => null);
-  }
-
-  if (licenseRow?.id) {
+  } else if (licenseRow?.id) {
     const licenseEnv = normalizeEnvironmentCode(licenseRow.environment_code);
     if (!licenseEnv) throw Object.assign(new Error('Suppression de licence refusée.'), { status: 403 });
     await supabaseFetch(url, serviceRole, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseRow.id)}&environment_code=eq.${encodeURIComponent(licenseEnv)}`, {
-      method: 'DELETE',
-      prefer: 'return=minimal'
-    }).catch(() => null);
-  } else if (deleteEmail && deleteEnv) {
-    await supabaseFetch(url, serviceRole, `/rest/v1/licenses?email=eq.${encodeURIComponent(deleteEmail)}&environment_code=eq.${encodeURIComponent(deleteEnv)}`, {
       method: 'DELETE',
       prefer: 'return=minimal'
     }).catch(() => null);

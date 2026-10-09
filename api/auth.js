@@ -1,5 +1,8 @@
 const crypto = require('crypto');
 const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile, fetchUpstream, clientIp, takeAttempt } = require('./_server-supabase');
+const { normalizeEmail, isEmailLike, isValidEmail } = require('./_email');
+
+const GENERIC_SIGN_IN_ERROR = 'Connexion refusée';
 
 function normalizeProfile(user, profile) {
   if (!user || !profile) return null;
@@ -66,14 +69,23 @@ module.exports = async function handler(req, res) {
     const body = await readJsonBody(req, 200000);
 
     if (body.action === 'signIn') {
-      let loginEmail = String(body.email || '').trim().toLowerCase();
-      if (loginEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginEmail)) {
-        const safeLogin = encodeURIComponent(loginEmail);
-        const rows = await serviceRest(`user_profiles?or=(login_user.eq.${safeLogin},username.eq.${safeLogin})&select=email,active&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []);
-        if (Array.isArray(rows) && rows[0]?.email) loginEmail = String(rows[0].email || '').trim().toLowerCase();
+      const rawLogin = String(body.email || '');
+      let loginEmail = '';
+      if (isEmailLike(rawLogin)) {
+        loginEmail = normalizeEmail(rawLogin);
+      } else {
+        const safeLogin = encodeURIComponent(rawLogin.trim());
+        if (safeLogin) {
+          const rows = await serviceRest(`user_profiles?or=(login_user.eq.${safeLogin},username.eq.${safeLogin})&select=email,active&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []);
+          if (Array.isArray(rows) && rows[0]?.email) loginEmail = normalizeEmail(rows[0].email);
+        }
       }
       const attempt = takeAttempt(`signin:${clientIp(req)}:${loginEmail || 'unknown'}`);
       if (!attempt.allowed) return json(res, 429, { error: 'Trop de tentatives. Réessayez plus tard.' });
+      if (isEmailLike(rawLogin) && !isValidEmail(rawLogin)) {
+        attempt.fail();
+        return json(res, 400, { error: GENERIC_SIGN_IN_ERROR });
+      }
       const upstream = await fetchUpstream(`${url}/auth/v1/token?grant_type=password`, {
         method: 'POST',
         headers: { apikey: anonKey, 'Content-Type': 'application/json' },

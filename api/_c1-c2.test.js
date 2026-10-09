@@ -142,7 +142,11 @@ test('PAD : login inchangé, synchro servie par le handler local', () => {
   const padAuth = fs.readFileSync(path.join(__dirname, 'pad-auth.js'), 'utf8');
   const padSync = fs.readFileSync(path.join(__dirname, 'pad-sync.js'), 'utf8');
   const fn = fs.readFileSync(path.join(__dirname, 'function.js'), 'utf8');
-  assert.match(padAuth, /password_hash=eq\./);
+  assert.match(padAuth, /email=eq\./);
+  assert.match(padAuth, /environment_code=eq\./);
+  assert.match(padAuth, /password_hash/);
+  assert.equal(padAuth.includes('password_hash=eq.'), false);
+  assert.equal(padAuth.includes('limit=50'), false);
   assert.match(padSync, /verifyToken/);
   assert.equal(fn.includes('/functions/v1/'), false);
   assert.match(fn, /functionName === 'pad-sync'/);
@@ -1134,10 +1138,17 @@ test('handler : delete-user relit la licence et n’efface qu’avec l’e-mail 
   const target = { id: targetId, email: 'robin@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
   await withSupabase(async () => {
     const { calls } = installActor(requester, {
-      onFetch(u) {
+      onFetch(u, method) {
         if (u.includes(`user_profiles?id=eq.${targetId}`) || u.includes('user_profiles?email=eq.robin')) return jsonResponse(200, [target]);
         if (u.includes('licenses?id=eq.lic-acme')) return jsonResponse(200, [{ id: 'lic-acme', email: 'robin@efc.picotrack.fr', environment_code: 'ACME', role: 'supervision_user' }]);
         if (u.includes('licenses?id=eq.lic-efc')) return jsonResponse(200, [{ id: 'lic-efc', email: 'robin@efc.picotrack.fr', environment_code: 'EFC', role: 'supervision_user' }]);
+        if (method === 'GET' && u.includes('/rest/v1/licenses?') && u.includes('environment_code=eq.EFC')) {
+          return jsonResponse(200, [
+            { id: 'lic-efc', email: 'robin@efc.picotrack.fr', environment_code: 'EFC', role: 'supervision_user', active: true },
+            { id: 'lic-dirty', email: ' ROBIN@EFC.PICOTRACK.FR ', environment_code: 'EFC', role: 'supervision_user', active: true }
+          ]);
+        }
+        if (method === 'PATCH' && u.includes('/rest/v1/licenses?id=eq.')) return jsonResponse(200, [{ id: 'patched', active: false }]);
         if (u.includes(`/auth/v1/admin/users/${targetId}`) || u.includes('/auth/v1/admin/users?page=')) return jsonResponse(200, { id: targetId, email: target.email, users: [{ id: targetId, email: target.email }] });
         return null;
       }
@@ -1145,7 +1156,7 @@ test('handler : delete-user relit la licence et n’efface qu’avec l’e-mail 
     calls.length = 0;
     const crossed = await callJson(functions, { functionName: 'delete-user', payload: { license_id: 'lic-acme', email: 'robin@efc.picotrack.fr' } }, authHeaders());
     assert.equal(crossed.status, 403, crossed.payload.error || '');
-    assert.equal(calls.some(call => call.method === 'DELETE'), false);
+    assert.equal(calls.some(call => call.method === 'DELETE' || call.method === 'PATCH'), false);
 
     calls.length = 0;
     const foreignEmail = await callJson(functions, {
@@ -1153,12 +1164,18 @@ test('handler : delete-user relit la licence et n’efface qu’avec l’e-mail 
       payload: { user_id: targetId, email: 'attacker@evil.test' }
     }, authHeaders());
     assert.equal(foreignEmail.status, 200, foreignEmail.payload.error || '');
-    const emailDelete = calls.find(call => call.method === 'DELETE' && call.url.includes('/rest/v1/licenses?'));
-    assert.ok(emailDelete, 'suppression de licence absente');
-    const emailUrl = decodeURIComponent(emailDelete.url);
-    assert.equal(emailUrl.includes('email=eq.robin@efc.picotrack.fr'), true, emailUrl);
-    assert.equal(emailUrl.includes('environment_code=eq.EFC'), true, emailUrl);
-    assert.equal(emailUrl.includes('attacker@evil.test'), false, emailUrl);
+    const emailWrites = calls.filter(call => call.method === 'PATCH' && call.url.includes('/rest/v1/licenses?'));
+    assert.equal(emailWrites.length, 2, 'les deux licences normalisées doivent être éteintes');
+    for (const call of emailWrites) {
+      const emailUrl = decodeURIComponent(call.url);
+      const body = JSON.parse(call.body || '{}');
+      assert.equal(body.active, false);
+      assert.equal(emailUrl.includes('environment_code=eq.EFC'), true, emailUrl);
+      assert.equal(emailUrl.includes('email=eq.'), false, emailUrl);
+      assert.equal(emailUrl.includes('attacker@evil.test'), false, emailUrl);
+    }
+    assert.equal(emailWrites.some(call => call.url.includes('id=eq.lic-dirty')), true);
+    assert.equal(calls.some(call => call.method === 'DELETE' && call.url.includes('/rest/v1/licenses?')), false);
 
     calls.length = 0;
     const sameEnv = await callJson(functions, {
@@ -1166,10 +1183,11 @@ test('handler : delete-user relit la licence et n’efface qu’avec l’e-mail 
       payload: { user_id: targetId, license_id: 'lic-efc', email: 'attacker@evil.test' }
     }, authHeaders());
     assert.equal(sameEnv.status, 200, sameEnv.payload.error || '');
-    const idDelete = calls.find(call => call.method === 'DELETE' && call.url.includes('licenses?id=eq.lic-efc'));
-    assert.ok(idDelete);
-    assert.equal(decodeURIComponent(idDelete.url).includes('environment_code=eq.EFC'), true, idDelete.url);
-    assert.equal(calls.some(call => call.method === 'DELETE' && decodeURIComponent(call.url).includes('attacker@evil.test')), false);
+    const idPatch = calls.find(call => call.method === 'PATCH' && call.url.includes('licenses?id=eq.lic-efc'));
+    assert.ok(idPatch, 'la licence du compte doit être éteinte par id');
+    assert.equal(JSON.parse(idPatch.body || '{}').active, false);
+    assert.equal(decodeURIComponent(idPatch.url).includes('environment_code=eq.EFC'), true, idPatch.url);
+    assert.equal(calls.some(call => call.method !== 'GET' && decodeURIComponent(call.url).includes('attacker@evil.test')), false);
   });
 });
 
@@ -1946,7 +1964,7 @@ test('handler : create-user plateforme dérive tenant_id de l’environnement ci
 test('handler : function.js range chaque alias PAD dans le pool PAD, NULL et supervision dans le pool supervision, quota inchangé', async () => {
   const { normalizeLicenseType, PAD_LICENSE_ALIASES } = require('./_license-type');
   const padAliases = [...PAD_LICENSE_ALIASES];
-  assert.deepEqual(padAliases, ['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator']);
+  assert.deepEqual(padAliases, ['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator', 'nomade']);
   for (const alias of padAliases) assert.equal(normalizeLicenseType(alias), 'pad', alias);
   assert.equal(normalizeLicenseType(null), 'supervision');
   assert.equal(normalizeLicenseType('supervision'), 'supervision');

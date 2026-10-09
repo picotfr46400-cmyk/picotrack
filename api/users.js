@@ -1,16 +1,9 @@
 const { getSupabaseConfig, json, setCors, bearer, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
 const { interpretedLicenseType, seatLicenseType } = require('./_license-type');
+const { normalizeEmail } = require('./_email');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
-}
-
-function licenseEmailKey(value) {
-  return String(value ?? '').replace(/\s+/g, '').toLowerCase();
-}
-
-function normalizeEmail(value) {
-  return licenseEmailKey(value).slice(0, 320);
 }
 
 function safeArray(value) {
@@ -74,7 +67,7 @@ function normalizeUserRow(row, source, environmentCode, options = {}) {
   };
   if (options.revealLicenseKey) normalized.license_key = row?.license_key || null;
   if (options.revealPermissions) normalized.resolved_permissions = safeObject(row?.resolved_permissions);
-  if (source === 'licenses' && String(row?.email ?? '') !== licenseEmailKey(row?.email || '')) {
+  if (String(row?.email ?? '') !== '' && String(row?.email ?? '') !== normalizeEmail(row?.email || '')) {
     normalized.email_unnormalized = true;
   }
   return normalized;
@@ -179,8 +172,10 @@ async function handleSummary(req, body) {
     if (!row || isPlatformRow(row)) return;
     const normalized = normalizeUserRow(row, source, env, { revealLicenseKey, revealPermissions });
     const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
+    if (!normalized.email_unnormalized) {
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+    }
     rows.push(normalized);
   }
   function pushLicense(row) {

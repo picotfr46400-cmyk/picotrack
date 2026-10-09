@@ -2,8 +2,9 @@ const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, ser
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
-const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota, licenseEmailKey } = require('./function');
+const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota } = require('./function');
 const submissionAudit = require('./_submission-audit');
+const { assertWritableEmail } = require('./_email');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -249,7 +250,7 @@ function normalizeRecord(record, entity = '') {
     if (record.desc && !out.description) out.description = record.desc;
   }
   if ((entity === 'user_profiles' || entity === 'licenses') && typeof out.email === 'string') {
-    out.email = licenseEmailKey(out.email);
+    out.email = assertWritableEmail(out.email);
   }
   delete out.password_hash;
   delete out.supa_key;
