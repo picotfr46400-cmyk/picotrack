@@ -16,6 +16,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 const functions = require('./function');
 const records = require('./records');
 const padAuth = require('./pad-auth');
@@ -1616,7 +1618,7 @@ test('limiteur : majuscules, espace de bord et NFKC partagent le compteur', asyn
       const u = String(url);
       if (u.includes('/auth/v1/token')) {
         tokenCalls += 1;
-        return { ok: false, status: 400, headers: { get: () => 'application/json' }, json: async () => ({ error_description: 'Connexion refusée' }), text: async () => '{"error_description":"Connexion refusée"}' };
+        return { ok: false, status: 400, headers: { get: () => 'application/json' }, json: async () => ({ error_description: 'Invalid login credentials' }), text: async () => '{"error_description":"Invalid login credentials"}' };
       }
       if (u.includes('user_profiles?or=')) {
         assert.equal(decodeURIComponent(u).includes('login_user.eq.PadUser'), true, u);
@@ -1628,6 +1630,8 @@ test('limiteur : majuscules, espace de bord et NFKC partagent le compteur', asyn
     for (let i = 0; i < 8; i += 1) {
       const failed = await callJson(authApi, { action: 'signIn', email: 'bureau@efc.picotrack.fr', password: 'secret' });
       assert.equal(failed.status, 400, failed.payload.error || '');
+      assert.equal(failed.payload.error, 'Identifiants invalides ou compte inactif');
+      assert.equal(JSON.stringify(failed.payload).includes('Invalid login credentials'), false);
     }
     const upper = await callJson(authApi, { action: 'signIn', email: ' BUREAU@EFC.PICOTRACK.FR ', password: 'secret' });
     assert.equal(upper.status, 429, upper.payload.error || '');
@@ -1636,10 +1640,138 @@ test('limiteur : majuscules, espace de bord et NFKC partagent le compteur', asyn
     assert.equal(tokenCalls, 8);
     const broken = await callJson(authApi, { action: 'signIn', email: 'terr ain@efc.picotrack.fr', password: 'secret' });
     assert.equal(broken.status, 400, broken.payload.error || '');
-    assert.equal(broken.payload.error, 'Connexion refusée');
-    assert.equal(tokenCalls, 8);
+    assert.equal(broken.payload.error, 'Identifiants invalides ou compte inactif');
+    assert.equal(tokenCalls, 9);
     const named = await callJson(authApi, { action: 'signIn', email: ' PadUser ', password: 'secret' });
     assert.equal(named.status, 400, named.payload.error || '');
+    assert.equal(named.payload.error, 'Identifiants invalides ou compte inactif');
+  });
+  resetRateLimits();
+});
+
+test('bureau et tablette : pleine chasse acceptée, espace interne identique au mauvais mot de passe, login_user inchangé', async () => {
+  const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
+  const start = bundle.indexOf('function _ptDeskLogin');
+  const end = bundle.indexOf('async function ptSignIn');
+  assert.ok(start >= 0 && end > start, 'normaliseur client absent');
+  assert.match(bundle.slice(end, end + 240), /email:_ptDeskLogin\(e\)/);
+  const deskLogin = new Function(`${bundle.slice(start, end)}; return _ptDeskLogin;`)();
+  const wideEmail = '  \uFF42\uFF55\uFF52\uFF45\uFF41\uFF55\uFF20efc.picotrack.fr  ';
+  assert.equal(deskLogin(wideEmail), 'bureau@efc.picotrack.fr');
+  assert.equal(deskLogin(' PadUser '), 'PadUser');
+  assert.equal(deskLogin('terr ain@efc.picotrack.fr'), 'terr ain@efc.picotrack.fr');
+
+  const hash = '11'.repeat(32);
+  const otherHash = '22'.repeat(32);
+  resetRateLimits();
+  await withSupabase(async () => {
+    const world = worldFor('supervision', {
+      licenses: [{
+        id: 'lic-wide',
+        email: 'bureau@efc.picotrack.fr',
+        environment_code: 'EFC',
+        role: 'pad_user',
+        license_type: 'pad',
+        active: true,
+        password_hash: hash
+      }]
+    });
+    const { calls } = installWorld(world);
+    const wide = await callJson(padAuth, { environment_code: 'EFC', login: wideEmail, password_hash: hash });
+    assert.equal(wide.status, 200, wide.payload.error || '');
+    assert.equal(wide.payload.license.id, 'lic-wide');
+
+    const badPassword = await callJson(padAuth, { environment_code: 'EFC', login: 'bureau@efc.picotrack.fr', password_hash: otherHash });
+    const spaced = await callJson(padAuth, { environment_code: 'EFC', login: 'TERR AIN@EFC.PICOTRACK.FR', password_hash: hash });
+    assert.equal(spaced.status, badPassword.status);
+    assert.deepEqual(spaced.payload, badPassword.payload);
+    assert.equal(spaced.payload.error, 'Identifiants PAD invalides ou licence inactive');
+
+    const before = calls.length;
+    const shortPad = await callJson(padAuth, { environment_code: 'EFC', login: ' PadUser ', password_hash: hash });
+    assert.equal(shortPad.status, badPassword.status);
+    assert.deepEqual(shortPad.payload, badPassword.payload);
+    const lookedUp = calls.slice(before).some(call => decodeURIComponent(call.url).includes('email=eq.paduser'));
+    assert.equal(lookedUp, false);
+  });
+
+  resetRateLimits();
+  await withSupabase(async () => {
+    const tokenEmails = [];
+    let waitMs = 0;
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      if (u.includes('/auth/v1/token')) {
+        const body = JSON.parse(options.body || '{}');
+        tokenEmails.push(body.email);
+        if (waitMs) await new Promise(resolve => setTimeout(resolve, waitMs));
+        if (body.email === 'bureau@efc.picotrack.fr' && body.password === 'secret') {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok', user: { id: 'user-1', email: body.email } }) };
+        }
+        if (body.email === 'pad.user@efc.picotrack.fr' && body.password === 'secret') {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok-pad', user: { id: 'user-2', email: body.email } }) };
+        }
+        if (String(body.email || '').includes(' ')) {
+          return { ok: false, status: 422, text: async () => JSON.stringify({ error_description: 'Unable to validate email address', error: 'invalid_email' }) };
+        }
+        return { ok: false, status: 401, text: async () => JSON.stringify({ error_description: 'Invalid login credentials' }) };
+      }
+      if (u.includes('user_profiles?or=')) {
+        const decoded = decodeURIComponent(u);
+        assert.equal(decoded.includes('login_user.eq.PadUser'), true, decoded);
+        assert.equal(decoded.includes('login_user.eq.paduser'), false, decoded);
+        return { ok: true, status: 200, text: async () => JSON.stringify([{ email: 'pad.user@efc.picotrack.fr', active: true }]) };
+      }
+      return { ok: true, status: 200, text: async () => '[]' };
+    };
+
+    const wide = await callJson(authApi, { action: 'signIn', email: wideEmail, password: 'secret' });
+    assert.equal(wide.status, 200, JSON.stringify(wide.payload));
+    assert.equal(wide.payload.session.access_token, 'tok');
+    assert.equal(tokenEmails[0], 'bureau@efc.picotrack.fr');
+
+    waitMs = 80;
+    const spacedStarted = performance.now();
+    const spaced = await callJson(authApi, { action: 'signIn', email: 'TERR AIN@EFC.PICOTRACK.FR', password: 'secret' });
+    const spacedMs = performance.now() - spacedStarted;
+    const wrongStarted = performance.now();
+    const wrong = await callJson(authApi, { action: 'signIn', email: 'bureau@efc.picotrack.fr', password: 'mauvais' });
+    const wrongMs = performance.now() - wrongStarted;
+    waitMs = 0;
+    assert.equal(spaced.status, wrong.status);
+    assert.equal(spaced.status, 400);
+    assert.deepEqual(spaced.payload, wrong.payload);
+    assert.equal(JSON.stringify(spaced.payload), JSON.stringify(wrong.payload));
+    assert.equal(spaced.payload.error, 'Identifiants invalides ou compte inactif');
+    assert.equal(JSON.stringify(spaced.payload).includes('Invalid login'), false);
+    assert.equal(JSON.stringify(spaced.payload).includes('validate email'), false);
+    assert.equal(tokenEmails.includes('terr ain@efc.picotrack.fr'), true);
+    assert.ok(spacedMs >= 60, `rejet anticipé ${spacedMs.toFixed(0)}ms`);
+    assert.ok(wrongMs >= 60, `mot de passe trop rapide ${wrongMs.toFixed(0)}ms`);
+    assert.ok(Math.abs(spacedMs - wrongMs) < 100, `écart ${Math.abs(spacedMs - wrongMs).toFixed(0)}ms`);
+
+    const named = await callJson(authApi, { action: 'signIn', email: ' PadUser ', password: 'secret' });
+    assert.equal(named.status, 200, JSON.stringify(named.payload));
+    assert.equal(tokenEmails.includes('pad.user@efc.picotrack.fr'), true);
+    assert.equal(tokenEmails.includes('paduser'), false);
+
+    for (let i = 0; i < 7; i += 1) {
+      const failed = await callJson(authApi, { action: 'signIn', email: 'terr ain@efc.picotrack.fr', password: 'secret' });
+      assert.equal(failed.status, 400, failed.payload.error || '');
+    }
+    const blocked = await callJson(authApi, { action: 'signIn', email: 'TERR\u3000AIN@EFC.PICOTRACK.FR', password: 'secret' });
+    assert.equal(blocked.status, 429, blocked.payload.error || '');
+
+    global.fetch = async (url) => {
+      if (String(url).includes('/auth/v1/token')) {
+        return { ok: false, status: 503, text: async () => JSON.stringify({ error_description: 'database unavailable' }) };
+      }
+      return { ok: true, status: 200, text: async () => '[]' };
+    };
+    const down = await callJson(authApi, { action: 'signIn', email: 'autre@efc.picotrack.fr', password: 'secret' });
+    assert.equal(down.status, 503);
+    assert.equal(JSON.stringify(down.payload).includes('database'), false);
+    assert.notEqual(down.payload.error, 'Identifiants invalides ou compte inactif');
   });
   resetRateLimits();
 });

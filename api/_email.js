@@ -7,7 +7,7 @@ function normalizeEmail(value) {
 }
 
 function isEmailLike(value) {
-  return String(value ?? '').includes('@');
+  return normalizeEmail(value).includes('@');
 }
 
 function isValidEmail(value) {

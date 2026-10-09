@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile, fetchUpstream, clientIp, takeAttempt } = require('./_server-supabase');
 const { normalizeEmail, isEmailLike, isValidEmail } = require('./_email');
 
-const GENERIC_SIGN_IN_ERROR = 'Connexion refusée';
+const GENERIC_SIGN_IN_ERROR = 'Identifiants invalides ou compte inactif';
 
 function normalizeProfile(user, profile) {
   if (!user || !profile) return null;
@@ -82,10 +82,8 @@ module.exports = async function handler(req, res) {
       }
       const attempt = takeAttempt(`signin:${clientIp(req)}:${loginEmail || 'unknown'}`);
       if (!attempt.allowed) return json(res, 429, { error: 'Trop de tentatives. Réessayez plus tard.' });
-      if (isEmailLike(rawLogin) && !isValidEmail(rawLogin)) {
-        attempt.fail();
-        return json(res, 400, { error: GENERIC_SIGN_IN_ERROR });
-      }
+      // Un e-mail invalide attend GoTrue, comme un mot de passe refusé, pour
+      // répondre au même moment. Le compteur porte sur la clé déjà normalisée.
       const upstream = await fetchUpstream(`${url}/auth/v1/token?grant_type=password`, {
         method: 'POST',
         headers: { apikey: anonKey, 'Content-Type': 'application/json' },
@@ -93,12 +91,17 @@ module.exports = async function handler(req, res) {
       }, 8000);
       const text = await upstream.text();
       let payload = {};
-      try { payload = JSON.parse(text || '{}'); } catch { payload = { message: text }; }
-      if (!upstream.ok) {
+      try { payload = JSON.parse(text || '{}'); } catch { payload = {}; }
+      const invalidEmail = isEmailLike(rawLogin) && !isValidEmail(rawLogin);
+      if (invalidEmail || !upstream.ok) {
         attempt.fail();
-        return json(res, upstream.status, {
-          error: payload.error_description || payload.msg || payload.error || payload.message || 'Connexion refusée'
-        });
+        if (!invalidEmail && upstream.status >= 500) {
+          return json(res, upstream.status, { error: 'Connexion refusée' });
+        }
+        if (!invalidEmail && upstream.status !== 400 && upstream.status !== 401) {
+          return json(res, upstream.status, { error: 'Connexion refusée' });
+        }
+        return json(res, 400, { error: GENERIC_SIGN_IN_ERROR });
       }
       attempt.ok();
 
