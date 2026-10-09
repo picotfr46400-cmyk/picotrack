@@ -143,6 +143,13 @@ function collect(files, schema) {
   return unknown;
 }
 
+test('schéma de référence : licenses.roles est un jsonb', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '../scripts/schema-public.sql'), 'utf8');
+  const columns = fs.readFileSync(path.join(__dirname, '../supabase/schema/public-columns.sql'), 'utf8');
+  assert.equal(sql, columns);
+  assert.match(sql, /create table licenses \(.*roles jsonb default '\[\]'::jsonb/);
+});
+
 test('schéma réel : select et colonnes écrites existent', () => {
   const sql = fs.readFileSync(path.join(__dirname, '../supabase/schema/public-columns.sql'), 'utf8');
   const schema = schemaColumns(sql);

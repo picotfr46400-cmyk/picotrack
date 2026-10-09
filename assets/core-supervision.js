@@ -2385,15 +2385,28 @@
     });
   }
 
-  window.ptSetRoleAccess = async function (roleId, kind, id, parentId, level) {
-    if (!ptEnvAdminUser()) return toast('e', 'Réservé aux administrateurs de l’environnement.');
-    var role = ptData('roles').find(function (item) { return ptRoleId(item) === String(roleId); });
-    if (!role) return toast('e', 'Enregistrez le rôle avant de régler l’accès.');
-    var perms = Object.assign({}, role.permissions || {});
-    var access = perms.access && typeof perms.access === 'object' ? JSON.parse(JSON.stringify(perms.access)) : { forms: {}, services: {}, statuses: {} };
-    access.forms = access.forms || {};
-    access.services = access.services || {};
-    access.statuses = access.statuses || {};
+  function ptBucketFilled(bucket) {
+    return !!(bucket && typeof bucket === 'object' && !Array.isArray(bucket) && Object.keys(bucket).length);
+  }
+
+  function ptCompactRoleAccess(perms) {
+    if (!perms || typeof perms !== 'object' || Array.isArray(perms)) return perms;
+    var access = perms.access;
+    if (!access || typeof access !== 'object' || Array.isArray(access)) return perms;
+    var statuses = ptBucketFilled(access.statuses) && Object.keys(access.statuses).some(function (key) {
+      return ptBucketFilled(access.statuses[key]);
+    });
+    if (!ptBucketFilled(access.forms) && !ptBucketFilled(access.services) && !statuses) delete perms.access;
+    return perms;
+  }
+
+  function ptApplyRoleAccess(perms, kind, id, parentId, level) {
+    var next = Object.assign({}, perms || {});
+    var source = next.access && typeof next.access === 'object' && !Array.isArray(next.access) ? next.access : {};
+    var access = JSON.parse(JSON.stringify(source));
+    access.forms = access.forms && typeof access.forms === 'object' && !Array.isArray(access.forms) ? access.forms : {};
+    access.services = access.services && typeof access.services === 'object' && !Array.isArray(access.services) ? access.services : {};
+    access.statuses = access.statuses && typeof access.statuses === 'object' && !Array.isArray(access.statuses) ? access.statuses : {};
     if (kind === 'form') {
       if (!level) delete access.forms[id]; else access.forms[id] = level;
     } else if (kind === 'service') {
@@ -2403,7 +2416,15 @@
       if (!level) delete access.statuses[parentId][id]; else access.statuses[parentId][id] = level;
       if (!Object.keys(access.statuses[parentId]).length) delete access.statuses[parentId];
     }
-    perms.access = access;
+    next.access = access;
+    return ptCompactRoleAccess(next);
+  }
+
+  window.ptSetRoleAccess = async function (roleId, kind, id, parentId, level) {
+    if (!ptEnvAdminUser()) return toast('e', 'Réservé aux administrateurs de l’environnement.');
+    var role = ptData('roles').find(function (item) { return ptRoleId(item) === String(roleId); });
+    if (!role) return toast('e', 'Enregistrez le rôle avant de régler l’accès.');
+    var perms = ptApplyRoleAccess(role.permissions || {}, kind, id, parentId, level);
     role.permissions = perms;
     try {
       await ptSaveRolePermissions(role, perms);

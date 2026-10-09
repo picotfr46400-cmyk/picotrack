@@ -1,7 +1,7 @@
 const { getSupabaseConfig, json, setCors, bearer, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
 const { interpretedLicenseType, seatLicenseType } = require('./_license-type');
 const { normalizeEmail } = require('./_email');
-const { canManageUsers, isPlatform, projectAppRoles, unavailable } = require('./_access');
+const { canManageUsers, isPlatform, projectAppRoles, unavailable, readPaged } = require('./_access');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
@@ -174,7 +174,10 @@ async function handleSummary(req, body) {
     licenseStatus === 'inactive' ? Promise.resolve([]) : licenseQuery('eq.true'),
     licenseStatus === 'active' ? Promise.resolve([]) : profileQuery('eq.false'),
     licenseStatus === 'active' ? Promise.resolve([]) : licenseQuery('eq.false'),
-    readCatalog(req, `app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=name.asc&limit=100`)
+    readPaged(100, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return readCatalog(req, `app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=id.asc&limit=100${cursor}`);
+    })
   ]);
   const roleServices = canManageUsers(profile, rolesRows) && !isPlatform(profile)
     ? await readCatalog(req, `services?environment_code=eq.${encodeURIComponent(env)}&select=id,form_id&limit=500`)

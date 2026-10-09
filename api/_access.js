@@ -138,15 +138,45 @@ function entryLevel(role, kind, id, parentId) {
   return '';
 }
 
-// Sans clé access, ou access null : défaut historique. Un objet access,
-// même vide, masque ce qui n'est pas écrit. Une valeur illisible est masquée.
+function plainBucket(bucket) {
+  return !!(bucket && typeof bucket === 'object' && !Array.isArray(bucket));
+}
+
+function accessHasRules(access) {
+  if (!plainBucket(access)) return false;
+  if (plainBucket(access.forms) && Object.keys(access.forms).length) return true;
+  if (plainBucket(access.services) && Object.keys(access.services).length) return true;
+  if (!plainBucket(access.statuses)) return false;
+  return Object.keys(access.statuses).some(key => plainBucket(access.statuses[key]) && Object.keys(access.statuses[key]).length);
+}
+
+// Sans clé access, access null, ou access sans aucune règle : défaut historique.
+// Une chaîne, un tableau, un niveau illisible ou une règle hidden restent masqués.
 function roleAccessMode(role) {
   const perms = rolePermissions(role);
   if (!perms || typeof perms !== 'object' || Array.isArray(perms)) return 'historical';
   if (!Object.prototype.hasOwnProperty.call(perms, 'access') || perms.access == null) return 'historical';
   const access = perms.access;
   if (typeof access !== 'object' || Array.isArray(access)) return 'invalid';
+  if (!accessHasRules(access)) return 'historical';
   return 'configured';
+}
+
+async function readPaged(pageSize, fetchPage) {
+  const out = [];
+  const seen = new Set();
+  let after = '';
+  for (;;) {
+    const rows = await fetchPage(after);
+    if (!Array.isArray(rows)) throw unavailable();
+    out.push(...rows);
+    if (rows.length < pageSize) return out;
+    const last = rows[rows.length - 1] && rows[rows.length - 1].id;
+    const key = last == null ? '' : String(last);
+    if (!key || seen.has(key)) throw unavailable();
+    seen.add(key);
+    after = key;
+  }
 }
 
 function assignedCatalogRoles(profile, catalog) {
@@ -185,9 +215,9 @@ function morePermissive(left, right) {
   return RANK[right] > RANK[left] ? right : left;
 }
 
-// Sans rôle catalogue, ou avec seulement des rôles sans clé access : défaut historique.
-// Un objet access masque une ressource sans règle. Le plus permissif gagne,
-// et un rôle historique compte comme ce défaut.
+// Sans rôle catalogue, ou avec seulement des rôles historiques : défaut historique.
+// Un objet access qui porte une règle masque une ressource absente de cette règle.
+// Le plus permissif gagne, et un rôle historique compte comme ce défaut.
 function foldLevels(profile, catalog, levelOf) {
   if (isPlatform(profile)) return 'write';
   const roles = assignedCatalogRoles(profile, catalog);
@@ -231,7 +261,7 @@ function linkedServices(services, formId) {
 
 // Sans entrée propre, le formulaire prend le plus permissif des workflows qui
 // portent une règle explicite. Un workflow sans règle n'ouvre pas le formulaire
-// quand le rôle a un objet access. Sans clé access, l'accès historique reste.
+// quand le rôle a des règles d'accès. Sans règle, l'accès historique reste.
 function formLevel(profile, catalog, formId, services) {
   if (formId == null || formId === '') return 'normal';
   const linked = linkedServices(services, formId);
@@ -610,6 +640,7 @@ module.exports = {
   effectiveLevel,
   instanceLevel,
   formLevel,
+  readPaged,
   unavailable,
   privilegeDrift,
   isOwnAccount,

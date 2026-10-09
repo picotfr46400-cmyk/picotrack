@@ -185,6 +185,23 @@ async function translate(client, actorOf, url, options, nextAuth) {
     return jsonResponse(200, { id, email: body.email, user: { id, email: body.email } });
   }
   if (target.includes('/auth/v1/admin/users')) return jsonResponse(200, { id: actor.id, email: actor.email });
+  if (target.includes('/rpc/match_short_logins') && method === 'POST') {
+    const login = String(body?.p_login || '').trim();
+    if (!login) return jsonResponse(200, []);
+    const result = await client.query(
+      `SELECT id, email, login_user, username, environment_code
+       FROM user_profiles
+       WHERE upper(btrim(coalesce(environment_code, ''))) = upper(btrim($1))
+         AND (
+           lower(btrim(coalesce(login_user, ''))) = lower(btrim($2))
+           OR lower(btrim(coalesce(username, ''))) = lower(btrim($2))
+         )
+       ORDER BY id
+       LIMIT 2`,
+      [String(body?.p_environment_code || ''), login]
+    );
+    return jsonResponse(200, result.rows);
+  }
   if (!target.includes('/rest/v1/')) return jsonResponse(404, { message: 'hors rest' });
 
   const parsed = new URL(target);
@@ -202,6 +219,8 @@ async function translate(client, actorOf, url, options, nextAuth) {
     const column = quoteIdent(filter.column);
     if (filter.op === 'is' && filter.value === 'null') return `${column} IS NULL`;
     if (filter.op === 'eq') return `${column} = ${literal(filter.value)}`;
+    if (filter.op === 'gt') return `${column} > ${literal(filter.value)}`;
+    if (filter.op === 'gte') return `${column} >= ${literal(filter.value)}`;
     return 'TRUE';
   });
   const clause = where.length ? ` WHERE ${where.join(' AND ')}` : '';

@@ -116,10 +116,9 @@ function firstRow(value) {
   return null;
 }
 
-async function loadRows(req, path, timeoutMs) {
-  const budget = timeoutMs == null ? nextTimeout(req) : Math.floor(Number(timeoutMs) || 0);
-  if (!budget) throw deadlineError();
-  timeoutMs = budget;
+async function loadRows(req, path) {
+  const timeoutMs = nextTimeout(req);
+  if (!timeoutMs) throw deadlineError();
   try {
     const rows = await sbRest(req, path, { method: 'GET', prefer: '', timeoutMs });
     if (!Array.isArray(rows)) throw access.unavailable();
@@ -130,17 +129,20 @@ async function loadRows(req, path, timeoutMs) {
   }
 }
 
-async function loadCatalog(req, environmentCode, timeoutMs) {
-  return loadRows(req, `app_roles?environment_code=eq.${encodeURIComponent(environmentCode)}&active=eq.true&select=id,name,permissions&limit=200`, timeoutMs);
+async function loadCatalog(req, environmentCode) {
+  return access.readPaged(200, (after) => {
+    const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+    return loadRows(req, `app_roles?environment_code=eq.${encodeURIComponent(environmentCode)}&active=eq.true&select=id,name,permissions&order=id.asc&limit=200${cursor}`);
+  });
 }
 
-async function loadServices(req, environmentCode, timeoutMs) {
-  return loadRows(req, `services?environment_code=eq.${encodeURIComponent(environmentCode)}&select=id,form_id,permissions&limit=500`, timeoutMs);
+async function loadServices(req, environmentCode) {
+  return loadRows(req, `services?environment_code=eq.${encodeURIComponent(environmentCode)}&select=id,form_id,permissions&limit=500`);
 }
 
-async function loadById(req, table, environmentCode, id, select, timeoutMs) {
+async function loadById(req, table, environmentCode, id, select) {
   if (!id) return null;
-  const rows = await loadRows(req, `${table}?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=${select}&limit=1`, timeoutMs);
+  const rows = await loadRows(req, `${table}?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=${select}&limit=1`);
   return rows[0] || null;
 }
 
@@ -325,13 +327,15 @@ async function handler(req, res) {
     let catalog = [];
     let serviceIndex = [];
     try {
-      const licenseTimeout = nextTimeout(req);
-      if (!licenseTimeout) throw deadlineError();
-      const licenseRows = await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}&environment_code=eq.${encodeURIComponent(session.environmentCode)}&active=eq.true&select=id,label,email,role,roles,license_type,device_name,active&limit=1`, { method: 'GET', prefer: '', timeoutMs: licenseTimeout });
-      if (!Array.isArray(licenseRows) || !licenseRows.length) throw new Error('Licence PAD inactive ou supprimée');
-      license = licenseRows[0];
-      catalog = await loadCatalog(req, environmentCode, licenseTimeout);
-      serviceIndex = await loadServices(req, environmentCode, licenseTimeout);
+      const loaded = await Promise.all([
+        loadRows(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}&environment_code=eq.${encodeURIComponent(session.environmentCode)}&active=eq.true&select=id,label,email,role,roles,license_type,device_name,active&limit=1`),
+        loadCatalog(req, environmentCode),
+        loadServices(req, environmentCode)
+      ]);
+      if (!loaded[0].length) throw new Error('Licence PAD inactive ou supprimée');
+      license = loaded[0][0];
+      catalog = loaded[1];
+      serviceIndex = loaded[2];
     } catch (err) {
       if (isPadAuthError(err)) throw err;
       const requestId = crypto.randomUUID();
@@ -350,8 +354,7 @@ async function handler(req, res) {
     const profile = padProfile(license, environmentCode);
     for (let index = 0; index < prepared.length; index++) {
       const { item, payload } = prepared[index];
-      const actionTimeout = nextTimeout(req);
-      if (!actionTimeout) {
+      if (!nextTimeout(req)) {
         queueRetries(index);
         break;
       }
@@ -363,8 +366,10 @@ async function handler(req, res) {
         const inst = payload.instance && typeof payload.instance === 'object' ? payload.instance : {};
         const serviceId = item.type === 'service_instance' ? String(inst.service_id || payload.serviceId || payload.service_id || '') : '';
         const statusId = serviceId ? String(inst.current_status_id || inst.status_id || payload.statusId || payload.status_id || '') : '';
-        const form = formId ? await loadById(req, 'forms', environmentCode, formId, 'id,permissions', actionTimeout) : null;
-        const service = serviceId ? await loadById(req, 'services', environmentCode, serviceId, 'id,form_id,permissions', actionTimeout) : null;
+        const [form, service] = await Promise.all([
+          formId ? loadById(req, 'forms', environmentCode, formId, 'id,permissions') : null,
+          serviceId ? loadById(req, 'services', environmentCode, serviceId, 'id,form_id,permissions') : null
+        ]);
         await assertPadWrite(profile, catalog, serviceIndex, form, formId, service, serviceId, statusId);
         if (item.type === 'form_submission') {
           const written = await insertSubmission(req, environmentCode, payload, resolved.key);

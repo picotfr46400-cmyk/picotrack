@@ -677,7 +677,10 @@ async function readStrictRows(req, path) {
 async function loadActiveAppRoles(req, env) {
   const code = normalizeEnvRecordValue(env, '');
   if (!code) return [];
-  return readStrictRows(req, `app_roles?environment_code=eq.${encodeURIComponent(code)}&active=eq.true&select=id,name,permissions&limit=200`);
+  return access.readPaged(200, (after) => {
+    const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+    return readStrictRows(req, `app_roles?environment_code=eq.${encodeURIComponent(code)}&active=eq.true&select=id,name,permissions&order=id.asc&limit=200${cursor}`);
+  });
 }
 
 async function loadServicesIndex(req, profile, env) {
@@ -783,9 +786,12 @@ function applyRoleSelect(rows, select) {
 
 async function readAppRoleCatalog(req, filters) {
   try {
-    const rows = await serviceRead(req, buildReadPath('app_roles', { select: '*', filters, limit: 1000 }));
-    if (!Array.isArray(rows)) throw access.unavailable();
-    return rows;
+    return await access.readPaged(1000, async (after) => {
+      const pageFilters = after ? (Array.isArray(filters) ? filters : []).concat([{ column: 'id', op: 'gt', value: after }]) : filters;
+      const rows = await serviceRead(req, buildReadPath('app_roles', { select: '*', filters: pageFilters, order: 'id.asc', limit: 1000 }));
+      if (!Array.isArray(rows)) throw access.unavailable();
+      return rows;
+    });
   } catch (err) {
     throw access.unavailable(err);
   }

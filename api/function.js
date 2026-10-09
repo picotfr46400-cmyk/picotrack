@@ -2,7 +2,7 @@ const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, get
 const { normalizeLicenseType, seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
 const { normalizeEmail, isValidEmail, assertWritableEmail } = require('./_email');
 const { shortLoginKey, conflictingShortLogin, shortLoginRpcBody, SHORT_LOGIN_RPC } = require('./_short-login');
-const { canManageUsers, unavailable, privilegeDrift, isOwnAccount, assertGrantWithinCeiling, isPlatform } = require('./_access');
+const { canManageUsers, unavailable, privilegeDrift, isOwnAccount, assertGrantWithinCeiling, isPlatform, readPaged } = require('./_access');
 
 const INTERNAL_FUNCTIONS = new Set([
   'list-users',
@@ -74,9 +74,10 @@ async function loadActiveAppRoles(url, serviceRole, environmentCode) {
   const env = normalizeEnvironmentCode(environmentCode || '');
   if (!env) return [];
   try {
-    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,name,permissions&limit=200`, { method: 'GET' });
-    if (!Array.isArray(rows)) throw unavailable();
-    return rows;
+    return await readPaged(200, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return supabaseFetch(url, serviceRole, `/rest/v1/app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,name,permissions&order=id.asc&limit=200${cursor}`, { method: 'GET' });
+    });
   } catch (err) {
     throw unavailable(err);
   }

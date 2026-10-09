@@ -104,9 +104,12 @@ async function assertFormPermission(req, env, formId, profile, action) {
 async function catalogFor(req, env, profile) {
   if (access.isPlatform(profile)) return [];
   try {
-    const rows = await serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,name,permissions&limit=200`, { method: 'GET', prefer: '', req });
-    if (!Array.isArray(rows)) throw access.unavailable();
-    return rows;
+    return await access.readPaged(200, async (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      const rows = await serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,name,permissions&order=id.asc&limit=200${cursor}`, { method: 'GET', prefer: '', req });
+      if (!Array.isArray(rows)) throw access.unavailable();
+      return rows;
+    });
   } catch (err) {
     throw access.unavailable(err);
   }

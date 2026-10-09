@@ -54,6 +54,25 @@ test('Importer / filtres / étiquette ne sont plus des no-op dans le bundle', ()
   assert.equal(bundle.includes('"Disponible","goAutomations()","Configurer"'), false);
 });
 
+test('Par défaut retire la règle, et un access vide redevient historique', () => {
+  const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
+  const start = overlay.indexOf('function ptBucketFilled');
+  const end = overlay.indexOf('window.ptSetRoleAccess', start);
+  assert.ok(start >= 0 && end > start);
+  const apply = vm.runInNewContext(`${overlay.slice(start, end)}\nptApplyRoleAccess;`, {});
+  const before = { manage_users: true };
+  const masked = apply(before, 'form', '1', '', 'hidden');
+  assert.equal(masked.access.forms['1'], 'hidden');
+  const restored = apply(masked, 'form', '1', '', '');
+  assert.equal(Object.prototype.hasOwnProperty.call(restored, 'access'), false);
+  assert.equal(restored.manage_users, before.manage_users);
+  assert.deepEqual(JSON.parse(JSON.stringify(restored)), before);
+  const status = apply({}, 'status', 'st', 'svc', 'read');
+  assert.equal(status.access.statuses.svc.st, 'read');
+  const statusCleared = apply(status, 'status', 'st', 'svc', '');
+  assert.equal(Object.prototype.hasOwnProperty.call(statusCleared, 'access'), false);
+});
+
 test('accès par rôle : écrans et badge dans l’overlay', () => {
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   assert.match(overlay, /Accès par rôle/);

@@ -60,7 +60,7 @@ Les rôles personnalisés vivent dans `app_roles`. Le champ JSON `permissions.ac
 }
 ```
 
-Les niveaux sont `hidden` (masqué), `read` (lecture) et `write` (écriture). L’absence de clé `access` (absente ou `null`) laisse le défaut historique (`permissions.view`, `permissions.submit`, `permissions.edit`, `permissions.delete`, « Visible par »). Le masquage ne s’applique qu’à un rôle dont l’objet `access` est présent : une ressource sans règle, un objet vide `{}`, une valeur illisible ou `hidden` restent masqués. Entre plusieurs rôles, le plus permissif gagne. Un rôle historique sans clé `access` compte comme ce défaut. Un rôle en lecture plus un rôle dont `access` est vide reste donc en lecture.
+Les niveaux sont `hidden` (masqué), `read` (lecture) et `write` (écriture). L’absence de clé `access`, `null`, ou un objet sans aucune règle (`{}` ou des cartes vides) laisse le défaut historique (`permissions.view`, `permissions.submit`, `permissions.edit`, `permissions.delete`, « Visible par »). Un access vide ne masque pas tout. Le masquage s’applique quand l’objet porte au moins une règle : une ressource absente de cette règle, une valeur illisible ou `hidden` restent masqués. Une chaîne ou un tableau à la place de l’objet est illisible et masque. Entre plusieurs rôles, le plus permissif gagne. Un rôle historique compte comme ce défaut et relève une règle plus stricte. Remettre un niveau à « Par défaut » retire l’entrée ; si plus aucune règle ne reste, la clé `access` est supprimée.
 
 Les rôles de place (`supervision_user`, `pad_user`, `operator`, `admin`, …) ne comptent pas comme un rôle catalogue. Les comptes plateforme ne sont pas concernés par le masquage des données.
 

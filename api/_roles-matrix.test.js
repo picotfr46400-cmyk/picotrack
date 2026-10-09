@@ -7,7 +7,8 @@
 // casesForCustomRole({ roleId, forms, services, statuses }) et concaténer le
 // résultat à CUSTOM_ROLE_CASES. Les niveaux sont hidden | read | write.
 // Une ressource absente de la carte n'est pas générée. Sans clé access, le
-// défaut historique reste. Un objet access, même vide, masque ce qui n'est pas écrit.
+// défaut historique reste. Un access vide, null ou sans règle reste historique.
+// Une chaîne, un tableau, un niveau illisible ou hidden masquent.
 // hidden = absent des listes et des comptages, lecture
 // directe 403/404, pas d'export PDF, pas de synchro tablette, pas de trace.
 // read = listes et PDF, écriture 403. write = listes, PDF et écriture.
@@ -2128,7 +2129,7 @@ function accessWorld(roleIds) {
   world.app_roles = [
     { id: MANAGER_ROLE, name: 'Manager', environment_code: 'EFC', active: true, permissions: {} },
     // form-open et le workflow parent du statut sont des porteurs explicites :
-    // sans règle, la décision « rôle vide = rien » les masquerait et masquerait
+    // une ressource absente d'un access qui a des règles serait masquée, y compris
     // la ressource réellement sous test. Le statut garde sa règle propre.
     { id: ROLE_H, name: 'Masqué', environment_code: 'EFC', active: true, permissions: rolePermissions({ 'form-h': 'hidden', 'form-open': 'write' }, { 'svc-h': 'hidden', 'svc-st-h': 'write' }, { 'svc-st-h': { 'st-h': 'hidden' } }) },
     { id: ROLE_R, name: 'Lecture', environment_code: 'EFC', active: true, permissions: rolePermissions({ 'form-r': 'read', 'form-open': 'write' }, { 'svc-r': 'read', 'svc-st-r': 'write' }, { 'svc-st-r': { 'st-r': 'read' } }) },
@@ -2293,7 +2294,7 @@ test('rôles personnalisés : hidden, read et write sur les vrais handlers', asy
   });
 });
 
-test('rôles personnalisés : le plus permissif gagne, un rôle vide n’ouvre pas l’écriture', async () => {
+test('rôles personnalisés : le plus permissif gagne, un access vide reste historique', async () => {
   await withSupabase(async () => {
     const both = accessWorld([ROLE_H, ROLE_W]);
     both.app_roles.find(role => role.id === ROLE_W).permissions.access.forms['form-h'] = 'write';
@@ -2308,15 +2309,15 @@ test('rôles personnalisés : le plus permissif gagne, un rôle vide n’ouvre p
     const readable = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-r' }] });
     assert.equal(readable.status, 200, readable.payload.error || '');
     assert.equal(listedIds(readable.payload).includes('form-r'), true);
-    const denied = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-r', values: { nom: 'non' } } });
-    assert.equal(denied.status, 403, denied.payload.error || '');
+    const raised = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-r', values: { nom: 'oui' } } });
+    assert.equal(raised.status, 200, raised.payload.error || '');
 
     const hidden = accessWorld([ROLE_H, ROLE_OPEN]);
     installWorld(hidden);
     const still = await callJson(records, { action: 'list', entity: 'forms' });
-    assert.equal(listedIds(still.payload).includes('form-h'), false);
-    const hiddenSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-h', values: { nom: 'non' } } });
-    assert.equal(hiddenSave.status, 404, hiddenSave.payload.error || '');
+    assert.equal(listedIds(still.payload).includes('form-h'), true);
+    const hiddenSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-h', values: { nom: 'oui' } } });
+    assert.equal(hiddenSave.status, 200, hiddenSave.payload.error || '');
 
     const plain = accessWorld([]);
     installWorld(plain);
@@ -2501,8 +2502,8 @@ test('formulaire sans droit propre : le workflow le plus permissif décide', asy
     link(open, 'svc-inherit-h', 'hidden', ROLE_H);
     open.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
     installWorld(open);
-    const staysClosed = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'non' } } });
-    assert.equal(staysClosed.status, 404, staysClosed.payload.error || '');
+    const restored = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'oui' } } });
+    assert.equal(restored.status, 200, restored.payload.error || '');
   });
 });
 
@@ -2799,6 +2800,24 @@ test('rôle sans clé access : historique conservé, clé invalide et hidden mas
     const keptSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-open', values: { nom: 'historique' } } });
     assert.equal(keptSave.status, 200, keptSave.payload.error || '');
 
+    for (const accessValue of [{}, null, { forms: {}, services: {}, statuses: {} }]) {
+      const empty = accessWorld(LEGACY);
+      empty.app_roles.push({ id: LEGACY, name: 'Historique', environment_code: 'EFC', active: true, permissions: { access: accessValue } });
+      installWorld(empty);
+      const same = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-open', values: { nom: 'vide' } } });
+      assert.equal(same.status, 200, same.payload.error || '');
+      const sameList = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-h' }] });
+      assert.equal(sameList.status, 200, sameList.payload.error || '');
+    }
+
+    for (const accessValue of ['masque', []]) {
+      const closed = accessWorld(PARTIAL);
+      closed.app_roles.push({ id: PARTIAL, name: 'Partiel', environment_code: 'EFC', active: true, permissions: { access: accessValue } });
+      installWorld(closed);
+      const blocked = await callJson(records, { action: 'list', entity: 'forms', filters: [{ column: 'id', op: 'eq', value: 'form-open' }] });
+      assert.equal(blocked.status, 404, blocked.payload.error || '');
+    }
+
     const invalid = accessWorld(PARTIAL);
     invalid.app_roles.push({ id: PARTIAL, name: 'Partiel', environment_code: 'EFC', active: true, permissions: { access: { forms: { 'form-open': 'nawak' } } } });
     installWorld(invalid);
@@ -2893,4 +2912,17 @@ test('liste et sauvegarde des rôles : catalogue complet, puis filtre, jamais le
     assert.equal(unavailable.status, 503, unavailable.payload.error || '');
     assert.equal(unavailable.payload.error, 'Service indisponible.');
   });
+});
+
+test('catalogue de rôles : une page pleine continue, une page sans id échoue', async () => {
+  const { readPaged } = require('./_access');
+  const calls = [];
+  const rows = await readPaged(2, async (after) => {
+    calls.push(after);
+    if (!after) return [{ id: 'a' }, { id: 'b' }];
+    return [{ id: 'c' }];
+  });
+  assert.deepEqual(calls, ['', 'b']);
+  assert.deepEqual(rows.map(row => row.id), ['a', 'b', 'c']);
+  await assert.rejects(() => readPaged(1, async () => [{ name: 'sans-id' }]), /indisponible/);
 });
