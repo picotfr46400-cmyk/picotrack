@@ -2,7 +2,7 @@ const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, ser
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
-const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile } = require('./function');
+const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota } = require('./function');
 const submissionAudit = require('./_submission-audit');
 
 const ENTITIES = new Set([
@@ -885,6 +885,7 @@ async function handleSave(req, body) {
   req.picoReaderProfile = profile;
   assertEntityWrite(entity, profile);
   const source = body.record || body.body;
+  const requestedLicenseId = String((source && source.license_id) || body.license_id || '').trim().slice(0, 80);
   const record = normalizeRecord(source, entity);
   if (!isPlatformLicenseManagerProfile(profile)) applyWriteWhitelist(record, entity);
 
@@ -991,6 +992,22 @@ async function handleSave(req, body) {
         record.license_type = seatLicenseType(after);
         after.license_type = record.license_type;
       }
+      const explicitActive = Object.prototype.hasOwnProperty.call(record, 'active') && (record.active === true || record.active === false);
+      const turningOn = explicitActive && record.active === true && existingRow?.active === false;
+      const turningOff = explicitActive && record.active === false && existingRow?.active !== false;
+      const accountForLicense = existingRow ? {
+        id: existingRow.id,
+        email: existingRow.email,
+        environment_code: existingRow.environment_code || record.environment_code,
+        license_type: after.license_type,
+        role: after.role,
+        roles: after.roles
+      } : null;
+      let explicitLicense = null;
+      if (entity === 'user_profiles' && turningOn && requestedLicenseId && accountForLicense) {
+        const { url, serviceRole } = getSupabaseConfig(req);
+        explicitLicense = await resolveReactivationLicense(url, serviceRole, accountForLicense, requestedLicenseId);
+      }
       if (updateAddsActiveSeat(creating ? { active: false } : existingRow, after)) {
         const { url, serviceRole } = getSupabaseConfig(req);
         await assertQuotaAvailable(url, serviceRole, {
@@ -1001,9 +1018,10 @@ async function handleSave(req, body) {
           active: true
         }, entity === 'user_profiles' ? (id || null) : null);
       }
-      const explicitActive = Object.prototype.hasOwnProperty.call(record, 'active') && (record.active === true || record.active === false);
-      const turningOn = explicitActive && record.active === true && existingRow?.active === false;
-      const turningOff = explicitActive && record.active === false && existingRow?.active !== false;
+      if (explicitLicense && accountForLicense) {
+        const { url, serviceRole } = getSupabaseConfig(req);
+        await assertExplicitLicenseQuota(url, serviceRole, accountForLicense, explicitLicense, id || null);
+      }
       if (entity === 'user_profiles' && id && existingRow && (turningOn || turningOff)) {
         const { url, serviceRole } = getSupabaseConfig(req);
         profileSnapshot = snapshotUserProfile(existingRow);
@@ -1012,7 +1030,7 @@ async function handleSave(req, body) {
           id: existingRow.id,
           email: existingRow.email,
           environment_code: existingRow.environment_code || record.environment_code
-        }, turningOn);
+        }, turningOn, { licenseId: turningOn ? requestedLicenseId : '' });
       }
     }
   }
@@ -1022,6 +1040,23 @@ async function handleSave(req, body) {
   applyServerTenant(record, entity, profile);
   if (id) await assertNotPlatformTarget(req, entity, id, profile);
   if (!id) delete record.id;
+
+  if (!id && (entity === 'submissions' || entity === 'service_instances') && String(record.device || '').toLowerCase() === 'pad') {
+    const padSync = require('./pad-sync');
+    const savedRow = await padSync.insertPadRecord(req, {
+      entity,
+      record,
+      license: String(profile && profile.id || ''),
+      localId: String(body.client_id || body.local_id || (source && source.local_id) || '').trim(),
+      createdAt: String(body.client_created_at || (source && source.created_at) || '').trim()
+    });
+    const saved = savedRow ? [savedRow] : [];
+    await submissionAudit.recordSave(req, {
+      serviceRest, user, profile, entity, id, record, env,
+      before: null, form: auditForm, service: auditService, saved
+    });
+    return saved;
+  }
 
   const method = id ? 'PATCH' : 'POST';
   let path = id ? `${entity}?id=eq.${encodeURIComponent(id)}` : entity;

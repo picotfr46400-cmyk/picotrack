@@ -267,7 +267,7 @@ async function runPadHandler() {
     const freshAgain = await callPad([formAction('act-fresh', 'Sans reçu')]);
     assert.equal(freshAgain.status, 200, JSON.stringify(freshAgain.payload));
     assert.equal(String(freshAgain.payload.results[0].row.id), String(ignoredReceipt.payload.results[0].row.id));
-    assert.equal(psql(`select count(*) from public.submissions where idempotency_key = 'pad:act-fresh'`), '1');
+    assert.equal(psql(`select count(*) from public.submissions where idempotency_key = ${sqlText(padSync.resolveIdempotencyKey('lic-e2e', formAction('act-fresh', 'Sans reçu')).key)}`), '1');
     assert.equal(psql(`select status from public.pad_sync_receipts where action_id = 'act-fresh'`), 'pending');
 
     const serviceAction = {
@@ -309,10 +309,10 @@ async function runPadHandler() {
         }
         return formAction(id, id);
       });
-      const keyLike = sqlText(`pad:${prefix}-%`);
-      const submissionCount = () => psql(`select count(*) from public.submissions where idempotency_key like ${keyLike}`);
-      const instanceCount = () => psql(`select count(*) from public.service_instances where idempotency_key like ${keyLike}`);
-      const duplicates = (table) => psql(`select count(*) from (select idempotency_key from public.${table} where idempotency_key like ${keyLike} group by environment_code, idempotency_key having count(*) > 1) d`);
+      const keyList = actions.map((action) => sqlText(padSync.resolveIdempotencyKey('lic-e2e', action).key)).join(',');
+      const submissionCount = () => psql(`select count(*) from public.submissions where idempotency_key in (${keyList})`);
+      const instanceCount = () => psql(`select count(*) from public.service_instances where idempotency_key in (${keyList})`);
+      const duplicates = (table) => psql(`select count(*) from (select idempotency_key from public.${table} where idempotency_key in (${keyList}) group by environment_code, idempotency_key having count(*) > 1) d`);
       const first = await callPad(actions);
       assert.equal(first.status, 200, `${prefix} ${delayMs} ${JSON.stringify(first.payload && first.payload.error)}`);
       assert.equal(first.payload.synced, 25);
@@ -355,21 +355,24 @@ async function runPadHandler() {
     const retryRows = partial.payload.results.filter((row) => row.status === 'retry');
     assert.equal(retryRows.length, partial.payload.retry.length);
     assert.equal(retryRows.every((row) => row.row == null), true);
-    assert.equal(psql(`select count(*) from public.submissions where idempotency_key like 'pad:cut-%'`), String(25 - partial.payload.retry.length));
+    const cutKeys = cut.map((action) => sqlText(padSync.resolveIdempotencyKey('lic-e2e', action).key)).join(',');
+    assert.equal(psql(`select count(*) from public.submissions where idempotency_key in (${cutKeys})`), String(25 - partial.payload.retry.length));
     pace.delayMs = 0;
     padSync.deadlineMs = padSync.REQUEST_DEADLINE_MS;
     const cutAgain = await callPad(cut);
     assert.equal(cutAgain.status, 200, JSON.stringify(cutAgain.payload));
     assert.equal(cutAgain.payload.synced, 25);
-    assert.equal(psql(`select count(*) from public.submissions where idempotency_key like 'pad:cut-%'`), '25');
-    assert.equal(psql(`select count(*) from (select idempotency_key from public.submissions where idempotency_key like 'pad:cut-%' group by environment_code, idempotency_key having count(*) > 1) d`), '0');
+    assert.equal(psql(`select count(*) from public.submissions where idempotency_key in (${cutKeys})`), '25');
+    assert.equal(psql(`select count(*) from (select idempotency_key from public.submissions where idempotency_key in (${cutKeys}) group by environment_code, idempotency_key having count(*) > 1) d`), '0');
   } finally {
     server.close();
   }
 }
 
-runPadHandler().then(() => {
+runPadHandler().then(async () => {
   console.log('journal postgres: ok');
+  await require('./pad-client-e2e').run();
+  console.log('client e2e: ok');
 }).catch((err) => {
   console.error(err);
   process.exit(1);

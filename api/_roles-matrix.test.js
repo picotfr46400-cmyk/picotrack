@@ -384,6 +384,10 @@ test('matrice : handlers selon le rôle et la licence', async () => {
     ['supervision', 'function', { functionName: 'create-user', payload: { email: 'new@efc.picotrack.fr', password: 'motdepasse', role: 'super_admin', license_type: 'supervision', environment_code: 'ACME', firstname: 'Neo' } }, 200],
     ['client_admin', 'function', { functionName: 'create-user', payload: { email: 'new-ca@efc.picotrack.fr', password: 'motdepasse', role: 'environment_admin', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neo' } }, 200],
     ['pad', 'records', { action: 'list', entity: 'licenses', environment_code: 'ACME' }, 403],
+    ['pad', 'users', { action: 'summary', environment_code: 'EFC', license_status: 'inactive' }, 403],
+    ['supervision', 'users', { action: 'summary', environment_code: 'EFC', license_status: 'inactive' }, 200],
+    ['pad', 'function', { functionName: 'list-users', payload: { environment_code: 'EFC', license_status: 'inactive' } }, 403],
+    ['supervision', 'function', { functionName: 'list-users', payload: { environment_code: 'EFC', license_status: 'inactive' } }, 200],
     ['operator_pad', 'records', { action: 'list', entity: 'licenses' }, 403],
     ['supervision', 'records', { action: 'list', entity: 'licenses', environment_code: 'ACME' }, 200],
     ['operator_supervision', 'records', { action: 'list', entity: 'licenses' }, 200],
@@ -666,6 +670,7 @@ test('B2 : une licence autonome se supprime par son id, sans le compte qui parta
       licenses: [
         { id: 'lic-bob', email: 'bob@acme.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true },
         { id: 'lic-root', email: 'root@picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true },
+        // chemin hors EFC : la table licenses d'EFC n'a pas de colonne user_id. Ce rattachement ne couvre que les bases qui l'ont.
         { id: 'lic-link', email: 'bob@acme.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true, user_id: 'bob-1' },
         { id: 'lic-global', email: 'root@picotrack.fr', environment_code: 'GLOBAL', role: 'super_admin', license_type: 'super_admin', active: true }
       ]
@@ -945,14 +950,20 @@ test('B6 : désactiver puis réactiver remet la licence, et refuse plafond ou do
     const world = worldFor('supervision', {
       profiles: [target],
       licenses: [
-        { id: 'lic-a', email: 'TERRAIN@EFC.PICOTRACK.FR', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false },
-        { id: 'lic-b', email: ' terrain@efc.picotrack.fr ', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false }
+        { id: 'lic-a', email: 'TERRAIN@EFC.PICOTRACK.FR', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false, label: 'Terrain', license_key: 'lk-secret-value', password_hash: 'pw-secret-value' },
+        { id: 'lic-b', email: ' terrain@efc.picotrack.fr ', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false, label: 'Doublon', license_key: 'lk-secret-value', password_hash: 'pw-secret-value' }
       ]
     });
     const { writes } = installWorld(world);
     const on = await callJson(functions, { functionName: 'update-user', payload: { id: 'pad-off', active: true } });
     assert.equal(on.status, 409, on.payload.error || '');
     assert.match(on.payload.error || '', /licences/i);
+    assert.match(on.payload.error || '', /lic-a/);
+    assert.match(on.payload.error || '', /lic-b/);
+    assert.match(on.payload.error || '', /lic-a, type pad, état inactif, libellé Terrain/);
+    assert.match(on.payload.error || '', /lic-b, type pad, état inactif, libellé Doublon/);
+    assert.equal((on.payload.error || '').includes('lk-secret-value'), false);
+    assert.equal((on.payload.error || '').includes('pw-secret-value'), false);
     assert.equal(world.user_profiles.find(row => row.id === 'pad-off').active, false);
     assert.equal(world.licenses.find(row => row.id === 'lic-a').active, false);
     assert.equal(world.licenses.find(row => row.id === 'lic-b').active, false);
@@ -974,6 +985,7 @@ test('B6 : désactiver puis réactiver remet la licence, et refuse plafond ou do
     const world = worldFor('supervision', {
       profiles: [target],
       licenses: [
+        // chemin hors EFC : user_id n'existe pas sur licenses chez EFC. La réactivation liée ne s'applique que si la colonne est présente.
         { id: 'lic-link', email: 'autre@efc.picotrack.fr', environment_code: 'EFC', user_id: 'pad-off', role: 'pad_user', license_type: 'pad', active: true },
         { id: 'lic-mail', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: true },
         { id: 'lic-acme', email: 'terrain@efc.picotrack.fr', environment_code: 'ACME', role: 'pad_user', license_type: 'pad', active: true }
@@ -1179,5 +1191,155 @@ test('bug : un compte inactif n’ouvre plus utilisateurs, rendez-vous ni e-mail
     assert.equal(mail.status, 403, mail.payload.error || '');
     assert.equal(forms.status, 403, forms.payload.error || '');
     assert.match(`${summary.payload.error} ${planning.payload.error} ${mail.payload.error} ${forms.payload.error}`, /désactivé/i);
+  });
+});
+
+test('licences inactives : filtre d’environnement, suppression par id, license_id et quota', async () => {
+  await withSupabase(async () => {
+    const dormant = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: false, label: 'Compte' };
+    const world = worldFor('supervision', {
+      profiles: [dormant],
+      licenses: [
+        { id: 'lic-efc', email: 'TERRAIN@EFC.PICOTRACK.FR', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false, label: 'Choisie', password_hash: 'pw-secret-value', license_key: 'lk-secret-value' },
+        { id: 'lic-other', email: ' autre@efc.picotrack.fr ', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false, label: 'Autre' },
+        { id: 'lic-acme', email: 'terrain@efc.picotrack.fr', environment_code: 'ACME', role: 'pad_user', license_type: 'pad', active: false, label: 'Acme' },
+        { id: 'lic-plat', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'super_admin', license_type: 'pad', active: false, label: 'Plateforme' }
+      ]
+    });
+    installWorld(world);
+    const summary = await callJson(usersApi, { action: 'summary', environment_code: 'EFC', license_status: 'inactive' });
+    assert.equal(summary.status, 200, summary.payload.error || '');
+    const ids = summary.payload.rows.map(row => row.id);
+    assert.equal(ids.includes('lic-efc'), true);
+    assert.equal(ids.includes('lic-other'), true);
+    assert.equal(ids.includes('pad-duo'), true);
+    assert.equal(ids.includes('lic-acme'), false);
+    assert.equal(ids.includes('lic-plat'), false);
+    assert.equal(JSON.stringify(summary.payload).includes('pw-secret-value'), false);
+    const listed = await callJson(functions, { functionName: 'list-users', payload: { environment_code: 'EFC', license_status: 'inactive' } });
+    assert.equal(listed.status, 200, listed.payload.error || '');
+    assert.equal(listed.payload.rows.some(row => row.id === 'lic-acme'), false);
+    assert.equal(listed.payload.rows.some(row => row.id === 'lic-efc'), true);
+    const otherEnv = await callJson(usersApi, { action: 'summary', environment_code: 'ACME', license_status: 'inactive' });
+    assert.equal(otherEnv.status, 403, otherEnv.payload.error || '');
+
+    const removed = await callJson(functions, { functionName: 'delete-user', payload: { id: 'lic-other', user_id: 'lic-other' } });
+    assert.equal(removed.status, 200, removed.payload.error || '');
+    assert.equal(world.licenses.some(row => row.id === 'lic-other'), false);
+    assert.equal(world.licenses.some(row => row.id === 'lic-acme'), true);
+    assert.equal(world.user_profiles.some(row => row.id === 'pad-duo'), true);
+  });
+
+  await withSupabase(async () => {
+    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: false };
+    const world = worldFor('supervision', {
+      profiles: [target],
+      licenses: [
+        { id: 'lic-efc-a', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false, label: 'A' },
+        { id: 'lic-efc-b', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'supervision_user', license_type: 'supervision', active: false, label: 'B' },
+        { id: 'lic-acme', email: 'terrain@efc.picotrack.fr', environment_code: 'ACME', role: 'pad_user', license_type: 'pad', active: true, label: 'Acme' }
+      ]
+    });
+    const { writes } = installWorld(world);
+    const on = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'pad-duo', active: true, license_id: 'lic-efc-a' }
+    });
+    assert.equal(on.status, 200, on.payload.error || '');
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, true);
+    assert.equal(world.licenses.find(row => row.id === 'lic-efc-a').active, true);
+    assert.equal(world.licenses.find(row => row.id === 'lic-efc-b').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-acme').active, true);
+    world.user_profiles.find(row => row.id === 'pad-duo').active = false;
+    world.licenses.find(row => row.id === 'lic-efc-a').active = false;
+    writes.length = 0;
+    const viaRecords = await callJson(records, {
+      action: 'save',
+      entity: 'user_profiles',
+      id: 'pad-duo',
+      record: { active: true, license_id: 'lic-efc-a' }
+    });
+    assert.equal(viaRecords.status, 200, viaRecords.payload.error || '');
+    assert.equal(world.licenses.find(row => row.id === 'lic-efc-a').active, true);
+    assert.equal(world.licenses.find(row => row.id === 'lic-efc-b').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-acme').active, true);
+    assert.equal(writes.some(entry => entry.body && entry.body.license_id), false);
+  });
+
+  await withSupabase(async () => {
+    const holder = { id: 'pad-full', email: 'full@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true };
+    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: false };
+    const world = worldFor('supervision', {
+      profiles: [holder, target],
+      licenses: [
+        { id: 'lic-pad', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false }
+      ],
+      limits: [{ id: 'lim-efc', environment_code: 'EFC', supervision_limit: 10, pad_limit: 1, lecture_limit: 5 }]
+    });
+    const { writes } = installWorld(world);
+    const ceiling = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'pad-duo', active: true, license_id: 'lic-pad' }
+    });
+    assert.equal(ceiling.status, 403, ceiling.payload.error || '');
+    assert.match(ceiling.payload.error || '', /PAD Terrain/);
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-pad').active, false);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+    const viaRecords = await callJson(records, {
+      action: 'save',
+      entity: 'user_profiles',
+      id: 'pad-duo',
+      record: { active: true, license_id: 'lic-pad' }
+    });
+    assert.equal(viaRecords.status, 403, viaRecords.payload.error || '');
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-pad').active, false);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+  });
+
+  await withSupabase(async () => {
+    const target = { id: 'pad-duo', email: 'terrain@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: false };
+    const world = worldFor('supervision', {
+      profiles: [target],
+      licenses: [
+        { id: 'lic-mail', email: 'autre@efc.picotrack.fr', environment_code: 'EFC', role: 'pad_user', license_type: 'pad', active: false },
+        { id: 'lic-acme', email: 'terrain@efc.picotrack.fr', environment_code: 'ACME', role: 'pad_user', license_type: 'pad', active: false },
+        { id: 'lic-plat', email: 'terrain@efc.picotrack.fr', environment_code: 'EFC', role: 'super_admin', license_type: 'super_admin', scope: 'platform', active: false }
+      ]
+    });
+    const { writes } = installWorld(world);
+    const otherEmail = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'pad-duo', active: true, license_id: 'lic-mail' }
+    });
+    assert.equal(otherEmail.status, 403, otherEmail.payload.error || '');
+    assert.match(otherEmail.payload.error || '', /ne correspond pas/);
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-mail').active, false);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+
+    writes.length = 0;
+    const otherEnv = await callJson(records, {
+      action: 'save',
+      entity: 'user_profiles',
+      id: 'pad-duo',
+      record: { active: true, license_id: 'lic-acme' }
+    });
+    assert.equal(otherEnv.status, 403, otherEnv.payload.error || '');
+    assert.match(otherEnv.payload.error || '', /ne correspond pas/);
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
+    assert.equal(world.licenses.find(row => row.id === 'lic-acme').active, false);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
+
+    writes.length = 0;
+    const platformRow = await callJson(functions, {
+      functionName: 'update-user',
+      payload: { id: 'pad-duo', active: true, license_id: 'lic-plat' }
+    });
+    assert.equal(platformRow.status, 403, platformRow.payload.error || '');
+    assert.equal(world.licenses.find(row => row.id === 'lic-plat').active, false);
+    assert.equal(world.user_profiles.find(row => row.id === 'pad-duo').active, false);
+    assert.equal(writes.some(entry => entry.method === 'POST' || entry.method === 'PATCH'), false);
   });
 });

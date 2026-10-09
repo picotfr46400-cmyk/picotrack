@@ -57,7 +57,7 @@ test('limiteur de tentatives bloque au seuil puis se réinitialise', () => {
 
 test('routes fonction : internes, pad-sync, le reste refusé', () => {
   assert.equal(handler.resolveFunctionRoute('delete-user'), 'internal');
-  assert.equal(handler.resolveFunctionRoute('pad-sync'), 'edge');
+  assert.equal(handler.resolveFunctionRoute('pad-sync'), 'pad-sync');
   assert.equal(handler.resolveFunctionRoute('admin-export'), 'deny');
   assert.equal(handler.resolveFunctionRoute('../auth'), 'deny');
 });

@@ -138,13 +138,15 @@ test('C2 : les secrets ne sortent pas, le métier et le rôle légitime restent'
   assert.equal(records.redactRecordsPayload([{ license_key: 'visible', id: '9' }], supervision)[0].license_key, 'visible');
 });
 
-test('PAD : login et proxy de sync ne sont pas modifiés par ce hotfix', () => {
+test('PAD : login inchangé, synchro servie par le handler local', () => {
   const padAuth = fs.readFileSync(path.join(__dirname, 'pad-auth.js'), 'utf8');
   const padSync = fs.readFileSync(path.join(__dirname, 'pad-sync.js'), 'utf8');
   const fn = fs.readFileSync(path.join(__dirname, 'function.js'), 'utf8');
   assert.match(padAuth, /password_hash=eq\./);
   assert.match(padSync, /verifyToken/);
-  assert.match(fn, /\/functions\/v1\//);
+  assert.equal(fn.includes('/functions/v1/'), false);
+  assert.match(fn, /functionName === 'pad-sync'/);
+  assert.match(fn, /require\('\.\/pad-sync'\)/);
 });
 
 const SUPA = 'https://hotfix-test.supabase.co';

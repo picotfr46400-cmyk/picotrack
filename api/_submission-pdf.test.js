@@ -1052,7 +1052,7 @@ for (const alias of ['pad_terrain', 'terrain', 'mobile', 'operator', 'operateur'
           const id = decodeURIComponent(match[1]);
           return jsonResponse(200, forms.filter((form) => form.id === id));
         }
-        if (u.includes('/rest/v1/submissions') && !u.includes('?')) return jsonResponse(200, [{ id: 'sub-new' }]);
+        if (u.includes('/rest/v1/submissions') && (u.includes('on_conflict=') || !u.includes('?'))) return jsonResponse(200, [{ id: 'sub-new' }]);
         return jsonResponse(200, []);
       };
 
