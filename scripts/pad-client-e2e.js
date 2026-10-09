@@ -87,7 +87,7 @@ function bootQueue(storage, fetchImpl, token) {
     crypto: globalThis.crypto,
     fetch: fetchImpl,
     isPadMode() { return true; },
-    getPadConfig() { return { licenseId: 'lic-e2e', padSessionToken: token }; },
+    getPadConfig() { return { licenseId: '424242', padSessionToken: token }; },
     console,
     setTimeout,
     clearTimeout,
@@ -129,9 +129,9 @@ async function run() {
     grant usage on schema public to service_role, anon, authenticated;
     grant all privileges on all tables in schema public to service_role;
     grant all privileges on all sequences in schema public to service_role;
-    insert into public.licenses (id, label, email, role, license_type, device_name, active, environment_code)
-    values ('lic-e2e', 'Tablette', 'pad@efc.picotrack.fr', 'pad_user', 'pad', 'Tab', true, 'EFC')
-    on conflict (id) do nothing;
+    delete from public.licenses where id = 424242;
+    insert into public.licenses (id, environment_code, license_key, license_type, label, email, role, device_name, active)
+    values (424242, 'EFC', 'pad-e2e', 'pad', 'Tablette', 'pad@efc.picotrack.fr', 'pad_user', 'Tab', true);
   `);
 
   const pgPort = 34123;
@@ -270,7 +270,7 @@ async function run() {
     process.env.SUPABASE_ANON_KEY = 'anon-test';
     process.env.SUPABASE_SERVICE_ROLE_KEY = serviceJwt();
     const token = signPayload({ headers: { host: 'localhost' } }, {
-      typ: 'pad', licenseId: 'lic-e2e', environmentCode: 'EFC', exp: Date.now() + 10 * 60 * 1000
+      typ: 'pad', licenseId: '424242', environmentCode: 'EFC', exp: Date.now() + 10 * 60 * 1000
     });
 
     async function clientFetch(url, options) {

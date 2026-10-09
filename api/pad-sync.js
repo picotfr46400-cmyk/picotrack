@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { sendJson, setCors, verifyToken, sbRest } = require('./_pad-security');
 const submissionAudit = require('./_submission-audit');
+const access = require('./_access');
 
 const REQUEST_DEADLINE_MS = 10000;
 const MIN_CALL_MS = 50;
@@ -113,6 +114,65 @@ function firstRow(value) {
   if (Array.isArray(value)) return value.find((row) => row && row.id != null) || null;
   if (value && typeof value === 'object' && value.id != null) return value;
   return null;
+}
+
+async function loadRows(req, path) {
+  const timeoutMs = nextTimeout(req);
+  if (!timeoutMs) throw deadlineError();
+  try {
+    const rows = await sbRest(req, path, { method: 'GET', prefer: '', timeoutMs });
+    if (!Array.isArray(rows)) throw access.unavailable();
+    return rows;
+  } catch (err) {
+    if (err && (err.code === 'DEADLINE' || err.status === 504)) throw err.code === 'DEADLINE' ? err : deadlineError();
+    throw access.unavailable(err);
+  }
+}
+
+async function loadCatalog(req, environmentCode) {
+  return access.readPaged(200, (after) => {
+    const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+    return loadRows(req, `app_roles?environment_code=eq.${encodeURIComponent(environmentCode)}&active=eq.true&select=id,name,permissions&order=id.asc&limit=200${cursor}`);
+  });
+}
+
+async function loadServices(req, environmentCode) {
+  return loadRows(req, `services?environment_code=eq.${encodeURIComponent(environmentCode)}&select=id,form_id,permissions&limit=500`);
+}
+
+async function loadById(req, table, environmentCode, id, select) {
+  if (!id) return null;
+  const rows = await loadRows(req, `${table}?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=${select}&limit=1`);
+  return rows[0] || null;
+}
+
+function padProfile(license, environmentCode) {
+  return {
+    id: license.id,
+    role: license.role || 'pad_user',
+    roles: license.roles || [],
+    license_type: license.license_type || 'pad',
+    environment_code: environmentCode,
+    active: license.active !== false
+  };
+}
+
+async function assertPadWrite(profile, catalog, services, form, formId, service, serviceId, statusId) {
+  if (formId) {
+    const level = access.formLevel(profile, catalog, formId, services);
+    access.assertLevel(level, 'write');
+    if (form && !access.legacyAllows(form, 'submit', profile)) {
+      throw Object.assign(new Error('Saisie du formulaire refusée par les rôles.'), { status: 403 });
+    }
+  }
+  if (!serviceId) return;
+  const level = statusId
+    ? access.effectiveLevel(profile, catalog, 'status', statusId, serviceId)
+    : access.effectiveLevel(profile, catalog, 'service', serviceId);
+  access.assertLevel(level, 'write');
+  if (service && !access.legacyAllows(service, 'create', profile)) {
+    throw Object.assign(new Error('Création de demande refusée par les rôles du service.'), { status: 403 });
+  }
 }
 
 async function writeIdempotent(req, table, row, key, timeoutMs) {
@@ -264,12 +324,18 @@ async function handler(req, res) {
     let failure = null;
     let interrupted = false;
     let license;
+    let catalog = [];
+    let serviceIndex = [];
     try {
-      const licenseTimeout = nextTimeout(req);
-      if (!licenseTimeout) throw deadlineError();
-      const licenseRows = await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}&environment_code=eq.${encodeURIComponent(session.environmentCode)}&active=eq.true&select=id,label,email,role,license_type,device_name&limit=1`, { method: 'GET', prefer: '', timeoutMs: licenseTimeout });
-      if (!Array.isArray(licenseRows) || !licenseRows.length) throw new Error('Licence PAD inactive ou supprimée');
-      license = licenseRows[0];
+      const loaded = await Promise.all([
+        loadRows(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}&environment_code=eq.${encodeURIComponent(session.environmentCode)}&active=eq.true&select=id,label,email,role,roles,license_type,device_name,active&limit=1`),
+        loadCatalog(req, environmentCode),
+        loadServices(req, environmentCode)
+      ]);
+      if (!loaded[0].length) throw new Error('Licence PAD inactive ou supprimée');
+      license = loaded[0][0];
+      catalog = loaded[1];
+      serviceIndex = loaded[2];
     } catch (err) {
       if (isPadAuthError(err)) throw err;
       const requestId = crypto.randomUUID();
@@ -285,6 +351,7 @@ async function handler(req, res) {
       });
     }
 
+    const profile = padProfile(license, environmentCode);
     for (let index = 0; index < prepared.length; index++) {
       const { item, payload } = prepared[index];
       if (!nextTimeout(req)) {
@@ -295,6 +362,15 @@ async function handler(req, res) {
       const resolved = resolveIdempotencyKey(session.licenseId, item);
       if (resolved.derived) console.warn(DERIVED_KEY_WARN, environmentCode, String(item.id || item.created_at || ''));
       try {
+        const formId = String(payload.formId ?? payload.form_id ?? '');
+        const inst = payload.instance && typeof payload.instance === 'object' ? payload.instance : {};
+        const serviceId = item.type === 'service_instance' ? String(inst.service_id || payload.serviceId || payload.service_id || '') : '';
+        const statusId = serviceId ? String(inst.current_status_id || inst.status_id || payload.statusId || payload.status_id || '') : '';
+        const [form, service] = await Promise.all([
+          formId ? loadById(req, 'forms', environmentCode, formId, 'id,permissions') : null,
+          serviceId ? loadById(req, 'services', environmentCode, serviceId, 'id,form_id,permissions') : null
+        ]);
+        await assertPadWrite(profile, catalog, serviceIndex, form, formId, service, serviceId, statusId);
         if (item.type === 'form_submission') {
           const written = await insertSubmission(req, environmentCode, payload, resolved.key);
           const row = written.row;
@@ -322,6 +398,17 @@ async function handler(req, res) {
         }
       } catch (err) {
         if (isPadAuthError(err)) throw err;
+        const refused = Number(err && err.status) || 0;
+        if (refused === 403 || refused === 404) {
+          results.push({
+            actionId: item.id,
+            type: item.type,
+            ok: false,
+            status: refused,
+            error: err.message || 'Synchronisation refusée'
+          });
+          continue;
+        }
         const timedOut = err && (err.code === 'DEADLINE' || err.status === 504);
         if (timedOut) interrupted = true;
         else {
@@ -363,7 +450,7 @@ async function handler(req, res) {
     if (seenTimeout) {
       await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}`, { method: 'PATCH', body: { last_seen: new Date().toISOString() }, timeoutMs: seenTimeout }).catch(() => null);
     }
-    return sendJson(res, 200, { ok: true, synced: results.length, results });
+    return sendJson(res, 200, { ok: true, synced: results.filter((row) => row.status === 'applied').length, results });
   } catch (err) {
     const requestId = crypto.randomUUID();
     console.error('[pad-sync]', requestId, err && (err.stack || err.message || err));

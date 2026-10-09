@@ -1,5 +1,6 @@
 const { json, setCors, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile, readJsonBody } = require('./_server-supabase');
 const { normalizeLicenseType } = require('./_license-type');
+const access = require('./_access');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
@@ -84,8 +85,13 @@ function formAllowedForProfile(form, action, profile) {
 
 async function readForm(req, env, formId) {
   if (!formId) return null;
-  const rows = await serviceRest(`forms?id=eq.${encodeURIComponent(formId)}&environment_code=eq.${encodeURIComponent(env)}&select=*&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []);
-  return Array.isArray(rows) ? rows[0] : null;
+  try {
+    const rows = await serviceRest(`forms?id=eq.${encodeURIComponent(formId)}&environment_code=eq.${encodeURIComponent(env)}&select=*&limit=1`, { method: 'GET', prefer: '', req });
+    if (!Array.isArray(rows)) throw access.unavailable();
+    return rows[0] || null;
+  } catch (err) {
+    throw access.unavailable(err);
+  }
 }
 
 async function assertFormPermission(req, env, formId, profile, action) {
@@ -93,6 +99,41 @@ async function assertFormPermission(req, env, formId, profile, action) {
   if (form && !formAllowedForProfile(form, action, profile)) {
     throw Object.assign(new Error(action === 'submit' ? 'Saisie/réservation refusée par les rôles du formulaire.' : 'Accès refusé par les rôles du formulaire.'), { status: 403 });
   }
+}
+
+async function catalogFor(req, env, profile) {
+  if (access.isPlatform(profile)) return [];
+  try {
+    return await access.readPaged(200, async (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      const rows = await serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,name,permissions&order=id.asc&limit=200${cursor}`, { method: 'GET', prefer: '', req });
+      if (!Array.isArray(rows)) throw access.unavailable();
+      return rows;
+    });
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+}
+
+async function servicesFor(req, env, profile) {
+  if (access.isPlatform(profile)) return [];
+  try {
+    const rows = await serviceRest(`services?environment_code=eq.${encodeURIComponent(env)}&select=id,form_id&limit=500`, { method: 'GET', prefer: '', req });
+    if (!Array.isArray(rows)) throw access.unavailable();
+    return rows;
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+}
+
+async function assertAppointmentAccess(req, env, formId, profile, mode) {
+  const catalog = await catalogFor(req, env, profile);
+  const services = await servicesFor(req, env, profile);
+  const level = access.formLevel(profile, catalog, formId, services);
+  if (mode === 'write') access.assertWritableLicense(profile);
+  access.assertLevel(level, mode === 'write' ? 'write' : 'read');
+  if (level === 'normal') await assertFormPermission(req, env, formId, profile, mode === 'write' ? 'submit' : 'view');
+  return { catalog, services };
 }
 
 async function requireProfile(req) {
@@ -148,9 +189,16 @@ async function handleList(req, env, body, profile) {
     order: cleanString(body.order || 'date.asc,start_time.asc', 100),
     limit: body.limit || 100
   };
-  if (options.form_id) await assertFormPermission(req, env, options.form_id, profile, 'view');
+  const catalog = await catalogFor(req, env, profile);
+  const services = await servicesFor(req, env, profile);
+  if (options.form_id) {
+    const level = access.formLevel(profile, catalog, options.form_id, services);
+    access.assertLevel(level, 'read');
+    if (level === 'normal') await assertFormPermission(req, env, options.form_id, profile, 'view');
+  }
   const rows = await serviceRest(buildAppointmentsPath(env, options), { method: 'GET', prefer: '', req });
-  return { ok: true, success: true, environment_code: env, rows: Array.isArray(rows) ? rows : [] };
+  const visible = (Array.isArray(rows) ? rows : []).filter(row => access.formLevel(profile, catalog, row?.form_id, services) !== 'hidden');
+  return { ok: true, success: true, environment_code: env, rows: visible };
 }
 
 async function handleAvailability(req, env, body, profile) {
@@ -158,7 +206,11 @@ async function handleAvailability(req, env, body, profile) {
   const fieldId = cleanString(body.field_id || body.fieldId || '', 120);
   const date = normalizeDate(body.date || '');
   if (!formId || !fieldId || !date) throw Object.assign(new Error('form_id, field_id et date requis.'), { status: 400 });
-  await assertFormPermission(req, env, formId, profile, 'submit');
+  const catalog = await catalogFor(req, env, profile);
+  const services = await servicesFor(req, env, profile);
+  const level = access.formLevel(profile, catalog, formId, services);
+  access.assertLevel(level, 'read');
+  if (level === 'normal') await assertFormPermission(req, env, formId, profile, 'submit');
 
   const select = 'id,form_id,field_id,response_id,date,start_time,end_time,status,parallel_slots,capacity_group,created_at';
   const rows = await serviceRest(buildAppointmentsPath(env, { form_id: formId, field_id: fieldId, date, select, limit: body.limit || 300 }), { method: 'GET', prefer: '', req });
@@ -202,7 +254,7 @@ function normalizeAppointmentRecord(record, env) {
 
 async function handleCreate(req, env, body, profile) {
   const record = normalizeAppointmentRecord(body.record || body, env);
-  await assertFormPermission(req, env, record.form_id, profile, 'submit');
+  await assertAppointmentAccess(req, env, record.form_id, profile, 'write');
   const saved = await serviceRest('appointments?select=*', { method: 'POST', body: record, prefer: 'return=representation', req });
   const row = Array.isArray(saved) ? saved[0] : saved;
   return { ok: true, success: true, environment_code: env, row, rows: row ? [row] : [] };

@@ -2111,6 +2111,485 @@
     DB.save.__ptAudit = true;
   }
 
+  var ACCESS_LEVELS = [
+    { value: '', label: 'Par défaut' },
+    { value: 'hidden', label: 'Masqué' },
+    { value: 'read', label: 'Lecture' },
+    { value: 'write', label: 'Écriture' }
+  ];
+  var SEAT_ROLES = { supervision_user: 1, pad_user: 1, operator: 1, operateur: 1, admin: 1, client_admin: 1, environment_admin: 1, super_admin: 1, platform_admin: 1, gestionnaire: 1, manager: 1, superviseur: 1, pad: 1 };
+
+  function ptUser() {
+    return window.PT_CURRENT_USER || null;
+  }
+
+  function ptToken(value) {
+    return String(value || '').replace(/[\t\r\n\f\v]/g, '').trim().toLowerCase();
+  }
+
+  function ptPlatformUser(user) {
+    user = user || ptUser();
+    if (!user || user.active === false) return false;
+    var role = ptToken(user.role);
+    var type = ptToken(user.license_type);
+    var scope = ptToken(user.scope);
+    var env = String(user.environment_code || '').trim().toUpperCase();
+    var perms = user.resolved_permissions || {};
+    return role === 'super_admin' || role === 'platform_admin' || type === 'super_admin' || scope === 'platform' || env === 'GLOBAL' || perms.platform_admin === true || perms.manage_global_licenses === true;
+  }
+
+  function ptReadOnlyUser(user) {
+    user = user || ptUser();
+    if (!user || ptPlatformUser(user)) return false;
+    var raw = ptToken(user.license_type);
+    return raw === 'lecture' || raw === 'readonly' || raw === 'read_only' || raw === 'lecture_seule' || raw === 'viewer' || raw === 'consultation';
+  }
+
+  function ptEnvAdminUser(user) {
+    user = user || ptUser();
+    if (!user || user.active === false) return false;
+    if (ptPlatformUser(user)) return true;
+    var role = ptToken(user.role);
+    return role === 'admin' || role === 'client_admin' || role === 'environment_admin';
+  }
+
+  function ptCanManageUsersClient(user) {
+    user = user || ptUser();
+    if (!user || user.active === false) return false;
+    if (ptPlatformUser(user)) return true;
+    if (ptReadOnlyUser(user)) return false;
+    var role = ptToken(user.role);
+    if (role === 'pad_user' || role === 'pad' || role === 'operateur' || role === 'operator' || ptToken(user.license_type) === 'pad') return false;
+    if (role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user') return true;
+    return ptAssignedRoles(user).some(function (item) { return item.permissions && item.permissions.manage_users === true; });
+  }
+
+  function ptData(name) {
+    try {
+      if (name === 'roles' && typeof ROLES_DATA !== 'undefined') return ROLES_DATA || [];
+      if (name === 'forms' && typeof FORMS_DATA !== 'undefined') return FORMS_DATA || [];
+      if (name === 'services' && typeof SERVICES_DATA !== 'undefined') return SERVICES_DATA || [];
+    } catch (_) {}
+    return [];
+  }
+
+  function ptRoleId(role) { return role && (role.id || role.role_id) ? String(role.id || role.role_id) : ''; }
+  function ptRoleName(role) { return String((role && (role.nom || role.name)) || 'Rôle'); }
+
+  function ptAssignedRoles(user) {
+    user = user || ptUser();
+    var wanted = {};
+    var list = user && user.roles;
+    if (typeof list === 'string') {
+      try { list = JSON.parse(list); } catch (_) { list = String(list).split(','); }
+    }
+    (Array.isArray(list) ? list : []).forEach(function (value) {
+      var key = ptToken(value);
+      if (key) wanted[key] = true;
+    });
+    var primary = ptToken(user && user.role);
+    if (primary && !SEAT_ROLES[primary]) wanted[primary] = true;
+    return ptData('roles').filter(function (role) {
+      return wanted[ptToken(ptRoleId(role))] || wanted[ptToken(ptRoleName(role))];
+    });
+  }
+
+  function ptAccessOf(role) {
+    var perms = role && role.permissions;
+    if (typeof perms === 'string') {
+      try { perms = JSON.parse(perms); } catch (_) { perms = null; }
+    }
+    var access = perms && perms.access;
+    return access && typeof access === 'object' ? access : null;
+  }
+
+  function ptEntry(role, kind, id, parentId) {
+    var access = ptAccessOf(role);
+    if (!access || id == null || id === '') return '';
+    var key = String(id);
+    if (kind === 'form') return access.forms && access.forms[key] ? access.forms[key] : '';
+    if (kind === 'service') return access.services && access.services[key] ? access.services[key] : '';
+    var bucket = access.statuses && parentId != null ? access.statuses[String(parentId)] : null;
+    return bucket && bucket[key] ? bucket[key] : '';
+  }
+
+  function ptPreviewRole() {
+    var id = '';
+    try { id = sessionStorage.getItem('pt_view_as_role') || ''; } catch (_) {}
+    if (!id) return null;
+    return ptData('roles').find(function (role) { return ptRoleId(role) === id; }) || null;
+  }
+
+  function ptClientLevel(kind, id, parentId) {
+    var preview = ptPreviewRole();
+    var roles = preview ? [preview] : ptAssignedRoles(ptUser());
+    if (!roles.length) return 'normal';
+    var rank = { hidden: 0, read: 1, write: 2 };
+    var best = '';
+    var open = false;
+    roles.forEach(function (role) {
+      var serviceLevel = kind === 'status' ? ptEntry(role, 'service', parentId) : '';
+      var level = serviceLevel === 'hidden' ? 'hidden' : (ptEntry(role, kind, id, parentId) || serviceLevel);
+      if (!level) { open = true; return; }
+      if (!best || rank[level] > rank[best]) best = level;
+    });
+    if (open || !best) return 'normal';
+    return best;
+  }
+
+  function ptSubject(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+    if (Array.isArray(obj.statuses) || obj.flux || obj.kanbanGroups || obj.kanban_groups) return { kind: 'service', id: obj.id };
+    if (obj.current_status_id || obj.status_id && obj.service_id) return { kind: 'status', id: obj.current_status_id || obj.status_id, parentId: obj.service_id };
+    return { kind: 'form', id: obj.id || obj.form_id };
+  }
+
+  function ptHiddenNames(kind, id, parentId) {
+    return ptData('roles').filter(function (role) { return ptEntry(role, kind, id, parentId) === 'hidden'; }).map(ptRoleName);
+  }
+
+  function ptBadge(kind, id, parentId) {
+    var names = ptHiddenNames(kind, id, parentId);
+    if (!names.length) return '';
+    return '<span class="pt-hidden-badge" style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:#fff7ed;color:#9a3412;font-size:12px;font-weight:700">Masqué pour : ' + html(names.join(', ')) + '</span>';
+  }
+
+  function ptLevelSelect(roleId, kind, id, parentId, current) {
+    var options = ACCESS_LEVELS.map(function (item) {
+      return '<option value="' + item.value + '"' + (item.value === current ? ' selected' : '') + '>' + item.label + '</option>';
+    }).join('');
+    return '<select aria-label="Accès ' + html(kind) + '" data-pt-access="1" data-role="' + html(roleId) + '" data-kind="' + html(kind) + '" data-id="' + html(id) + '" data-parent="' + html(parentId || '') + '" onchange="ptSetRoleAccess(this.dataset.role,this.dataset.kind,this.dataset.id,this.dataset.parent,this.value)" style="border:1px solid var(--bd);border-radius:8px;padding:6px 8px;background:#fff">' + options + '</select>';
+  }
+
+  function ptAccessRows(kind, id, parentId) {
+    var roles = ptData('roles');
+    if (!roles.length) return '<p style="color:var(--tl);margin:8px 0">Aucun rôle pour l’instant. Créez-en un dans Administration → Rôles &amp; Permissions.</p>';
+    return roles.map(function (role) {
+      var current = ptEntry(role, kind, id, parentId);
+      if (current !== 'hidden' && current !== 'read' && current !== 'write') current = '';
+      var mine = current === 'hidden' ? '<span class="pt-hidden-badge" style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:#fff7ed;color:#9a3412;font-size:12px;font-weight:700">Masqué pour : ' + html(ptRoleName(role)) + '</span>' : '';
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--bd)"><div><strong>' + html(ptRoleName(role)) + '</strong>' + mine + '</div>' + ptLevelSelect(ptRoleId(role), kind, id, parentId, current) + '</div>';
+    }).join('');
+  }
+
+  function ptAccessCard(title, body) {
+    return '<section class="pt-role-access" style="background:#fff;border:1.5px solid var(--bd);border-radius:12px;padding:16px 18px;margin:0 0 16px"><div style="font-weight:800;margin-bottom:6px">Accès par rôle</div><div style="color:var(--tl);font-size:13px;margin-bottom:10px">' + title + '</div>' + body + '</section>';
+  }
+
+  function mountFormAccess() {
+    var host = document.getElementById('v-builder');
+    if (!host || !ptEnvAdminUser()) return;
+    var panel = document.getElementById('pt-role-access-form');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'pt-role-access-form';
+      var root = document.getElementById('react-builder-root');
+      if (root && root.parentNode === host) host.insertBefore(panel, root);
+      else host.insertBefore(panel, host.firstChild);
+    }
+    var id = window.__ptFormId || '';
+    try {
+      if (!id && typeof curForm !== 'undefined' && curForm && curForm.id) id = curForm.id;
+    } catch (_) {}
+    if (!id) {
+      panel.innerHTML = ptAccessCard('Formulaire', 'Enregistrez le formulaire pour régler l’accès par rôle.');
+      return;
+    }
+    panel.innerHTML = ptAccessCard('Formulaire' + ptBadge('form', id), ptAccessRows('form', id));
+  }
+
+  function appendServiceAccess(el) {
+    if (!el || !ptEnvAdminUser()) return;
+    var svc = window.__ptSvc || {};
+    var old = el.querySelector('[data-pt-service-access]');
+    if (old) old.remove();
+    var block = document.createElement('div');
+    block.setAttribute('data-pt-service-access', '1');
+    if (!svc.id) {
+      block.innerHTML = ptAccessCard('Workflow', 'Enregistrez le workflow pour régler l’accès par rôle.');
+    } else {
+      block.innerHTML = ptAccessCard('Workflow entier' + ptBadge('service', svc.id), ptAccessRows('service', svc.id));
+    }
+    el.appendChild(block);
+  }
+
+  function appendStatusAccess(el) {
+    if (!el || !ptEnvAdminUser()) return;
+    var svc = window.__ptSvc || {};
+    var old = el.querySelector('[data-pt-status-access]');
+    if (old) old.remove();
+    var block = document.createElement('div');
+    block.setAttribute('data-pt-status-access', '1');
+    var statuses = Array.isArray(svc.statuses) ? svc.statuses : [];
+    if (!svc.id || !statuses.length) {
+      block.innerHTML = ptAccessCard('Statuts', 'Ajoutez un statut pour choisir qui le voit, le lit ou l’écrit.');
+    } else {
+      var rows = statuses.map(function (status) {
+        var id = status && status.id;
+        var name = status && (status.nom || status.name || status.label) || id;
+        return '<div style="margin:12px 0 4px"><strong>' + html(name) + '</strong>' + ptBadge('status', id, svc.id) + '</div>' + ptAccessRows('status', id, svc.id);
+      }).join('');
+      block.innerHTML = ptAccessCard('Chaque statut du workflow', rows);
+    }
+    el.appendChild(block);
+  }
+
+  function mountRoleEditorAccess() {
+    var body = document.getElementById('role-editor-body');
+    if (!body || !ptEnvAdminUser()) return;
+    var existing = document.getElementById('pt-role-access-editor');
+    if (existing) existing.remove();
+    var roleId = '';
+    try { roleId = window.__ptRoleId || ''; } catch (_) {}
+    var role = ptData('roles').find(function (item) { return ptRoleId(item) === String(roleId); });
+    var forms = ptData('forms').map(function (form) {
+      return '<div style="margin-top:12px"><strong>' + html(form.nom || form.name || form.id) + '</strong>' + ptBadge('form', form.id) + '</div>' + (role ? ptLevelSelect(ptRoleId(role), 'form', form.id, '', (function () { var v = ptEntry(role, 'form', form.id); return v === 'hidden' || v === 'read' || v === 'write' ? v : ''; })()) : '');
+    }).join('');
+    var services = ptData('services').map(function (service) {
+      var head = '<div style="margin-top:14px"><strong>' + html(service.nom || service.name || service.id) + '</strong>' + ptBadge('service', service.id) + '</div>' + (role ? ptLevelSelect(ptRoleId(role), 'service', service.id, '', (function () { var v = ptEntry(role, 'service', service.id); return v === 'hidden' || v === 'read' || v === 'write' ? v : ''; })()) : '');
+      var statuses = (Array.isArray(service.statuses) ? service.statuses : []).map(function (status) {
+        var current = role ? ptEntry(role, 'status', status.id, service.id) : '';
+        if (current !== 'hidden' && current !== 'read' && current !== 'write') current = '';
+        return '<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0 6px 12px"><span>' + html(status.nom || status.name || status.id) + ptBadge('status', status.id, service.id) + '</span>' + (role ? ptLevelSelect(ptRoleId(role), 'status', status.id, service.id, current) : '') + '</div>';
+      }).join('');
+      return head + statuses;
+    }).join('');
+    var checked = role && role.permissions && role.permissions.manage_users === true;
+    var viewAs = ptData('roles').map(function (item) {
+      return '<option value="' + html(ptRoleId(item)) + '">' + html(ptRoleName(item)) + '</option>';
+    }).join('');
+    var box = document.createElement('div');
+    box.id = 'pt-role-access-editor';
+    box.innerHTML = ptAccessCard(
+      'Renommez le rôle avec le nom ci-dessus. Masqué retire l’élément, Lecture l’affiche sans saisie, Écriture autorise la saisie, Par défaut conserve la règle actuelle.',
+      (role
+        ? '<div style="display:flex;gap:8px;margin-bottom:12px"><button type="button" class="btn btn-sm" onclick="ptDuplicateRole(\'' + html(ptRoleId(role)) + '\')">Dupliquer</button></div>'
+        : '<p>Enregistrez le rôle pour régler l’accès. Le bouton Créer de la liste ouvre cette fiche.</p>') +
+      '<label style="display:flex;gap:8px;align-items:center;margin:8px 0 14px"><input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="ptSetManageUsers(\'' + html(role ? ptRoleId(role) : '') + '\', this.checked)"> Gérer les utilisateurs</label>' +
+      '<div style="font-weight:700;margin-top:8px">Formulaires</div>' + (forms || '<p>Aucun formulaire.</p>') +
+      '<div style="font-weight:700;margin-top:16px">Workflows et statuts</div>' + (services || '<p>Aucun workflow.</p>') +
+      '<div style="margin-top:16px"><label>Voir comme ce rôle <select id="pt-view-as" onchange="ptSetViewAsRole(this.value)"><option value="">Mon accès</option>' + viewAs + '</select></label><p style="color:var(--tl);font-size:12px">Aperçu en lecture seule : aucun droit n’est envoyé au serveur.</p></div>'
+    );
+    body.appendChild(box);
+  }
+
+  async function ptSaveRolePermissions(role, perms) {
+    if (typeof DB === 'undefined' || !DB.saveRole) return;
+    await DB.saveRole({
+      id: ptRoleId(role),
+      nom: ptRoleName(role),
+      desc: role.desc || role.description || '',
+      permissions: perms,
+      active: role.active !== false,
+      environment_code: envCode()
+    });
+  }
+
+  function ptBucketFilled(bucket) {
+    return !!(bucket && typeof bucket === 'object' && !Array.isArray(bucket) && Object.keys(bucket).length);
+  }
+
+  function ptCompactRoleAccess(perms) {
+    if (!perms || typeof perms !== 'object' || Array.isArray(perms)) return perms;
+    var access = perms.access;
+    if (!access || typeof access !== 'object' || Array.isArray(access)) return perms;
+    var statuses = ptBucketFilled(access.statuses) && Object.keys(access.statuses).some(function (key) {
+      return ptBucketFilled(access.statuses[key]);
+    });
+    if (!ptBucketFilled(access.forms) && !ptBucketFilled(access.services) && !statuses) delete perms.access;
+    return perms;
+  }
+
+  function ptApplyRoleAccess(perms, kind, id, parentId, level) {
+    var next = Object.assign({}, perms || {});
+    var source = next.access && typeof next.access === 'object' && !Array.isArray(next.access) ? next.access : {};
+    var access = JSON.parse(JSON.stringify(source));
+    access.forms = access.forms && typeof access.forms === 'object' && !Array.isArray(access.forms) ? access.forms : {};
+    access.services = access.services && typeof access.services === 'object' && !Array.isArray(access.services) ? access.services : {};
+    access.statuses = access.statuses && typeof access.statuses === 'object' && !Array.isArray(access.statuses) ? access.statuses : {};
+    if (kind === 'form') {
+      if (!level) delete access.forms[id]; else access.forms[id] = level;
+    } else if (kind === 'service') {
+      if (!level) delete access.services[id]; else access.services[id] = level;
+    } else {
+      access.statuses[parentId] = Object.assign({}, access.statuses[parentId] || {});
+      if (!level) delete access.statuses[parentId][id]; else access.statuses[parentId][id] = level;
+      if (!Object.keys(access.statuses[parentId]).length) delete access.statuses[parentId];
+    }
+    next.access = access;
+    return ptCompactRoleAccess(next);
+  }
+
+  window.ptSetRoleAccess = async function (roleId, kind, id, parentId, level) {
+    if (!ptEnvAdminUser()) return toast('e', 'Réservé aux administrateurs de l’environnement.');
+    var role = ptData('roles').find(function (item) { return ptRoleId(item) === String(roleId); });
+    if (!role) return toast('e', 'Enregistrez le rôle avant de régler l’accès.');
+    var perms = ptApplyRoleAccess(role.permissions || {}, kind, id, parentId, level);
+    role.permissions = perms;
+    try {
+      await ptSaveRolePermissions(role, perms);
+      toast('s', 'Accès enregistré.');
+    } catch (err) {
+      toast('e', 'Accès non enregistré : ' + (err && err.message || err));
+    }
+    mountFormAccess();
+  };
+
+  window.ptSetManageUsers = async function (roleId, checked) {
+    if (!ptEnvAdminUser()) return toast('e', 'Réservé aux administrateurs de l’environnement.');
+    var role = ptData('roles').find(function (item) { return ptRoleId(item) === String(roleId); });
+    if (!role) return;
+    var perms = Object.assign({}, role.permissions || {});
+    if (checked) perms.manage_users = true; else delete perms.manage_users;
+    role.permissions = perms;
+    try { await ptSaveRolePermissions(role, perms); toast('s', 'Permission enregistrée.'); }
+    catch (err) { toast('e', err && err.message || 'Erreur'); }
+  };
+
+  window.ptDuplicateRole = async function (roleId) {
+    if (!ptEnvAdminUser()) return toast('e', 'Réservé aux administrateurs de l’environnement.');
+    var role = ptData('roles').find(function (item) { return ptRoleId(item) === String(roleId); });
+    if (!role || typeof DB === 'undefined' || !DB.saveRole) return;
+    await DB.saveRole({
+      nom: 'Copie de ' + ptRoleName(role),
+      desc: role.desc || role.description || '',
+      permissions: JSON.parse(JSON.stringify(role.permissions || {})),
+      active: true,
+      environment_code: envCode()
+    });
+    toast('s', 'Rôle dupliqué.');
+    if (typeof window.renderRolesList === 'function') await window.renderRolesList();
+  };
+
+  window.ptSetViewAsRole = function (roleId) {
+    try {
+      if (!roleId) sessionStorage.removeItem('pt_view_as_role');
+      else sessionStorage.setItem('pt_view_as_role', String(roleId));
+    } catch (_) {}
+    paintPreviewBanner();
+    toast('i', roleId ? 'Aperçu en lecture seule. Aucun droit n’est envoyé au serveur.' : 'Aperçu terminé.');
+  };
+
+  function paintPreviewBanner() {
+    var role = ptPreviewRole();
+    var banner = document.getElementById('pt-view-as-banner');
+    if (!role) {
+      if (banner) banner.remove();
+      return;
+    }
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'pt-view-as-banner';
+      banner.style.cssText = 'position:sticky;top:0;z-index:40;background:#fff7ed;color:#9a3412;padding:8px 14px;font-weight:700;border-bottom:1px solid #fdba74';
+      document.body.insertBefore(banner, document.body.firstChild);
+    }
+    banner.innerHTML = 'Aperçu en lecture seule : ' + html(ptRoleName(role)) + '. Aucun droit n’est envoyé au serveur. <button type="button" class="btn btn-sm" onclick="ptSetViewAsRole(\'\')">Quitter</button>';
+  }
+
+  function applyAccessMenu() {
+    var admin = ptEnvAdminUser();
+    var users = ptCanManageUsersClient();
+    [['sb-roles', admin], ['sb-api', admin], ['sb-users', users]].forEach(function (pair) {
+      var el = document.getElementById(pair[0]);
+      if (el) el.style.display = pair[1] ? '' : 'none';
+    });
+    paintPreviewBanner();
+  }
+
+  function guardScreen(name, allow, message) {
+    var orig = window[name];
+    if (typeof orig !== 'function' || orig.__ptAccessGuard) return;
+    var wrapped = function () {
+      if (!allow()) { toast('e', message); return; }
+      return orig.apply(this, arguments);
+    };
+    wrapped.__ptAccessGuard = true;
+    window[name] = wrapped;
+  }
+
+  function installRoleAccess() {
+    guardScreen('goRoles', ptEnvAdminUser, 'Rôles réservés aux administrateurs de l’environnement.');
+    guardScreen('goApiConfig', ptEnvAdminUser, 'Intégrations réservées aux administrateurs de l’environnement.');
+    guardScreen('goUsers', ptCanManageUsersClient, 'Gestion des utilisateurs refusée pour ce profil.');
+    if (typeof window._ptCanObject === 'function' && !window._ptCanObject.__ptAccess) {
+      var origCan = window._ptCanObject;
+      window._ptCanObject = function (obj, action) {
+        var subject = ptSubject(obj);
+        var level = subject ? ptClientLevel(subject.kind, subject.id, subject.parentId) : 'normal';
+        if (level === 'hidden') return false;
+        if (ptPreviewRole()) return action === 'view';
+        if (level === 'read') return action === 'view';
+        if (level === 'write') return true;
+        return origCan.apply(this, arguments);
+      };
+      window._ptCanObject.__ptAccess = true;
+    }
+    if (typeof window.canWrite === 'function' && !window.canWrite.__ptAccess) {
+      var origWrite = window.canWrite;
+      window.canWrite = function () {
+        if (ptPreviewRole() || ptReadOnlyUser()) return false;
+        return origWrite.apply(this, arguments);
+      };
+      window.canWrite.__ptAccess = true;
+    }
+    if (typeof window.openRoleEditor === 'function' && !window.openRoleEditor.__ptAccess) {
+      var origOpen = window.openRoleEditor;
+      window.openRoleEditor = async function (id) {
+        window.__ptRoleId = id || '';
+        var ret = await origOpen.apply(this, arguments);
+        mountRoleEditorAccess();
+        return ret;
+      };
+      window.openRoleEditor.__ptAccess = true;
+    }
+    if (typeof window.deleteRole === 'function' && !window.deleteRole.__ptAccess) {
+      var origDelete = window.deleteRole;
+      window.deleteRole = async function (id) {
+        var count = 0;
+        try {
+          if (typeof _usersForRoles === 'function' && typeof _userRoleIds === 'function' && typeof _roleId === 'function') {
+            var key = _roleId(id);
+            count = _usersForRoles().filter(function (user) { return _userRoleIds(user).includes(key); }).length;
+          }
+        } catch (_) {}
+        if (count > 0) {
+          toast('e', 'Ce rôle est encore assigné à ' + count + ' utilisateur(s).');
+          return;
+        }
+        return origDelete.apply(this, arguments);
+      };
+      window.deleteRole.__ptAccess = true;
+    }
+    if (typeof window.renderSvcGen === 'function' && !window.renderSvcGen.__ptAccess) {
+      var origGen = window.renderSvcGen;
+      window.renderSvcGen = function (el) {
+        var ret = origGen.apply(this, arguments);
+        try { appendServiceAccess(el); } catch (_) {}
+        return ret;
+      };
+      window.renderSvcGen.__ptAccess = true;
+    }
+    if (typeof window.renderSvcStatuses === 'function' && !window.renderSvcStatuses.__ptAccess) {
+      var origStatuses = window.renderSvcStatuses;
+      window.renderSvcStatuses = function (el) {
+        var ret = origStatuses.apply(this, arguments);
+        try { appendStatusAccess(el); } catch (_) {}
+        return ret;
+      };
+      window.renderSvcStatuses.__ptAccess = true;
+    }
+    if (typeof window.show === 'function' && !window.show.__ptAccess) {
+      var origShow = window.show;
+      window.show = function () {
+        var ret = origShow.apply(this, arguments);
+        applyAccessMenu();
+        return ret;
+      };
+      window.show.__ptAccess = true;
+    }
+    applyAccessMenu();
+  }
+
   function boot() {
     window._prodServicesAssignee = window._prodServicesAssignee || 'all';
     window._prodServicesExtra = window._prodServicesExtra || { sla: 'all', waiting: false, unassigned: false };
@@ -2127,6 +2606,7 @@
     wrapSubmissionPdf();
     wrapTrace();
     wrapDbAudit();
+    installRoleAccess();
     wireImporterButton();
     hideInternalDatabases();
     if (ready) return;

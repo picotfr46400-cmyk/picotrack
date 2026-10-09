@@ -563,7 +563,7 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
 test('la frise de traçabilité interroge le serveur et filtre sans réécrire l’historique', () => {
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /core-supervision\.js\?v=20261008f/);
+  assert.match(html, /core-supervision\.js\?v=20261008i/);
   assert.match(overlay, /action: 'submission_trace'/);
   assert.match(overlay, /Europe\/Paris/);
   assert.match(overlay, /data-pt-trace-filter/);
@@ -1474,7 +1474,7 @@ test('une limite de temps en milieu de lot laisse les actions non commencées à
       headers: { host: 'localhost' },
       body: { pad: { sessionToken: token }, actions },
       picoDeadlineMs: 5000,
-      picoNow: () => (ticks++ < 4 ? 1000 : 20000)
+      picoNow: () => (ticks++ < 7 ? 1000 : 20000)
     };
     try {
       const res = {
@@ -1500,6 +1500,69 @@ test('une limite de temps en milieu de lot laisse les actions non commencées à
     } finally {
       ticks = 0;
     }
+  });
+});
+
+test('trois lectures lentes de 4 s restent au délai d’une seule lecture', { timeout: 20000 }, async () => {
+  await withSupabase(async () => {
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      if (method === 'GET' && (u.includes('/rest/v1/licenses?') || u.includes('/rest/v1/app_roles?') || u.includes('/rest/v1/services?'))) {
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+      }
+      if (u.includes('/rest/v1/licenses?')) {
+        return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', device_name: 'Tab', active: true, environment_code: 'EFC', roles: [] }]);
+      }
+      return jsonResponse(200, []);
+    };
+    const token = signPayload({ headers: { host: 'localhost' } }, {
+      typ: 'pad', licenseId: 'lic-1', environmentCode: 'EFC', exp: Date.now() + 60_000
+    });
+    const started = Date.now();
+    const out = await callJson(padSync, {
+      pad: { sessionToken: token },
+      actions: []
+    });
+    const elapsed = Date.now() - started;
+    assert.equal(out.status, 200, out.payload.error || '');
+    assert.ok(elapsed < 7000, `trois lectures en ${elapsed} ms`);
+    assert.ok(elapsed < 10000, `échéance dépassée ${elapsed} ms`);
+  });
+});
+
+test('formulaire puis service retardés de 6 s répondent en 10 s', { timeout: 20000 }, async () => {
+  await withSupabase(async () => {
+    global.fetch = async (url, options = {}) => {
+      const u = String(url);
+      const method = options.method || 'GET';
+      if ((u.includes('/rest/v1/forms?') || u.includes('/rest/v1/services?id=')) && method === 'GET') {
+        await new Promise((resolve) => setTimeout(resolve, 6000));
+      }
+      if (u.includes('/rest/v1/licenses?')) {
+        return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', device_name: 'Tab', active: true, environment_code: 'EFC', roles: [] }]);
+      }
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: '1', permissions: {} }]);
+      if (u.includes('/rest/v1/services?')) return jsonResponse(200, [{ id: '7', form_id: '1', permissions: {} }]);
+      if (method === 'POST' || method === 'PATCH') return jsonResponse(200, [{ id: 1, environment_code: 'EFC' }]);
+      return jsonResponse(200, []);
+    };
+    const token = signPayload({ headers: { host: 'localhost' } }, {
+      typ: 'pad', licenseId: 'lic-1', environmentCode: 'EFC', exp: Date.now() + 60_000
+    });
+    const started = Date.now();
+    const out = await callJson(padSync, {
+      pad: { sessionToken: token },
+      actions: [{
+        id: 'act-slow',
+        type: 'service_instance',
+        created_at: '2026-10-08T08:00:00.000Z',
+        payload: { formId: 1, values: { client: 'Lent' }, serviceId: 7, instance: { status_id: 'open', current_status_id: 'open', reference: 'L-1' } }
+      }]
+    });
+    const elapsed = Date.now() - started;
+    assert.ok(out.status === 200 || out.status === 503, out.payload.error || '');
+    assert.ok(elapsed <= 10000, `réponse en ${elapsed} ms`);
   });
 });
 
