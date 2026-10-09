@@ -123,8 +123,11 @@ function extractPdfText(pdf) {
 
 function clip(value, max) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
-  if (text.length <= max) return text;
-  return text.slice(0, Math.max(0, max - 3)) + '...';
+  const chars = Array.from(text);
+  if (chars.length <= max) return chars.join('');
+  const ellipsis = '...';
+  const room = Math.max(0, max - ellipsis.length);
+  return chars.slice(0, room).join('') + (room < chars.length ? ellipsis : '');
 }
 
 function num(value) {
@@ -615,6 +618,9 @@ function formatSubmissionDocument(input) {
     status: clip(source.status, 80) || 'Enregistrée',
     reference: clip(source.reference, 80) || '—',
     fields: rows,
+    traceLines: Array.isArray(source.traceLines)
+      ? source.traceLines.map((line) => clip(line, 220)).filter(Boolean).slice(0, 400)
+      : [],
     imageStats: {
       kept: budget.kept,
       attempts: budget.attempts,
@@ -767,8 +773,16 @@ function renderSubmissionPdf(doc) {
     }
   });
 
-  // La frise de traçabilité s'insère ici, avant le pied de page.
-  // Son repli (retirer la frise, puis rappeler renderSubmissionPdf) reste à l'appelant.
+  const trace = Array.isArray(model.traceLines) ? model.traceLines : [];
+  if (trace.length && need(22)) {
+    textAt(LEFT, y, 'Traçabilité', 13, true, [5, 150, 105]);
+    y -= 8;
+    rule(y);
+    y -= 16;
+    trace.forEach((line) => {
+      writeLines(wrapLine(line, 9), 9, false, [15, 23, 42], 2);
+    });
+  }
 
   if (page) {
     page.chunks.push(Buffer.from(
@@ -853,6 +867,41 @@ function buildSubmissionPdf(doc, options) {
   return renderSubmissionPdf(modelWithoutImages(model));
 }
 
+function textRoomFor(doc) {
+  const embedded = Math.max(0, Number(doc && doc.imageStats && doc.imageStats.embeddedBytes) || 0);
+  const reserved = Math.min(embedded, MAX_EMBEDDED_BUDGET);
+  return Math.max(TEXT_BYTE_MARGIN, PDF_BYTE_LIMIT - reserved);
+}
+
+// Repli : 50 derniers événements et la mention, puis sans frise, puis sans images.
+// enforceLimit:false garde les images pendant les essais de frise.
+// renderSubmissionPdf est rappelé à chaque essai. Un 413 n'arrive qu'une fois la frise retirée.
+function buildSubmissionPdfWithinLimit(doc, lineSets, limit = PDF_BYTE_LIMIT) {
+  const sets = Array.isArray(lineSets) && lineSets.length ? lineSets : [[]];
+  const room = textRoomFor(doc);
+  const attempts = [];
+  for (const lines of sets) {
+    const list = Array.isArray(lines) ? lines : [];
+    if (!list.length) continue;
+    if (Buffer.byteLength(list.join('\n'), 'utf8') > room) continue;
+    attempts.push({ lines: list, omitImages: false });
+  }
+  const omitted = ['Traçabilité non incluse (taille)'];
+  attempts.push({ lines: omitted, omitImages: false });
+  attempts.push({ lines: [], omitImages: false });
+  attempts.push({ lines: omitted, omitImages: true });
+  attempts.push({ lines: [], omitImages: true });
+  let last = null;
+  for (const attempt of attempts) {
+    const next = Object.assign({}, doc, { traceLines: attempt.lines });
+    last = buildSubmissionPdf(next, { enforceLimit: false, omitImages: attempt.omitImages });
+    if (last && last.length <= limit) return last;
+  }
+  const err = new Error('Export PDF impossible.');
+  err.status = 413;
+  throw err;
+}
+
 module.exports = {
   PDF_BYTE_LIMIT,
   TEXT_BYTE_MARGIN,
@@ -864,6 +913,7 @@ module.exports = {
   formatSubmissionDocument,
   renderSubmissionPdf,
   buildSubmissionPdf,
+  buildSubmissionPdfWithinLimit,
   extractPdfText,
   decodeImageBuffer
 };

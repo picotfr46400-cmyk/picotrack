@@ -20,3 +20,55 @@ jobs:
         with:
           node-version: '22'
       - run: npm test
+
+  audit-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: picotrack
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d picotrack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Client Postgres
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Rôles et migrations du journal
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "create role anon nologin;"
+          psql -v ON_ERROR_STOP=1 -c "create role authenticated nologin;"
+          psql -v ON_ERROR_STOP=1 -c "create role service_role nologin bypassrls;"
+          psql -v ON_ERROR_STOP=1 -c "grant service_role to postgres;"
+          psql -v ON_ERROR_STOP=1 -c "grant authenticated to postgres;"
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008221500_submission_audit_log.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008233000_submission_audit_idempotence_purge.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008234500_business_idempotency_key.sql
+      - name: PostgREST
+        run: |
+          curl -fsSL -o /tmp/postgrest.tar.xz -L https://github.com/PostgREST/postgrest/releases/download/v16.4/postgrest-v16.4-linux-static-x86-64.tar.xz
+          sudo tar -xJf /tmp/postgrest.tar.xz -C /usr/local/bin postgrest
+          postgrest --version
+      - name: Contraintes du journal
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: node scripts/submission-audit-pg.js

@@ -1,7 +1,7 @@
 {
   "scripts": {
     "build": "node build.js",
-    "test": "node --test api/_tenant-host.test.js api/_integrations.test.js api/_core-supervision-bundle.test.js api/_security.test.js api/_c1-c2.test.js api/_nav-cache.test.js api/_roles-matrix.test.js api/_vercel-deploy.test.js mobile/configure.test.mjs mobile/pad-device.test.mjs api/_submission-pdf.test.js"
+    "test": "node --test api/_tenant-host.test.js api/_integrations.test.js api/_core-supervision-bundle.test.js api/_security.test.js api/_c1-c2.test.js api/_nav-cache.test.js api/_roles-matrix.test.js api/_vercel-deploy.test.js mobile/configure.test.mjs mobile/pad-device.test.mjs api/_submission-pdf.test.js api/_submission-audit.test.js"
   },
   "dependencies": {}
 }

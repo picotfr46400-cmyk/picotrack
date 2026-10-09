@@ -1052,7 +1052,7 @@ for (const alias of ['pad_terrain', 'terrain', 'mobile', 'operator', 'operateur'
           const id = decodeURIComponent(match[1]);
           return jsonResponse(200, forms.filter((form) => form.id === id));
         }
-        if (u.includes('/rest/v1/submissions') && !u.includes('?')) return jsonResponse(200, [{ id: 'sub-new' }]);
+        if (u.includes('/rest/v1/submissions') && (u.includes('on_conflict=') || !u.includes('?'))) return jsonResponse(200, [{ id: 'sub-new' }]);
         return jsonResponse(200, []);
       };
 
@@ -1149,7 +1149,7 @@ test('export PDF refuse un compte pad_user', async () => {
 
 test('le détail supervision expose Exporter en PDF via /api/records', async () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /core-supervision\.js\?v=20261008a/);
+  assert.match(html, /core-supervision\.js\?v=20261008f/);
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   assert.match(overlay, /Exporter en PDF/);
   assert.match(overlay, /export_submission_pdf/);

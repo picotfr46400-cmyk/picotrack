@@ -10,12 +10,10 @@ const INTERNAL_FUNCTIONS = new Set([
   'update-user',
   'delete-user'
 ]);
-const EDGE_FUNCTIONS = new Set(['pad-sync']);
-
 function resolveFunctionRoute(name) {
   const fn = String(name || '');
   if (INTERNAL_FUNCTIONS.has(fn)) return 'internal';
-  if (EDGE_FUNCTIONS.has(fn)) return 'edge';
+  if (fn === 'pad-sync') return 'pad-sync';
   return 'deny';
 }
 
@@ -1260,25 +1258,16 @@ async function handler(req, res) {
     }
 
     if (!functionName) return json(res, 400, { error: 'Fonction manquante' });
-    if (resolveFunctionRoute(functionName) !== 'edge') return json(res, 404, { error: 'Fonction inconnue' });
-    await requireAuth(req);
-    const token = bearer(req);
-    const key = anonKey;
-    const upstream = await fetch(`${url}/functions/v1/${functionName}`, {
-      method: 'POST',
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-    const text = await upstream.text();
-    applySecurityHeaders(res);
-    res.statusCode = upstream.status;
-    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    return res.end(text);
+    if (functionName === 'pad-sync') {
+      return require('./pad-sync')({
+        method: 'POST',
+        headers: req.headers || {},
+        body: payload,
+        picoNow: req.picoNow,
+        picoDeadlineMs: req.picoDeadlineMs
+      }, res);
+    }
+    return json(res, 404, { error: 'Fonction inconnue' });
   } catch (err) {
     return json(res, err.status && err.status >= 400 ? err.status : 500, {
       error: err.message || 'Erreur fonction serveur'

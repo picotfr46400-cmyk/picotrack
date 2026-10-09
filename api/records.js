@@ -1,8 +1,9 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
-const { formatSubmissionDocument, buildSubmissionPdf, PDF_BYTE_LIMIT } = require('./_submission-pdf');
+const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
 const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota } = require('./function');
+const submissionAudit = require('./_submission-audit');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -871,6 +872,9 @@ function projectClientResult(action, body, result, profile) {
 }
 
 async function handleSave(req, body) {
+  if (submissionAudit.isAuditEntity(body && body.entity)) {
+    throw Object.assign(new Error('Journal de traçabilité en ajout seul.'), { status: 403 });
+  }
   let companionLicenses = null;
   let companionActivating = false;
   let profileSnapshot = null;
@@ -940,17 +944,19 @@ async function handleSave(req, body) {
     const existing = await readOneById(req, 'services', id, env);
     if (existing) assertRecordAllowed('services', existing, 'edit', profile, 'Modification du service refusée par les rôles.');
   }
+  let auditForm = null;
+  let auditService = null;
   if (entity === 'submissions') {
-    const form = await readFormForSubmission(req, record.form_id || source?.formId, env);
-    if (form) assertRecordAllowed('forms', form, 'submit', profile, 'Saisie du formulaire refusée par les rôles.');
+    auditForm = await readFormForSubmission(req, record.form_id || source?.formId, env);
+    if (auditForm) assertRecordAllowed('forms', auditForm, 'submit', profile, 'Saisie du formulaire refusée par les rôles.');
   }
   if (entity === 'appointments') {
     const form = await readFormForSubmission(req, record.form_id || source?.formId, env);
     if (form) assertRecordAllowed('forms', form, 'submit', profile, 'Réservation refusée par les rôles du formulaire.');
   }
   if (entity === 'service_instances') {
-    const service = await readServiceForInstance(req, record.service_id || source?.serviceId, env);
-    if (service) assertRecordAllowed('services', service, 'create', profile, 'Création de demande refusée par les rôles du service.');
+    auditService = await readServiceForInstance(req, record.service_id || source?.serviceId, env);
+    if (auditService) assertRecordAllowed('services', auditService, 'create', profile, 'Création de demande refusée par les rôles du service.');
   }
 
   if (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles') {
@@ -1035,6 +1041,23 @@ async function handleSave(req, body) {
   if (id) await assertNotPlatformTarget(req, entity, id, profile);
   if (!id) delete record.id;
 
+  if (!id && (entity === 'submissions' || entity === 'service_instances') && String(record.device || '').toLowerCase() === 'pad') {
+    const padSync = require('./pad-sync');
+    const savedRow = await padSync.insertPadRecord(req, {
+      entity,
+      record,
+      license: String(profile && profile.id || ''),
+      localId: String(body.client_id || body.local_id || (source && source.local_id) || '').trim(),
+      createdAt: String(body.client_created_at || (source && source.created_at) || '').trim()
+    });
+    const saved = savedRow ? [savedRow] : [];
+    await submissionAudit.recordSave(req, {
+      serviceRest, user, profile, entity, id, record, env,
+      before: null, form: auditForm, service: auditService, saved
+    });
+    return saved;
+  }
+
   const method = id ? 'PATCH' : 'POST';
   let path = id ? `${entity}?id=eq.${encodeURIComponent(id)}` : entity;
   if (id && entitiesWithEnvironmentCode.has(entity) && !isPlatformLicenseManagerProfile(profile)) {
@@ -1043,7 +1066,16 @@ async function handleSave(req, body) {
 
   // Les écritures passent côté serveur avec clé service après authentification + whitelist + normalisation.
   // Cela évite les pertes silencieuses dues aux politiques RLS incomplètes, sans exposer la clé au navigateur.
+  const auditBefore = (entity === 'submissions' || entity === 'service_instances') && id
+    ? await readOneById(req, entity, id, record.environment_code || env).catch(() => null)
+    : null;
   const saved = await serviceRest(path, { method, body: record, prefer: 'return=representation', req });
+  if (entity === 'submissions' || entity === 'service_instances') {
+    await submissionAudit.recordSave(req, {
+      serviceRest, user, profile, entity, id, record, env,
+      before: auditBefore, form: auditForm, service: auditService, saved
+    });
+  }
   if (companionLicenses && companionLicenses.length) {
     const { url, serviceRole } = getSupabaseConfig(req);
     await commitCompanionLicenseChange(url, serviceRole, profileSnapshot, companionLicenses, companionActivating);
@@ -1052,6 +1084,9 @@ async function handleSave(req, body) {
 }
 
 async function handleDelete(req, body) {
+  if (submissionAudit.isAuditEntity(body && body.entity)) {
+    throw Object.assign(new Error('Journal de traçabilité en ajout seul.'), { status: 403 });
+  }
   const entity = cleanEntity(body.entity);
   const id = String(body.id || '').trim();
   if (!entity || !id) throw Object.assign(new Error('Suppression invalide'), { status: 400 });
@@ -1092,18 +1127,35 @@ async function handleDelete(req, body) {
     }
   }
 
-  // Suppression métier d'un formulaire : on nettoie d'abord les soumissions liées
-  // pour éviter les blocages de contrainte et les données orphelines.
-  if (entity === 'forms') {
-    let subPath = `submissions?form_id=eq.${encodeURIComponent(id)}`;
-    if (!isPlatform) {
-      const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
-      if (env && env !== 'GLOBAL') subPath += `&environment_code=eq.${encodeURIComponent(env)}`;
-    }
-    await serviceRest(subPath, { method: 'DELETE', prefer: 'return=minimal', req }).catch(() => []);
+  const deleteEnv = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
+  let deleteTarget = null;
+  if (entity === 'submissions' || entity === 'service_instances') {
+    deleteTarget = await readOneById(req, entity, id, isPlatform ? null : deleteEnv).catch(() => null);
   }
 
-  return await serviceRest(scopedPath(entity), { method: 'DELETE', prefer: 'return=minimal', req });
+  // Suppression métier d'un formulaire : on nettoie d'abord les soumissions liées
+  // pour éviter les blocages de contrainte et les données orphelines.
+  let removedSubmissions = [];
+  if (entity === 'forms') {
+    let subPath = `submissions?form_id=eq.${encodeURIComponent(id)}&select=id,environment_code,device&limit=100`;
+    if (!isPlatform && deleteEnv && deleteEnv !== 'GLOBAL') subPath += `&environment_code=eq.${encodeURIComponent(deleteEnv)}`;
+    removedSubmissions = await serviceRest(subPath, { method: 'GET', prefer: '', req }).catch(() => []);
+    let deletePath = `submissions?form_id=eq.${encodeURIComponent(id)}`;
+    if (!isPlatform && deleteEnv && deleteEnv !== 'GLOBAL') deletePath += `&environment_code=eq.${encodeURIComponent(deleteEnv)}`;
+    await serviceRest(deletePath, { method: 'DELETE', prefer: 'return=minimal', req });
+    await submissionAudit.recordFormCascade(req, {
+      serviceRest, user, profile, formId: id, env: isPlatform ? '' : deleteEnv,
+      rows: Array.isArray(removedSubmissions) ? removedSubmissions : []
+    });
+  }
+
+  const removed = await serviceRest(scopedPath(entity), { method: 'DELETE', prefer: 'return=minimal', req });
+  if (entity === 'submissions' || entity === 'service_instances') {
+    await submissionAudit.recordDelete(req, {
+      serviceRest, user, profile, entity, id, env: deleteEnv, existing: deleteTarget
+    });
+  }
+  return removed;
 }
 
 async function serviceRead(req, path) {
@@ -1285,6 +1337,17 @@ async function handleExportSubmissionPdf(req, body) {
     environmentDisplayName(req, env)
   ]);
   const safeForm = form && normalizeEnvCode(form.environment_code) === env ? form : null;
+  let exportRow = null;
+  let lineSets = [[]];
+  try {
+    const packed = await submissionAudit.prepareExportTrace(req, {
+      serviceRest, user, profile, env, submissionId: id, submission
+    });
+    exportRow = packed.row;
+    lineSets = packed.lineSets || [packed.lines || []];
+  } catch (err) {
+    console.error('[submission-audit] préparation PDF', err && (err.message || err));
+  }
   const document = formatSubmissionDocument({
     environmentName,
     environmentCode: env,
@@ -1297,10 +1360,11 @@ async function handleExportSubmissionPdf(req, body) {
     status: workflow.status,
     reference: id
   });
-  const pdf = buildSubmissionPdf(document);
+  const pdf = buildSubmissionPdfWithinLimit(document, lineSets);
   if (!pdf || pdf.length > PDF_BYTE_LIMIT) {
     throw Object.assign(new Error('Export PDF impossible.'), { status: 413 });
   }
+  if (exportRow) await submissionAudit.insertEvent(serviceRest, req, exportRow);
   return {
     filename: `saisie-${id}.pdf`,
     contentType: 'application/pdf',
@@ -1338,6 +1402,20 @@ async function handler(req, res) {
         break;
       case 'export_submission_pdf':
         result = await handleExportSubmissionPdf(req, body);
+        break;
+      case 'submission_trace':
+        result = await submissionAudit.handleTrace(req, body, {
+          requireAuth,
+          getUserProfile,
+          serviceRest,
+          isPlatform: isPlatformLicenseManagerProfile,
+          effectiveEnvironmentCode,
+          normalizeEnvRecordValue,
+          normalizeEnvCode,
+          cleanSubmissionId,
+          readFormForSubmission,
+          assertRecordAllowed
+        });
         break;
       case 'save':
         result = await handleSave(req, body);
