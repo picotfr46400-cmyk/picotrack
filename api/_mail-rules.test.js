@@ -731,6 +731,158 @@ test('plafonds horaire et journalier comptés en destinataires', async () => {
   assert.match(sendingRow.last_error, /Plafond de destinataires atteint/);
 });
 
+test('échec explicite rend la place, incertain la garde, sent et sending ne sont pas renvoyés', async () => {
+  const released = createMemoryStore();
+  await released.saveRule(submissionRule());
+  await notifyAfterWrite(writeInput(released, {
+    mailEnv: { MAIL_HOURLY_LIMIT: '1', MAIL_DAILY_LIMIT: '1' },
+    transport: async () => {
+      const err = new Error('550 refused');
+      err.code = 'EENVELOPE';
+      throw err;
+    }
+  }));
+  assert.equal(released.outbox[0].status, 'failed');
+  let second = 0;
+  await notifyAfterWrite(writeInput(released, {
+    id: 'sub-2',
+    saved: { id: 'sub-2', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Sud' } },
+    mailEnv: { MAIL_HOURLY_LIMIT: '1', MAIL_DAILY_LIMIT: '1' },
+    transport: async () => {
+      second += 1;
+      return { provider: 'fake' };
+    }
+  }));
+  assert.equal(second, 1);
+  const sent = released.outbox.find(row => row.target_id === 'sub-2');
+  assert.equal(sent.status, 'sent');
+  const overwritten = await released.markOutbox(sent.id, 'DEMO', {
+    status: 'pending',
+    last_error: 'Plafond de destinataires atteint'
+  }, { status: 'pending', attemptId: null });
+  assert.equal(overwritten, null);
+  assert.equal(sent.status, 'sent');
+
+  const admin = { role: 'environment_admin', environment_code: 'DEMO', active: true, email: 'admin@example.com', license_type: 'supervision' };
+  let refusedCalls = 0;
+  const refusedSent = await handleMailAction({}, { action: 'mail_outbox_resend', id: sent.id }, admin, {
+    store: released,
+    transport: async () => {
+      refusedCalls += 1;
+      return { provider: 'fake' };
+    }
+  });
+  assert.equal(refusedSent.ok, false);
+  assert.equal(refusedCalls, 0);
+  assert.equal(sent.status, 'sent');
+
+  const held = createMemoryStore();
+  await held.saveRule(submissionRule());
+  held.setForms([formOf()]);
+  let release;
+  await notifyAfterWrite(writeInput(held, {
+    id: 'sub-hold',
+    saved: { id: 'sub-hold', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Nord' } },
+    mailEnv: { MAIL_HOURLY_LIMIT: '1', MAIL_DAILY_LIMIT: '1' },
+    transport: () => new Promise(resolve => { release = resolve; }),
+    budgetMs: 400,
+    perCallMs: 80
+  }));
+  const first = held.outbox.find(row => row.target_id === 'sub-hold');
+  assert.equal(first.status, 'sending');
+  let blocked = 0;
+  await notifyAfterWrite(writeInput(held, {
+    id: 'sub-hold-2',
+    saved: { id: 'sub-hold-2', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Sud' } },
+    mailEnv: { MAIL_HOURLY_LIMIT: '1', MAIL_DAILY_LIMIT: '1' },
+    transport: async () => {
+      blocked += 1;
+      return { provider: 'fake' };
+    }
+  }));
+  assert.equal(blocked, 0);
+  assert.equal(first.status, 'sending');
+  const waiting = held.outbox.find(row => row.target_id === 'sub-hold-2');
+  assert.equal(waiting.status, 'pending');
+  assert.match(waiting.last_error, /Plafond de destinataires atteint/);
+  const refusedSending = await handleMailAction({}, { action: 'mail_outbox_resend', id: first.id }, admin, {
+    store: held,
+    transport: async () => {
+      blocked += 1;
+      return { provider: 'fake' };
+    }
+  });
+  assert.equal(refusedSending.ok, false);
+  assert.equal(first.status, 'sending');
+  first.claimed_until = new Date(Date.now() - 1000).toISOString();
+  const inactive = submissionRule();
+  inactive.active = false;
+  await held.saveRule(inactive);
+  await notifyAfterWrite(writeInput(held, {
+    id: 'sub-hold-3',
+    saved: { id: 'sub-hold-3', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Est' } },
+    mailEnv: { MAIL_HOURLY_LIMIT: '1', MAIL_DAILY_LIMIT: '1' },
+    transport: async () => {
+      blocked += 1;
+      return { provider: 'fake' };
+    },
+    budgetMs: 400,
+    perCallMs: 80
+  }));
+  assert.equal(first.status, 'uncertain');
+  release({ provider: 'fake' });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(first.status, 'uncertain');
+  const active = submissionRule();
+  await held.saveRule(active);
+  await notifyAfterWrite(writeInput(held, {
+    id: 'sub-hold-4',
+    saved: { id: 'sub-hold-4', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Ouest' } },
+    mailEnv: { MAIL_HOURLY_LIMIT: '1', MAIL_DAILY_LIMIT: '1' },
+    transport: async () => {
+      blocked += 1;
+      return { provider: 'fake' };
+    }
+  }));
+  assert.equal(blocked, 0);
+  assert.equal(first.status, 'uncertain');
+  assert.match(held.outbox.find(row => row.target_id === 'sub-hold-4').last_error, /Plafond de destinataires atteint/);
+  const previousHourly = process.env.MAIL_HOURLY_LIMIT;
+  const previousDaily = process.env.MAIL_DAILY_LIMIT;
+  process.env.MAIL_HOURLY_LIMIT = '1';
+  process.env.MAIL_DAILY_LIMIT = '1';
+  try {
+    const stillHeld = await handleMailAction({}, { action: 'mail_outbox_resend', id: first.id }, admin, {
+      store: held,
+      transport: async () => {
+        blocked += 1;
+        return { provider: 'fake' };
+      }
+    });
+    assert.equal(stillHeld.ok, false);
+    assert.equal(blocked, 0);
+    assert.equal(first.status, 'failed');
+    assert.match(stillHeld.error || '', /Plafond de destinataires atteint/);
+    process.env.MAIL_HOURLY_LIMIT = '60';
+    process.env.MAIL_DAILY_LIMIT = '300';
+    const resent = await handleMailAction({}, { action: 'mail_outbox_resend', id: first.id }, admin, {
+      store: held,
+      transport: async () => {
+        blocked += 1;
+        return { provider: 'fake' };
+      }
+    });
+    assert.equal(resent.ok, true);
+    assert.equal(blocked, 1);
+    assert.equal(first.status, 'sent');
+  } finally {
+    if (previousHourly == null) delete process.env.MAIL_HOURLY_LIMIT;
+    else process.env.MAIL_HOURLY_LIMIT = previousHourly;
+    if (previousDaily == null) delete process.env.MAIL_DAILY_LIMIT;
+    else process.env.MAIL_DAILY_LIMIT = previousDaily;
+  }
+});
+
 test('règle déjà enregistrée : 11 destinataires refusés à l’enregistrement, 12 déjà stockés avertissent', async () => {
   assert.throws(
     () => normalizeRuleRecord({
@@ -1147,6 +1299,24 @@ test('migration outbox : unicité complète, RLS forcée, service_role seulement
   assert.equal(fs.existsSync(path.join(__dirname, '../supabase/migrations/20261008223000_mail_outbox.sql')), false);
   assert.equal(/create policy/i.test(sql), false);
   assert.equal(/seule migration/i.test(sql), false);
+
+  const quota = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261009020000_mail_quota.sql'), 'utf8');
+  assert.match(quota, /create table if not exists public\.mail_quota/);
+  assert.match(quota, /function public\.claim_mail_quota/);
+  assert.match(quota, /function public\.finish_mail_outbox/);
+  assert.match(quota, /security definer/i);
+  assert.match(quota, /set search_path = public/);
+  assert.match(quota, /alter table public\.mail_quota force row level security/i);
+  assert.match(quota, /revoke all on table public\.mail_quota from authenticated/i);
+  assert.match(quota, /grant all on table public\.mail_quota to service_role/i);
+  assert.match(quota, /grant execute on function public\.claim_mail_quota\(uuid, integer, integer, integer, integer, timestamptz, timestamptz\) to service_role/i);
+  assert.match(quota, /grant execute on function public\.finish_mail_outbox\(uuid, text, integer, uuid, text, text, text, text, jsonb\) to service_role/i);
+  assert.match(quota, /revoke all on function public\.claim_mail_quota\(uuid, integer, integer, integer, integer, timestamptz, timestamptz\) from authenticated/i);
+  assert.equal(/create policy/i.test(quota), false);
+  const finishSql = quota.slice(quota.indexOf('function public.finish_mail_outbox'));
+  assert.match(finishSql, /p_status = 'failed'/);
+  assert.equal(/uncertain/.test(finishSql), false);
+  assert.match(quota.slice(quota.indexOf('function public.claim_mail_quota'), quota.indexOf('function public.finish_mail_outbox')), /status in \('pending', 'failed'\)/);
 });
 
 test('l’overlay n’envoie plus depuis le navigateur et le cache supervision est l', () => {

@@ -58,7 +58,7 @@ function sqlLiteral(table, column, value) {
     const json = typeof value === 'string' ? value : JSON.stringify(value);
     return `${sqlText(json)}::jsonb`;
   }
-  if (column.endsWith('_at') || column === 'claimed_until' || column === 'revoked_at' || column === 'last_seen') {
+  if (column.endsWith('_at') || column === 'claimed_until' || column === 'revoked_at' || column === 'last_seen' || column === 'window_start' || column === 'quota_hour' || column === 'quota_day') {
     return `${sqlText(value)}::timestamptz`;
   }
   return sqlText(value);
@@ -223,7 +223,7 @@ function ensureFixtures() {
 }
 
 function reset() {
-  psql('truncate public.mail_outbox, public.mail_rules, public.submissions, public.forms, public.licenses, public.user_profiles, public.active_device_sessions restart identity cascade');
+  psql('truncate public.mail_outbox, public.mail_rules, public.mail_quota, public.submissions, public.forms, public.licenses, public.user_profiles, public.active_device_sessions restart identity cascade');
   const fields = JSON.stringify([
     { id: 'reponse', nom: 'Réponse', type: 'text' },
     { id: 'client', nom: 'Client', type: 'text' },
@@ -252,7 +252,43 @@ function countOutbox() {
 }
 
 function outboxRows() {
-  return rowsOf('select row_to_json(t) from (select id, status, attempts, idempotency_key, target_id, attempt_id from public.mail_outbox order by created_at) t');
+  return rowsOf('select row_to_json(t) from (select id, status, attempts, idempotency_key, target_id, attempt_id, last_error from public.mail_outbox order by created_at) t');
+}
+
+function quotaReserved(kind) {
+  return Number(psql(`select coalesce(sum(reserved), 0) from public.mail_quota where environment_code = '${ENV}' and window_kind = ${sqlText(kind)}`).trim());
+}
+
+function rpcArgs(name, body) {
+  if (name === 'claim_mail_outbox') {
+    return `${sqlText(body.p_id)}::uuid, ${Number(body.p_attempts || 0)}`;
+  }
+  if (name === 'claim_mail_quota') {
+    return [
+      `${sqlText(body.p_id)}::uuid`,
+      String(Number(body.p_attempts || 0)),
+      String(Number(body.p_recipients || 0)),
+      String(Number(body.p_hour_limit || 0)),
+      String(Number(body.p_day_limit || 0)),
+      `${sqlText(body.p_hour_start)}::timestamptz`,
+      `${sqlText(body.p_day_start)}::timestamptz`
+    ].join(', ');
+  }
+  if (name === 'finish_mail_outbox') {
+    const recipients = typeof body.p_recipients === 'string' ? body.p_recipients : JSON.stringify(body.p_recipients || {});
+    return [
+      `${sqlText(body.p_id)}::uuid`,
+      sqlText(body.p_environment_code),
+      String(Number(body.p_attempts || 0)),
+      body.p_attempt_id ? `${sqlText(body.p_attempt_id)}::uuid` : 'null',
+      sqlText(body.p_status),
+      body.p_last_error == null ? 'null' : sqlText(body.p_last_error),
+      body.p_warning == null ? 'null' : sqlText(body.p_warning),
+      body.p_subject == null ? 'null' : sqlText(body.p_subject),
+      `${sqlText(recipients)}::jsonb`
+    ].join(', ');
+  }
+  return sqlText(body.p_environment_code);
 }
 
 function startAdapter() {
@@ -271,9 +307,7 @@ function startAdapter() {
       }
       const rpc = url.pathname.match(/^\/rest\/v1\/rpc\/([a-z0-9_]+)$/);
       if (rpc) {
-        const args = rpc[1] === 'claim_mail_outbox'
-          ? `${sqlText(body.p_id)}::uuid, ${Number(body.p_attempts || 0)}`
-          : sqlText(body.p_environment_code);
+        const args = rpcArgs(rpc[1], body || {});
         const rows = rowsOf(`select row_to_json(t) from public.${sqlIdent(rpc[1])}(${args}) t`);
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify(rows));
@@ -313,13 +347,15 @@ function startAdapter() {
 }
 
 function startSmtp(greet) {
+  const accept = greet === true;
+  const reject = greet === 'reject';
   let connections = 0;
   let messages = 0;
   const sockets = [];
   const server = net.createServer(socket => {
     connections += 1;
     sockets.push(socket);
-    if (!greet) return;
+    if (!accept && !reject) return;
     socket.write('220 picotrack.test ESMTP\r\n');
     let buffer = '';
     let dataMode = false;
@@ -334,7 +370,8 @@ function startSmtp(greet) {
           if (/^data$/i.test(line)) {
             dataMode = true;
             socket.write('354 end with dot\r\n');
-          } else if (/^quit$/i.test(line)) socket.write('221 bye\r\n');
+          } else if (reject && /^rcpt /i.test(line)) socket.write('550 refused\r\n');
+          else if (/^quit$/i.test(line)) socket.write('221 bye\r\n');
           else if (/^ehlo|^helo/i.test(line)) socket.write('250-picotrack.test\r\n250 OK\r\n');
           else socket.write('250 OK\r\n');
         }
@@ -417,6 +454,7 @@ async function main() {
   const adapter = await startAdapter();
   const fast = await startSmtp(true);
   const slow = await startSmtp(false);
+  const reject = await startSmtp('reject');
   process.env.SUPABASE_URL = adapter.url;
   process.env.SUPABASE_ANON_KEY = 'anon-pg';
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-pg';
@@ -462,6 +500,7 @@ async function main() {
     assert.equal(slow.connections() - slowStarted, 1);
     const uncertain = outboxRows().find(row => row.id === leased[0].id);
     assert.equal(uncertain.status, 'uncertain');
+    assert.equal(quotaReserved('hour'), 1);
     slow.destroy();
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.equal(outboxRows().find(row => row.id === leased[0].id).status, 'uncertain');
@@ -481,11 +520,91 @@ async function main() {
     const pending = outboxRows().filter(row => row.status === 'pending').length;
     assert.ok(pending >= 1, 'au moins une ligne encore pending');
     assert.ok(fast.messages() - beforeFast < 25);
+
+    reset();
+    pointSmtp(fast.port);
+    const previousHourly = process.env.MAIL_HOURLY_LIMIT;
+    const previousDaily = process.env.MAIL_DAILY_LIMIT;
+    process.env.MAIL_HOURLY_LIMIT = '2';
+    process.env.MAIL_DAILY_LIMIT = '2';
+    latencyMs = 100;
+    const beforeCap = fast.messages();
+    const capResults = await Promise.all([0, 1, 2, 3].map(index => syncPad([{
+      id: `act-cap-${index}`,
+      type: 'form_submission',
+      payload: { formId: 'form-1', values: { client: 'Nord', reponse: `C${index}` } }
+    }])));
+    capResults.forEach(result => assert.equal(result.status, 200, JSON.stringify(result.payload)));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const capped = outboxRows();
+    assert.equal(capped.length, 4, JSON.stringify(capped));
+    const sentRows = capped.filter(row => row.status === 'sent');
+    assert.equal(sentRows.length, 2, JSON.stringify(capped));
+    assert.equal(capped.filter(row => row.status === 'sending' || row.status === 'uncertain').length, 0);
+    assert.equal(fast.messages() - beforeCap, 2);
+    assert.equal(new Set(capped.map(row => row.idempotency_key)).size, 4);
+    capped.filter(row => row.status === 'pending').forEach(row => {
+      assert.match(row.last_error || '', /Plafond de destinataires atteint/);
+    });
+    assert.equal(quotaReserved('hour'), 2);
+    assert.equal(quotaReserved('day'), 2);
+    const replayBefore = fast.messages();
+    const replayed = await Promise.all([0, 1, 2, 3].map(index => syncPad([{
+      id: `act-cap-${index}`,
+      type: 'form_submission',
+      payload: { formId: 'form-1', values: { client: 'Nord', reponse: `C${index}-bis` } }
+    }])));
+    replayed.forEach(result => assert.equal(result.status, 200, JSON.stringify(result.payload)));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const afterReplay = outboxRows();
+    assert.equal(afterReplay.length, 4);
+    sentRows.forEach(row => {
+      assert.equal(afterReplay.find(item => item.id === row.id).status, 'sent');
+    });
+    assert.equal(fast.messages() - replayBefore, 0);
+    assert.equal(afterReplay.filter(row => row.status === 'sent').length, 2);
+    const sentId = sentRows[0].id;
+    const flipped = Number(psql(`with patched as (
+      update public.mail_outbox
+      set status = 'pending', last_error = 'Plafond de destinataires atteint'
+      where id = ${sqlText(sentId)}::uuid
+        and status = 'pending'
+        and attempt_id is null
+      returning 1
+    ) select count(*) from patched`).trim());
+    assert.equal(flipped, 0);
+    assert.equal(outboxRows().find(row => row.id === sentId).status, 'sent');
+
+    reset();
+    pointSmtp(reject.port);
+    process.env.MAIL_HOURLY_LIMIT = '1';
+    process.env.MAIL_DAILY_LIMIT = '1';
+    latencyMs = 0;
+    const refused = await syncPad([{ id: 'act-fail', type: 'form_submission', payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Non' } } }]);
+    assert.equal(refused.status, 200, JSON.stringify(refused.payload));
+    const failedRows = outboxRows();
+    assert.equal(failedRows.length, 1);
+    assert.equal(failedRows[0].status, 'failed', JSON.stringify(failedRows));
+    assert.equal(quotaReserved('hour'), 0);
+    pointSmtp(fast.port);
+    const beforeReleased = fast.messages();
+    const released = await syncPad([{ id: 'act-after-fail', type: 'form_submission', payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Oui' } } }]);
+    assert.equal(released.status, 200, JSON.stringify(released.payload));
+    const releasedRows = outboxRows();
+    assert.equal(releasedRows.filter(row => row.status === 'sent').length, 1, JSON.stringify(releasedRows));
+    assert.equal(fast.messages() - beforeReleased, 1);
+    assert.equal(quotaReserved('hour'), 1);
+    if (previousHourly == null) delete process.env.MAIL_HOURLY_LIMIT;
+    else process.env.MAIL_HOURLY_LIMIT = previousHourly;
+    if (previousDaily == null) delete process.env.MAIL_DAILY_LIMIT;
+    else process.env.MAIL_DAILY_LIMIT = previousDaily;
+    latencyMs = 0;
     console.log('mail-rules-pg ok');
   } finally {
     latencyMs = 0;
     await fast.close();
     await slow.close();
+    await reject.close();
     await adapter.close();
   }
 }

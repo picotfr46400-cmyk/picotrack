@@ -175,7 +175,8 @@ function parisParts(now = new Date()) {
   }).formatToParts(now);
   const pick = type => parts.find(part => part.type === type).value;
   const asUtc = Date.UTC(pick('year'), Number(pick('month')) - 1, pick('day'), pick('hour'), pick('minute'), pick('second'));
-  return { pick, offset: asUtc - now.getTime() };
+  const offset = Math.round((asUtc - now.getTime()) / 60000) * 60000;
+  return { pick, offset };
 }
 
 function parisDayStart(now = new Date()) {
@@ -712,11 +713,36 @@ function outboxRow(rule, occurrence, status, reason) {
 function createMemoryStore() {
   const rules = [];
   const outbox = [];
+  const quotaReserved = new Map();
   let users = [];
   let forms = [];
   let services = [];
   const submissions = [];
   const touch = row => { row.updated_at = new Date().toISOString(); return row; };
+  const quotaKey = (env, kind, start) => `${String(env).toUpperCase()}|${kind}|${new Date(start).toISOString()}`;
+  const reservedAt = (env, kind, start) => quotaReserved.get(quotaKey(env, kind, start)) || 0;
+  const addReserved = (env, kind, start, delta) => {
+    const key = quotaKey(env, kind, start);
+    quotaReserved.set(key, Math.max(0, (quotaReserved.get(key) || 0) + delta));
+  };
+  const legacyUsage = (env, since) => {
+    const start = new Date(since).getTime();
+    return outbox.reduce((sum, item) => {
+      if (String(item.environment_code).toUpperCase() !== String(env).toUpperCase()) return sum;
+      if (item.quota_hour) return sum;
+      if (item.status !== 'sent' && item.status !== 'sending' && item.status !== 'uncertain') return sum;
+      const stamp = new Date(item.updated_at || item.created_at || 0).getTime();
+      if (stamp < start) return sum;
+      return sum + recipientTotal(item.recipients);
+    }, 0);
+  };
+  const releaseQuota = row => {
+    const amount = Number(row && row.quota_recipients || 0);
+    if (!row || amount <= 0 || !row.quota_hour) return;
+    addReserved(row.environment_code, 'hour', row.quota_hour, -amount);
+    if (row.quota_day) addReserved(row.environment_code, 'day', row.quota_day, -amount);
+    row.quota_recipients = 0;
+  };
   return {
     rules,
     outbox,
@@ -772,16 +798,29 @@ function createMemoryStore() {
       }
       return inserted;
     },
-    async claimOutbox(row) {
+    async claimOutbox(row, quota) {
       const current = outbox.find(item => item.id === row.id);
-      if (!current) return null;
+      if (!current || !quota) return null;
       const attempts = Number(current.attempts || 0);
-      if (attempts !== Number(row.attempts || 0) || attempts >= MAX_ATTEMPTS) return null;
+      const recipients = Number(quota.recipients || 0);
+      if (attempts !== Number(row.attempts || 0) || attempts >= MAX_ATTEMPTS || recipients < 1) return null;
       if (current.status !== 'pending' && current.status !== 'failed') return null;
+      const hourUsed = reservedAt(current.environment_code, 'hour', quota.hourStart) + legacyUsage(current.environment_code, quota.hourStart);
+      const dayUsed = reservedAt(current.environment_code, 'day', quota.dayStart) + legacyUsage(current.environment_code, quota.dayStart);
+      if (hourUsed + recipients > Number(quota.hourLimit) || dayUsed + recipients > Number(quota.dayLimit)) {
+        current.last_error = 'Plafond de destinataires atteint';
+        return touch(current);
+      }
+      addReserved(current.environment_code, 'hour', quota.hourStart, recipients);
+      addReserved(current.environment_code, 'day', quota.dayStart, recipients);
       current.status = 'sending';
       current.attempts = attempts + 1;
       current.attempt_id = crypto.randomUUID();
       current.claimed_until = new Date(Date.now() + CLAIM_LEASE_MS).toISOString();
+      current.quota_recipients = recipients;
+      current.quota_hour = new Date(quota.hourStart).toISOString();
+      current.quota_day = new Date(quota.dayStart).toISOString();
+      current.last_error = null;
       return touch(current);
     },
     async expireUncertain(env) {
@@ -799,13 +838,19 @@ function createMemoryStore() {
     async finishSending(id, env, attempts, attemptId, patch) {
       const row = outbox.find(item => item.id === id && String(item.environment_code).toUpperCase() === String(env).toUpperCase());
       if (!row || row.status !== 'sending' || Number(row.attempts) !== Number(attempts)) return null;
-      if (row.attempt_id && String(row.attempt_id) !== String(attemptId || '')) return null;
+      if (!row.attempt_id || String(row.attempt_id) !== String(attemptId || '')) return null;
+      if (!patch || (patch.status !== 'sent' && patch.status !== 'failed')) return null;
+      if (patch.status === 'failed') releaseQuota(row);
       Object.assign(row, patch, { claimed_until: null });
+      if (patch.status === 'failed') row.quota_recipients = 0;
       return touch(row);
     },
-    async markOutbox(id, env, patch) {
+    async markOutbox(id, env, patch, expected) {
       const row = outbox.find(item => item.id === id && String(item.environment_code).toUpperCase() === String(env).toUpperCase());
-      if (!row) return null;
+      if (!row || !expected || row.status !== expected.status) return null;
+      const wanted = expected.attemptId == null || expected.attemptId === '' ? null : String(expected.attemptId);
+      const actual = row.attempt_id == null || row.attempt_id === '' ? null : String(row.attempt_id);
+      if (wanted !== actual) return null;
       Object.assign(row, patch);
       return touch(row);
     },
@@ -917,32 +962,35 @@ function createSqlStore(query) {
         select row_to_json(inserted) as row from inserted`);
       return inserted.map(item => item.row || item);
     },
-    async claimOutbox(row) {
-      const rows = await one(`select row_to_json(t) as row from public.claim_mail_outbox(${sqlText(row.id)}::uuid, ${Number(row.attempts || 0)}) t`);
+    async claimOutbox(row, quota) {
+      const q = quota || {};
+      const rows = await one(`select row_to_json(t) as row from public.claim_mail_quota(
+        ${sqlText(row.id)}::uuid,
+        ${Number(row.attempts || 0)},
+        ${Number(q.recipients || 0)},
+        ${Number(q.hourLimit || 0)},
+        ${Number(q.dayLimit || 0)},
+        ${q.hourStart ? `${sqlText(q.hourStart)}::timestamptz` : 'null'},
+        ${q.dayStart ? `${sqlText(q.dayStart)}::timestamptz` : 'null'}
+      ) t`);
       return rows[0] ? (rows[0].row || rows[0]) : null;
     },
     async finishSending(id, env, attempts, attemptId, patch) {
-      const rows = await one(`
-        with done as (
-          update public.mail_outbox set
-            status = ${sqlText(patch.status)},
-            last_error = ${sqlText(patch.last_error || null)},
-            warning = ${sqlText(patch.warning || null)},
-            subject = ${sqlText(patch.subject || null)},
-            recipients = ${sqlJson(patch.recipients || {})},
-            claimed_until = null,
-            updated_at = now()
-          where id = ${sqlText(id)}::uuid
-            and environment_code = ${sqlText(env)}
-            and status = 'sending'
-            and attempts = ${Number(attempts)}
-            and attempt_id = ${sqlText(attemptId)}::uuid
-          returning *
-        )
-        select row_to_json(done) as row from done`);
+      const rows = await one(`select row_to_json(t) as row from public.finish_mail_outbox(
+        ${sqlText(id)}::uuid,
+        ${sqlText(env)},
+        ${Number(attempts)},
+        ${attemptId ? `${sqlText(attemptId)}::uuid` : 'null'},
+        ${sqlText(patch && patch.status)},
+        ${sqlText(patch && patch.last_error || null)},
+        ${sqlText(patch && patch.warning || null)},
+        ${sqlText(patch && patch.subject || null)},
+        ${sqlJson(patch && patch.recipients || {})}
+      ) t`);
       return rows[0] ? (rows[0].row || rows[0]) : null;
     },
-    async markOutbox(id, env, patch) {
+    async markOutbox(id, env, patch, expected) {
+      if (!expected || !expected.status) return null;
       const assignments = ['updated_at = now()'];
       if (patch.status) assignments.push(`status = ${sqlText(patch.status)}`);
       if ('last_error' in patch) assignments.push(`last_error = ${sqlText(patch.last_error)}`);
@@ -951,10 +999,14 @@ function createSqlStore(query) {
       if ('attempt_id' in patch) assignments.push(`attempt_id = ${patch.attempt_id ? `${sqlText(patch.attempt_id)}::uuid` : 'null'}`);
       if (patch.subject) assignments.push(`subject = ${sqlText(patch.subject)}`);
       if (patch.recipients) assignments.push(`recipients = ${sqlJson(patch.recipients)}`);
+      const attemptSql = expected.attemptId ? `attempt_id = ${sqlText(expected.attemptId)}::uuid` : 'attempt_id is null';
       const rows = await one(`
         with done as (
           update public.mail_outbox set ${assignments.join(', ')}
-          where id = ${sqlText(id)}::uuid and environment_code = ${sqlText(env)}
+          where id = ${sqlText(id)}::uuid
+            and environment_code = ${sqlText(env)}
+            and status = ${sqlText(expected.status)}
+            and ${attemptSql}
           returning *
         )
         select row_to_json(done) as row from done`);
@@ -1104,11 +1156,20 @@ function createSupabaseStore(req) {
         throw err;
       }
     },
-    async claimOutbox(row) {
+    async claimOutbox(row, quota) {
+      const q = quota || {};
       try {
-        const rows = await rest('rpc/claim_mail_outbox', {
+        const rows = await rest('rpc/claim_mail_quota', {
           method: 'POST',
-          body: { p_id: row.id, p_attempts: Number(row.attempts || 0) },
+          body: {
+            p_id: row.id,
+            p_attempts: Number(row.attempts || 0),
+            p_recipients: Number(q.recipients || 0),
+            p_hour_limit: Number(q.hourLimit || 0),
+            p_day_limit: Number(q.dayLimit || 0),
+            p_hour_start: q.hourStart || null,
+            p_day_start: q.dayStart || null
+          },
           prefer: 'return=representation'
         });
         return firstRow(rows);
@@ -1117,15 +1178,34 @@ function createSupabaseStore(req) {
       }
     },
     async finishSending(id, env, attempts, attemptId, patch) {
-      const rows = await rest(
-        `mail_outbox?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(env)}&status=eq.sending&attempts=eq.${Number(attempts)}&attempt_id=eq.${encodeURIComponent(attemptId || '')}`,
-        { method: 'PATCH', body: Object.assign({}, patch, { claimed_until: null, updated_at: new Date().toISOString() }), prefer: 'return=representation' }
-      );
-      return firstRow(rows);
+      try {
+        const rows = await rest('rpc/finish_mail_outbox', {
+          method: 'POST',
+          body: {
+            p_id: id,
+            p_environment_code: env,
+            p_attempts: Number(attempts),
+            p_attempt_id: attemptId || null,
+            p_status: patch && patch.status,
+            p_last_error: patch && patch.last_error || null,
+            p_warning: patch && patch.warning || null,
+            p_subject: patch && patch.subject || null,
+            p_recipients: patch && patch.recipients || {}
+          },
+          prefer: 'return=representation'
+        });
+        return firstRow(rows);
+      } catch (_) {
+        return null;
+      }
     },
-    async markOutbox(id, env, patch) {
+    async markOutbox(id, env, patch, expected) {
+      if (!expected || !expected.status) return null;
+      const attempt = expected.attemptId
+        ? `attempt_id=eq.${encodeURIComponent(expected.attemptId)}`
+        : 'attempt_id=is.null';
       const rows = await rest(
-        `mail_outbox?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(env)}`,
+        `mail_outbox?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(env)}&status=eq.${encodeURIComponent(expected.status)}&${attempt}`,
         { method: 'PATCH', body: Object.assign({}, patch, { updated_at: new Date().toISOString() }), prefer: 'return=representation' }
       );
       return firstRow(rows);
@@ -1373,17 +1453,39 @@ async function readSubmission(store, env, id) {
   return { ok: true, row: outcome.value || null };
 }
 
+function attemptExpect(row) {
+  return { status: row && row.status, attemptId: row && row.attempt_id ? row.attempt_id : null };
+}
+
+function quotaRequest(deps, recipients, now) {
+  const limits = deps.env || process.env;
+  const when = now || deps.now || new Date();
+  return {
+    recipients: recipientTotal(recipients),
+    hourLimit: hourlyLimit(limits),
+    dayLimit: dailyLimit(limits),
+    hourStart: parisHourStart(when).toISOString(),
+    dayStart: parisDayStart(when).toISOString()
+  };
+}
+
+async function markCurrent(store, row, env, patch) {
+  if (!store || !row) return null;
+  return store.markOutbox(row.id, env, patch, attemptExpect(row));
+}
+
 async function deliverPrepared(row, prepared, deps, deadline) {
   const env = row.environment_code;
   const recipients = capRecipients(prepared.to || [], prepared.cc || [], prepared.bcc || [], MAX_RECIPIENTS);
   if (!recipients.to.length) {
-    await deps.store.markOutbox(row.id, env, { status: 'skipped', last_error: 'Aucun destinataire', recipients });
+    await markCurrent(deps.store, row, env, { status: 'skipped', last_error: 'Aucun destinataire', recipients });
     return 'skipped';
   }
   const perCall = Math.min(deps.perCallMs || DEFAULT_PER_CALL_MS, Math.max(0, deadline - Date.now()));
   if (perCall < 50) return 'pending';
-  const claimed = await deps.store.claimOutbox(row);
+  const claimed = await deps.store.claimOutbox(row, quotaRequest(deps, recipients));
   if (!claimed) return 'skipped';
+  if (claimed.status !== 'sending') return 'capped';
   const transport = deps.transport || (message => deliverMail(message, deps.env || process.env));
   const message = {
     to: recipients.to,
@@ -1426,7 +1528,7 @@ async function sendOutboxRow(row, deps, deadline) {
     ? await loadFormState(deps.store, { formId: payload.form_id, environmentCode: env }, deps.input || {}, deps.formCache || new Map())
     : { ok: true, form: null };
   if (payload.form_id && !formState.ok) {
-    await deps.store.markOutbox(row.id, env, { status: 'pending', last_error: 'Formulaire indisponible, nouvel essai plus tard' });
+    await markCurrent(deps.store, row, env, { status: 'pending', last_error: 'Formulaire indisponible, nouvel essai plus tard' });
     return 'pending';
   }
   let rule = (deps.rules || []).find(item => item.id && item.id === row.rule_id) || null;
@@ -1434,24 +1536,24 @@ async function sendOutboxRow(row, deps, deadline) {
   if (!rule && payload.needs_form && formState.form) {
     rule = implicitRuleFromForm(formState.form, env);
     if (!rule) {
-      await deps.store.markOutbox(row.id, env, { status: 'skipped', last_error: 'Aucune règle mail' });
+      await markCurrent(deps.store, row, env, { status: 'skipped', last_error: 'Aucune règle mail' });
       return 'skipped';
     }
   }
   if (!rule && row.rule_id) {
-    await deps.store.markOutbox(row.id, env, { status: 'skipped', last_error: 'Règle introuvable' });
+    await markCurrent(deps.store, row, env, { status: 'skipped', last_error: 'Règle introuvable' });
     return 'skipped';
   }
   const submissionId = payload.submission_id || (row.event && String(row.event).startsWith('submission.') ? row.target_id : '');
   const loaded = await readSubmission(deps.store, env, submissionId);
   if (submissionId && !loaded.ok) {
-    await deps.store.markOutbox(row.id, env, { status: 'pending', last_error: 'Saisie indisponible, nouvel essai plus tard' });
+    await markCurrent(deps.store, row, env, { status: 'pending', last_error: 'Saisie indisponible, nouvel essai plus tard' });
     return 'pending';
   }
   const values = loaded.row ? valuesOf(loaded.row) : {};
   const fields = formState.form && Array.isArray(formState.form.fields) ? formState.form.fields : [];
   if (rule && !conditionsPass(rule.config.conditions, values, fields)) {
-    await deps.store.markOutbox(row.id, env, { status: 'skipped', last_error: 'Conditions non remplies' });
+    await markCurrent(deps.store, row, env, { status: 'skipped', last_error: 'Conditions non remplies' });
     return 'skipped';
   }
   const service = payload.service_id && deps.store.getService ? await deps.store.getService(env, payload.service_id).catch(() => null) : null;
@@ -1481,22 +1583,16 @@ async function sendOutboxRow(row, deps, deadline) {
   const recipients = { to: resolved.to, cc: resolved.cc, bcc: resolved.bcc };
   if (resolved.uncapped > MAX_RECIPIENTS) warning = IMPLICIT_WARNING;
   if (!recipients.to.length) {
-    await deps.store.markOutbox(row.id, env, { status: 'skipped', last_error: 'Aucun destinataire', recipients, warning });
+    await markCurrent(deps.store, row, env, { status: 'skipped', last_error: 'Aucun destinataire', recipients, warning });
     return 'skipped';
   }
-  const count = recipientTotal(recipients);
   const now = deps.now || new Date();
-  const sentHour = await deps.store.countSentRecipients(env, parisHourStart(now));
-  const sentDay = await deps.store.countSentRecipients(env, parisDayStart(now));
   const limits = deps.env || process.env;
-  if (sentHour + count > hourlyLimit(limits) || sentDay + count > dailyLimit(limits)) {
-    await deps.store.markOutbox(row.id, env, { status: 'pending', last_error: 'Plafond de destinataires atteint', recipients });
-    return 'capped';
-  }
   const perCall = Math.min(deps.perCallMs || DEFAULT_PER_CALL_MS, Math.max(0, deadline - Date.now()));
   if (perCall < 50) return 'pending';
-  const claimed = await deps.store.claimOutbox(row);
+  const claimed = await deps.store.claimOutbox(row, quotaRequest(deps, recipients, now));
   if (!claimed) return 'skipped';
+  if (claimed.status !== 'sending') return 'capped';
   const subject = renderMailText((rule && rule.config.subject) || 'Notification PicoTrack — {{formulaire}}', ctx) || 'PicoTrack';
   let inner = renderMailTemplate((rule && rule.config.body) || 'Nouvelle saisie : {{formulaire}}', ctx);
   if (ctx.attachPdf) inner += '<!--pt-pdf-->';
@@ -1779,16 +1875,29 @@ async function handleMailAction(req, body, profile, deps = {}) {
       err.status = 404;
       throw err;
     }
-    if (row.status === 'uncertain' || row.status === 'sent') {
-      await store.markOutbox(id, env, { attempts: 0, status: 'failed', attempt_id: null, last_error: null });
+    if (row.status === 'sent' || row.status === 'sending') {
+      return { ok: false, status: row.status, error: 'Renvoi refusé', row: publicOutbox(row) };
+    }
+    if (row.status === 'uncertain') {
+      const updated = await markCurrent(store, row, env, { attempts: 0, status: 'failed', attempt_id: null, last_error: null });
+      if (!updated) {
+        const fresh = await store.getOutbox(env, id);
+        return { ok: false, status: fresh && fresh.status, error: 'Renvoi refusé', row: publicOutbox(fresh) };
+      }
       row.attempts = 0;
       row.status = 'failed';
       row.attempt_id = null;
-    } else if (Number(row.attempts || 0) >= MAX_ATTEMPTS) {
-      await store.markOutbox(id, env, { attempts: MAX_ATTEMPTS - 1, status: 'failed', attempt_id: null });
+    } else if (row.status === 'failed' && Number(row.attempts || 0) >= MAX_ATTEMPTS) {
+      const updated = await markCurrent(store, row, env, { attempts: MAX_ATTEMPTS - 1, status: 'failed', attempt_id: null });
+      if (!updated) {
+        const fresh = await store.getOutbox(env, id);
+        return { ok: false, status: fresh && fresh.status, error: 'Renvoi refusé', row: publicOutbox(fresh) };
+      }
       row.attempts = MAX_ATTEMPTS - 1;
       row.status = 'failed';
       row.attempt_id = null;
+    } else if (row.status !== 'pending' && row.status !== 'failed') {
+      return { ok: false, status: row.status, error: 'Renvoi refusé', row: publicOutbox(row) };
     }
     const rules = await store.listRules(env);
     const result = await sendOutboxRow(row, {
