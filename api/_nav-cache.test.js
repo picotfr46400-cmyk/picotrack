@@ -3,17 +3,63 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('node:vm');
+const { execFileSync } = require('child_process');
 const { prefixForHost } = require('./_server-supabase');
 
 const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
 const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
 
-test('index.html : Babel absent, React conservé, cache-buster 20261008k sur le bundle modifié', () => {
+function cacheBusters(html, fileName) {
+  const re = new RegExp(fileName.replace(/\./g, '\\.') + '\\?v=([A-Za-z0-9]+)', 'g');
+  return [...String(html).matchAll(re)].map(match => match[1]);
+}
+
+function gitShow(rev, file) {
+  return execFileSync('git', ['show', `${rev}:${file}`], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+}
+
+function v2Revision() {
+  for (const rev of ['origin/v2', 'v2']) {
+    try {
+      gitShow(rev, 'index.html');
+      return rev;
+    } catch (_) { /* ref absente */ }
+  }
+  execFileSync('git', ['fetch', '--depth=1', 'origin', 'v2'], {
+    cwd: path.join(__dirname, '..'),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  return 'origin/v2';
+}
+
+test('cache-buster : app.secured.js différent de v2 a un ?v= différent', () => {
+  const rev = v2Revision();
+  const baseBundle = gitShow(rev, 'assets/app.secured.js');
+  const baseHtml = gitShow(rev, 'index.html');
+  const currentBundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
+  const currentHtml = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
+  const baseBusters = cacheBusters(baseHtml, 'app.secured.js');
+  const currentBusters = cacheBusters(currentHtml, 'app.secured.js');
+  assert.equal(baseBusters.length >= 1, true);
+  assert.equal(new Set(currentBusters).size, 1);
+  if (baseBundle !== currentBundle) assert.notEqual(currentBusters[0], baseBusters[0]);
+  const baseOverlay = gitShow(rev, 'assets/core-supervision.js');
+  const currentOverlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
+  if (baseOverlay === currentOverlay) {
+    assert.deepEqual(cacheBusters(currentHtml, 'core-supervision.js'), cacheBusters(baseHtml, 'core-supervision.js'));
+  }
+});
+
+test('index.html : Babel absent, React conservé, cache-buster 20261008n sur le bundle modifié', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.match(html, /app\.secured\.js\?v=20261008k/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008n/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261008f/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);

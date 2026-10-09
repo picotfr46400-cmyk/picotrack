@@ -1,6 +1,7 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
 const { normalizeLicenseType, seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
 const { normalizeEmail, isValidEmail, assertWritableEmail } = require('./_email');
+const { shortLoginKey, conflictingShortLogin } = require('./_short-login');
 
 const INTERNAL_FUNCTIONS = new Set([
   'list-users',
@@ -777,6 +778,27 @@ async function resolveCreateTenantId(url, serviceRole, environmentCode, requeste
   return null;
 }
 
+async function listEnvironmentShortLogins(url, serviceRole, environmentCode) {
+  const env = normalizeEnvironmentCode(environmentCode);
+  const pageSize = 1000;
+  const rows = [];
+  for (let offset = 0; offset < pageSize * 20; offset += pageSize) {
+    const page = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=id,login_user,username,environment_code&limit=${pageSize}&offset=${offset}`, { method: 'GET' });
+    const list = Array.isArray(page) ? page : [];
+    rows.push(...list);
+    if (list.length < pageSize) break;
+  }
+  return rows;
+}
+
+async function assertShortLoginsAvailable(url, serviceRole, environmentCode, keys, exceptId) {
+  if (!(keys || []).some(value => shortLoginKey(value))) return;
+  const rows = await listEnvironmentShortLogins(url, serviceRole, environmentCode);
+  if (conflictingShortLogin(rows, environmentCode, keys, exceptId)) {
+    throw Object.assign(new Error('Cet identifiant est déjà utilisé.'), { status: 409 });
+  }
+}
+
 async function handleCreateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const profile = await requireUserCreator(req, url, serviceRole);
@@ -785,7 +807,10 @@ async function handleCreateUser(req, url, serviceRole, payload) {
   const environmentCode = assertSameEnvironmentOrPlatform(profile, safePayload.environment_code || safePayload.active_env || profileEnvironmentCode(profile));
   const email = assertWritableEmail(safePayload.email || payload.email || '');
   safePayload.email = email;
+  const loginUser = cleanString(safePayload.login_user || safePayload.username || email);
+  const username = cleanString(safePayload.username || safePayload.login_user || email);
   const quota = await assertQuotaAvailable(url, serviceRole, { ...safePayload, environment_code: environmentCode }, null);
+  await assertShortLoginsAvailable(url, serviceRole, environmentCode, [loginUser, username], null);
   const storedLicenseType = normalizePrivilegeToken(safePayload.license_type) ? safePayload.license_type : quota.licenseType;
   const creating = { ...safePayload, license_type: storedLicenseType, environment_code: quota.environmentCode };
   const authUser = await createAuthUserWithPassword(url, serviceRole, creating);
@@ -1076,6 +1101,9 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'roles')) merged.roles = current.roles;
   if (!Object.prototype.hasOwnProperty.call(safePayload, 'active')) merged.active = current.active;
   if (Object.prototype.hasOwnProperty.call(payload, 'email')) merged.email = assertWritableEmail(payload.email);
+  const nextLogin = Object.prototype.hasOwnProperty.call(payload, 'login_user') ? cleanString(payload.login_user) : current.login_user;
+  const nextUsername = Object.prototype.hasOwnProperty.call(payload, 'username') ? cleanString(payload.username) : current.username;
+  await assertShortLoginsAvailable(url, serviceRole, merged.environment_code || current.environment_code, [nextLogin, nextUsername], current.id);
   const turningOn = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === true && current.active === false;
   const turningOff = Object.prototype.hasOwnProperty.call(payload, 'active') && payload.active === false && current.active !== false;
   const requestedLicenseId = cleanString(payload.license_id, 80);
@@ -1336,4 +1364,5 @@ handler.snapshotUserProfile = snapshotUserProfile;
 handler.resolveReactivationLicense = resolveReactivationLicense;
 handler.assertExplicitLicenseQuota = assertExplicitLicenseQuota;
 handler.licenseEmailKey = licenseEmailKey;
+handler.assertShortLoginsAvailable = assertShortLoginsAvailable;
 module.exports = handler;

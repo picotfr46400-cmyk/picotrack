@@ -2,7 +2,7 @@ const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, ser
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
 const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
-const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota } = require('./function');
+const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota, assertShortLoginsAvailable } = require('./function');
 const submissionAudit = require('./_submission-audit');
 const { assertWritableEmail } = require('./_email');
 
@@ -1011,6 +1011,12 @@ async function handleSave(req, body) {
           role: existingRow.role,
           roles: existingRow.roles
         }, turningOn, { licenseId: turningOn ? requestedLicenseId : '' });
+      }
+      if (entity === 'user_profiles' && (Object.prototype.hasOwnProperty.call(record, 'login_user') || Object.prototype.hasOwnProperty.call(record, 'username'))) {
+        const { url, serviceRole } = getSupabaseConfig(req);
+        const loginValue = Object.prototype.hasOwnProperty.call(record, 'login_user') ? record.login_user : existingRow?.login_user;
+        const usernameValue = Object.prototype.hasOwnProperty.call(record, 'username') ? record.username : existingRow?.username;
+        await assertShortLoginsAvailable(url, serviceRole, record.environment_code, [loginValue, usernameValue], id || existingRow?.id || null);
       }
       if (updateAddsActiveSeat(creating ? { active: false } : existingRow, after)) {
         const { url, serviceRole } = getSupabaseConfig(req);

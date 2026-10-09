@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile, fetchUpstream, clientIp, takeAttempt } = require('./_server-supabase');
 const { normalizeEmail, isEmailLike, isValidEmail } = require('./_email');
+const { findShortLoginMatches } = require('./_short-login');
 
 const GENERIC_SIGN_IN_ERROR = 'Identifiants invalides ou compte inactif';
 
@@ -16,6 +17,21 @@ function normalizeProfile(user, profile) {
     active: profile.active !== false,
     resolved_permissions: profile.resolved_permissions || {}
   };
+}
+
+async function listShortLoginCandidates(req) {
+  const pageSize = 1000;
+  const rows = [];
+  for (let offset = 0; offset < pageSize * 20; offset += pageSize) {
+    const page = await serviceRest(
+      `user_profiles?select=id,email,login_user,username,environment_code&limit=${pageSize}&offset=${offset}`,
+      { method: 'GET', prefer: '', req }
+    ).catch(() => null);
+    if (!Array.isArray(page)) break;
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows;
 }
 
 function makeSessionToken() {
@@ -73,12 +89,10 @@ module.exports = async function handler(req, res) {
       let loginEmail = '';
       if (isEmailLike(rawLogin)) {
         loginEmail = normalizeEmail(rawLogin);
-      } else {
-        const safeLogin = encodeURIComponent(rawLogin.trim());
-        if (safeLogin) {
-          const rows = await serviceRest(`user_profiles?or=(login_user.eq.${safeLogin},username.eq.${safeLogin})&select=email,active&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []);
-          if (Array.isArray(rows) && rows[0]?.email) loginEmail = normalizeEmail(rows[0].email);
-        }
+      } else if (String(rawLogin).trim()) {
+        const rows = await listShortLoginCandidates(req);
+        const matches = findShortLoginMatches(rows, rawLogin);
+        if (matches.length === 1 && matches[0]?.email) loginEmail = normalizeEmail(matches[0].email);
       }
       const attempt = takeAttempt(`signin:${clientIp(req)}:${loginEmail || 'unknown'}`);
       if (!attempt.allowed) return json(res, 429, { error: 'Trop de tentatives. Réessayez plus tard.' });
@@ -93,15 +107,15 @@ module.exports = async function handler(req, res) {
       let payload = {};
       try { payload = JSON.parse(text || '{}'); } catch { payload = {}; }
       const invalidEmail = isEmailLike(rawLogin) && !isValidEmail(rawLogin);
-      if (invalidEmail || !upstream.ok) {
+      const credentialFailure = upstream.status === 400 || upstream.status === 401;
+      if (invalidEmail && (upstream.ok || credentialFailure)) {
         attempt.fail();
-        if (!invalidEmail && upstream.status >= 500) {
-          return json(res, upstream.status, { error: 'Connexion refusée' });
-        }
-        if (!invalidEmail && upstream.status !== 400 && upstream.status !== 401) {
-          return json(res, upstream.status, { error: 'Connexion refusée' });
-        }
         return json(res, 400, { error: GENERIC_SIGN_IN_ERROR });
+      }
+      if (!upstream.ok) {
+        attempt.fail();
+        if (credentialFailure) return json(res, 400, { error: GENERIC_SIGN_IN_ERROR });
+        return json(res, upstream.status, { error: 'Connexion refusée' });
       }
       attempt.ok();
 
