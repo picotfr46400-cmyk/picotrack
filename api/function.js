@@ -1,7 +1,7 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
 const { normalizeLicenseType, seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
 const { normalizeEmail, isValidEmail, assertWritableEmail } = require('./_email');
-const { shortLoginKey, conflictingShortLogin } = require('./_short-login');
+const { shortLoginKey, conflictingShortLogin, shortLoginQuery } = require('./_short-login');
 
 const INTERNAL_FUNCTIONS = new Set([
   'list-users',
@@ -778,23 +778,33 @@ async function resolveCreateTenantId(url, serviceRole, environmentCode, requeste
   return null;
 }
 
-async function listEnvironmentShortLogins(url, serviceRole, environmentCode) {
-  const env = normalizeEnvironmentCode(environmentCode);
-  const pageSize = 1000;
-  const rows = [];
-  for (let offset = 0; offset < pageSize * 20; offset += pageSize) {
-    const page = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=id,login_user,username,environment_code&limit=${pageSize}&offset=${offset}`, { method: 'GET' });
-    const list = Array.isArray(page) ? page : [];
-    rows.push(...list);
-    if (list.length < pageSize) break;
+async function readShortLoginPage(url, serviceRole, environmentCode, rawLogin) {
+  const path = `/rest/v1/user_profiles?select=id,login_user,username,environment_code&${shortLoginQuery(environmentCode, rawLogin)}`;
+  let page;
+  try {
+    page = await supabaseFetch(url, serviceRole, path, { method: 'GET' });
+  } catch (_) {
+    throw Object.assign(new Error('Lecture des identifiants impossible.'), { status: 503 });
   }
-  return rows;
+  if (!Array.isArray(page)) {
+    throw Object.assign(new Error('Lecture des identifiants impossible.'), { status: 503 });
+  }
+  return page;
 }
 
 async function assertShortLoginsAvailable(url, serviceRole, environmentCode, keys, exceptId) {
-  if (!(keys || []).some(value => shortLoginKey(value))) return;
-  const rows = await listEnvironmentShortLogins(url, serviceRole, environmentCode);
-  if (conflictingShortLogin(rows, environmentCode, keys, exceptId)) {
+  const wanted = [...new Set((keys || []).map(shortLoginKey).filter(Boolean))];
+  if (!wanted.length) return;
+  const rows = [];
+  const seen = new Set();
+  for (const key of wanted) {
+    for (const row of await readShortLoginPage(url, serviceRole, environmentCode, key)) {
+      if (!row?.id || seen.has(String(row.id))) continue;
+      seen.add(String(row.id));
+      rows.push(row);
+    }
+  }
+  if (conflictingShortLogin(rows, environmentCode, wanted, exceptId)) {
     throw Object.assign(new Error('Cet identifiant est déjà utilisé.'), { status: 409 });
   }
 }

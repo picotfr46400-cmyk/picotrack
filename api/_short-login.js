@@ -1,9 +1,33 @@
 'use strict';
 
 // Identifiant court : trim et minuscules des deux côtés. La valeur stockée
-// ne change pas. Pas de ilike, donc pas de jokers.
+// ne change pas. ilike sert d'égalité insensible à la casse : % _ \ et *
+// sont échappés, puis la ligne est revérifiée en JS.
 function shortLoginKey(value) {
   return String(value ?? '').trim().toLowerCase();
+}
+
+function ilikeLiteral(value) {
+  return shortLoginKey(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '\\%')
+    .replace(/_/g, '\\_')
+    .replace(/\*/g, '\\*');
+}
+
+function postgrestLiteral(value) {
+  return encodeURIComponent(value).replace(/[!'()*.]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+function shortLoginQuery(environmentCode, rawLogin) {
+  const env = String(environmentCode || '').trim().toUpperCase();
+  const pattern = postgrestLiteral(ilikeLiteral(rawLogin));
+  return [
+    `environment_code=eq.${encodeURIComponent(env)}`,
+    `or=(login_user.ilike.${pattern},username.ilike.${pattern})`,
+    'order=id.asc',
+    'limit=2'
+  ].join('&');
 }
 
 function shortLoginKeys(row) {
@@ -36,5 +60,8 @@ module.exports = {
   shortLoginKey,
   shortLoginKeys,
   findShortLoginMatches,
-  conflictingShortLogin
+  conflictingShortLogin,
+  ilikeLiteral,
+  postgrestLiteral,
+  shortLoginQuery
 };

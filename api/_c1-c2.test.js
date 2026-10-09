@@ -1535,7 +1535,7 @@ test('handler : update-user {roles} ne remplace pas le login court ni les champs
   const requester = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true };
   const target = {
     id: 'target-1', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', environment_code: 'EFC', active: true,
-    roles: ['pad_user'], username: 'pad1', login_user: 'pad1', label: 'Pad Un', firstname: 'Pad', lastname: 'Un', license_key: 'LK-PAD'
+    roles: ['pad_user'], username: 'padtest', login_user: 'padtest', label: 'Pad Test', firstname: 'Pad', lastname: 'Test', license_key: 'LK-PAD'
   };
   await withSupabase(async () => {
     let saved = null;

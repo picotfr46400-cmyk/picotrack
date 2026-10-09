@@ -1,7 +1,7 @@
 const crypto = require('crypto');
-const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile, fetchUpstream, clientIp, takeAttempt } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile, fetchUpstream, clientIp, takeAttempt, requestHost, resolveTenantFromHost } = require('./_server-supabase');
 const { normalizeEmail, isEmailLike, isValidEmail } = require('./_email');
-const { findShortLoginMatches } = require('./_short-login');
+const { findShortLoginMatches, shortLoginQuery } = require('./_short-login');
 
 const GENERIC_SIGN_IN_ERROR = 'Identifiants invalides ou compte inactif';
 
@@ -19,19 +19,22 @@ function normalizeProfile(user, profile) {
   };
 }
 
-async function listShortLoginCandidates(req) {
-  const pageSize = 1000;
-  const rows = [];
-  for (let offset = 0; offset < pageSize * 20; offset += pageSize) {
-    const page = await serviceRest(
-      `user_profiles?select=id,email,login_user,username,environment_code&limit=${pageSize}&offset=${offset}`,
-      { method: 'GET', prefer: '', req }
-    ).catch(() => null);
-    if (!Array.isArray(page)) break;
-    rows.push(...page);
-    if (page.length < pageSize) break;
+function hostEnvironmentCode(req) {
+  return normalizeEnvironmentCode(resolveTenantFromHost(requestHost(req)).environmentCode);
+}
+
+async function listShortLoginCandidates(req, environmentCode, rawLogin) {
+  const path = `user_profiles?select=id,email,login_user,username,environment_code&${shortLoginQuery(environmentCode, rawLogin)}`;
+  let page;
+  try {
+    page = await serviceRest(path, { method: 'GET', prefer: '', req });
+  } catch (_) {
+    throw Object.assign(new Error('Connexion indisponible.'), { status: 503 });
   }
-  return rows;
+  if (!Array.isArray(page) || page.length > 2) {
+    throw Object.assign(new Error('Connexion indisponible.'), { status: 503 });
+  }
+  return page;
 }
 
 function makeSessionToken() {
@@ -90,8 +93,9 @@ module.exports = async function handler(req, res) {
       if (isEmailLike(rawLogin)) {
         loginEmail = normalizeEmail(rawLogin);
       } else if (String(rawLogin).trim()) {
-        const rows = await listShortLoginCandidates(req);
-        const matches = findShortLoginMatches(rows, rawLogin);
+        const env = hostEnvironmentCode(req);
+        const rows = await listShortLoginCandidates(req, env, rawLogin);
+        const matches = findShortLoginMatches(rows, rawLogin).filter(row => normalizeEnvironmentCode(row.environment_code) === env);
         if (matches.length === 1 && matches[0]?.email) loginEmail = normalizeEmail(matches[0].email);
       }
       const attempt = takeAttempt(`signin:${clientIp(req)}:${loginEmail || 'unknown'}`);

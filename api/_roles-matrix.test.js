@@ -1694,6 +1694,9 @@ test('bureau et tablette : pleine chasse acceptée, espace interne identique au 
   });
 
   resetRateLimits();
+  const previousDeskEnv = process.env.PICOTRACK_ENVIRONMENT_CODE;
+  process.env.PICOTRACK_ENVIRONMENT_CODE = 'EFC';
+  try {
   await withSupabase(async () => {
     const tokenEmails = [];
     let waitMs = 0;
@@ -1716,7 +1719,8 @@ test('bureau et tablette : pleine chasse acceptée, espace interne identique au 
       }
       if (u.includes('/rest/v1/user_profiles?') && u.includes('login_user')) {
         assert.equal(u.includes('pad,user'), false, u);
-        assert.equal(decodeURIComponent(u).includes('or=('), false, u);
+        assert.match(decodeURIComponent(u), /order=id/);
+        assert.match(decodeURIComponent(u), /environment_code=eq\.EFC/);
         return { ok: true, status: 200, text: async () => JSON.stringify([{ id: 'named-1', email: 'pad.user@efc.picotrack.fr', login_user: 'PadUser', username: 'PadUser', environment_code: 'EFC' }]) };
       }
       return { ok: true, status: 200, text: async () => '[]' };
@@ -1760,19 +1764,28 @@ test('bureau et tablette : pleine chasse acceptée, espace interne identique au 
     assert.equal(blocked.status, 429, blocked.payload.error || '');
 
   });
+  } finally {
+    if (previousDeskEnv === undefined) delete process.env.PICOTRACK_ENVIRONMENT_CODE;
+    else process.env.PICOTRACK_ENVIRONMENT_CODE = previousDeskEnv;
+  }
   resetRateLimits();
 });
 
 test('login court : casse des deux côtés, doublon générique, 409, saisie sans injection', async () => {
   resetRateLimits();
+  const previousEnv = process.env.PICOTRACK_ENVIRONMENT_CODE;
+  process.env.PICOTRACK_ENVIRONMENT_CODE = 'EFC';
+  try {
   await withSupabase(async () => {
     let rows = [];
     const lookedUp = [];
+    const tokenEmails = [];
     global.fetch = async (url, options = {}) => {
       const u = String(url);
       lookedUp.push(u);
       if (u.includes('/auth/v1/token')) {
         const body = JSON.parse(options.body || '{}');
+        tokenEmails.push(body.email);
         if (body.password === 'secret' && body.email && body.email.endsWith('@efc.picotrack.fr')) {
           return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok', user: { id: 'user-1', email: body.email } }) };
         }
@@ -1782,7 +1795,7 @@ test('login court : casse des deux côtés, doublon générique, 409, saisie san
       return { ok: true, status: 200, text: async () => '[]' };
     };
 
-    rows = [{ id: 'low-1', email: 'pad1@efc.picotrack.fr', login_user: 'paduser', username: 'paduser', environment_code: 'EFC' }];
+    rows = [{ id: 'low-1', email: 'padtest@efc.picotrack.fr', login_user: 'paduser', username: 'paduser', environment_code: 'EFC' }];
     const typedUpper = await callJson(authApi, { action: 'signIn', email: ' PadUser ', password: 'secret' });
     assert.equal(typedUpper.status, 200, JSON.stringify(typedUpper.payload));
 
@@ -1790,25 +1803,28 @@ test('login court : casse des deux côtés, doublon générique, 409, saisie san
     const typedSame = await callJson(authApi, { action: 'signIn', email: 'PadUser', password: 'secret' });
     assert.equal(typedSame.status, 200, JSON.stringify(typedSame.payload));
 
-    rows = [{ id: 'cap-1', email: 'cap@efc.picotrack.fr', login_user: 'PAD1', username: 'autre', environment_code: 'EFC' }];
-    const lowerIn = await callJson(authApi, { action: 'signIn', email: ' pad1 ', password: 'secret' });
+    rows = [{ id: 'cap-1', email: 'cap@efc.picotrack.fr', login_user: 'PADTEST', username: 'autre', environment_code: 'EFC' }];
+    const lowerIn = await callJson(authApi, { action: 'signIn', email: ' padtest ', password: 'secret' });
     assert.equal(lowerIn.status, 200, JSON.stringify(lowerIn.payload));
     assert.equal(lowerIn.payload.session.user.email, 'cap@efc.picotrack.fr');
 
-    rows = [{ id: 'low-2', email: 'low@efc.picotrack.fr', login_user: 'pad1', username: 'autre', environment_code: 'EFC' }];
-    const upperIn = await callJson(authApi, { action: 'signIn', email: 'PAD1', password: 'secret' });
+    rows = [{ id: 'low-2', email: 'low@efc.picotrack.fr', login_user: 'padtest', username: 'autre', environment_code: 'EFC' }];
+    const upperIn = await callJson(authApi, { action: 'signIn', email: 'PADTEST', password: 'secret' });
     assert.equal(upperIn.status, 200, JSON.stringify(upperIn.payload));
     assert.equal(upperIn.payload.session.user.email, 'low@efc.picotrack.fr');
 
     rows = [
-      { id: 'a', email: 'a@efc.picotrack.fr', login_user: 'PAD1', username: 'a', environment_code: 'EFC' },
-      { id: 'b', email: 'b@efc.picotrack.fr', login_user: 'pad1', username: 'b', environment_code: 'EFC' }
+      { id: 'a', email: 'a@efc.picotrack.fr', login_user: 'PADTEST', username: 'a', environment_code: 'EFC' },
+      { id: 'b', email: 'b@efc.picotrack.fr', login_user: 'padtest', username: 'b', environment_code: 'EFC' }
     ];
-    const ambiguous = await callJson(authApi, { action: 'signIn', email: 'Pad1', password: 'secret' });
+    tokenEmails.length = 0;
+    const ambiguous = await callJson(authApi, { action: 'signIn', email: 'Padtest', password: 'secret' });
     const wrong = await callJson(authApi, { action: 'signIn', email: 'bureau@efc.picotrack.fr', password: 'mauvais' });
     assert.equal(ambiguous.status, 400);
     assert.deepEqual(ambiguous.payload, wrong.payload);
     assert.equal(ambiguous.payload.error, 'Identifiants invalides ou compte inactif');
+    assert.equal(tokenEmails.includes('a@efc.picotrack.fr'), false);
+    assert.equal(tokenEmails.includes('b@efc.picotrack.fr'), false);
 
     lookedUp.length = 0;
     rows = [];
@@ -1816,27 +1832,33 @@ test('login court : casse des deux côtés, doublon générique, 409, saisie san
     assert.equal(hostile.status, 400);
     assert.equal(hostile.payload.error, 'Identifiants invalides ou compte inactif');
     const profileReads = lookedUp.filter(url => url.includes('/rest/v1/user_profiles?'));
-    assert.equal(profileReads.length > 0, true);
-    for (const url of profileReads) {
-      assert.equal(url.includes('pad,user'), false, url);
-      assert.equal(url.includes('pad%2Cuser'), false, url);
-      assert.equal(decodeURIComponent(url).includes('or=('), false, url);
-    }
+    assert.equal(profileReads.length, 1);
+    const profileUrl = profileReads[0];
+    assert.equal(profileUrl.includes('pad,user)'), false, profileUrl);
+    assert.match(profileUrl, /login_user\.ilike\.pad%2Cuser%29/);
+    assert.match(profileUrl, /username\.ilike\.pad%2Cuser%29/);
+    assert.match(decodeURIComponent(profileUrl), /order=id/);
+    assert.match(decodeURIComponent(profileUrl), /environment_code=eq\.EFC/);
+    assert.equal((profileUrl.match(/or=\(/g) || []).length, 1);
   });
 
   await withSupabase(async () => {
-    const kept = { id: 'cap-1', email: 'cap@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true, login_user: 'PAD1', username: 'CAP' };
+    const kept = { id: 'cap-1', email: 'cap@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true, login_user: 'PADTEST', username: 'CAP' };
     const other = { id: 'other-1', email: 'other@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true, login_user: 'libre', username: 'LIBRE' };
     const world = worldFor('supervision', { profiles: [kept, other] });
-    const { writes } = installWorld(world);
+    const { writes, calls } = installWorld(world);
     const created = await callJson(functions, {
       functionName: 'create-user',
-      payload: { email: 'neuf@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neuf', login_user: 'PAD1' }
+      payload: { email: 'neuf@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Neuf', login_user: 'PADTEST' }
     });
     assert.equal(created.status, 409, created.payload.error || '');
     assert.match(created.payload.error || '', /déjà utilisé/);
     assert.equal(writes.some(entry => entry.url.includes('/auth/v1/admin/users') && entry.method === 'POST'), false);
-    assert.equal(kept.login_user, 'PAD1');
+    assert.equal(kept.login_user, 'PADTEST');
+    const duplicateLookup = calls.find(call => call.method === 'GET' && call.url.includes('login_user.ilike'));
+    assert.ok(duplicateLookup, 'requête ilike absente');
+    assert.match(decodeURIComponent(duplicateLookup.url), /order=id/);
+    assert.match(decodeURIComponent(duplicateLookup.url), /environment_code=eq\.EFC/);
 
     const createdUser = await callJson(functions, {
       functionName: 'create-user',
@@ -1846,7 +1868,7 @@ test('login court : casse des deux côtés, doublon générique, 409, saisie san
 
     const renamed = await callJson(functions, {
       functionName: 'update-user',
-      payload: { id: 'other-1', login_user: 'pad1' }
+      payload: { id: 'other-1', login_user: 'padtest' }
     });
     assert.equal(renamed.status, 409, renamed.payload.error || '');
     assert.equal(other.login_user, 'libre');
@@ -1865,6 +1887,123 @@ test('login court : casse des deux côtés, doublon générique, 409, saisie san
     assert.equal(fresh.status, 200, fresh.payload.error || '');
     assert.equal(lastWrite(writes, 'user_profiles').body.login_user, 'Neuf');
   });
+  } finally {
+    if (previousEnv === undefined) delete process.env.PICOTRACK_ENVIRONMENT_CODE;
+    else process.env.PICOTRACK_ENVIRONMENT_CODE = previousEnv;
+  }
+  resetRateLimits();
+});
+
+test('login court : même identifiant dans EFC et ACME, lecture en échec 503', async () => {
+  resetRateLimits();
+  const prefixed = ['EFC_SUPABASE_URL', 'EFC_SUPABASE_ANON_KEY', 'EFC_SUPABASE_SERVICE_ROLE_KEY', 'ACME_SUPABASE_URL', 'ACME_SUPABASE_ANON_KEY', 'ACME_SUPABASE_SERVICE_ROLE_KEY'];
+  const previousPrefixed = Object.fromEntries(prefixed.map(key => [key, process.env[key]]));
+  process.env.EFC_SUPABASE_URL = 'https://efc-fixture.supabase.co';
+  process.env.EFC_SUPABASE_ANON_KEY = 'anon-efc';
+  process.env.EFC_SUPABASE_SERVICE_ROLE_KEY = 'service-efc';
+  process.env.ACME_SUPABASE_URL = 'https://acme-fixture.supabase.co';
+  process.env.ACME_SUPABASE_ANON_KEY = 'anon-acme';
+  process.env.ACME_SUPABASE_SERVICE_ROLE_KEY = 'service-acme';
+  try {
+    await withSupabase(async () => {
+      global.fetch = async (url, options = {}) => {
+        const u = String(url);
+        if (u.includes('/auth/v1/token')) {
+          const body = JSON.parse(options.body || '{}');
+          if (body.password === 'secret' && body.email) {
+            return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok', user: { id: 'user-1', email: body.email } }) };
+          }
+          return { ok: false, status: 400, text: async () => '{"error_description":"Invalid login credentials"}' };
+        }
+        if (u.includes('/rest/v1/user_profiles?') && u.includes('login_user.ilike')) {
+          const decoded = decodeURIComponent(u);
+          assert.match(decoded, /order=id/);
+          assert.match(decoded, /limit=2/);
+          if (decoded.includes('environment_code=eq.EFC')) {
+            assert.equal(decoded.includes('environment_code=eq.ACME'), false);
+            return { ok: true, status: 200, text: async () => JSON.stringify([{ id: 'efc-1', email: 'efc-user@efc.picotrack.fr', login_user: 'sharedlogin', username: 'sharedlogin', environment_code: 'EFC' }]) };
+          }
+          if (decoded.includes('environment_code=eq.ACME')) {
+            return { ok: true, status: 200, text: async () => JSON.stringify([{ id: 'acme-1', email: 'acme-user@acme.picotrack.fr', login_user: 'sharedlogin', username: 'sharedlogin', environment_code: 'ACME' }]) };
+          }
+          return { ok: true, status: 200, text: async () => '[]' };
+        }
+        return { ok: true, status: 200, text: async () => '[]' };
+      };
+      const efc = await callJson(authApi, {
+        action: 'signIn', email: 'sharedlogin', password: 'secret', environment_code: 'ACME'
+      }, { ...authHeaders(), host: 'efc.client.picotrack.fr' });
+      assert.equal(efc.status, 200, JSON.stringify(efc.payload));
+      assert.equal(efc.payload.session.user.email, 'efc-user@efc.picotrack.fr');
+
+      const acme = await callJson(authApi, {
+        action: 'signIn', email: 'sharedlogin', password: 'secret', environment_code: 'EFC'
+      }, { ...authHeaders(), host: 'acme.picotrack.fr' });
+      assert.equal(acme.status, 200, JSON.stringify(acme.payload));
+      assert.equal(acme.payload.session.user.email, 'acme-user@acme.picotrack.fr');
+      assert.notEqual(efc.payload.session.user.email, acme.payload.session.user.email);
+    });
+
+    await withSupabase(async () => {
+      global.fetch = async (url) => {
+        if (String(url).includes('/rest/v1/user_profiles?')) {
+          return { ok: false, status: 500, text: async () => JSON.stringify({ message: 'db down' }) };
+        }
+        if (String(url).includes('/auth/v1/token')) {
+          return { ok: false, status: 400, text: async () => '{"error_description":"Invalid login credentials"}' };
+        }
+        return { ok: true, status: 200, text: async () => '[]' };
+      };
+      const failed = await callJson(authApi, { action: 'signIn', email: 'padtest', password: 'secret' });
+      assert.equal(failed.status, 503, failed.payload.error || '');
+      assert.equal(failed.payload.error, 'Connexion indisponible.');
+      assert.equal(JSON.stringify(failed.payload).includes('db down'), false);
+      assert.notEqual(failed.payload.error, 'Identifiants invalides ou compte inactif');
+    });
+
+    await withSupabase(async () => {
+      global.fetch = async (url) => {
+        if (String(url).includes('/rest/v1/user_profiles?')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify([
+            { id: 'a', email: 'a@efc.picotrack.fr', login_user: 'padtest', username: 'a', environment_code: 'EFC' },
+            { id: 'b', email: 'b@efc.picotrack.fr', login_user: 'PADTEST', username: 'b', environment_code: 'EFC' },
+            { id: 'c', email: 'c@efc.picotrack.fr', login_user: 'Padtest', username: 'c', environment_code: 'EFC' }
+          ]) };
+        }
+        if (String(url).includes('/auth/v1/token')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'tok', user: { id: 'user-1', email: 'a@efc.picotrack.fr' } }) };
+        }
+        return { ok: true, status: 200, text: async () => '[]' };
+      };
+      const ceiling = await callJson(authApi, { action: 'signIn', email: 'padtest', password: 'secret' });
+      assert.equal(ceiling.status, 503, ceiling.payload.error || '');
+      assert.equal(ceiling.payload.error, 'Connexion indisponible.');
+      assert.equal(ceiling.payload.session, undefined);
+    });
+
+    await withSupabase(async () => {
+      global.fetch = async (url) => {
+        if (String(url).includes('login_user.ilike') || String(url).includes('username.ilike')) {
+          return { ok: false, status: 500, text: async () => JSON.stringify({ message: 'db down' }) };
+        }
+        return { ok: true, status: 200, text: async () => '[]' };
+      };
+      await assert.rejects(
+        () => functions.assertShortLoginsAvailable(SUPA, 'service-test', 'EFC', ['padtest'], null),
+        (err) => {
+          assert.equal(err.status, 503);
+          assert.equal(err.message, 'Lecture des identifiants impossible.');
+          assert.equal(String(err.message).includes('db down'), false);
+          return true;
+        }
+      );
+    });
+  } finally {
+    for (const key of prefixed) {
+      if (previousPrefixed[key] === undefined) delete process.env[key];
+      else process.env[key] = previousPrefixed[key];
+    }
+  }
   resetRateLimits();
 });
 
