@@ -774,9 +774,13 @@ function auditBudget(req) {
     const start = Date.now();
     host.picoAuditBudget = {
       timeoutFor() {
-        const left = JOURNAL_BUDGET_MS - (Date.now() - start);
-        if (left <= 50) return 0;
-        return Math.min(JOURNAL_CALL_MS, left);
+        let left = JOURNAL_BUDGET_MS - (Date.now() - start);
+        if (typeof host.picoRemainingMs === 'function') left = Math.min(left, host.picoRemainingMs() - 50);
+        if (left < 50) {
+          host.picoAuditDeferred = true;
+          return 0;
+        }
+        return Math.min(JOURNAL_CALL_MS, Math.floor(left));
       }
     };
     if (req) req.picoAuditBudget = host.picoAuditBudget;
@@ -787,8 +791,11 @@ function auditBudget(req) {
 async function journalCall(serviceRest, req, path, options) {
   const timeoutMs = auditBudget(req).timeoutFor();
   if (timeoutMs <= 0) {
+    if (req) req.picoAuditDeferred = true;
     console.error('[submission-audit] budget journal épuisé');
-    throw new Error('budget journal épuisé');
+    const err = new Error('budget journal épuisé');
+    err.auditBudget = true;
+    throw err;
   }
   return serviceRest(path, Object.assign({}, options, { req, timeoutMs }));
 }
@@ -804,7 +811,11 @@ async function insertEvents(serviceRest, req, rows) {
     await journalCall(serviceRest, req, path, { method: 'POST', body, prefer });
     return true;
   } catch (err) {
-    console.error('[submission-audit] écriture journal impossible', err && (err.message || err));
+    const message = String(err && err.message || '');
+    if (req && (err.auditBudget || err.status === 504 || message.includes('Délai dépassé') || message.includes('budget journal'))) {
+      req.picoAuditDeferred = true;
+    }
+    console.error('[submission-audit] écriture journal impossible', message);
     return false;
   }
 }
@@ -821,7 +832,7 @@ function stageEvents(req, rows) {
 
 async function flushAudit(req, serviceRest) {
   const rows = req && Array.isArray(req.picoAuditStage) ? req.picoAuditStage.splice(0) : [];
-  if (!rows.length || !serviceRest) return false;
+  if (!rows.length || !serviceRest) return true;
   return insertEvents(serviceRest, req, rows);
 }
 

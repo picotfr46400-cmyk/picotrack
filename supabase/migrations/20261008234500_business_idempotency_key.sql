@@ -1,3 +1,5 @@
+set lock_timeout = '5s';
+
 -- Clé d'idempotence des créations PAD.
 -- NULL autorisés et distincts : aucune ligne existante n'est réécrite.
 -- L'index est plein (pas de WHERE) pour que PostgREST puisse envoyer

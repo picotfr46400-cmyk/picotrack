@@ -150,13 +150,53 @@ async function run() {
   child.stdout.on('data', (chunk) => { pgLog += chunk; });
   child.stderr.on('data', (chunk) => { pgLog += chunk; });
 
-  const delay = { ms: 0 };
+  const pace = {
+    ms: 0,
+    slowSubmission: 0,
+    hangLicense: false,
+    hangInstance: false,
+    hangJournal: false,
+    waitFor(req) {
+      const url = String(req.url || '');
+      const method = req.method || 'GET';
+      if (this.hangLicense && method === 'GET' && url.includes('/licenses') && url.includes('active=eq.true')) return 60000;
+      if (this.hangInstance && method === 'POST' && url.includes('/service_instances')) return 60000;
+      if (this.hangJournal && method === 'POST' && url.includes('/submission_audit_log')) return 60000;
+      if (this.slowSubmission && method === 'POST' && url.includes('/submissions')) return this.slowSubmission;
+      return this.ms || 0;
+    },
+    reset() {
+      this.ms = 0;
+      this.slowSubmission = 0;
+      this.hangLicense = false;
+      this.hangInstance = false;
+      this.hangJournal = false;
+    }
+  };
   const proxy = http.createServer((req, res) => {
     const chunks = [];
+    let aborted = false;
+    req.on('aborted', () => { aborted = true; });
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', async () => {
       try {
-        if (delay.ms) await new Promise((resolve) => setTimeout(resolve, delay.ms));
+        const bodyText = Buffer.concat(chunks).toString('utf8');
+        const wait = pace.waitFor(req);
+        if (wait) {
+          await new Promise((resolve) => {
+            const timer = setTimeout(finish, wait);
+            const poll = setInterval(() => {
+              if (aborted || req.aborted) finish();
+            }, 20);
+            function finish() {
+              clearTimeout(timer);
+              clearInterval(poll);
+              resolve();
+            }
+            req.once('aborted', () => { aborted = true; finish(); });
+          });
+        }
+        if (aborted || res.writableEnded) return;
         const headers = Object.assign({}, req.headers);
         delete headers.host;
         delete headers.connection;
@@ -165,7 +205,7 @@ async function run() {
         const upstream = await fetch(`http://127.0.0.1:${pgPort}${target}`, {
           method: req.method,
           headers,
-          body: req.method === 'GET' || req.method === 'HEAD' ? undefined : Buffer.concat(chunks)
+          body: req.method === 'GET' || req.method === 'HEAD' ? undefined : Buffer.from(bodyText)
         });
         const buf = Buffer.from(await upstream.arrayBuffer());
         const out = {};
@@ -336,7 +376,7 @@ async function run() {
     });
 
     for (const ms of [50, 150, 200]) {
-      delay.ms = ms;
+      pace.ms = ms;
       await record(`latency-${ms}`, `e2e-lat-${ms}`, async () => {
         const { sandbox, item } = fresh(`e2e-lat-${ms}`);
         item.status = 'pending';
@@ -344,7 +384,7 @@ async function run() {
         const pair = await replayPair(sandbox, item);
         return { id: pair.id, identical: true };
       });
-      delay.ms = 0;
+      pace.ms = 0;
     }
 
     await record('replay-60s', 'e2e-60s', async () => {
@@ -384,6 +424,180 @@ async function run() {
       assert.equal(warnings.some((line) => line.includes('[pad-sync] clé d’idempotence dérivée')), true);
       return { id: pair.id, identical: true };
     });
+
+    function submissionId(payload) {
+      const result = payload && payload.results && payload.results[0];
+      if (result && result.submission && result.submission.id != null) return String(result.submission.id);
+      if (result && result.row && result.row.id != null) return String(result.row.id);
+      return '';
+    }
+
+    function journalCreated(actionId) {
+      return psql(`select count(*) from public.submission_audit_log where idempotency_key = ${sqlText('pad:' + actionId + ':created')}`);
+    }
+
+    async function settle(sandbox, item) {
+      item.status = 'pending';
+      const created = await sandbox.PT_OFFLINE.send(item);
+      item.status = 'pending';
+      const replayed = await sandbox.PT_OFFLINE.send(item);
+      const id = submissionId(created);
+      assert.equal(submissionId(replayed), id);
+      item.status = 'pending';
+      received.length = 0;
+      await sandbox.PT_OFFLINE.send(item);
+      item.status = 'pending';
+      await sandbox.PT_OFFLINE.send(item);
+      assert.equal(received.length, 2, JSON.stringify(received));
+      assert.equal(received[0].status, 200, received[0].body);
+      assert.equal(received[1].status, 200, received[1].body);
+      assert.equal(received[0].body, received[1].body);
+      return id;
+    }
+
+    async function flushTimed(sandbox) {
+      received.length = 0;
+      const started = Date.now();
+      await sandbox.flushOfflineQueue();
+      return Date.now() - started;
+    }
+
+    function keptItem(sandbox, key) {
+      return sandbox.PT_OFFLINE.read().find((item) => item.idempotency_key === key || item.id === key);
+    }
+
+    await record('ceiling-instance', 'e2e-ceil-inst', async () => {
+      const storage = memoryStorage();
+      const sandbox = bootQueue(storage, clientFetch, token);
+      const item = sandbox.addOfflineAction('service_instance', {
+        formId: 1,
+        values: { client: 'e2e-ceil-inst' },
+        serviceId: 7,
+        instance: { status_id: 'open', current_status_id: 'open', reference: 'e2e-ceil-inst' }
+      });
+      const key = item.idempotency_key;
+      pace.slowSubmission = 7000;
+      pace.hangInstance = true;
+      const elapsed = await flushTimed(sandbox);
+      pace.reset();
+      const kept = keptItem(sandbox, key);
+      assert.ok(kept, 'la saisie doit rester en file');
+      assert.notEqual(kept.status, 'synced');
+      assert.equal(kept.idempotency_key, key);
+      assert.ok(elapsed <= 10000, `plafond instance ${elapsed} ms`);
+      const id = await settle(sandbox, kept);
+      assert.equal(countClient('e2e-ceil-inst'), '1');
+      assert.equal(psql(`select count(*) from public.service_instances where reference = 'e2e-ceil-inst'`), '1');
+      assert.equal(journalCreated(item.id), '1');
+      console.log(`CASE ceiling-instance elapsed=${elapsed}`);
+      return { id, identical: true };
+    });
+
+    await record('ceiling-journal', 'e2e-ceil-journal', async () => {
+      const { sandbox, item } = fresh('e2e-ceil-journal');
+      const key = item.idempotency_key;
+      pace.slowSubmission = 9500;
+      pace.hangJournal = true;
+      const elapsed = await flushTimed(sandbox);
+      pace.reset();
+      const kept = keptItem(sandbox, key);
+      assert.ok(kept, 'la saisie doit rester en file');
+      assert.notEqual(kept.status, 'synced');
+      assert.equal(kept.idempotency_key, key);
+      assert.ok(elapsed <= 10000, `plafond journal ${elapsed} ms`);
+      const id = await settle(sandbox, kept);
+      assert.equal(journalCreated(item.id), '1');
+      assert.equal(id, idsFor('e2e-ceil-journal'));
+      console.log(`CASE ceiling-journal elapsed=${elapsed}`);
+      return { id, identical: true };
+    });
+
+    await record('ceiling-license', 'e2e-ceil-lic', async () => {
+      const { sandbox, item } = fresh('e2e-ceil-lic');
+      const key = item.idempotency_key;
+      pace.hangLicense = true;
+      const elapsed = await flushTimed(sandbox);
+      pace.reset();
+      const kept = keptItem(sandbox, key);
+      assert.ok(kept, 'la saisie doit rester en file');
+      assert.notEqual(kept.status, 'synced');
+      assert.equal(kept.idempotency_key, key);
+      assert.equal(countClient('e2e-ceil-lic'), '0');
+      assert.ok(elapsed <= 10000, `plafond licence ${elapsed} ms`);
+      const id = await settle(sandbox, kept);
+      assert.equal(journalCreated(item.id), '1');
+      console.log(`CASE ceiling-license elapsed=${elapsed}`);
+      return { id, identical: true };
+    });
+
+    await record('distinct-legacy', 'e2e-legacy-a', async () => {
+      const storage = memoryStorage();
+      const legacy = (id, client) => ({
+        id,
+        type: 'form_submission',
+        payload: { formId: 1, values: { client, note: client } },
+        status: 'pending',
+        created_at: '2026-10-08T07:00:00.000Z',
+        attempts: 0,
+        last_error: ''
+      });
+      storage.setItem(QUEUE_KEY, JSON.stringify([
+        legacy('old-a', 'e2e-legacy-a'),
+        legacy('old-b', 'e2e-legacy-b')
+      ]));
+      const sandbox = bootQueue(storage, clientFetch, token);
+      await sandbox.flushOfflineQueue();
+      const keyA = psql(`select idempotency_key from public.submissions where values->>'client' = 'e2e-legacy-a'`);
+      const keyB = psql(`select idempotency_key from public.submissions where values->>'client' = 'e2e-legacy-b'`);
+      assert.match(keyA, /^legacy:[0-9a-f]{64}$/);
+      assert.match(keyB, /^legacy:[0-9a-f]{64}$/);
+      assert.notEqual(keyA, keyB);
+      const items = sandbox.PT_OFFLINE.read();
+      for (const item of items) item.status = 'pending';
+      sandbox.PT_OFFLINE.write(items);
+      await sandbox.flushOfflineQueue();
+      assert.equal(countClient('e2e-legacy-a'), '1');
+      assert.equal(countClient('e2e-legacy-b'), '1');
+      const id = idsFor('e2e-legacy-a');
+      console.log(`CASE distinct-legacy rows=2 keys=${keyA.slice(0, 12)}/${keyB.slice(0, 12)}`);
+      return { id, identical: true };
+    });
+
+    const previousDeadline = padSync.deadlineMs;
+    try {
+      padSync.deadlineMs = 500;
+      pace.ms = 90;
+      const storage = memoryStorage();
+      const sandbox = bootQueue(storage, clientFetch, token);
+      for (let index = 1; index <= 25; index += 1) {
+        sandbox.addOfflineAction('form_submission', { formId: 1, values: { client: `cut-${index}` } });
+      }
+      received.length = 0;
+      await sandbox.flushOfflineQueue();
+      assert.equal(received[0].status, 503, received[0] && received[0].body);
+      const partialPayload = JSON.parse(received[0].body);
+      assert.equal(partialPayload.error, 'Synchronisation momentanément indisponible.');
+      assert.ok(partialPayload.retry.length > 0);
+      const partialRows = Number(psql(`select count(*) from public.submissions where values->>'client' like 'cut-%'`));
+      assert.ok(partialRows > 0 && partialRows < 25, `cut partiel ${partialRows}`);
+      assert.equal(psql(`select count(*) from (select idempotency_key from public.submissions where values->>'client' like 'cut-%' group by idempotency_key having count(*) > 1) d`), '0');
+      pace.reset();
+      padSync.deadlineMs = previousDeadline;
+      const pending = sandbox.PT_OFFLINE.read();
+      for (const item of pending) {
+        if (item.status !== 'synced') item.status = 'pending';
+      }
+      sandbox.PT_OFFLINE.write(pending);
+      await sandbox.flushOfflineQueue();
+      assert.equal(psql(`select count(*) from public.submissions where values->>'client' like 'cut-%'`), '25');
+      await sandbox.flushOfflineQueue();
+      assert.equal(psql(`select count(*) from public.submissions where values->>'client' like 'cut-%'`), '25');
+      assert.equal(psql(`select count(*) from (select idempotency_key from public.submissions where values->>'client' like 'cut-%' group by idempotency_key having count(*) > 1) d`), '0');
+      console.log(`CASE cut rows=25 partial=${partialRows} retry=${partialPayload.retry.length}`);
+    } finally {
+      pace.reset();
+      padSync.deadlineMs = previousDeadline;
+    }
 
     console.log('CLIENT_E2E ' + JSON.stringify(cases));
     return cases;

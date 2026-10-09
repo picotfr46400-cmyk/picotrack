@@ -850,8 +850,9 @@ test('un journal qui ne répond pas laisse la sauvegarde et la synchro sous 4 s'
           { id: 'q2', type: 'form_submission', created_at: '2026-10-08T08:01:00.000Z', payload: { formId: 'form-1', values: { client: 'Deux' } } }
         ]
       });
-      assert.equal(synced.status, 200, synced.payload.error || '');
-      assert.equal(synced.payload.synced, 2);
+      assert.equal(synced.status, 503, synced.payload.error || '');
+      assert.deepEqual(synced.payload.retry, ['q1', 'q2']);
+      assert.equal(synced.payload.results.every((row) => row.status === 'retry'), true);
       assert.ok(Date.now() - syncStarted < 4500, `sync ${Date.now() - syncStarted}ms`);
     } finally {
       console.error = previousError;
@@ -1034,13 +1035,14 @@ test('la suppression d’une saisie efface son journal via la fonction service_r
   assert.match(architecture, /zéro occurrence/);
   assert.match(architecture, /\[pad-sync\] receipts timeout or 5xx, idempotence degraded/);
   assert.match(architecture, /idempotency_key/);
-  assert.match(architecture, /14 s/);
+  assert.match(architecture, /10 s/);
   const businessKey = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261008234500_business_idempotency_key.sql'), 'utf8');
   assert.equal((businessKey.match(/add column if not exists idempotency_key/gi) || []).length, 2);
   const indexes = businessKey.match(/create unique index if not exists[\s\S]*?nulls distinct/gi) || [];
   assert.equal(indexes.length, 2);
   assert.equal(indexes.every((statement) => !/\bwhere\b/i.test(statement)), true);
   assert.equal(/\bupdate\s+public\.(submissions|service_instances)\b/i.test(businessKey), false);
+  assert.match(businessKey, /^set lock_timeout = '5s';/);
   const src = fs.readFileSync(path.join(__dirname, '_submission-audit.js'), 'utf8');
   assert.match(src, /rpc\/purge_submission_audit_log/);
   assert.equal(src.includes('interval \'3 years\''), false);
@@ -1354,8 +1356,9 @@ test('une table de reçus absente ou trop lente ne refuse pas la synchro PAD', a
       const batchStarted = Date.now();
       const batch = await callJson(padSync, { pad: { sessionToken: token }, actions: batchActions });
       const batchElapsed = Date.now() - batchStarted;
-      assert.equal(batch.status, 200, batch.payload.error || '');
-      assert.equal(batch.payload.synced, 25);
+      assert.equal(batch.status, 503, batch.payload.error || '');
+      assert.equal(batch.payload.retry.length, 25);
+      assert.equal(batch.payload.results.every((row) => row.status === 'retry'), true);
       assert.ok(batchElapsed < 10000, `lot ${batchElapsed}ms`);
       assert.equal(receiptCalls, 0);
       assert.equal(auditCalls, 1);
@@ -1485,11 +1488,11 @@ test('une limite de temps en milieu de lot laisse les actions non commencées à
       const partial = { status: res.statusCode, payload: JSON.parse(res.body || '{}') };
       assert.equal(partial.status, 503, partial.payload.error || '');
       assert.equal(partial.payload.ok, false);
-      assert.ok(partial.payload.retry.length > 0 && partial.payload.retry.length < 25);
       assert.equal(partial.payload.results.filter((row) => row.status === 'retry').length, partial.payload.retry.length);
       const started = submissions.size;
-      assert.equal(started, 25 - partial.payload.retry.length);
-      assert.equal(partial.payload.results.filter((row) => row.status === 'applied').length, started);
+      assert.ok(started > 0 && started < 25, `saisies commencées ${started}`);
+      assert.equal(partial.payload.results.filter((row) => row.status === 'applied').length, 0);
+      assert.equal(partial.payload.retry.length, 25);
       const again = await callJson(padSync, { pad: { sessionToken: token }, actions });
       assert.equal(again.status, 200, again.payload.error || '');
       assert.equal(submissions.size, 25);
@@ -1544,7 +1547,7 @@ test('un insert bloqué est coupé par le temps restant, sous 15 s', { timeout: 
     const payload = JSON.parse(res.body || '{}');
     assert.equal(res.statusCode, 503, payload.error || '');
     assert.equal(payload.retry[0], 'hang-1');
-    assert.ok(elapsed < 15000, `réponse en ${elapsed} ms`);
+    assert.ok(elapsed < 10000, `réponse en ${elapsed} ms`);
     assert.ok(elapsed < 3000, `le délai restant n’a pas coupé l’appel (${elapsed} ms)`);
   });
 });
