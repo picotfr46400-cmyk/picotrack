@@ -2,6 +2,13 @@
 
 const crypto = require('crypto');
 const { interpretedLicenseType, normalizeLicenseType } = require('./_license-type');
+const {
+  isSecretObjectKey,
+  isSensitiveField,
+  looksLikeAuditSecret,
+  maskAuditEmbedded,
+  maskKindForType
+} = require('./_secret-mask');
 
 const TABLE = 'submission_audit_log';
 const LEGACY_NOTICE = "L'historique détaillé commence à la mise en place de cette version.";
@@ -37,9 +44,6 @@ const EVENT_LABELS = {
 const STEP_TYPES = ['status_changed', 'validated', 'refused', 'returned', 'closed', 'reopened', 'archived'];
 const DETAILED_TYPES = new Set(EVENT_TYPES.filter((type) => type !== 'viewed' && type !== 'exported'));
 const FILE_TYPES = new Set(['photo', 'image', 'file', 'fichier', 'signature', 'sign', 'camera', 'piece', 'pj', 'upload', 'video', 'audio', 'son']);
-const SECRET_FIELD_TYPES = new Set(['password', 'passwd', 'secret', 'hidden', 'pin', 'otp']);
-const SECRET_KEY = /password|passwd|token|secret|authorization|cookie|api[_-]?key|license[_-]?key|session|supa[_-]?(key|url)|bearer/i;
-const SENSITIVE_TEXT = /motdepasse|mot de passe|\bpassword\b|\bpasswd\b|\bpwd\b|\bmdp\b|code confidentiel|code\s*(?:d['\s]*)?acces|digicode|code pin|\bpin\b|\botp\b|code de verification|verification code|\btoken\b|\bsecret\b|api ?key|\biban\b|carte bancaire|numero de carte|credit card|card number|\bcvv\b|\bcvc\b|cryptogramme/;
 const DEVICE_DECLARED = new Set(['email_sent', 'db_updated', 'form_filled', 'commented']);
 const SELECT_COLUMNS = 'id,environment_code,submission_id,service_instance_id,event_type,occurred_at,device_captured_at,actor_id,actor_name,actor_role,actor_license_type,origin,device_label,detail,idempotency_key';
 const JOURNAL_CALL_MS = 2000;
@@ -139,7 +143,7 @@ function deviceLabel(req, profile, recordDevice) {
     return 'PAD';
   }
   const ua = clip(req?.headers?.['user-agent'], 160);
-  if (ua && !SECRET_KEY.test(ua)) return ua;
+  if (ua && !isSecretObjectKey(ua)) return ua;
   if (raw && !generic.includes(raw.toLowerCase())) return raw;
   return '';
 }
@@ -161,84 +165,13 @@ function actorFromSession(user, profile) {
   };
 }
 
-function foldText(value) {
-  return String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-}
-
-function luhnOk(digits) {
-  let sum = 0;
-  let alt = false;
-  for (let i = digits.length - 1; i >= 0; i -= 1) {
-    let n = digits.charCodeAt(i) - 48;
-    if (n < 0 || n > 9) return false;
-    if (alt) {
-      n *= 2;
-      if (n > 9) n -= 9;
-    }
-    sum += n;
-    alt = !alt;
-  }
-  return sum % 10 === 0;
-}
-
-function looksLikeSecret(value) {
-  const text = String(value ?? '').trim();
-  if (!text) return false;
-  if (/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/.test(text)) return true;
-  if (!/\s/.test(text) && /^[0-9a-fA-F]{32,}$/.test(text)) return true;
-  if (!/\s/.test(text) && text.length >= 32 && /^[A-Za-z0-9+/_=-]+$/.test(text)) return true;
-  const digits = text.replace(/[\s-]/g, '');
-  if (/^\d{13,19}$/.test(digits) && luhnOk(digits)) return true;
-  return false;
-}
-
-function maskEmbeddedSecrets(text) {
-  return String(text || '')
-    .replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, 'masqué')
-    .replace(/\b[0-9a-fA-F]{32,}\b/g, 'masqué')
-    .replace(/\b(?:\d[ -]?){13,19}\b/g, (match) => {
-      const digits = match.replace(/\D/g, '');
-      return /^\d{13,19}$/.test(digits) && luhnOk(digits) ? 'masqué' : match;
-    });
-}
-
-function normalizeSecretText(value) {
-  const prepared = String(value ?? '')
-    .replace(/[\u2018\u2019\u201A\u201B\u2032\u02BC`]/g, "'")
-    .replace(/[\u201C\u201D\u201E\u201F\u00AB\u00BB]/g, "'")
-    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
-  return foldText(prepared).replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function isSensitiveField(key, label) {
-  const blob = normalizeSecretText(`${key} ${label}`);
-  const keyText = normalizeSecretText(key);
-  const labelText = normalizeSecretText(label);
-  return SENSITIVE_TEXT.test(blob) || SECRET_KEY.test(keyText) || SECRET_KEY.test(labelText);
-}
-
-function isSignatureType(type) {
-  const value = String(type || '').toLowerCase();
-  return value === 'signature' || value === 'sign';
-}
-
-function maskKindForType(type) {
-  const raw = String(type || '').trim();
-  if (!raw) return '';
-  if (isSignatureType(raw)) return 'signature';
-  const folded = normalizeSecretText(raw);
-  if (SECRET_FIELD_TYPES.has(folded) || SENSITIVE_TEXT.test(folded) || SECRET_KEY.test(folded)) return 'secret';
-  return '';
-}
-
 function sanitizeDetail(value, depth = 0) {
   if (value == null) return value === undefined ? undefined : null;
   if (typeof value === 'string') {
     const text = value.trim();
     if (/^data:/i.test(text)) return '[contenu omis]';
-    if (looksLikeSecret(text)) return 'masqué';
-    return maskEmbeddedSecrets(clip(text, 500));
+    if (looksLikeAuditSecret(text)) return 'masqué';
+    return maskAuditEmbedded(clip(text, 500));
   }
   if (typeof value === 'number' || typeof value === 'boolean') return value;
   if (depth > 5) return '[contenu omis]';
@@ -247,7 +180,7 @@ function sanitizeDetail(value, depth = 0) {
     const out = {};
     const keys = Object.keys(value).slice(0, 40);
     for (const key of keys) {
-      if (SECRET_KEY.test(key)) continue;
+      if (isSecretObjectKey(key)) continue;
       const next = sanitizeDetail(value[key], depth + 1);
       if (next !== undefined) out[key] = next;
     }
@@ -408,8 +341,8 @@ function plain(value) {
 function displayValue(value) {
   const text = plain(value);
   if (!text) return '';
-  if (looksLikeSecret(text)) return 'masqué';
-  return maskEmbeddedSecrets(text);
+  if (looksLikeAuditSecret(text)) return 'masqué';
+  return maskAuditEmbedded(text);
 }
 
 function diffValues(before, after, fields) {
@@ -576,8 +509,8 @@ function eventsForInstance({ before, after, service, fields }) {
   }
   const fresh = newClientEvents(before && before.events, row.events);
   const comment = fresh.find((item) => item && item.type === 'commented');
-  const commentText = maskEmbeddedSecrets(clip(comment && comment.payload && comment.payload.comment, 500));
-  const safeComment = looksLikeSecret(commentText) ? 'masqué' : commentText;
+  const commentText = maskAuditEmbedded(clip(comment && comment.payload && comment.payload.comment, 500));
+  const safeComment = looksLikeAuditSecret(commentText) ? 'masqué' : commentText;
   if (safeComment) {
     const statusEvent = events.find((item) => STEP_TYPES.includes(item.eventType));
     if (statusEvent) statusEvent.detail.comment = safeComment;
@@ -1426,7 +1359,6 @@ module.exports = {
   JOURNAL_BUDGET_MS,
   RECEIPT_COMPLETE_MS,
   DETAIL_MAX_BYTES,
-  looksLikeSecret,
   pdfLineSets,
   claimPadAction,
   claimPadBatch,

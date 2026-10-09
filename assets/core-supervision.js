@@ -858,7 +858,7 @@
             Notification.requestPermission().catch(function () {});
           }
         } else if (type === 'email') {
-          /* déjà couvert par sendMail si configuré ; pas de faux succès ici */
+          /* Envoi serveur uniquement : le navigateur ne contacte pas le transport. */
         } else if (type === 'status' || type === 'db_row') {
           /* db_row déjà exécuté par _ptRunDbRowTrigger */
         }
@@ -913,18 +913,19 @@
   }
 
   function wrapMailTrigger() {
-    if (window._ptPrepareMailTrigger && window._ptPrepareMailTrigger.__ptCore) return;
-    var orig = window._ptPrepareMailTrigger;
+    if (window._ptPrepareMailTrigger && window._ptPrepareMailTrigger.__ptServerMail) return;
+    window.ptSendMail = async function () {
+      return { ok: true, skipped: true, server: true };
+    };
     window._ptPrepareMailTrigger = function (form, second, third) {
       var sub = normalizeSubmission(form, second, third);
-      var ret;
-      if (typeof orig === 'function') ret = orig.call(this, form, sub);
-      Promise.resolve(ret).then(function () { return window.ptRunSubmitTriggers(form, sub); }).catch(function (err) {
+      Promise.resolve().then(function () { return window.ptRunSubmitTriggers(form, sub); }).catch(function (err) {
         console.warn('[PicoTrack] déclencheurs', err);
       });
-      return ret;
+      return sub;
     };
     window._ptPrepareMailTrigger.__ptCore = true;
+    window._ptPrepareMailTrigger.__ptServerMail = true;
   }
 
   function submissionFromInstance(instance, service) {
@@ -978,6 +979,10 @@
         if (window.Notification && Notification.permission === 'granted') {
           try { new Notification('PicoTrack', { body: msg }); } catch (_) {}
         }
+        return true;
+      }
+      if (type === 'email' || type === 'mail' || type === 'server_mail' || type === 'send_email') {
+        toast('i', 'Le mail part du serveur après enregistrement du dossier.');
         return true;
       }
       toast('i', 'Action « ' + type + ' » hors périmètre (non exécutée).');
@@ -1166,6 +1171,7 @@
       }
       var ret = orig.apply(this, arguments);
       paintAutomationBadges();
+      paintMailOutbox();
       markPainted('goAutomations', fp);
       return ret;
     };
@@ -2111,12 +2117,494 @@
     DB.save.__ptAudit = true;
   }
 
+  function mailFields() {
+    var fields = [];
+    try { if (typeof builderFields !== 'undefined' && Array.isArray(builderFields)) fields = builderFields; } catch (_) {}
+    if (!fields.length) {
+      try {
+        if (typeof curForm !== 'undefined' && curForm && Array.isArray(curForm.fields)) fields = curForm.fields;
+      } catch (_) {}
+    }
+    return fields.filter(function (field) {
+      var type = String(field && field.type || '').toLowerCase();
+      return field && type !== 'separator' && type !== 'sep' && type !== 'image' && type !== 'titre';
+    });
+  }
+
+  function mailRoles() {
+    var roles = [];
+    try { roles = (typeof ROLES_DATA !== 'undefined' && ROLES_DATA) || window.ROLES_DATA || []; } catch (_) { roles = []; }
+    return Array.isArray(roles) ? roles : [];
+  }
+
+  function mailCurrentFormId() {
+    try {
+      if (typeof curForm !== 'undefined' && curForm && curForm.id != null) return String(curForm.id);
+    } catch (_) {}
+    return '';
+  }
+
+  function mailCurrentServiceId() {
+    try {
+      if (typeof curService !== 'undefined' && curService && curService.id != null) return String(curService.id);
+      if (window.curService && window.curService.id != null) return String(window.curService.id);
+    } catch (_) {}
+    return '';
+  }
+
+  function el(tag, attrs, text) {
+    var node = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (key) {
+      if (key === 'style') node.style.cssText = attrs[key];
+      else node.setAttribute(key, attrs[key]);
+    });
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function fillSelect(select, options, selected) {
+    options.forEach(function (option) {
+      var item = el('option', { value: option.value }, option.label);
+      if (String(option.value) === String(selected || '')) item.selected = true;
+      select.appendChild(item);
+    });
+  }
+
+  function appendVarChips(host, input) {
+    var names = ['formulaire', 'statut', 'auteur', 'date', 'lien'];
+    mailFields().forEach(function (field) {
+      if (field.id != null) names.push(String(field.id));
+      if (field.nom || field.label) names.push(String(field.nom || field.label));
+    });
+    var seen = {};
+    var row = el('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 8px' });
+    names.forEach(function (name) {
+      var token = String(name || '').trim();
+      var key = token.toLowerCase();
+      if (!token || seen[key]) return;
+      seen[key] = true;
+      var btn = el('button', { type: 'button', class: 'btn btn-sm' }, '{{' + token + '}}');
+      btn.addEventListener('click', function () {
+        var chip = '{{' + token + '}}';
+        var start = typeof input.selectionStart === 'number' ? input.selectionStart : input.value.length;
+        var end = typeof input.selectionEnd === 'number' ? input.selectionEnd : start;
+        input.value = input.value.slice(0, start) + chip + input.value.slice(end);
+        input.focus();
+      });
+      row.appendChild(btn);
+    });
+    host.appendChild(row);
+  }
+
+  function readConditions(box) {
+    return Array.prototype.map.call(box.querySelectorAll('[data-pt-cond]'), function (row) {
+      return {
+        field: (row.querySelector('[data-k="field"]') || {}).value || '',
+        op: (row.querySelector('[data-k="op"]') || {}).value || 'eq',
+        value: (row.querySelector('[data-k="value"]') || {}).value || ''
+      };
+    }).filter(function (item) { return item.field || item.op === 'empty'; });
+  }
+
+  function addConditionRow(box, condition) {
+    var cond = condition || { field: '', op: 'eq', value: '' };
+    var row = el('div', { 'data-pt-cond': '1', style: 'display:grid;grid-template-columns:1fr 140px 1fr;gap:6px;margin-bottom:6px' });
+    var field = el('select', { class: 'ci', 'data-k': 'field' });
+    fillSelect(field, [{ value: '', label: 'Champ' }].concat(mailFields().map(function (item) {
+      return { value: String(item.id || item.nom || ''), label: String(item.nom || item.label || item.id || '') };
+    })), cond.field);
+    var op = el('select', { class: 'ci', 'data-k': 'op' });
+    fillSelect(op, [
+      { value: 'eq', label: 'égal' },
+      { value: 'neq', label: 'différent' },
+      { value: 'contains', label: 'contient' },
+      { value: 'empty', label: 'vide' }
+    ], cond.op);
+    var value = el('input', { class: 'ci', 'data-k': 'value', placeholder: 'Valeur' });
+    value.value = cond.value || '';
+    row.appendChild(field);
+    row.appendChild(op);
+    row.appendChild(value);
+    box.appendChild(row);
+  }
+
+  function buildMailEditor(state, meta) {
+    var cfg = state || {};
+    var box = el('div', { 'data-pt-mail-editor': '1', style: 'margin-top:10px;padding:10px 12px;background:var(--bg);border-radius:8px;display:grid;gap:8px' });
+    box.appendChild(el('div', { style: 'font-size:12px;font-weight:800' }, meta.title || 'Règle mail serveur'));
+    if (meta.eventChoices) {
+      var event = el('select', { class: 'ci', 'data-k': 'event' });
+      fillSelect(event, meta.eventChoices, cfg.event || meta.eventChoices[0].value);
+      box.appendChild(event);
+    }
+    box.appendChild(el('label', { class: 'fl2' }, 'Destinataires fixes'));
+    var toFixed = el('input', { class: 'ci', 'data-k': 'toFixed', placeholder: 'a@exemple.fr ; b@exemple.fr' });
+    toFixed.value = cfg.toFixed || '';
+    box.appendChild(toFixed);
+    var fieldRow = el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:6px' });
+    var toField = el('select', { class: 'ci', 'data-k': 'toField' });
+    fillSelect(toField, [{ value: '', label: 'Champ e-mail de la saisie' }].concat(mailFields().map(function (item) {
+      return { value: String(item.id || ''), label: String(item.nom || item.label || item.id || '') };
+    })), cfg.toField || '');
+    var toRole = el('select', { class: 'ci', 'data-k': 'toRole' });
+    fillSelect(toRole, [{ value: '', label: 'Rôle (utilisateurs actifs)' }].concat(mailRoles().map(function (role) {
+      var name = role.nom || role.name || role.label || role.id || '';
+      return { value: String(name), label: String(name) };
+    })), cfg.toRole || '');
+    fieldRow.appendChild(toField);
+    fieldRow.appendChild(toRole);
+    box.appendChild(fieldRow);
+    var author = el('label', { style: 'font-size:12px;display:flex;gap:6px;align-items:center' });
+    var authorInput = el('input', { type: 'checkbox', 'data-k': 'toAuthor' });
+    authorInput.checked = !!cfg.toAuthor;
+    author.appendChild(authorInput);
+    author.appendChild(document.createTextNode(' Auteur de la saisie'));
+    box.appendChild(author);
+    var cc = el('input', { class: 'ci', 'data-k': 'ccFixed', placeholder: 'Cc' });
+    cc.value = cfg.ccFixed || '';
+    var bcc = el('input', { class: 'ci', 'data-k': 'bccFixed', placeholder: 'Cci' });
+    bcc.value = cfg.bccFixed || '';
+    box.appendChild(cc);
+    box.appendChild(bcc);
+    var limitNote = el('div', { 'data-pt-mail-limit': '1', style: 'font-size:12px;color:#b45309;display:none' }, 'à réduire à 10 destinataires');
+    function refreshLimit() {
+      var count = [toFixed.value, cc.value, bcc.value].join(';').split(/[;,]/).filter(function (item) { return String(item || '').trim(); }).length;
+      if (authorInput.checked) count += 1;
+      if (toField.value) count += 1;
+      if (toRole.value) count += 1;
+      limitNote.style.display = count > 10 ? 'block' : 'none';
+    }
+    [toFixed, cc, bcc, toField, toRole, authorInput].forEach(function (node) {
+      node.addEventListener('input', refreshLimit);
+      node.addEventListener('change', refreshLimit);
+    });
+    refreshLimit();
+    box.appendChild(limitNote);
+    var subject = el('input', { class: 'ci', 'data-k': 'subject', placeholder: 'Sujet' });
+    subject.value = cfg.subject || 'Nouvelle saisie — {{formulaire}}';
+    box.appendChild(subject);
+    appendVarChips(box, subject);
+    var body = el('textarea', { class: 'ci', 'data-k': 'body', style: 'min-height:90px' });
+    body.value = cfg.body || 'Bonjour,\n\n{{formulaire}} — {{statut}}\nAuteur : {{auteur}}\nDate : {{date}}\n{{lien}}';
+    box.appendChild(body);
+    appendVarChips(box, body);
+    var pdf = el('label', { style: 'font-size:12px;display:flex;gap:6px;align-items:center' });
+    var pdfInput = el('input', { type: 'checkbox', 'data-k': 'attachPdf' });
+    pdfInput.checked = !!cfg.attachPdf;
+    pdf.appendChild(pdfInput);
+    pdf.appendChild(document.createTextNode(' Joindre le PDF de la saisie'));
+    box.appendChild(pdf);
+    box.appendChild(el('div', { class: 'fl2' }, 'Condition (optionnelle)'));
+    var conds = el('div', { 'data-k': 'conditions' });
+    var initial = Array.isArray(cfg.conditions) && cfg.conditions.length ? cfg.conditions : [{ field: '', op: 'eq', value: '' }];
+    initial.forEach(function (condition) { addConditionRow(conds, condition); });
+    box.appendChild(conds);
+    var add = el('button', { type: 'button', class: 'btn btn-sm' }, 'Ajouter une condition');
+    add.addEventListener('click', function () { if (conds.children.length < 4) addConditionRow(conds); });
+    box.appendChild(add);
+    var actions = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' });
+    var save = el('button', { type: 'button', class: 'btn bp btn-sm' }, 'Enregistrer la règle');
+    var test = el('button', { type: 'button', class: 'btn btn-sm' }, 'Envoyer un test');
+    save.addEventListener('click', function () { meta.onSave(readMailEditor(box)); });
+    test.addEventListener('click', function () { meta.onTest(readMailEditor(box)); });
+    actions.appendChild(save);
+    actions.appendChild(test);
+    box.appendChild(actions);
+    return box;
+  }
+
+  function readMailEditor(box) {
+    function val(key) {
+      var node = box.querySelector('[data-k="' + key + '"]');
+      if (!node) return '';
+      if (node.type === 'checkbox') return node.checked;
+      return node.value || '';
+    }
+    return {
+      event: val('event'),
+      toFixed: val('toFixed'),
+      toField: val('toField'),
+      toRole: val('toRole'),
+      toAuthor: val('toAuthor') === true,
+      ccFixed: val('ccFixed'),
+      bccFixed: val('bccFixed'),
+      subject: val('subject'),
+      body: val('body'),
+      attachPdf: val('attachPdf') === true,
+      conditions: readConditions(box).filter(function (item) { return item.field; })
+    };
+  }
+
+  function audienceFromEditor(draft, which) {
+    if (which === 'to') {
+      return {
+        fixed: draft.toFixed,
+        fields: draft.toField ? [draft.toField] : [],
+        author: !!draft.toAuthor,
+        roles: draft.toRole ? [draft.toRole] : []
+      };
+    }
+    if (which === 'cc') return { fixed: draft.ccFixed, fields: [], author: false, roles: [] };
+    return { fixed: draft.bccFixed, fields: [], author: false, roles: [] };
+  }
+
+  function ruleFromEditor(draft, meta) {
+    return {
+      id: meta.ruleId || undefined,
+      clientKey: meta.clientKey,
+      event: draft.event || meta.event,
+      form_id: meta.formId || '',
+      service_id: meta.serviceId || '',
+      status_id: meta.statusId || '',
+      action_key: meta.actionKey || '',
+      active: true,
+      to: audienceFromEditor(draft, 'to'),
+      cc: audienceFromEditor(draft, 'cc'),
+      bcc: audienceFromEditor(draft, 'bcc'),
+      subject: draft.subject,
+      body: draft.body,
+      attachPdf: !!draft.attachPdf,
+      conditions: draft.conditions || [],
+      fields: mailFields().map(function (field) {
+        return { id: field.id, nom: field.nom || field.label || '', type: field.type || '' };
+      })
+    };
+  }
+
+  async function saveMailRule(rule) {
+    var res = await apiPost('/api/records', { action: 'mail_rules_save', environment_code: envCode(), rule: rule });
+    if (!res || res.ok === false) throw new Error((res && res.error) || 'Règle refusée');
+    return res.rule || null;
+  }
+
+  async function sendMailTest(rule) {
+    var res = await apiPost('/api/records', { action: 'mail_test', environment_code: envCode(), rule: rule });
+    if (!res || res.ok === false) throw new Error((res && res.error) || 'Test refusé');
+    return res;
+  }
+
+  function editorStateFromConfig(config) {
+    var cfg = config || {};
+    var to = cfg.to || {};
+    return {
+      event: cfg.event || 'submission.created',
+      toFixed: cfg.toFixed || (Array.isArray(to.fixed) ? to.fixed.join(' ; ') : (to.fixed || '')),
+      toField: cfg.toField || (Array.isArray(to.fields) ? to.fields[0] : '') || '',
+      toRole: cfg.toRole || (Array.isArray(to.roles) ? to.roles[0] : '') || '',
+      toAuthor: cfg.toAuthor != null ? !!cfg.toAuthor : !!to.author,
+      ccFixed: cfg.ccFixed || '',
+      bccFixed: cfg.bccFixed || '',
+      subject: cfg.subject || '',
+      body: cfg.body || '',
+      attachPdf: cfg.attachPdf === true || cfg.attach_pdf === true,
+      conditions: cfg.conditions || []
+    };
+  }
+
+  function paintDeclMailEditors() {
+    var root = document.querySelector('#barea-decl > div');
+    if (!root || typeof declItems === 'undefined' || !Array.isArray(declItems)) return;
+    var cards = Array.prototype.slice.call(root.children, 0, declItems.length);
+    cards.forEach(function (card, index) {
+      var item = declItems[index];
+      if (!item || item.type !== 'email' || card.querySelector('[data-pt-mail-editor]')) return;
+      var formId = mailCurrentFormId();
+      if (!item.config) item.config = {};
+      if (!item.config.localId) item.config.localId = 'm' + Date.now() + index;
+      var meta = {
+        title: 'Envoi serveur à la saisie',
+        eventChoices: [
+          { value: 'submission.created', label: 'Saisie créée' },
+          { value: 'submission.updated', label: 'Saisie modifiée' }
+        ],
+        formId: formId,
+        clientKey: 'form:' + formId + ':decl:' + item.config.localId,
+        ruleId: item.config.ruleId || ''
+      };
+      card.appendChild(buildMailEditor(editorStateFromConfig(item.config), {
+        title: meta.title,
+        eventChoices: meta.eventChoices,
+        onSave: function (draft) {
+          var rule = ruleFromEditor(draft, meta);
+          item.config = Object.assign({}, item.config, draft, { event: rule.event, localId: item.config.localId });
+          saveMailRule(rule).then(function (saved) {
+            if (saved && saved.id) item.config.ruleId = saved.id;
+            toast('s', 'Règle mail enregistrée.');
+          }).catch(function (err) { toast('e', err.message || String(err)); });
+        },
+        onTest: function (draft) {
+          sendMailTest(ruleFromEditor(draft, meta)).then(function () {
+            toast('s', 'Mail de test envoyé à votre adresse.');
+          }).catch(function (err) { toast('e', err.message || String(err)); });
+        }
+      }));
+    });
+  }
+
+  function paintWorkflowMailEditors() {
+    var area = document.getElementById('svc-area');
+    if (!area || area.querySelector('[data-pt-workflow-mail]')) return;
+    var tab = '';
+    try { tab = typeof svcTab !== 'undefined' ? svcTab : ''; } catch (_) {}
+    if (tab !== 'statuses' && tab !== 'actions') return;
+    var serviceId = mailCurrentServiceId();
+    var wrap = el('div', { 'data-pt-workflow-mail': '1', style: 'margin:16px;padding:12px;border:1px solid var(--bd);border-radius:12px' });
+    wrap.appendChild(el('div', { style: 'font-weight:800;margin-bottom:6px' }, 'Mails serveur'));
+    wrap.appendChild(el('div', { class: 'f-hint', style: 'margin-bottom:10px' }, 'Le navigateur n’envoie plus ces mails. La règle part après l’enregistrement du dossier. L’effet « Envoyer un email » historique ne contacte plus le transport.'));
+    if (!serviceId) {
+      wrap.appendChild(el('div', { class: 'f-hint' }, 'Enregistrez d’abord le workflow pour obtenir un identifiant, puis rouvrez cet onglet.'));
+      area.appendChild(wrap);
+      return;
+    }
+    var blocks = [];
+    if (tab === 'statuses') {
+      blocks.push({ title: 'À chaque changement de statut', statusId: '', clientKey: 'service:' + serviceId + ':status:*' });
+      var statuses = [];
+      try { statuses = svcBuilderStatuses || []; } catch (_) {}
+      statuses.forEach(function (status) {
+        blocks.push({
+          title: 'À l’entrée du statut ' + (status.nom || status.name || status.id || ''),
+          statusId: String(status.id || ''),
+          clientKey: 'service:' + serviceId + ':status:' + String(status.id || '')
+        });
+      });
+    } else {
+      var actions = [];
+      try { actions = svcBuilderActions || []; } catch (_) {}
+      actions.forEach(function (action) {
+        blocks.push({
+          title: 'Quand l’action « ' + (action.nom || action.name || action.id || '') + ' » est déclarée',
+          actionKey: String(action.id || ''),
+          clientKey: 'service:' + serviceId + ':action:' + String(action.id || '')
+        });
+      });
+    }
+    blocks.forEach(function (block) {
+      var details = el('details', { style: 'margin-bottom:8px' });
+      details.appendChild(el('summary', { style: 'cursor:pointer;font-weight:700' }, block.title));
+      details.appendChild(buildMailEditor({}, {
+        title: block.title,
+        onSave: function (draft) {
+          var rule = ruleFromEditor(draft, {
+            event: block.actionKey ? 'workflow.action' : 'workflow.status',
+            serviceId: serviceId,
+            statusId: block.statusId || '',
+            actionKey: block.actionKey || '',
+            clientKey: block.clientKey
+          });
+          saveMailRule(rule).then(function () { toast('s', 'Règle mail enregistrée.'); }).catch(function (err) {
+            toast('e', err.message || String(err));
+          });
+        },
+        onTest: function (draft) {
+          var rule = ruleFromEditor(draft, {
+            event: block.actionKey ? 'workflow.action' : 'workflow.status',
+            serviceId: serviceId,
+            statusId: block.statusId || '',
+            actionKey: block.actionKey || '',
+            clientKey: block.clientKey
+          });
+          sendMailTest(rule).then(function () { toast('s', 'Mail de test envoyé à votre adresse.'); }).catch(function (err) {
+            toast('e', err.message || String(err));
+          });
+        }
+      }));
+      wrap.appendChild(details);
+    });
+    area.appendChild(wrap);
+  }
+
+  function paintMailOutbox() {
+    var root = document.getElementById('automations-wrap');
+    if (!root) return;
+    var host = root.querySelector('[data-pt-mail-outbox]');
+    if (!host) {
+      host = el('div', { 'data-pt-mail-outbox': '1', style: 'margin-top:18px' });
+      root.appendChild(host);
+    }
+    host.innerHTML = '';
+    host.appendChild(el('h2', { style: 'font-size:16px;margin:0 0 8px' }, 'Derniers envois'));
+    host.appendChild(el('p', { class: 'f-hint' }, 'Envoyé, en échec ou en attente. Le renvoi est réservé aux administrateurs de l’environnement.'));
+    apiPost('/api/records', { action: 'mail_outbox_list', environment_code: envCode() }).then(function (res) {
+      var rows = (res && res.rows) || [];
+      if (!rows.length) {
+        host.appendChild(el('div', { class: 'v4-empty' }, 'Aucun envoi pour le moment.'));
+        return;
+      }
+      rows.forEach(function (row) {
+        var line = el('div', { style: 'display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bd)' });
+        var label = row.status === 'sent' ? 'Envoyé' : (row.status === 'uncertain' ? 'Envoi incertain' : (row.status === 'failed' ? 'Échec' : (row.status === 'skipped' ? 'Ignoré' : (row.status === 'sending' ? 'Envoi en cours' : 'En attente'))));
+        var text = el('div');
+        text.appendChild(el('b', null, label + ' — ' + (row.subject || 'Sans sujet')));
+        var reason = row.status === 'failed' || row.status === 'skipped' ? (row.last_error || 'erreur') : (row.last_error || '');
+        if (row.warning) reason = row.warning + (reason ? ' — ' + reason : '');
+        if (reason) text.appendChild(el('div', { class: 'f-hint' }, reason));
+        line.appendChild(text);
+        if (row.status !== 'sent' && row.status !== 'skipped') {
+          var btn = el('button', { type: 'button', class: 'btn btn-sm' }, 'Renvoyer');
+          btn.addEventListener('click', function () {
+            apiPost('/api/records', { action: 'mail_outbox_resend', environment_code: envCode(), id: row.id }).then(function () {
+              toast('s', 'Renvoi effectué.');
+              paintMailOutbox();
+            }).catch(function (err) { toast('e', err.message || String(err)); });
+          });
+          line.appendChild(btn);
+        }
+        host.appendChild(line);
+      });
+    }).catch(function () {
+      host.appendChild(el('div', { class: 'f-hint' }, 'Historique des envois indisponible.'));
+    });
+  }
+
+  function wrapMailEditors() {
+    if (typeof window.renderDecl === 'function' && !window.renderDecl.__ptMail) {
+      var origDecl = window.renderDecl;
+      window.renderDecl = function () {
+        var ret = origDecl.apply(this, arguments);
+        try { paintDeclMailEditors(); } catch (err) { console.warn('[PicoTrack] éditeur mail', err); }
+        return ret;
+      };
+      window.renderDecl.__ptMail = true;
+    }
+    if (typeof window.renderSvcTab === 'function' && !window.renderSvcTab.__ptMail) {
+      var origSvc = window.renderSvcTab;
+      window.renderSvcTab = function () {
+        var ret = origSvc.apply(this, arguments);
+        try { paintWorkflowMailEditors(); } catch (err) { console.warn('[PicoTrack] mail workflow', err); }
+        return ret;
+      };
+      window.renderSvcTab.__ptMail = true;
+    }
+    if (typeof window.executeAction === 'function' && !window.executeAction.__ptMail) {
+      var origExec = window.executeAction;
+      window.executeAction = async function (instanceId, actionId) {
+        try {
+          if (typeof SERVICE_INSTANCES_DATA !== 'undefined' && Array.isArray(SERVICE_INSTANCES_DATA)) {
+            SERVICE_INSTANCES_DATA.forEach(function (inst) {
+              if (!inst || String(inst.id) !== String(instanceId)) return;
+              if (!Array.isArray(inst.events)) inst.events = [];
+              inst.events.push({
+                id: 'decl-' + Date.now(),
+                type: 'declared_action',
+                payload: { actionId: String(actionId || '') }
+              });
+            });
+          }
+        } catch (_) {}
+        return origExec.apply(this, arguments);
+      };
+      window.executeAction.__ptMail = true;
+    }
+  }
+
   function boot() {
     window._prodServicesAssignee = window._prodServicesAssignee || 'all';
     window._prodServicesExtra = window._prodServicesExtra || { sla: 'all', waiting: false, unassigned: false };
     wrapProdServices();
     wrapGoProdServices();
     wrapMailTrigger();
+    wrapMailEditors();
     wrapFormToDb();
     wrapOpenBuilder();
     wrapDashboard();

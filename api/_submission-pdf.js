@@ -1,6 +1,7 @@
 'use strict';
 
 const zlib = require('zlib');
+const { isSensitiveField, isSensitiveName, looksLikeSecret, maskSecretText } = require('./_secret-mask');
 
 const PAGE_W = 595;
 const PAGE_H = 842;
@@ -578,6 +579,15 @@ function formatAnswer(type, value, images, budget) {
   return '—';
 }
 
+function maskPdfAnswer(field, type, raw) {
+  const kind = String(type || '').toLowerCase();
+  if (kind === 'photo' || kind === 'sign' || kind === 'signature' || kind === 'file') return raw;
+  if (isSensitiveField(field)) return 'masqué';
+  if (typeof raw === 'string') return maskSecretText(raw);
+  if ((typeof raw === 'number' || typeof raw === 'boolean') && looksLikeSecret(String(raw))) return 'masqué';
+  return raw;
+}
+
 function formatSubmissionDocument(input) {
   const source = input || {};
   const values = asObject(source.values);
@@ -591,7 +601,7 @@ function formatSubmissionDocument(input) {
     if (SKIP_TYPES.has(type)) return;
     const id = field.id != null ? String(field.id) : '';
     if (id) used.add(id);
-    const raw = id ? values[id] : undefined;
+    const raw = maskPdfAnswer(field, type, id ? values[id] : undefined);
     const images = [];
     rows.push({
       label: clip(field.nom || field.label || field.name || id || 'Champ', 160) || 'Champ',
@@ -602,9 +612,10 @@ function formatSubmissionDocument(input) {
   Object.keys(values).forEach((key) => {
     if (used.has(key) || key.startsWith('_')) return;
     const images = [];
+    const raw = isSensitiveName(key) ? 'masqué' : (typeof values[key] === 'string' ? maskSecretText(values[key]) : values[key]);
     rows.push({
       label: clip(key, 160) || 'Champ',
-      value: formatAnswer('', values[key], images, budget),
+      value: formatAnswer('', raw, images, budget),
       images
     });
   });

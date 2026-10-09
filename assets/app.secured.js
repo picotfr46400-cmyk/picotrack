@@ -2011,7 +2011,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
       } else if(fx.type==='send_email'){
         if(typeof ptBuildServiceMailPayload==='function' && typeof ptSendMail==='function'){
           var payload=ptBuildServiceMailPayload(instance, service, fx.config||{}); if(!payload.to || !payload.to.length){ toastSafe('e','📧 Email non envoyé : destinataire manquant'); return; }
-          try { await ptSendMail(payload); instance.events=A(instance.events); instance.events.push({id:Date.now(),type:'email_sent',actor:'PicoTrack',at:nowLabel(),payload:{to:payload.to,subject:payload.subject,status:'sent'}}); toastSafe('s','📧 Email envoyé'); } catch(e){ toastSafe('e','📧 Email non envoyé : '+(e&&e.message||e)); }
+          try { var mailResult = await ptSendMail(payload); var mailStatus = mailResult && (mailResult.status || (mailResult.sent ? 'sent' : (mailResult.queued ? 'queued' : ''))); if (mailStatus === 'queued' || mailStatus === 'sent') { instance.events=A(instance.events); instance.events.push({id:Date.now(),type:'email_sent',actor:'PicoTrack',at:nowLabel(),payload:{to:payload.to,subject:payload.subject,status:mailStatus}}); toastSafe('s','📧 Email envoyé'); } } catch(e){ toastSafe('e','📧 Email non envoyé : '+(e&&e.message||e)); }
         } else toastSafe('e','📧 Module mail indisponible');
       } else if(fx.type==='update_db_row'){
         await ensureSources(); var ok=await runUpdateDbRow(instance, service, action, fx); if(!ok) return;
@@ -2292,7 +2292,7 @@ startPicoTrackApp(),"serviceWorker"in navigator&&navigator.serviceWorker.registe
       } else if(fx.type === 'send_email'){
         if(typeof ptBuildServiceMailPayload === 'function' && typeof ptSendMail === 'function'){
           var payload = ptBuildServiceMailPayload(instance, service, fx.config || {}); if(!payload.to || !payload.to.length){ toastSafe('e','📧 Email non envoyé : destinataire manquant'); return; }
-          try { await ptSendMail(payload); instance.events=A(instance.events); instance.events.push({id:Date.now(), type:'email_sent', actor:'PicoTrack', at:nowLabel(), payload:{to:payload.to, subject:payload.subject, status:'sent'}}); toastSafe('s','📧 Email envoyé'); } catch(e){ toastSafe('e','📧 Email non envoyé : '+(e && e.message || e)); return; }
+          try { var mailResult = await ptSendMail(payload); var mailStatus = mailResult && (mailResult.status || (mailResult.sent ? 'sent' : (mailResult.queued ? 'queued' : ''))); if (mailStatus === 'queued' || mailStatus === 'sent') { instance.events=A(instance.events); instance.events.push({id:Date.now(), type:'email_sent', actor:'PicoTrack', at:nowLabel(), payload:{to:payload.to, subject:payload.subject, status:mailStatus}}); toastSafe('s','📧 Email envoyé'); } } catch(e){ toastSafe('e','📧 Email non envoyé : '+(e && e.message || e)); return; }
         } else { toastSafe('e','📧 Module mail indisponible'); return; }
       } else {
         if(window.ptRunWorkflowDeclaredAction){await window.ptRunWorkflowDeclaredAction(fx,instance,service);}else toastSafe('i','ℹ️ Action '+S(fx.type || 'inconnue')+' prévue mais pas encore exécutée.');
