@@ -9,6 +9,7 @@ const {
   normalizeEmails,
   brandTemplate,
   originFromReq,
+  allowedAppOrigin,
   deliverMail
 } = require('./_mail-transport');
 const {
@@ -21,6 +22,9 @@ const {
   isSensitiveName,
   maskSecretText
 } = require('./_secret-mask');
+
+const LINK_SLOT = '%%PTLIEN%%';
+const FALLBACK_ORIGIN = 'https://picotrack.fr';
 
 const EVENTS = new Set([
   'submission.created',
@@ -213,8 +217,24 @@ function buildLookup(ctx) {
   lookup.statut = String(ctx.status || '');
   lookup.auteur = String(ctx.authorName || '');
   lookup.date = formatParis(ctx.date);
-  lookup.lien = String(ctx.link || '');
+  lookup.lien = LINK_SLOT;
   return lookup;
+}
+
+function insertSubmissionLink(value, link, asHtml) {
+  const raw = String(value || '');
+  if (!raw.includes(LINK_SLOT)) return raw;
+  const url = String(link || '');
+  const replacement = asHtml && url ? `<a href="${escapeHtml(url)}">${escapeHtml(url)}</a>` : url;
+  return raw.split(LINK_SLOT).join(replacement);
+}
+
+function clipAroundLink(text) {
+  const raw = String(text || '');
+  if (raw.length <= 200) return raw;
+  const at = raw.indexOf(LINK_SLOT);
+  if (at === -1 || at + LINK_SLOT.length <= 200) return raw.slice(0, 200);
+  return raw.slice(0, 200 - LINK_SLOT.length) + LINK_SLOT;
 }
 
 function renderMailTemplate(template, ctx) {
@@ -225,21 +245,26 @@ function renderMailTemplate(template, ctx) {
     if (i % 2 === 0) html += escapeHtml(parts[i]).replace(/\r?\n/g, '<br>');
     else {
       const key = String(parts[i] || '').trim().toLowerCase();
+      if (key === 'lien') {
+        html += LINK_SLOT;
+        continue;
+      }
       const value = Object.prototype.hasOwnProperty.call(lookup, key) ? lookup[key] : '';
       html += escapeHtml(maskSecretText(value)).replace(/\r?\n/g, '<br>');
     }
   }
-  return maskSecretText(html);
+  return insertSubmissionLink(maskSecretText(html), ctx && ctx.link, true);
 }
 
 function renderMailText(template, ctx) {
   const lookup = buildLookup(ctx || {});
   const text = String(template || '').replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, token) => {
     const key = String(token || '').trim().toLowerCase();
+    if (key === 'lien') return LINK_SLOT;
     const value = Object.prototype.hasOwnProperty.call(lookup, key) ? lookup[key] : '';
     return maskSecretText(String(value)).replace(/[\r\n]+/g, ' ').slice(0, 300);
   }).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
-  return maskSecretText(text).slice(0, 200);
+  return insertSubmissionLink(clipAroundLink(maskSecretText(text)), ctx && ctx.link, false);
 }
 
 function normalizeOp(value) {
@@ -601,9 +626,10 @@ function personName(profile) {
 }
 
 function submissionLink(origin, id) {
-  const base = String(origin || '').replace(/\/$/, '');
-  if (!base || !id) return '';
-  return `${base}/?saisie=${encodeURIComponent(id)}`;
+  const base = allowedAppOrigin(origin) || FALLBACK_ORIGIN;
+  const submissionId = String(id || '').trim();
+  if (!submissionId) return '';
+  return `${base}/?saisie=${encodeURIComponent(submissionId)}`;
 }
 
 function limitFrom(env, name, fallback) {
@@ -1363,9 +1389,9 @@ async function deliverPrepared(row, prepared, deps, deadline) {
     to: recipients.to,
     cc: recipients.cc,
     bcc: recipients.bcc,
-    subject: maskSecretText(prepared.subject || 'PicoTrack'),
-    html: maskSecretText(prepared.html || ''),
-    text: maskSecretText(prepared.text || ''),
+    subject: prepared.subject || 'PicoTrack',
+    html: prepared.html || '',
+    text: prepared.text || '',
     attachments: [],
     idempotencyKey: row.idempotency_key,
     outboxId: row.id
@@ -1471,7 +1497,7 @@ async function sendOutboxRow(row, deps, deadline) {
   if (perCall < 50) return 'pending';
   const claimed = await deps.store.claimOutbox(row);
   if (!claimed) return 'skipped';
-  const subject = maskSecretText(renderMailText((rule && rule.config.subject) || 'Notification PicoTrack — {{formulaire}}', ctx) || 'PicoTrack');
+  const subject = renderMailText((rule && rule.config.subject) || 'Notification PicoTrack — {{formulaire}}', ctx) || 'PicoTrack';
   let inner = renderMailTemplate((rule && rule.config.body) || 'Nouvelle saisie : {{formulaire}}', ctx);
   if (ctx.attachPdf) inner += '<!--pt-pdf-->';
   const pdfDocument = {
@@ -1501,7 +1527,6 @@ async function sendOutboxRow(row, deps, deadline) {
   } else if (html.includes('<!--pt-pdf-->')) {
     html = html.replace('<!--pt-pdf-->', `<br><br>${escapeHtml(PDF_OMITTED_MENTION)}`);
   }
-  html = maskSecretText(html);
   const transport = deps.transport || (message => deliverMail(message, limits));
   const message = {
     to: recipients.to,
@@ -1509,7 +1534,7 @@ async function sendOutboxRow(row, deps, deadline) {
     bcc: recipients.bcc,
     subject,
     html,
-    text: maskSecretText(renderMailText((rule && rule.config.body) || '', ctx)),
+    text: renderMailText((rule && rule.config.body) || '', ctx),
     attachments,
     idempotencyKey: row.idempotency_key,
     outboxId: claimed.id
@@ -1798,13 +1823,13 @@ async function handleMailAction(req, body, profile, deps = {}) {
       link: submissionLink(originFromReq(req), 'test'),
       environmentCode: env
     };
-    const subject = maskSecretText(`[Test] ${renderMailText(draft.subject || 'Test PicoTrack — {{formulaire}}', ctx)}`.slice(0, 200));
-    const html = maskSecretText(brandTemplate({
+    const subject = `[Test] ${renderMailText(draft.subject || 'Test PicoTrack — {{formulaire}}', ctx)}`.slice(0, 200);
+    const html = brandTemplate({
       subject,
       html: renderMailTemplate(draft.body || 'Message de test.', ctx),
       logoUrl: '',
       brandName: 'PicoTrack Nexus'
-    }));
+    });
     const row = {
       environment_code: env,
       rule_id: null,
@@ -1826,7 +1851,7 @@ async function handleMailAction(req, body, profile, deps = {}) {
     };
     const inserted = await store.insertOutboxBatch([row]);
     const claimedSource = Object.assign({}, inserted[0] || row, {
-      _prepared: { subject, html, text: maskSecretText(renderMailText(draft.body || '', ctx)), to: own, cc: [], bcc: [] }
+      _prepared: { subject, html, text: renderMailText(draft.body || '', ctx), to: own, cc: [], bcc: [] }
     });
     const result = await sendOutboxRow(claimedSource, {
       store,

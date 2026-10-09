@@ -195,6 +195,7 @@ module.exports = {
   normalizeEmails,
   normalizeAttachments,
   originFromReq,
+  allowedAppOrigin,
   textToHtml,
   brandTemplate,
   smtpConfigured,

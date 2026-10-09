@@ -20,11 +20,15 @@ const COMPACT_PHRASES = [
   'token',
   'secret',
   'session',
-  'cookie'
+  'cookie',
+  'licensekey',
+  'cledelicence',
+  'codeconfidentiel'
 ];
 const EXACT_TOKENS = new Set(['pwd', 'mdp', 'cvv', 'cvc', 'pin', 'otp', 'iban']);
 const JWT_RE = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
 const DATA_URL_RE = /data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+/gi;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MASK = 'masqué';
 
 function foldText(value) {
@@ -104,9 +108,14 @@ function shannonEntropy(text) {
   return entropy;
 }
 
+function isStandardUuid(text) {
+  return UUID_RE.test(String(text || '').trim());
+}
+
 function isHighEntropyToken(text) {
   if (!text || text.length < 32 || /\s/.test(text)) return false;
-  if (!/^[A-Za-z0-9+/_=-]+$/.test(text)) return false;
+  if (isStandardUuid(text)) return false;
+  if (!/^[A-Za-z0-9+/_-]+$/.test(text)) return false;
   if (new Set(text).size < 8) return false;
   return shannonEntropy(text) >= 3.5;
 }
@@ -136,7 +145,7 @@ function isIban(value) {
 
 function looksLikeSecret(value) {
   const text = String(value ?? '').trim();
-  if (!text || /^data:/i.test(text)) return false;
+  if (!text || /^data:/i.test(text) || isStandardUuid(text)) return false;
   if (new RegExp(`^${JWT_RE.source}$`).test(text)) return true;
   if (isHighEntropyToken(text)) return true;
   if (cardDigits(text)) return true;
@@ -165,7 +174,9 @@ function restoreDataUrls(text, holders) {
 function maskEmbeddedSecrets(text) {
   const { shielded, holders } = shieldDataUrls(text);
   let out = shielded.replace(new RegExp(JWT_RE.source, 'g'), MASK);
-  out = out.replace(/\b[A-Za-z0-9+/_=-]{32,}\b/g, (match) => (isHighEntropyToken(match) ? MASK : match));
+  out = out.replace(/(^|[^A-Za-z0-9+/_-])([A-Za-z0-9+/_-]{32,})(?![A-Za-z0-9+/_-])/g, (full, lead, token) => (
+    isStandardUuid(token) || !isHighEntropyToken(token) ? full : lead + MASK
+  ));
   out = out.replace(/(^|[^\d])((?:\d[ -]?){12,18}\d)(?!\d)/g, (full, lead, card) => (
     cardDigits(card) ? lead + MASK : full
   ));

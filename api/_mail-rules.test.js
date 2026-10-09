@@ -21,6 +21,7 @@ const {
   notifyAfterWrite,
   occurrencesFromWrite,
   renderMailTemplate,
+  renderMailText,
   resolveRecipients,
   ruleMatches,
   setMailAuditHook,
@@ -136,17 +137,88 @@ test('rendu des modèles : échappement HTML, date Paris, code postal visible', 
       status: 'Ouverte',
       authorName: 'Ada',
       date: '2026-01-15T23:30:00.000Z',
-      link: 'https://demo.example.com/?saisie=sub-1'
+      link: 'https://demo.picotrack.fr/?saisie=123e4567-e89b-12d3-a456-426614174000'
     }
   );
+  const lien = 'https://demo.picotrack.fr/?saisie=123e4567-e89b-12d3-a456-426614174000';
   assert.equal(html.includes('<script>'), false);
   assert.match(html, /46400/);
   assert.match(html, /16\/01\/2026/);
-  assert.match(html, /https:\/\/demo\.example\.com\/\?saisie=sub-1/);
+  assert.equal(html.includes(`<a href="${lien}">${lien}</a>`), true);
   assert.match(html, /Visite &amp; co/);
   secretsAbsent(html);
-  assert.match(html, /masqué\|CONFIDENTIEL-991\|46400\|/);
+  assert.match(html, /masqué\|masqué\|46400\|/);
+  const text = renderMailText('Voir {{lien}}', {
+    fields: FIELDS,
+    values: SECRET_VALUES,
+    link: lien
+  });
+  assert.equal(text.includes(lien), true);
   assert.equal(formatParis('2026-07-15T22:30:00.000Z').includes('16/07/2026'), true);
+});
+
+test('lien serveur intact après le masquage, URL utilisateur masquée, PDF et journal inchangés', async () => {
+  const id = '123e4567-e89b-12d3-a456-426614174000';
+  const lien = `https://demo.picotrack.fr/?saisie=${id}`;
+  const suivi = '223e4567-e89b-12d3-a456-426614174001';
+  const token40 = `${TOKEN}wQ4nR8sT`;
+  const userUrl = `https://app.picotrack.fr/go?token=${token40}&jwt=${JWT}`;
+  const store = createMemoryStore();
+  await store.saveRule(submissionRule({
+    subject: 'Ouverture {{lien}}',
+    body: 'Voir {{lien}} {{commentaire}} {{suivi}}'
+  }));
+  store.setSubmissions([{
+    id,
+    form_id: 'form-1',
+    environment_code: 'DEMO',
+    values: Object.assign({}, SECRET_VALUES, { commentaire: userUrl, suivi })
+  }]);
+  const calls = [];
+  const seen = [];
+  setMailAuditHook(entry => seen.push(entry));
+  try {
+    await notifyAfterWrite(writeInput(store, {
+      id,
+      origin: 'https://demo.picotrack.fr',
+      saved: { id, form_id: 'form-1', environment_code: 'DEMO', values: { client: 'MEMOIRE-ABSENTE' } },
+      transport: async (message) => {
+        calls.push(message);
+        return { provider: 'fake' };
+      }
+    }));
+  } finally {
+    setMailAuditHook(null);
+  }
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].subject.includes(lien), true);
+  assert.equal(calls[0].text.includes(lien), true);
+  assert.equal(calls[0].html.includes(`<a href="${lien}">${lien}</a>`), true);
+  assert.equal(store.outbox[0].subject.includes(lien), true);
+  for (const secret of [token40, JWT]) {
+    assert.equal(calls[0].subject.includes(secret), false, secret);
+    assert.equal(calls[0].text.includes(secret), false, secret);
+    assert.equal(calls[0].html.includes(secret), false, secret);
+    assert.equal(JSON.stringify(store.outbox).includes(secret), false, secret);
+  }
+  assert.equal(calls[0].text.includes(suivi), true);
+  const pdfText = extractPdfText(buildSubmissionPdf(formatSubmissionDocument({
+    fields: FIELDS.concat([{ id: 'suivi', nom: 'Suivi', type: 'text' }]),
+    values: Object.assign({}, SECRET_VALUES, { commentaire: userUrl, suivi, reponse: 'Reponse-VISIBLE-42' }),
+    environmentName: 'DEMO',
+    formName: 'Visite',
+    reference: 'sub-pdf'
+  })));
+  assert.equal(pdfText.includes(suivi), true);
+  assert.equal(pdfText.includes('Reponse-VISIBLE-42'), true);
+  assert.equal(pdfText.includes(token40), false);
+  assert.equal(pdfText.includes(JWT), false);
+  assert.equal(pdfText.includes('/?saisie='), false);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].type, 'mail.sent');
+  assert.equal(seen[0].target_id, id);
+  assert.equal(JSON.stringify(seen).includes(lien), false);
+  assert.equal(JSON.stringify(seen).includes(token40), false);
 });
 
 test('conditions : égal, différent, contient, vide', () => {
@@ -410,7 +482,7 @@ test('secrets absents du mail et de mail_outbox', async () => {
   secretsAbsent(JSON.stringify(store.outbox));
   assert.match(calls[0].html, /46400/);
   assert.match(calls[0].html, /Nord/);
-  assert.match(calls[0].html, /CONFIDENTIEL-991/);
+  assert.equal(calls[0].html.includes('CONFIDENTIEL-991'), false);
   assert.match(calls[0].html, /masqué/);
   assert.equal(calls[0].outboxId, store.outbox[0].id);
   assert.equal(calls[0].html.includes('MEMOIRE-ABSENTE'), false);
@@ -449,7 +521,7 @@ test('PDF réel relu en base, et échec sans pièce jointe', async () => {
   const text = extractPdfText(binary);
   assert.equal(text.includes('Reponse-VISIBLE-42'), true);
   assert.equal(text.includes('MEMOIRE-ABSENTE'), false);
-  assert.equal(text.includes('CONFIDENTIEL-991'), true);
+  assert.equal(text.includes('CONFIDENTIEL-991'), false);
   assert.equal(text.includes('s3cret-clair'), false);
   assert.equal(text.includes(JWT), false);
   assert.equal(text.includes('4111'), false);
@@ -464,7 +536,7 @@ test('PDF réel relu en base, et échec sans pièce jointe', async () => {
   }));
   const exportText = extractPdfText(exported);
   assert.equal(exportText.includes('Reponse-VISIBLE-42'), true);
-  assert.equal(exportText.includes('CONFIDENTIEL-991'), true);
+  assert.equal(exportText.includes('CONFIDENTIEL-991'), false);
   assert.equal(exportText.includes('s3cret-clair'), false);
   assert.equal(exportText.includes(JWT), false);
   assert.equal(exportText.includes('4111'), false);

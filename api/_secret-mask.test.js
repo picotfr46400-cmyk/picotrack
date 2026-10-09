@@ -39,7 +39,12 @@ const MASKED_NAMES = [
   'cryptogramme',
   'CVV',
   'IBAN',
-  'passwd'
+  'passwd',
+  'licenseKey',
+  'license_key',
+  'clé de licence',
+  'code confidentiel',
+  'codeConfidentiel'
 ];
 
 const VISIBLE_NAMES = [
@@ -51,7 +56,6 @@ const VISIBLE_NAMES = [
   'Contrôle d\u2019accès',
   'Accès',
   'Confidentiel',
-  'codeConfidentiel',
   'Code postal',
   'opinion'
 ];
@@ -66,8 +70,9 @@ test('normalisation compacte : NFKD, apostrophe, camelCase, sans espaces', () =>
   assert.equal(normalizeSecretText('accessToken'), 'accesstoken');
 });
 
-test('37 noms : secrets masqués, identifiants métier et code postal visibles', () => {
-  assert.equal(MASKED_NAMES.length + VISIBLE_NAMES.length, 37);
+test('noms : secrets masqués, identifiants métier et code postal visibles', () => {
+  assert.equal(MASKED_NAMES.length, 31);
+  assert.equal(VISIBLE_NAMES.length, 10);
   for (const name of MASKED_NAMES) assert.equal(isSensitiveName(name), true, name);
   for (const name of VISIBLE_NAMES) assert.equal(isSensitiveName(name), false, name);
   assert.equal(isSensitiveField({ id: 'note', type: 'password', label: 'Commentaire' }), true);
@@ -97,4 +102,15 @@ test('valeurs : JWT, entropie, Luhn, IBAN, jamais une chaîne vide', () => {
   assert.equal(maskSecretText(`carte 4111 1111 1111 1111 merci`), 'carte masqué merci');
   assert.equal(maskSecretText('visible'), 'visible');
   assert.equal(maskSecretText('CL-441'), 'CL-441');
+  const uuid = '123e4567-e89b-12d3-a456-426614174000';
+  const token40 = `${TOKEN}wQ4nR8sT`;
+  assert.equal(token40.length, 40);
+  assert.equal(looksLikeSecret(uuid), false);
+  assert.equal(maskSecretText(uuid), uuid);
+  assert.equal(maskSecretText(`réf ${uuid} ok`), `réf ${uuid} ok`);
+  assert.equal(maskSecretText(`clé=${token40}`), 'clé=masqué');
+  assert.equal(maskSecretText(`https://evil.example/a?x=${token40}`).includes(token40), false);
+  assert.equal(maskSecretText(`https://app.picotrack.fr/?token=${token40}`).includes(token40), false);
+  assert.equal(maskSecretText(`https://app.picotrack.fr/?jwt=${JWT}`).includes(JWT), false);
+  assert.match(maskSecretText(`https://app.picotrack.fr/?token=${token40}`), /masqué/);
 });
