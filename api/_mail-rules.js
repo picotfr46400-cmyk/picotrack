@@ -648,10 +648,13 @@ function hourlyLimit(env = process.env) {
 }
 
 function transportFailureIsUncertain(error) {
-  const code = String(error && (error.code || error.errno) || '').toUpperCase();
-  const text = String(error && error.message || error || '').toLowerCase();
-  if (['ETIMEDOUT', 'ESOCKET', 'ECONNECTION', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'EHOSTUNREACH', 'ENOTFOUND'].includes(code)) return true;
-  return /greeting|timeout|timed out|etimedout|esocket|econnection|econnreset|connexion|socket/.test(text);
+  if (!error || typeof error !== 'object') return false;
+  const code = String(error.code || error.errno || '').toUpperCase();
+  const text = String(error.message || '').toLowerCase();
+  const timedOut = code === 'ETIMEDOUT' || /timeout|timed out|etimedout/.test(text);
+  if (!timedOut) return false;
+  if (error.afterData === true) return true;
+  return String(error.command || '').toUpperCase() === 'DATA';
 }
 
 function withTimeout(promise, ms) {
@@ -823,6 +826,17 @@ function createMemoryStore() {
       current.last_error = null;
       return touch(current);
     },
+    async releaseUncertain(row) {
+      const current = outbox.find(item => item.id === row.id);
+      if (!current || current.status !== 'uncertain') return null;
+      releaseQuota(current);
+      current.status = 'failed';
+      current.attempts = 0;
+      current.attempt_id = null;
+      current.last_error = null;
+      current.claimed_until = null;
+      return touch(current);
+    },
     async expireUncertain(env) {
       const now = Date.now();
       for (const item of outbox) {
@@ -972,6 +986,13 @@ function createSqlStore(query) {
         ${Number(q.dayLimit || 0)},
         ${q.hourStart ? `${sqlText(q.hourStart)}::timestamptz` : 'null'},
         ${q.dayStart ? `${sqlText(q.dayStart)}::timestamptz` : 'null'}
+      ) t`);
+      return rows[0] ? (rows[0].row || rows[0]) : null;
+    },
+    async releaseUncertain(row) {
+      const rows = await one(`select row_to_json(t) as row from public.release_uncertain_mail(
+        ${sqlText(row.id)}::uuid,
+        ${sqlText(row.environment_code)}
       ) t`);
       return rows[0] ? (rows[0].row || rows[0]) : null;
     },
@@ -1170,6 +1191,18 @@ function createSupabaseStore(req) {
             p_hour_start: q.hourStart || null,
             p_day_start: q.dayStart || null
           },
+          prefer: 'return=representation'
+        });
+        return firstRow(rows);
+      } catch (_) {
+        return null;
+      }
+    },
+    async releaseUncertain(row) {
+      try {
+        const rows = await rest('rpc/release_uncertain_mail', {
+          method: 'POST',
+          body: { p_id: row.id, p_environment_code: row.environment_code },
           prefer: 'return=representation'
         });
         return firstRow(rows);
@@ -1694,10 +1727,12 @@ function writesOf(input) {
 async function dispatchWithinBudget(input) {
   const budgetMs = input.budgetMs ?? DEFAULT_BUDGET_MS;
   const deadline = input.deadline || (Date.now() + budgetMs);
+  if (Date.now() >= deadline) return { ok: true, pending: true, queued: 0 };
   const store = input.store || createSupabaseStore(input.req);
   const writes = writesOf(input);
   const occurrences = [];
   for (const write of writes) {
+    if (Date.now() >= deadline) break;
     for (const occurrence of occurrencesFromWrite(write)) {
       if (typeof store.noteSubmission === 'function' && occurrence.targetKind === 'submission') {
         await store.noteSubmission(occurrence.saved);
@@ -1709,6 +1744,7 @@ async function dispatchWithinBudget(input) {
   const formCache = new Map();
   const planned = [];
   for (const occurrence of occurrences) {
+    if (Date.now() >= deadline) break;
     if (!rulesByEnv.has(occurrence.environmentCode)) {
       const listed = await store.listRules(occurrence.environmentCode).catch(() => []);
       rulesByEnv.set(occurrence.environmentCode, Array.isArray(listed) ? listed : []);
@@ -1879,7 +1915,7 @@ async function handleMailAction(req, body, profile, deps = {}) {
       return { ok: false, status: row.status, error: 'Renvoi refusé', row: publicOutbox(row) };
     }
     if (row.status === 'uncertain') {
-      const updated = await markCurrent(store, row, env, { attempts: 0, status: 'failed', attempt_id: null, last_error: null });
+      const updated = typeof store.releaseUncertain === 'function' ? await store.releaseUncertain(row) : null;
       if (!updated) {
         const fresh = await store.getOutbox(env, id);
         return { ok: false, status: fresh && fresh.status, error: 'Renvoi refusé', row: publicOutbox(fresh) };
@@ -1887,6 +1923,7 @@ async function handleMailAction(req, body, profile, deps = {}) {
       row.attempts = 0;
       row.status = 'failed';
       row.attempt_id = null;
+      row.quota_recipients = 0;
     } else if (row.status === 'failed' && Number(row.attempts || 0) >= MAX_ATTEMPTS) {
       const updated = await markCurrent(store, row, env, { attempts: MAX_ATTEMPTS - 1, status: 'failed', attempt_id: null });
       if (!updated) {

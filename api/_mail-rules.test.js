@@ -852,19 +852,6 @@ test('échec explicite rend la place, incertain la garde, sent et sending ne son
   process.env.MAIL_HOURLY_LIMIT = '1';
   process.env.MAIL_DAILY_LIMIT = '1';
   try {
-    const stillHeld = await handleMailAction({}, { action: 'mail_outbox_resend', id: first.id }, admin, {
-      store: held,
-      transport: async () => {
-        blocked += 1;
-        return { provider: 'fake' };
-      }
-    });
-    assert.equal(stillHeld.ok, false);
-    assert.equal(blocked, 0);
-    assert.equal(first.status, 'failed');
-    assert.match(stillHeld.error || '', /Plafond de destinataires atteint/);
-    process.env.MAIL_HOURLY_LIMIT = '60';
-    process.env.MAIL_DAILY_LIMIT = '300';
     const resent = await handleMailAction({}, { action: 'mail_outbox_resend', id: first.id }, admin, {
       store: held,
       transport: async () => {
@@ -875,12 +862,97 @@ test('échec explicite rend la place, incertain la garde, sent et sending ne son
     assert.equal(resent.ok, true);
     assert.equal(blocked, 1);
     assert.equal(first.status, 'sent');
+    assert.equal(Number(first.quota_recipients || 0), 1);
+    let extra = 0;
+    await notifyAfterWrite(writeInput(held, {
+      id: 'sub-hold-5',
+      saved: { id: 'sub-hold-5', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Centre' } },
+      mailEnv: { MAIL_HOURLY_LIMIT: '1', MAIL_DAILY_LIMIT: '1' },
+      transport: async () => {
+        extra += 1;
+        return { provider: 'fake' };
+      }
+    }));
+    assert.equal(extra, 0);
+    assert.match(held.outbox.find(row => row.target_id === 'sub-hold-5').last_error, /Plafond de destinataires atteint/);
   } finally {
     if (previousHourly == null) delete process.env.MAIL_HOURLY_LIMIT;
     else process.env.MAIL_HOURLY_LIMIT = previousHourly;
     if (previousDaily == null) delete process.env.MAIL_DAILY_LIMIT;
     else process.env.MAIL_DAILY_LIMIT = previousDaily;
   }
+});
+
+test('connexion refusée rend la place, timeout après DATA la garde', async () => {
+  const refused = createMemoryStore();
+  await refused.saveRule(submissionRule());
+  const limits = { MAIL_HOURLY_LIMIT: '1', MAIL_DAILY_LIMIT: '1' };
+  await notifyAfterWrite(writeInput(refused, {
+    mailEnv: limits,
+    transport: async () => {
+      const err = new Error('connect ECONNREFUSED 127.0.0.1:2525');
+      err.code = 'ECONNREFUSED';
+      throw err;
+    }
+  }));
+  assert.equal(refused.outbox[0].status, 'failed');
+  let sent = 0;
+  await notifyAfterWrite(writeInput(refused, {
+    id: 'sub-2',
+    saved: { id: 'sub-2', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Sud' } },
+    mailEnv: limits,
+    transport: async () => {
+      sent += 1;
+      return { provider: 'fake' };
+    }
+  }));
+  assert.equal(sent, 1);
+  assert.equal(refused.outbox.find(row => row.target_id === 'sub-2').status, 'sent');
+
+  const greeting = createMemoryStore();
+  await greeting.saveRule(submissionRule());
+  await notifyAfterWrite(writeInput(greeting, {
+    id: 'sub-greet',
+    saved: { id: 'sub-greet', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Nord' } },
+    mailEnv: limits,
+    transport: async () => {
+      const err = new Error('Greeting never received');
+      err.code = 'ETIMEDOUT';
+      err.command = 'CONN';
+      throw err;
+    }
+  }));
+  assert.equal(greeting.outbox[0].status, 'failed');
+
+  const afterData = createMemoryStore();
+  await afterData.saveRule(submissionRule());
+  await notifyAfterWrite(writeInput(afterData, {
+    id: 'sub-data',
+    saved: { id: 'sub-data', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Est' } },
+    mailEnv: limits,
+    transport: async () => {
+      const err = new Error('Timeout');
+      err.code = 'ETIMEDOUT';
+      err.command = 'DATA';
+      err.afterData = true;
+      throw err;
+    }
+  }));
+  const held = afterData.outbox[0];
+  assert.equal(held.status, 'sending');
+  let blocked = 0;
+  await notifyAfterWrite(writeInput(afterData, {
+    id: 'sub-data-2',
+    saved: { id: 'sub-data-2', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Ouest' } },
+    mailEnv: limits,
+    transport: async () => {
+      blocked += 1;
+      return { provider: 'fake' };
+    }
+  }));
+  assert.equal(blocked, 0);
+  assert.equal(held.status, 'sending');
+  assert.match(afterData.outbox.find(row => row.target_id === 'sub-data-2').last_error, /Plafond de destinataires atteint/);
 });
 
 test('règle déjà enregistrée : 11 destinataires refusés à l’enregistrement, 12 déjà stockés avertissent', async () => {
@@ -1269,7 +1341,10 @@ test('crochet d’audit : mail envoyé, sans dépendre du journal des saisies', 
   assert.equal(seen[0].event, 'submission.created');
   assert.equal(seen[0].target_id, 'sub-1');
   assert.equal(typeof seen[0].rule_id, 'string');
-  assert.equal(fs.existsSync(path.join(__dirname, '_submission-audit.js')), false);
+  assert.equal(fs.existsSync(path.join(__dirname, '_submission-audit.js')), true);
+  const mailSrc = fs.readFileSync(path.join(__dirname, '_mail-rules.js'), 'utf8');
+  assert.match(mailSrc, /tryAttachSubmissionAudit/);
+  assert.equal(mailSrc.includes("require('./_submission-audit')") && mailSrc.includes('try {'), true);
 });
 
 test('migration outbox : unicité complète, RLS forcée, service_role seulement', () => {
@@ -1316,10 +1391,17 @@ test('migration outbox : unicité complète, RLS forcée, service_role seulement
   const finishSql = quota.slice(quota.indexOf('function public.finish_mail_outbox'));
   assert.match(finishSql, /p_status = 'failed'/);
   assert.equal(/uncertain/.test(finishSql), false);
+  const release = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261009030000_mail_uncertain_release.sql'), 'utf8');
+  assert.match(release, /function public\.release_uncertain_mail/);
+  assert.match(release, /security definer/i);
+  assert.match(release, /set search_path = public/);
+  assert.match(release, /status is distinct from 'uncertain'/);
+  assert.match(release, /grant execute on function public\.release_uncertain_mail\(uuid, text\) to service_role/i);
+  assert.equal(/create policy/i.test(release), false);
   assert.match(quota.slice(quota.indexOf('function public.claim_mail_quota'), quota.indexOf('function public.finish_mail_outbox')), /status in \('pending', 'failed'\)/);
 });
 
-test('l’overlay n’envoie plus depuis le navigateur et le cache supervision est l', () => {
+test('l’overlay n’envoie plus depuis le navigateur et le cache supervision est p', () => {
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   assert.match(overlay, /Envoi serveur uniquement/);
   assert.match(overlay, /mail_rules_save/);
@@ -1329,8 +1411,8 @@ test('l’overlay n’envoie plus depuis le navigateur et le cache supervision e
   const app = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
   assert.equal((app.match(/mailStatus === 'queued' \|\| mailStatus === 'sent'/g) || []).length, 2);
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/core-supervision\.js\?v=20261008o/g) || []).length, 1);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008o/g) || []).length, 2);
+  assert.equal((html.match(/core-supervision\.js\?v=20261008p/g) || []).length, 1);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008p/g) || []).length, 2);
   assert.match(overlay, /Envoi incertain/);
   const recordsSrc = fs.readFileSync(path.join(__dirname, 'records.js'), 'utf8');
   const pad = fs.readFileSync(path.join(__dirname, 'pad-sync.js'), 'utf8');

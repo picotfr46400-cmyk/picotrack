@@ -1,9 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
+  AUDIT_TEXT_MAX,
+  isSecretObjectKey,
   isSensitiveField,
   isSensitiveName,
+  looksLikeAuditSecret,
   looksLikeSecret,
+  maskAuditText,
   maskKindForType,
   maskSecretText,
   normalizeSecretText
@@ -44,7 +50,16 @@ const MASKED_NAMES = [
   'license_key',
   'clé de licence',
   'code confidentiel',
-  'codeConfidentiel'
+  'codeConfidentiel',
+  'authorization',
+  'bearer',
+  'supa_key',
+  'supa_url',
+  'code de verification',
+  'verification code',
+  'carte bancaire',
+  'credit card',
+  'card number'
 ];
 
 const VISIBLE_NAMES = [
@@ -71,7 +86,7 @@ test('normalisation compacte : NFKD, apostrophe, camelCase, sans espaces', () =>
 });
 
 test('noms : secrets masqués, identifiants métier et code postal visibles', () => {
-  assert.equal(MASKED_NAMES.length, 31);
+  assert.equal(MASKED_NAMES.length, 40);
   assert.equal(VISIBLE_NAMES.length, 10);
   for (const name of MASKED_NAMES) assert.equal(isSensitiveName(name), true, name);
   for (const name of VISIBLE_NAMES) assert.equal(isSensitiveName(name), false, name);
@@ -113,4 +128,56 @@ test('valeurs : JWT, entropie, Luhn, IBAN, jamais une chaîne vide', () => {
   assert.equal(maskSecretText(`https://app.picotrack.fr/?token=${token40}`).includes(token40), false);
   assert.equal(maskSecretText(`https://app.picotrack.fr/?jwt=${JWT}`).includes(JWT), false);
   assert.match(maskSecretText(`https://app.picotrack.fr/?token=${token40}`), /masqué/);
+});
+
+test('journal : valeur entière, hex, IBAN, coupe à 500, mail inchangé', () => {
+  assert.equal(looksLikeAuditSecret(`préfixe ${JWT} suffixe`), true);
+  assert.equal(looksLikeAuditSecret('a'.repeat(40)), true);
+  assert.equal(looksLikeSecret('a'.repeat(40)), false);
+  assert.equal(looksLikeAuditSecret(IBAN), true);
+  assert.equal(maskAuditText(`préfixe ${JWT} suffixe`), 'masqué');
+  assert.equal(maskSecretText(`préfixe ${JWT} suite`), 'préfixe masqué suite');
+  assert.equal(maskAuditText('a'.repeat(40)), 'masqué');
+  assert.equal(maskAuditText(''), '');
+  const long = `note ${'é'.repeat(800)}`;
+  assert.equal(Array.from(maskAuditText(long)).length, AUDIT_TEXT_MAX);
+  assert.equal(AUDIT_TEXT_MAX, 500);
+  assert.equal(isSecretObjectKey('api_key'), true);
+  assert.equal(isSecretObjectKey('supa-url'), true);
+  assert.equal(isSecretObjectKey('pwd'), false);
+  assert.equal(isSecretObjectKey('Mozilla/5.0'), false);
+});
+
+test('un seul masqueur dans le dépôt', () => {
+  const root = path.join(__dirname, '..');
+  const files = [];
+  const walk = dir => {
+    for (const name of fs.readdirSync(dir)) {
+      if (name === 'node_modules' || name === '.git') continue;
+      const full = path.join(dir, name);
+      if (fs.statSync(full).isDirectory()) walk(full);
+      else if (/\.(js|mjs|cjs)$/.test(name)) files.push(full);
+    }
+  };
+  walk(root);
+  const needles = [
+    /function\s+looksLikeSecret\s*\(/,
+    /function\s+maskEmbeddedSecrets\s*\(/,
+    /function\s+luhnOk\s*\(/,
+    /const\s+SECRET_KEY\s*=/,
+    /const\s+SENSITIVE_TEXT\s*=/
+  ];
+  const offenders = [];
+  for (const file of files) {
+    if (file.endsWith(`${path.sep}_secret-mask.js`) || file.endsWith(`${path.sep}_secret-mask.test.js`)) continue;
+    const text = fs.readFileSync(file, 'utf8');
+    for (const needle of needles) {
+      if (needle.test(text)) offenders.push(path.relative(root, file));
+    }
+  }
+  assert.deepEqual(offenders, []);
+  const audit = fs.readFileSync(path.join(__dirname, '_submission-audit.js'), 'utf8');
+  assert.match(audit, /require\('\.\/_secret-mask'\)/);
+  assert.equal(/function\s+looksLikeSecret\s*\(/.test(audit), false);
+  assert.equal(/function\s+maskEmbeddedSecrets\s*\(/.test(audit), false);
 });

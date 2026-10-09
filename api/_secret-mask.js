@@ -23,9 +23,20 @@ const COMPACT_PHRASES = [
   'cookie',
   'licensekey',
   'cledelicence',
-  'codeconfidentiel'
+  'codeconfidentiel',
+  'authorization',
+  'bearer',
+  'supakey',
+  'supaurl',
+  'codedeverification',
+  'verificationcode',
+  'cartebancaire',
+  'creditcard',
+  'cardnumber'
 ];
 const EXACT_TOKENS = new Set(['pwd', 'mdp', 'cvv', 'cvc', 'pin', 'otp', 'iban']);
+const SECRET_OBJECT_KEY = /password|passwd|token|secret|authorization|cookie|api[_-]?key|license[_-]?key|session|supa[_-]?(key|url)|bearer/i;
+const AUDIT_TEXT_MAX = 500;
 const JWT_RE = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
 const DATA_URL_RE = /data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+/gi;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -45,6 +56,10 @@ function nameTokens(value) {
     .replace(/([a-z\d])([A-Z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
   return foldText(split).split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function isSecretObjectKey(value) {
+  return SECRET_OBJECT_KEY.test(String(value ?? ''));
 }
 
 function isSensitiveName(value) {
@@ -153,6 +168,17 @@ function looksLikeSecret(value) {
   return false;
 }
 
+function looksLikeAuditSecret(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return false;
+  if (JWT_RE.test(text)) return true;
+  if (!/\s/.test(text) && /^[0-9a-fA-F]{32,}$/.test(text)) return true;
+  if (!/\s/.test(text) && text.length >= 32 && /^[A-Za-z0-9+/_=-]+$/.test(text)) return true;
+  if (cardDigits(text)) return true;
+  if (isIban(text)) return true;
+  return false;
+}
+
 function shieldDataUrls(text) {
   const holders = [];
   const shielded = String(text || '').replace(DATA_URL_RE, (match) => {
@@ -184,6 +210,21 @@ function maskEmbeddedSecrets(text) {
   return restoreDataUrls(out, holders);
 }
 
+function maskAuditEmbedded(text) {
+  let out = String(text || '')
+    .replace(new RegExp(JWT_RE.source, 'g'), MASK)
+    .replace(/\b[0-9a-fA-F]{32,}\b/g, MASK)
+    .replace(/\b(?:\d[ -]?){13,19}\b/g, (match) => {
+      const digits = match.replace(/\D/g, '');
+      return /^\d{13,19}$/.test(digits) && luhnOk(digits) ? MASK : match;
+    });
+  out = out.replace(/(^|[^A-Za-z0-9+/_-])([A-Za-z0-9+/_-]{32,})(?![A-Za-z0-9+/_-])/g, (full, lead, token) => (
+    isStandardUuid(token) || !isHighEntropyToken(token) ? full : lead + MASK
+  ));
+  out = out.replace(/\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]){11,30}\b/g, (match) => (isIban(match) ? MASK : match));
+  return out;
+}
+
 function maskSecretText(value) {
   const text = value == null ? '' : String(value);
   if (!text) return '';
@@ -191,15 +232,29 @@ function maskSecretText(value) {
   return maskEmbeddedSecrets(text);
 }
 
+function maskAuditText(value) {
+  const text = value == null ? '' : String(value);
+  if (!text) return '';
+  const chars = Array.from(text);
+  const clipped = chars.length <= AUDIT_TEXT_MAX ? text : chars.slice(0, AUDIT_TEXT_MAX).join('');
+  if (looksLikeAuditSecret(text) || looksLikeAuditSecret(clipped)) return MASK;
+  return maskAuditEmbedded(clipped);
+}
+
 module.exports = {
   SECRET_FIELD_TYPES,
+  AUDIT_TEXT_MAX,
   foldText,
   normalizeSecretText,
+  isSecretObjectKey,
   isSensitiveName,
   isSensitiveField,
   maskKindForType,
   luhnOk,
   looksLikeSecret,
+  looksLikeAuditSecret,
   maskEmbeddedSecrets,
-  maskSecretText
+  maskAuditEmbedded,
+  maskSecretText,
+  maskAuditText
 };

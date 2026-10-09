@@ -163,22 +163,31 @@ async function sendSmtp(message, env = process.env) {
   const options = smtpTransportOptions(env);
   const transporter = nodemailer.createTransport(options);
   const messageId = smtpMessageId(message && message.outboxId);
-  const info = await transporter.sendMail({
-    from: env.SMTP_FROM,
-    messageId: messageId || undefined,
-    to: message.to,
-    cc: message.cc && message.cc.length ? message.cc : undefined,
-    bcc: message.bcc && message.bcc.length ? message.bcc : undefined,
-    replyTo: message.replyTo && message.replyTo.length ? message.replyTo : undefined,
-    subject: message.subject,
-    html: message.html,
-    text: message.text || undefined,
-    attachments: (message.attachments || []).map(item => ({
-      filename: item.filename,
-      content: Buffer.from(String(item.content || ''), 'base64')
-    }))
-  });
-  return { id: info && info.messageId, provider: 'smtp' };
+  try {
+    const info = await transporter.sendMail({
+      from: env.SMTP_FROM,
+      messageId: messageId || undefined,
+      to: message.to,
+      cc: message.cc && message.cc.length ? message.cc : undefined,
+      bcc: message.bcc && message.bcc.length ? message.bcc : undefined,
+      replyTo: message.replyTo && message.replyTo.length ? message.replyTo : undefined,
+      subject: message.subject,
+      html: message.html,
+      text: message.text || undefined,
+      attachments: (message.attachments || []).map(item => ({
+        filename: item.filename,
+        content: Buffer.from(String(item.content || ''), 'base64')
+      }))
+    });
+    return { id: info && info.messageId, provider: 'smtp' };
+  } catch (error) {
+    const command = String(error && error.command || '').toUpperCase();
+    const code = String(error && (error.code || error.errno) || '').toUpperCase();
+    const text = String(error && error.message || '').toLowerCase();
+    const timedOut = code === 'ETIMEDOUT' || /timeout|timed out|etimedout/.test(text);
+    if (error && typeof error === 'object' && timedOut && command === 'DATA') error.afterData = true;
+    throw error;
+  }
 }
 
 async function deliverMail(message, env = process.env) {

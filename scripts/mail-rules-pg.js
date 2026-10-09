@@ -7,6 +7,7 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const net = require('node:net');
+const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { signPayload } = require('../api/_pad-security');
 const padSync = require('../api/pad-sync');
@@ -18,7 +19,7 @@ const USER_ID = 'user-1';
 const SESSION = 'sess-token';
 let latencyMs = 0;
 
-const JSON_COLS = new Set(['values', 'fields', 'triggers', 'config', 'recipients', 'payload', 'roles', 'resolved_permissions', 'permissions']);
+const JSON_COLS = new Set(['values', 'fields', 'triggers', 'config', 'recipients', 'payload', 'roles', 'resolved_permissions', 'permissions', 'detail']);
 const UUID_COLS = {
   mail_outbox: new Set(['id', 'rule_id', 'attempt_id']),
   mail_rules: new Set(['id'])
@@ -173,6 +174,13 @@ function patchRows(table, body, params) {
   return rowsOf(sql);
 }
 
+function applyMigration(name) {
+  execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-q', '-f', path.join(__dirname, '../supabase/migrations', name)], {
+    encoding: 'utf8',
+    env: process.env
+  });
+}
+
 function ensureFixtures() {
   psql(`
     create table if not exists public.forms (
@@ -189,7 +197,8 @@ function ensureFixtures() {
       values jsonb,
       device text,
       created_at timestamptz default now(),
-      environment_code text
+      environment_code text,
+      idempotency_key text
     );
     create table if not exists public.licenses (
       id text primary key,
@@ -218,8 +227,13 @@ function ensureFixtures() {
       revoked_at timestamptz
     );
     alter table public.forms add column if not exists permissions jsonb;
+    alter table public.submissions add column if not exists idempotency_key text;
     alter table public.submissions alter column id set default gen_random_uuid()::text;
   `);
+  applyMigration('20261008221500_submission_audit_log.sql');
+  applyMigration('20261008233000_submission_audit_idempotence_purge.sql');
+  applyMigration('20261008234500_business_idempotency_key.sql');
+  applyMigration('20261009030000_mail_uncertain_release.sql');
 }
 
 function reset() {
@@ -273,6 +287,9 @@ function rpcArgs(name, body) {
       `${sqlText(body.p_hour_start)}::timestamptz`,
       `${sqlText(body.p_day_start)}::timestamptz`
     ].join(', ');
+  }
+  if (name === 'release_uncertain_mail') {
+    return `${sqlText(body.p_id)}::uuid, ${sqlText(body.p_environment_code)}`;
   }
   if (name === 'finish_mail_outbox') {
     const recipients = typeof body.p_recipients === 'string' ? body.p_recipients : JSON.stringify(body.p_recipients || {});
@@ -574,6 +591,38 @@ async function main() {
     ) select count(*) from patched`).trim());
     assert.equal(flipped, 0);
     assert.equal(outboxRows().find(row => row.id === sentId).status, 'sent');
+
+    for (const workers of [2, 8, 16]) {
+      reset();
+      pointSmtp(fast.port);
+      process.env.MAIL_HOURLY_LIMIT = '2';
+      process.env.MAIL_DAILY_LIMIT = '2';
+      latencyMs = 0;
+      const beforeN = fast.messages();
+      const packed = await Promise.all(Array.from({ length: workers }, (_, index) => syncPad([{
+        id: `act-n-${workers}-${index}`,
+        type: 'form_submission',
+        payload: { formId: 'form-1', values: { client: 'Nord', reponse: `N${workers}-${index}` } }
+      }])));
+      packed.forEach(result => assert.equal(result.status, 200, `workers=${workers} ${JSON.stringify(result.payload)}`));
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const packedRows = outboxRows();
+      assert.equal(packedRows.length, workers, JSON.stringify(packedRows));
+      assert.equal(packedRows.filter(row => row.status === 'sent').length, 2, JSON.stringify(packedRows));
+      assert.equal(packedRows.filter(row => row.status === 'sending' || row.status === 'uncertain').length, 0);
+      assert.equal(fast.messages() - beforeN, 2);
+      assert.equal(quotaReserved('hour'), 2);
+      const replayN = fast.messages();
+      const replayPack = await Promise.all(Array.from({ length: workers }, (_, index) => syncPad([{
+        id: `act-n-${workers}-${index}`,
+        type: 'form_submission',
+        payload: { formId: 'form-1', values: { client: 'Nord', reponse: `N${workers}-${index}-bis` } }
+      }])));
+      replayPack.forEach(result => assert.equal(result.status, 200, `replay workers=${workers} ${JSON.stringify(result.payload)}`));
+      await new Promise(resolve => setTimeout(resolve, 150));
+      assert.equal(fast.messages() - replayN, 0);
+      assert.equal(outboxRows().filter(row => row.status === 'sent').length, 2);
+    }
 
     reset();
     pointSmtp(reject.port);

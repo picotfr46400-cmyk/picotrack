@@ -110,10 +110,15 @@ jobs:
           psql -v ON_ERROR_STOP=1 -c "create role authenticated nologin;"
           psql -v ON_ERROR_STOP=1 -c "create role service_role nologin bypassrls;"
           psql -v ON_ERROR_STOP=1 -c "grant service_role to postgres;"
+          psql -v ON_ERROR_STOP=1 -c "grant authenticated to postgres;"
+          psql -v ON_ERROR_STOP=1 -c "create table public.forms (id text primary key, nom text, fields jsonb, triggers jsonb, environment_code text);"
+          psql -v ON_ERROR_STOP=1 -c "create table public.submissions (id text primary key, form_id text, values jsonb, device text, created_at timestamptz, environment_code text, idempotency_key text);"
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008221500_submission_audit_log.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008233000_submission_audit_idempotence_purge.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008234500_business_idempotency_key.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261009010000_mail_outbox.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261009020000_mail_quota.sql
-          psql -v ON_ERROR_STOP=1 -c "create table public.forms (id text primary key, nom text, fields jsonb, triggers jsonb, environment_code text);"
-          psql -v ON_ERROR_STOP=1 -c "create table public.submissions (id text primary key, form_id text, values jsonb, device text, created_at timestamptz, environment_code text);"
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261009030000_mail_uncertain_release.sql
       - name: Dépendances
         run: npm ci
       - name: Mails sur Postgres
