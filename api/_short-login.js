@@ -1,33 +1,19 @@
 'use strict';
 
 // Identifiant court : trim et minuscules des deux côtés. La valeur stockée
-// ne change pas. ilike sert d'égalité insensible à la casse : % _ \ et *
-// sont échappés, puis la ligne est revérifiée en JS.
+// ne change pas. La comparaison SQL est une fonction paramétrée : aucune
+// saisie n'est interpolée dans un filtre PostgREST.
+const SHORT_LOGIN_RPC = 'rpc/match_short_logins';
+
 function shortLoginKey(value) {
   return String(value ?? '').trim().toLowerCase();
 }
 
-function ilikeLiteral(value) {
-  return shortLoginKey(value)
-    .replace(/\\/g, '\\\\')
-    .replace(/%/g, '\\%')
-    .replace(/_/g, '\\_')
-    .replace(/\*/g, '\\*');
-}
-
-function postgrestLiteral(value) {
-  return encodeURIComponent(value).replace(/[!'()*.]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-
-function shortLoginQuery(environmentCode, rawLogin) {
-  const env = String(environmentCode || '').trim().toUpperCase();
-  const pattern = postgrestLiteral(ilikeLiteral(rawLogin));
-  return [
-    `environment_code=eq.${encodeURIComponent(env)}`,
-    `or=(login_user.ilike.${pattern},username.ilike.${pattern})`,
-    'order=id.asc',
-    'limit=2'
-  ].join('&');
+function shortLoginRpcBody(environmentCode, rawLogin) {
+  return {
+    p_environment_code: String(environmentCode || '').trim().toUpperCase(),
+    p_login: String(rawLogin ?? '')
+  };
 }
 
 function shortLoginKeys(row) {
@@ -57,11 +43,10 @@ function conflictingShortLogin(rows, environmentCode, keys, exceptId) {
 }
 
 module.exports = {
+  SHORT_LOGIN_RPC,
   shortLoginKey,
   shortLoginKeys,
   findShortLoginMatches,
   conflictingShortLogin,
-  ilikeLiteral,
-  postgrestLiteral,
-  shortLoginQuery
+  shortLoginRpcBody
 };

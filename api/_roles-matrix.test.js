@@ -206,6 +206,15 @@ function installWorld(world) {
     if (u.includes('/auth/v1/token')) {
       return jsonResponse(200, { access_token: 'jwt', user: { id: world.actor.id, email: world.actor.email } });
     }
+    if (method === 'POST' && u.includes('/rpc/match_short_logins')) {
+      const env = String(body?.p_environment_code || '').trim().toUpperCase();
+      const key = String(body?.p_login || '').trim().toLowerCase();
+      const found = tableOf(world, 'user_profiles').filter(row => {
+        if (String(row?.environment_code || '').trim().toUpperCase() !== env) return false;
+        return [row?.login_user, row?.username].some(value => String(value ?? '').trim().toLowerCase() === key && key);
+      }).sort((a, b) => String(a.id).localeCompare(String(b.id))).slice(0, 2);
+      return jsonResponse(200, found);
+    }
     if (u.includes('api.resend.com')) return jsonResponse(200, { id: 'mail-1' });
     if (method === 'GET' && world.failReadId && decodeURIComponent(u).includes(`id=eq.${world.failReadId}`)) {
       return jsonResponse(500, { message: 'lecture impossible' });
@@ -1717,10 +1726,11 @@ test('bureau et tablette : pleine chasse acceptée, espace interne identique au 
         }
         return { ok: false, status: 401, text: async () => JSON.stringify({ error_description: 'Invalid login credentials' }) };
       }
-      if (u.includes('/rest/v1/user_profiles?') && u.includes('login_user')) {
-        assert.equal(u.includes('pad,user'), false, u);
-        assert.match(decodeURIComponent(u), /order=id/);
-        assert.match(decodeURIComponent(u), /environment_code=eq\.EFC/);
+      if (u.includes('/rpc/match_short_logins')) {
+        const rpcBody = JSON.parse(options.body || '{}');
+        assert.equal(u.includes('or=('), false, u);
+        assert.equal(u.includes('PadUser'), false, u);
+        assert.equal(rpcBody.p_environment_code, 'EFC');
         return { ok: true, status: 200, text: async () => JSON.stringify([{ id: 'named-1', email: 'pad.user@efc.picotrack.fr', login_user: 'PadUser', username: 'PadUser', environment_code: 'EFC' }]) };
       }
       return { ok: true, status: 200, text: async () => '[]' };
@@ -1791,7 +1801,13 @@ test('login court : casse des deux côtés, doublon générique, 409, saisie san
         }
         return { ok: false, status: 400, text: async () => JSON.stringify({ error_description: 'Invalid login credentials' }) };
       }
-      if (u.includes('/rest/v1/user_profiles?') && u.includes('login_user')) return { ok: true, status: 200, text: async () => JSON.stringify(rows) };
+      if (u.includes('/rpc/match_short_logins')) {
+        const rpcBody = JSON.parse(options.body || '{}');
+        assert.equal(u.includes('or=('), false, u);
+        assert.equal(u.includes(String(rpcBody.p_login || '___absent___')), false, u);
+        assert.equal(rpcBody.p_environment_code, 'EFC');
+        return { ok: true, status: 200, text: async () => JSON.stringify(rows) };
+      }
       return { ok: true, status: 200, text: async () => '[]' };
     };
 
@@ -1826,20 +1842,43 @@ test('login court : casse des deux côtés, doublon générique, 409, saisie san
     assert.equal(tokenEmails.includes('a@efc.picotrack.fr'), false);
     assert.equal(tokenEmails.includes('b@efc.picotrack.fr'), false);
 
+    const literals = [
+      ['a,b', 'comma@efc.picotrack.fr'],
+      ['a*b', 'star@efc.picotrack.fr'],
+      ['a(b)', 'paren@efc.picotrack.fr'],
+      ['a"b', 'quote@efc.picotrack.fr']
+    ];
+    for (const [login, email] of literals) {
+      lookedUp.length = 0;
+      tokenEmails.length = 0;
+      rows = [{ id: `lit-${email}`, email, login_user: login, username: 'autre', environment_code: 'EFC' }];
+      const signed = await callJson(authApi, { action: 'signIn', email: ` ${login} `, password: 'secret' });
+      assert.equal(signed.status, 200, `${login} ${JSON.stringify(signed.payload)}`);
+      assert.equal(signed.payload.session.user.email, email);
+      const rpcUrls = lookedUp.filter(url => url.includes('/rpc/match_short_logins'));
+      assert.equal(rpcUrls.length, 1, login);
+      assert.equal(rpcUrls[0].includes(login), false, rpcUrls[0]);
+      assert.equal(rpcUrls[0].includes('or=('), false, rpcUrls[0]);
+    }
+
     lookedUp.length = 0;
-    rows = [];
-    const hostile = await callJson(authApi, { action: 'signIn', email: 'pad,user)', password: 'secret' });
-    assert.equal(hostile.status, 400);
-    assert.equal(hostile.payload.error, 'Identifiants invalides ou compte inactif');
-    const profileReads = lookedUp.filter(url => url.includes('/rest/v1/user_profiles?'));
-    assert.equal(profileReads.length, 1);
-    const profileUrl = profileReads[0];
-    assert.equal(profileUrl.includes('pad,user)'), false, profileUrl);
-    assert.match(profileUrl, /login_user\.ilike\.pad%2Cuser%29/);
-    assert.match(profileUrl, /username\.ilike\.pad%2Cuser%29/);
-    assert.match(decodeURIComponent(profileUrl), /order=id/);
-    assert.match(decodeURIComponent(profileUrl), /environment_code=eq\.EFC/);
-    assert.equal((profileUrl.match(/or=\(/g) || []).length, 1);
+    tokenEmails.length = 0;
+    rows = [
+      { id: 'wild-1', email: 'wild@efc.picotrack.fr', login_user: 'axb', username: 'wild', environment_code: 'EFC' },
+      { id: 'wild-2', email: 'other@efc.picotrack.fr', login_user: 'aab', username: 'other', environment_code: 'EFC' }
+    ];
+    const star = await callJson(authApi, { action: 'signIn', email: 'a*b', password: 'secret' });
+    const wrongStar = await callJson(authApi, { action: 'signIn', email: 'bureau@efc.picotrack.fr', password: 'mauvais' });
+    assert.equal(star.status, 400);
+    assert.deepEqual(star.payload, wrongStar.payload);
+    assert.equal(tokenEmails.includes('wild@efc.picotrack.fr'), false);
+    assert.equal(tokenEmails.includes('other@efc.picotrack.fr'), false);
+
+    const sql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261009120000_match_short_logins.sql'), 'utf8');
+    assert.match(sql, /order by up\.id/i);
+    assert.match(sql, /limit 2/i);
+    assert.match(sql, /security invoker/i);
+    assert.equal(/ilike|\blike\b/i.test(sql), false);
   });
 
   await withSupabase(async () => {
@@ -1855,10 +1894,12 @@ test('login court : casse des deux côtés, doublon générique, 409, saisie san
     assert.match(created.payload.error || '', /déjà utilisé/);
     assert.equal(writes.some(entry => entry.url.includes('/auth/v1/admin/users') && entry.method === 'POST'), false);
     assert.equal(kept.login_user, 'PADTEST');
-    const duplicateLookup = calls.find(call => call.method === 'GET' && call.url.includes('login_user.ilike'));
-    assert.ok(duplicateLookup, 'requête ilike absente');
-    assert.match(decodeURIComponent(duplicateLookup.url), /order=id/);
-    assert.match(decodeURIComponent(duplicateLookup.url), /environment_code=eq\.EFC/);
+    const duplicateLookup = writes.find(entry => entry.method === 'POST' && entry.url.includes('/rpc/match_short_logins'));
+    assert.ok(duplicateLookup, 'rpc absente');
+    assert.equal(duplicateLookup.url.includes('or=('), false);
+    assert.equal(duplicateLookup.url.includes('padtest'), false);
+    assert.equal(duplicateLookup.body.p_environment_code, 'EFC');
+    assert.equal(duplicateLookup.body.p_login, 'padtest');
 
     const createdUser = await callJson(functions, {
       functionName: 'create-user',
@@ -1886,6 +1927,18 @@ test('login court : casse des deux côtés, doublon générique, 409, saisie san
     });
     assert.equal(fresh.status, 200, fresh.payload.error || '');
     assert.equal(lastWrite(writes, 'user_profiles').body.login_user, 'Neuf');
+
+    const literal = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'litteral@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Lit', login_user: 'x,y)' }
+    });
+    assert.equal(literal.status, 200, literal.payload.error || '');
+    assert.equal(lastWrite(writes, 'user_profiles').body.login_user, 'x,y)');
+    const literalAgain = await callJson(functions, {
+      functionName: 'create-user',
+      payload: { email: 'litteral2@efc.picotrack.fr', password: 'motdepasse', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', firstname: 'Lit', login_user: 'X,Y)' }
+    });
+    assert.equal(literalAgain.status, 409, literalAgain.payload.error || '');
   });
   } finally {
     if (previousEnv === undefined) delete process.env.PICOTRACK_ENVIRONMENT_CODE;
@@ -1915,15 +1968,15 @@ test('login court : même identifiant dans EFC et ACME, lecture en échec 503', 
           }
           return { ok: false, status: 400, text: async () => '{"error_description":"Invalid login credentials"}' };
         }
-        if (u.includes('/rest/v1/user_profiles?') && u.includes('login_user.ilike')) {
-          const decoded = decodeURIComponent(u);
-          assert.match(decoded, /order=id/);
-          assert.match(decoded, /limit=2/);
-          if (decoded.includes('environment_code=eq.EFC')) {
-            assert.equal(decoded.includes('environment_code=eq.ACME'), false);
+        if (u.includes('/rpc/match_short_logins')) {
+          const rpcBody = JSON.parse(options.body || '{}');
+          assert.equal(u.includes('or=('), false, u);
+          assert.equal(u.includes('sharedlogin'), false, u);
+          assert.match(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261009120000_match_short_logins.sql'), 'utf8'), /limit 2/i);
+          if (rpcBody.p_environment_code === 'EFC') {
             return { ok: true, status: 200, text: async () => JSON.stringify([{ id: 'efc-1', email: 'efc-user@efc.picotrack.fr', login_user: 'sharedlogin', username: 'sharedlogin', environment_code: 'EFC' }]) };
           }
-          if (decoded.includes('environment_code=eq.ACME')) {
+          if (rpcBody.p_environment_code === 'ACME') {
             return { ok: true, status: 200, text: async () => JSON.stringify([{ id: 'acme-1', email: 'acme-user@acme.picotrack.fr', login_user: 'sharedlogin', username: 'sharedlogin', environment_code: 'ACME' }]) };
           }
           return { ok: true, status: 200, text: async () => '[]' };
@@ -1946,7 +1999,7 @@ test('login court : même identifiant dans EFC et ACME, lecture en échec 503', 
 
     await withSupabase(async () => {
       global.fetch = async (url) => {
-        if (String(url).includes('/rest/v1/user_profiles?')) {
+        if (String(url).includes('/rpc/match_short_logins')) {
           return { ok: false, status: 500, text: async () => JSON.stringify({ message: 'db down' }) };
         }
         if (String(url).includes('/auth/v1/token')) {
@@ -1963,7 +2016,7 @@ test('login court : même identifiant dans EFC et ACME, lecture en échec 503', 
 
     await withSupabase(async () => {
       global.fetch = async (url) => {
-        if (String(url).includes('/rest/v1/user_profiles?')) {
+        if (String(url).includes('/rpc/match_short_logins')) {
           return { ok: true, status: 200, text: async () => JSON.stringify([
             { id: 'a', email: 'a@efc.picotrack.fr', login_user: 'padtest', username: 'a', environment_code: 'EFC' },
             { id: 'b', email: 'b@efc.picotrack.fr', login_user: 'PADTEST', username: 'b', environment_code: 'EFC' },
@@ -1983,7 +2036,7 @@ test('login court : même identifiant dans EFC et ACME, lecture en échec 503', 
 
     await withSupabase(async () => {
       global.fetch = async (url) => {
-        if (String(url).includes('login_user.ilike') || String(url).includes('username.ilike')) {
+        if (String(url).includes('/rpc/match_short_logins')) {
           return { ok: false, status: 500, text: async () => JSON.stringify({ message: 'db down' }) };
         }
         return { ok: true, status: 200, text: async () => '[]' };

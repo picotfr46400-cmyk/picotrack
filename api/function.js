@@ -1,7 +1,7 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
 const { normalizeLicenseType, seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
 const { normalizeEmail, isValidEmail, assertWritableEmail } = require('./_email');
-const { shortLoginKey, conflictingShortLogin, shortLoginQuery } = require('./_short-login');
+const { shortLoginKey, conflictingShortLogin, shortLoginRpcBody, SHORT_LOGIN_RPC } = require('./_short-login');
 
 const INTERNAL_FUNCTIONS = new Set([
   'list-users',
@@ -779,14 +779,16 @@ async function resolveCreateTenantId(url, serviceRole, environmentCode, requeste
 }
 
 async function readShortLoginPage(url, serviceRole, environmentCode, rawLogin) {
-  const path = `/rest/v1/user_profiles?select=id,login_user,username,environment_code&${shortLoginQuery(environmentCode, rawLogin)}`;
   let page;
   try {
-    page = await supabaseFetch(url, serviceRole, path, { method: 'GET' });
+    page = await supabaseFetch(url, serviceRole, `/rest/v1/${SHORT_LOGIN_RPC}`, {
+      method: 'POST',
+      body: shortLoginRpcBody(environmentCode, rawLogin)
+    });
   } catch (_) {
     throw Object.assign(new Error('Lecture des identifiants impossible.'), { status: 503 });
   }
-  if (!Array.isArray(page)) {
+  if (!Array.isArray(page) || page.length > 2) {
     throw Object.assign(new Error('Lecture des identifiants impossible.'), { status: 503 });
   }
   return page;

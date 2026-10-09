@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile, fetchUpstream, clientIp, takeAttempt, requestHost, resolveTenantFromHost } = require('./_server-supabase');
 const { normalizeEmail, isEmailLike, isValidEmail } = require('./_email');
-const { findShortLoginMatches, shortLoginQuery } = require('./_short-login');
+const { findShortLoginMatches, shortLoginKey, shortLoginRpcBody, SHORT_LOGIN_RPC } = require('./_short-login');
 
 const GENERIC_SIGN_IN_ERROR = 'Identifiants invalides ou compte inactif';
 
@@ -24,10 +24,15 @@ function hostEnvironmentCode(req) {
 }
 
 async function listShortLoginCandidates(req, environmentCode, rawLogin) {
-  const path = `user_profiles?select=id,email,login_user,username,environment_code&${shortLoginQuery(environmentCode, rawLogin)}`;
+  if (!shortLoginKey(rawLogin)) return [];
   let page;
   try {
-    page = await serviceRest(path, { method: 'GET', prefer: '', req });
+    page = await serviceRest(SHORT_LOGIN_RPC, {
+      method: 'POST',
+      body: shortLoginRpcBody(environmentCode, rawLogin),
+      prefer: '',
+      req
+    });
   } catch (_) {
     throw Object.assign(new Error('Connexion indisponible.'), { status: 503 });
   }

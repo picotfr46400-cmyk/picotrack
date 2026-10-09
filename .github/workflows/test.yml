@@ -60,6 +60,8 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008221500_submission_audit_log.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008233000_submission_audit_idempotence_purge.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008234500_business_idempotency_key.sql
+          psql -v ON_ERROR_STOP=1 -c "create table if not exists public.user_profiles (id uuid primary key, email text, login_user text, username text, environment_code text);"
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261009120000_match_short_logins.sql
       - name: PostgREST
         run: |
           curl -fsSL -o /tmp/postgrest.tar.xz -L https://github.com/PostgREST/postgrest/releases/download/v16.4/postgrest-v16.4-linux-static-x86-64.tar.xz
