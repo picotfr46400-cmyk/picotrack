@@ -36,7 +36,7 @@ const EVENTS = new Set([
 const MAX_RECIPIENTS = 10;
 const USER_PAGE_SIZE = 500;
 const MAX_ROLE_USERS = 5000;
-const RECIPIENT_READ_ERROR = 'Lecture des destinataires impossible. Le mail n\'a pas été envoyé.';
+const RECIPIENT_READ_ERROR = 'Lecture des destinataires impossible, nouvel essai plus tard.';
 const RECIPIENT_BOUND_ERROR = `Trop d'utilisateurs actifs (plus de ${MAX_ROLE_USERS}) pour connaître tous les destinataires. Le mail n'a pas été envoyé.`;
 const MAX_ATTEMPTS = 3;
 const DEFAULT_BUDGET_MS = 3000;
@@ -342,8 +342,10 @@ function userHasRole(user, role) {
 }
 
 function recipientReadError(message) {
-  const err = new Error(message || RECIPIENT_READ_ERROR);
+  const text = message || RECIPIENT_READ_ERROR;
+  const err = new Error(text);
   err.recipientRead = true;
+  err.recipientRetry = text === RECIPIENT_READ_ERROR;
   return err;
 }
 
@@ -1707,13 +1709,14 @@ async function sendOutboxRow(row, deps, deadline) {
       : { to: [], cc: [], bcc: [], uncapped: 0 };
   } catch (err) {
     if (!err || err.recipientRead !== true) throw err;
+    const retry = err.recipientRetry === true;
     await markCurrent(deps.store, row, env, {
-      status: 'failed',
-      last_error: String(err.message || RECIPIENT_READ_ERROR).slice(0, 500),
+      status: retry ? 'pending' : 'failed',
+      last_error: String(err.message || (retry ? RECIPIENT_READ_ERROR : RECIPIENT_BOUND_ERROR)).slice(0, 500),
       recipients: { to: [], cc: [], bcc: [] },
       warning: null
     });
-    return 'failed';
+    return retry ? 'pending' : 'failed';
   }
   let warning = null;
   const recipients = { to: resolved.to, cc: resolved.cc, bcc: resolved.bcc };

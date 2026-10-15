@@ -402,7 +402,7 @@ test('501 et plus destinataires de rôle sont tous servis', async () => {
   });
 });
 
-test('échec de lecture des destinataires : aucun envoi partiel', async () => {
+test('échec de lecture des destinataires : aucun envoi partiel, nouvel essai plus tard', async () => {
   const all = roleUsers(501);
   const admin = {
     role: 'environment_admin',
@@ -411,32 +411,48 @@ test('échec de lecture des destinataires : aucun envoi partiel', async () => {
     email: 'admin@example.com',
     license_type: 'supervision'
   };
+  const store = createMemoryStore();
+  await store.saveRule(submissionRule({
+    to: { fixed: ['qa@example.com'], roles: ['manager'] }
+  }));
+  const sent = [];
+  const transport = async (message) => {
+    sent.push(message);
+    return { provider: 'fake' };
+  };
   await withUserFetch(all, async (calls) => {
-    const store = createMemoryStore();
     store.listUsers = env => remoteUsers().listUsers(env);
-    await store.saveRule(submissionRule({
-      to: { fixed: ['qa@example.com'], roles: ['manager'] }
-    }));
-    const sent = [];
-    const result = await notifyAfterWrite(writeInput(store, {
-      transport: async (message) => {
-        sent.push(message);
-        return { provider: 'fake' };
-      }
-    }));
+    const result = await notifyAfterWrite(writeInput(store, { transport }));
     assert.equal(result.ok, true);
+    assert.equal(result.pending, true);
     assert.equal(sent.length, 0);
     assert.equal(calls.length, 2);
     assert.equal(store.outbox.length, 1);
-    assert.equal(store.outbox[0].status, 'failed');
+    assert.equal(store.outbox[0].status, 'pending');
+    assert.equal(Number(store.outbox[0].attempts || 0), 0);
     assert.equal(store.outbox[0].last_error, RECIPIENT_READ_ERROR);
     assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
     assert.equal(JSON.stringify(store.outbox).includes('qa@example.com'), false);
     assert.equal(JSON.stringify(store.outbox).includes('u0001@example.com'), false);
     const listed = await handleMailAction({}, { action: 'mail_outbox_list' }, admin, { store });
-    assert.equal(listed.rows[0].status, 'failed');
+    assert.equal(listed.rows[0].status, 'pending');
     assert.equal(listed.rows[0].last_error, RECIPIENT_READ_ERROR);
   }, { failPage: 2 });
+
+  await withUserFetch(all, async (calls) => {
+    store.listUsers = env => remoteUsers().listUsers(env);
+    const result = await notifyAfterWrite(writeInput(store, { transport }));
+    assert.equal(result.ok, true);
+    assert.equal(result.pending, false);
+    assert.equal(sent.length, 1);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].includes('id=gt.u0500'), true);
+    assert.equal(store.outbox.length, 1);
+    assert.equal(store.outbox[0].status, 'sent');
+    assert.deepEqual(sent[0].to, ['qa@example.com'].concat(all.slice(0, 9).map(user => user.email)));
+    assert.equal(sent[0].to.includes('u0501@example.com'), false);
+    assert.match(store.outbox[0].warning, /10 premiers/);
+  });
 
   await withUserFetch(roleUsers(MAX_ROLE_USERS + 1), async () => {
     const store = createMemoryStore();

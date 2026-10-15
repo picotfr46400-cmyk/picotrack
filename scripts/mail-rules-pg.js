@@ -732,16 +732,35 @@ async function main() {
     assert.equal(roleFail.status, 200, JSON.stringify(roleFail.payload));
     assert.equal(fast.messages() - beforeFail, 0);
     assert.equal(userListGets.length, 2, userListGets.join('\n'));
-    const failedRead = rowsOf('select row_to_json(t) from (select status, last_error, recipients from public.mail_outbox) t');
+    const failedRead = rowsOf('select row_to_json(t) from (select status, attempts, last_error, recipients from public.mail_outbox) t');
     assert.equal(failedRead.length, 1, JSON.stringify(failedRead));
-    assert.equal(failedRead[0].status, 'failed', JSON.stringify(failedRead[0]));
+    assert.equal(failedRead[0].status, 'pending', JSON.stringify(failedRead[0]));
+    assert.equal(Number(failedRead[0].attempts || 0), 0);
     assert.match(failedRead[0].last_error || '', /Lecture des destinataires impossible/);
+    assert.match(failedRead[0].last_error || '', /nouvel essai plus tard/);
     const failedTo = (failedRead[0].recipients && failedRead[0].recipients.to) || [];
     assert.deepEqual(failedTo, []);
     assert.equal(JSON.stringify(failedRead[0].recipients || {}).includes(TO), false);
     assert.equal(JSON.stringify(failedRead[0].recipients || {}).includes('u0001@example.com'), false);
     assert.equal(quotaReserved('hour'), 0);
     failUserListAt = 0;
+    userListGets.length = 0;
+    const beforeRetry = fast.messages();
+    const roleRetry = await syncPad([{
+      id: 'act-role-fail',
+      type: 'form_submission',
+      payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Coupure' } }
+    }]);
+    assert.equal(roleRetry.status, 200, JSON.stringify(roleRetry.payload));
+    assert.equal(fast.messages() - beforeRetry, 1);
+    assert.equal(userListGets.length, 2, userListGets.join('\n'));
+    assert.equal(userListGets[1].includes('id=gt.'), true);
+    const retried = rowsOf('select row_to_json(t) from (select status, recipients from public.mail_outbox) t');
+    assert.equal(retried.length, 1, JSON.stringify(retried));
+    assert.equal(retried[0].status, 'sent', JSON.stringify(retried[0]));
+    assert.deepEqual((retried[0].recipients && retried[0].recipients.to) || [], ['qa@example.com'].concat(
+      Array.from({ length: 9 }, (_, index) => `u${String(index + 1).padStart(4, '0')}@example.com`)
+    ));
     if (previousHour == null) delete process.env.MAIL_HOURLY_LIMIT;
     else process.env.MAIL_HOURLY_LIMIT = previousHour;
     if (previousDay == null) delete process.env.MAIL_DAILY_LIMIT;
