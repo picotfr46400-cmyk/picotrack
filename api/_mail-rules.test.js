@@ -1121,7 +1121,7 @@ async function assertRealSmtpOutcome(mode, status) {
       perCallMs: slow ? 20000 : 7000
     }));
     const row = store.outbox.find(item => item.target_id === 'sub-probe');
-    assert.equal(row.status, status);
+    assert.equal(row.status, status, String(row && row.last_error));
     assert.equal(row.attempts, status === 'failed' ? MAX_ATTEMPTS : 1);
     assert.equal(probe.transmissions, 1);
     await notifyAfterWrite(writeInput(store, {
@@ -1132,7 +1132,7 @@ async function assertRealSmtpOutcome(mode, status) {
       perCallMs: 1500
     }));
     assert.equal(probe.transmissions, 1);
-    assert.equal(row.status, status);
+    assert.equal(row.status, status, String(row && row.last_error));
     assert.equal(row.attempts, status === 'failed' ? MAX_ATTEMPTS : 1);
   } finally {
     await new Promise(resolve => probe.server.close(resolve));
