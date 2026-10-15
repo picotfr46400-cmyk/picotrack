@@ -103,22 +103,37 @@ function smtpTransportOptions(env = process.env) {
   };
 }
 
-// Le timeout de socket de nodemailer remonte toujours command=CONN.
-// Le flux du message ne démarre qu'après le 354 de DATA : c'est là que le drapeau est posé.
+// nodemailer remonte le timeout de socket en ETIMEDOUT avec command=CONN.
+// Le drapeau DATA est posé à l'envoi de la commande, avant le 354.
+// Le drapeau du point final est posé quand le flux du message se termine.
 function installSmtpDataPhase() {
   const SMTPConnection = require('nodemailer/lib/smtp-connection');
   const proto = SMTPConnection && SMTPConnection.prototype;
   if (!proto || proto._picoDataPhaseInstalled) return;
   proto._picoDataPhaseInstalled = true;
+  const sendCommand = proto._sendCommand;
+  proto._sendCommand = function picoSendCommand(command, logCommand) {
+    if (String(command || '').trim().toUpperCase() === 'DATA') this._picoDataCommandSent = true;
+    return sendCommand.call(this, command, logCommand);
+  };
   const createSendStream = proto._createSendStream;
   proto._createSendStream = function picoCreateSendStream(callback) {
-    this._picoDataStarted = true;
-    return createSendStream.call(this, callback);
+    this._picoDataCommandSent = true;
+    const stream = createSendStream.call(this, callback);
+    if (stream && typeof stream.once === 'function') {
+      stream.once('end', () => {
+        this._picoFinalDotSent = true;
+      });
+    }
+    return stream;
   };
   const formatError = proto._formatError;
   proto._formatError = function picoFormatError(message, type, response, command) {
     const err = formatError.call(this, message, type, response, command);
-    if (this._picoDataStarted && err && typeof err === 'object') err.afterData = true;
+    if (err && typeof err === 'object') {
+      if (this._picoDataCommandSent) err.afterData = true;
+      if (this._picoFinalDotSent) err.afterFinalDot = true;
+    }
     return err;
   };
 }

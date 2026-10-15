@@ -647,25 +647,17 @@ function hourlyLimit(env = process.env) {
   return limitFrom(env, 'MAIL_HOURLY_LIMIT', DEFAULT_HOURLY_LIMIT);
 }
 
-function explicitTransportFailure(error) {
-  const code = String(error.code || error.errno || '').toUpperCase();
-  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAUTH') return true;
+function explicitFinalDotRejection(error) {
+  if (!error || error.afterFinalDot !== true) return false;
   const responseCode = Number(error.responseCode || 0);
-  if (responseCode >= 400 && responseCode <= 599) return true;
-  return /(?:^|:\s*)[45]\d{2}\b/.test(String(error.response || ''));
-}
-
-function timeoutOrCutoff(error) {
-  const code = String(error.code || error.errno || '').toUpperCase();
-  if (code === 'ETIMEDOUT' || code === 'ESOCKET' || code === 'ECONNECTION' || code === 'ECONNRESET' || code === 'EPIPE' || code === 'ECONNABORTED') return true;
-  return /timeout|timed out|etimedout|econnreset|epipe|socket hang up|connection closed|unexpectedly closed/.test(String(error.message || '').toLowerCase());
+  if (responseCode >= 500 && responseCode <= 599) return true;
+  return /(?:^|:\s*)5\d{2}\b/.test(String(error.response || ''));
 }
 
 function transportFailureIsUncertain(error) {
   if (!error || typeof error !== 'object') return false;
-  if (explicitTransportFailure(error)) return false;
   if (error.afterData !== true) return false;
-  return timeoutOrCutoff(error);
+  return !explicitFinalDotRejection(error);
 }
 
 function withTimeout(promise, ms) {
@@ -1029,6 +1021,7 @@ function createSqlStore(query) {
       if ('warning' in patch) assignments.push(`warning = ${sqlText(patch.warning)}`);
       if ('attempts' in patch) assignments.push(`attempts = ${Number(patch.attempts)}`);
       if ('attempt_id' in patch) assignments.push(`attempt_id = ${patch.attempt_id ? `${sqlText(patch.attempt_id)}::uuid` : 'null'}`);
+      if ('claimed_until' in patch) assignments.push(`claimed_until = ${patch.claimed_until ? `${sqlText(patch.claimed_until)}::timestamptz` : 'null'}`);
       if (patch.subject) assignments.push(`subject = ${sqlText(patch.subject)}`);
       if (patch.recipients) assignments.push(`recipients = ${sqlJson(patch.recipients)}`);
       const attemptSql = expected.attemptId ? `attempt_id = ${sqlText(expected.attemptId)}::uuid` : 'attempt_id is null';
@@ -1518,6 +1511,29 @@ async function markCurrent(store, row, env, patch) {
   return store.markOutbox(row.id, env, patch, attemptExpect(row));
 }
 
+async function closeTransportFailure(store, claimed, env, error, patch) {
+  const text = String((error && error.message) || error || 'Erreur SMTP').slice(0, 500);
+  if (transportFailureIsUncertain(error)) {
+    await markCurrent(store, claimed, env, {
+      status: 'uncertain',
+      last_error: 'Envoi incertain : aucune confirmation après DATA.',
+      claimed_until: null
+    });
+    return 'uncertain';
+  }
+  await store.finishSending(claimed.id, env, claimed.attempts, claimed.attempt_id, Object.assign({}, patch, {
+    status: 'failed',
+    last_error: text
+  }));
+  if (explicitFinalDotRejection(error)) {
+    await store.markOutbox(claimed.id, env, { attempts: MAX_ATTEMPTS }, {
+      status: 'failed',
+      attemptId: claimed.attempt_id || null
+    });
+  }
+  return 'failed';
+}
+
 async function deliverPrepared(row, prepared, deps, deadline) {
   const env = row.environment_code;
   const recipients = capRecipients(prepared.to || [], prepared.cc || [], prepared.bcc || [], MAX_RECIPIENTS);
@@ -1545,14 +1561,10 @@ async function deliverPrepared(row, prepared, deps, deadline) {
   const outcome = await withTimeout(Promise.resolve().then(() => transport(message)), perCall);
   if (outcome.timedOut) return 'pending';
   if (outcome.error) {
-    if (transportFailureIsUncertain(outcome.error)) return 'pending';
-    await deps.store.finishSending(claimed.id, env, claimed.attempts, claimed.attempt_id, {
-      status: 'failed',
+    return closeTransportFailure(deps.store, claimed, env, outcome.error, {
       subject: message.subject,
-      recipients,
-      last_error: String(outcome.error.message || outcome.error).slice(0, 500)
+      recipients
     });
-    return 'failed';
   }
   await deps.store.finishSending(claimed.id, env, claimed.attempts, claimed.attempt_id, {
     status: 'sent',
@@ -1686,31 +1698,23 @@ async function sendOutboxRow(row, deps, deadline) {
   if (outcome.timedOut) {
     flight.then(
       () => deps.store.finishSending(claimed.id, env, claimed.attempts, claimed.attempt_id, Object.assign({ status: 'sent' }, finishPatch)).catch(() => null),
-      (error) => {
-        if (transportFailureIsUncertain(error)) return null;
-        return deps.store.finishSending(claimed.id, env, claimed.attempts, claimed.attempt_id, {
-          status: 'failed',
-          subject,
-          recipients,
-          warning,
-          last_error: String(error && error.message || error).slice(0, 500)
-        }).catch(() => null);
-      }
+      (error) => closeTransportFailure(deps.store, claimed, env, error, { subject, recipients, warning }).catch(() => null)
     );
     return 'pending';
   }
   if (outcome.error) {
-    if (transportFailureIsUncertain(outcome.error)) return 'pending';
-    const messageText = String(outcome.error.message || outcome.error).slice(0, 500);
-    await deps.store.finishSending(claimed.id, env, claimed.attempts, claimed.attempt_id, {
-      status: 'failed',
-      subject,
-      recipients,
-      warning,
-      last_error: messageText
-    });
-    emitMailAudit({ type: 'mail.failed', environment_code: env, rule_id: row.rule_id, event: row.event, target_id: row.target_id, error: messageText });
-    return 'failed';
+    const settled = await closeTransportFailure(deps.store, claimed, env, outcome.error, { subject, recipients, warning });
+    if (settled === 'failed') {
+      emitMailAudit({
+        type: 'mail.failed',
+        environment_code: env,
+        rule_id: row.rule_id,
+        event: row.event,
+        target_id: row.target_id,
+        error: String(outcome.error.message || outcome.error).slice(0, 500)
+      });
+    }
+    return settled;
   }
   await deps.store.finishSending(claimed.id, env, claimed.attempts, claimed.attempt_id, Object.assign({ status: 'sent' }, finishPatch));
   emitMailAudit({

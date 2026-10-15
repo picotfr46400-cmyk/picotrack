@@ -8,6 +8,7 @@ const sendMail = require('./send-mail');
 const { extractPdfText, formatSubmissionDocument, buildSubmissionPdf } = require('./_submission-pdf');
 const {
   PDF_BYTE_LIMIT,
+  MAX_ATTEMPTS,
   CLAIM_LEASE_MS,
   PDF_OMITTED_MENTION,
   RECIPIENT_LIMIT_MESSAGE,
@@ -940,7 +941,8 @@ test('connexion refusée rend la place, timeout après DATA la garde', async () 
     }
   }));
   const held = afterData.outbox[0];
-  assert.equal(held.status, 'sending');
+  assert.equal(held.status, 'uncertain');
+  assert.equal(held.attempts, 1);
   let blocked = 0;
   await notifyAfterWrite(writeInput(afterData, {
     id: 'sub-data-2',
@@ -952,7 +954,8 @@ test('connexion refusée rend la place, timeout après DATA la garde', async () 
     }
   }));
   assert.equal(blocked, 0);
-  assert.equal(held.status, 'sending');
+  assert.equal(held.status, 'uncertain');
+  assert.equal(held.attempts, 1);
   assert.match(afterData.outbox.find(row => row.target_id === 'sub-data-2').last_error, /Plafond de destinataires atteint/);
 
   const refusedCode = createMemoryStore();
@@ -968,11 +971,24 @@ test('connexion refusée rend la place, timeout après DATA la garde', async () 
       err.responseCode = 550;
       err.response = '550 rejected';
       err.afterData = true;
+      err.afterFinalDot = true;
       throw err;
     }
   }));
   assert.equal(refusedCode.outbox[0].status, 'failed');
+  assert.equal(refusedCode.outbox[0].attempts, MAX_ATTEMPTS);
   let afterReject = 0;
+  await notifyAfterWrite(writeInput(refusedCode, {
+    id: 'sub-550',
+    saved: { id: 'sub-550', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Nord' } },
+    mailEnv: limits,
+    transport: async () => {
+      afterReject += 1;
+      return { provider: 'fake' };
+    }
+  }));
+  assert.equal(afterReject, 0);
+  assert.equal(refusedCode.outbox[0].status, 'failed');
   await notifyAfterWrite(writeInput(refusedCode, {
     id: 'sub-550-next',
     saved: { id: 'sub-550-next', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Sud' } },
@@ -983,6 +999,7 @@ test('connexion refusée rend la place, timeout après DATA la garde', async () 
     }
   }));
   assert.equal(afterReject, 1);
+  assert.equal(refusedCode.outbox[0].attempts, MAX_ATTEMPTS);
 
   const dropped = createMemoryStore();
   await dropped.saveRule(submissionRule());
@@ -998,7 +1015,8 @@ test('connexion refusée rend la place, timeout après DATA la garde', async () 
       throw err;
     }
   }));
-  assert.equal(dropped.outbox[0].status, 'sending');
+  assert.equal(dropped.outbox[0].status, 'uncertain');
+  assert.equal(dropped.outbox[0].attempts, 1);
   let afterDrop = 0;
   await notifyAfterWrite(writeInput(dropped, {
     id: 'sub-reset-2',
@@ -1010,41 +1028,55 @@ test('connexion refusée rend la place, timeout après DATA la garde', async () 
     }
   }));
   assert.equal(afterDrop, 0);
-  assert.equal(dropped.outbox[0].status, 'sending');
+  assert.equal(dropped.outbox[0].status, 'uncertain');
+  assert.equal(dropped.outbox[0].attempts, 1);
 });
 
-function startSilentSmtpSink() {
+function startSmtpProbe(mode) {
+  let transmissions = 0;
   return new Promise((resolve, reject) => {
     const server = net.createServer(socket => {
       let buffer = '';
       let readingBody = false;
-      let silent = false;
-      socket.write('220 sink.local ESMTP\r\n');
+      let settled = false;
+      const stop = () => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+      };
+      socket.write('220 probe.local ESMTP\r\n');
       socket.on('data', chunk => {
-        if (silent) return;
+        if (settled) return;
+        if (readingBody && mode === 'cut-body') return stop();
         buffer += chunk.toString('latin1');
         if (readingBody) {
           const lines = buffer.split(/\r?\n/);
           const incomplete = buffer.endsWith('\n') ? '' : (lines.pop() || '');
           for (const line of lines) {
-            if (line === '.') {
-              silent = true;
-              readingBody = false;
-              buffer = '';
+            if (line !== '.') continue;
+            readingBody = false;
+            buffer = '';
+            if (mode === 'cut-dot') return stop();
+            if (mode === 'reject') {
+              settled = true;
+              socket.write('550 rejected\r\n');
               return;
             }
+            settled = true;
+            return;
           }
           buffer = incomplete;
           return;
         }
         let breakAt = buffer.indexOf('\n');
-        while (breakAt !== -1) {
+        while (!readingBody && breakAt !== -1) {
           const line = buffer.slice(0, breakAt).replace(/\r$/, '');
           buffer = buffer.slice(breakAt + 1);
           const upper = line.toUpperCase();
-          if (upper.startsWith('EHLO') || upper.startsWith('HELO')) socket.write('250 sink\r\n');
+          if (upper.startsWith('EHLO') || upper.startsWith('HELO')) socket.write('250 probe\r\n');
           else if (upper.startsWith('MAIL FROM') || upper.startsWith('RCPT TO') || upper === 'RSET' || upper === 'NOOP') socket.write('250 OK\r\n');
           else if (upper === 'DATA') {
+            transmissions += 1;
             readingBody = true;
             socket.write('354 End data with <CR><LF>.<CR><LF>\r\n');
             break;
@@ -1057,56 +1089,71 @@ function startSilentSmtpSink() {
     });
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      resolve({ server, port: address.port });
+      resolve({
+        server,
+        port: server.address().port,
+        get transmissions() { return transmissions; }
+      });
     });
   });
 }
 
-test('nodemailer : silence après le contenu, bail d’au moins 15 s, la place reste tenue', { timeout: 40000 }, async () => {
-  assert.ok(CLAIM_LEASE_MS >= 15000);
-  const sink = await startSilentSmtpSink();
+async function assertRealSmtpOutcome(mode, status) {
+  const probe = await startSmtpProbe(mode);
+  const slow = mode === 'silent';
   const limits = {
     MAIL_TRANSPORT: 'smtp',
     SMTP_HOST: '127.0.0.1',
-    SMTP_PORT: String(sink.port),
+    SMTP_PORT: String(probe.port),
     SMTP_FROM: 'PicoTrack <notifications@noreply.picotrack.fr>',
-    MAIL_HOURLY_LIMIT: '1',
-    MAIL_DAILY_LIMIT: '1'
+    MAIL_HOURLY_LIMIT: '60',
+    MAIL_DAILY_LIMIT: '300'
   };
   const store = createMemoryStore();
   await store.saveRule(submissionRule());
+  const saved = { id: 'sub-probe', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Nord' } };
   try {
     await notifyAfterWrite(writeInput(store, {
-      id: 'sub-sink',
-      saved: { id: 'sub-sink', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Nord' } },
+      id: 'sub-probe',
+      saved,
       mailEnv: limits,
-      budgetMs: 25000,
-      perCallMs: 20000
+      budgetMs: slow ? 25000 : 8000,
+      perCallMs: slow ? 20000 : 7000
     }));
-    const held = store.outbox.find(row => row.target_id === 'sub-sink');
-    assert.equal(held.status, 'sending');
-    assert.equal(held.attempts, 1);
-    assert.ok(Date.parse(held.claimed_until) - Date.now() >= 15000);
-    let blocked = 0;
+    const row = store.outbox.find(item => item.target_id === 'sub-probe');
+    assert.equal(row.status, status);
+    assert.equal(row.attempts, status === 'failed' ? MAX_ATTEMPTS : 1);
+    assert.equal(probe.transmissions, 1);
     await notifyAfterWrite(writeInput(store, {
-      id: 'sub-sink-2',
-      saved: { id: 'sub-sink-2', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Sud' } },
+      id: 'sub-probe',
+      saved,
       mailEnv: limits,
       budgetMs: 2000,
-      perCallMs: 1500,
-      transport: async () => {
-        blocked += 1;
-        return { provider: 'fake' };
-      }
+      perCallMs: 1500
     }));
-    assert.equal(blocked, 0);
-    assert.equal(held.status, 'sending');
-    assert.equal(held.attempts, 1);
-    assert.match(store.outbox.find(row => row.target_id === 'sub-sink-2').last_error, /Plafond de destinataires atteint/);
+    assert.equal(probe.transmissions, 1);
+    assert.equal(row.status, status);
+    assert.equal(row.attempts, status === 'failed' ? MAX_ATTEMPTS : 1);
   } finally {
-    await new Promise(resolve => sink.server.close(resolve));
+    await new Promise(resolve => probe.server.close(resolve));
   }
+}
+
+test('serveur SMTP : coupure après DATA, une transmission, aucun renvoi', async () => {
+  await assertRealSmtpOutcome('cut-body', 'uncertain');
+});
+
+test('serveur SMTP : coupure après le point final, une transmission, aucun renvoi', async () => {
+  await assertRealSmtpOutcome('cut-dot', 'uncertain');
+});
+
+test('serveur SMTP : pas de 250 avant le timeout, une transmission, aucun renvoi', { timeout: 40000 }, async () => {
+  assert.ok(CLAIM_LEASE_MS >= 15000);
+  await assertRealSmtpOutcome('silent', 'uncertain');
+});
+
+test('serveur SMTP : 5xx après le point final, failed sans renvoi', async () => {
+  await assertRealSmtpOutcome('reject', 'failed');
 });
 
 test('règle déjà enregistrée : 11 destinataires refusés à l’enregistrement, 12 déjà stockés avertissent', async () => {

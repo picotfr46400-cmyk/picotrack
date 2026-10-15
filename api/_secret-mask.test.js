@@ -36,6 +36,9 @@ const MASKED_NAMES = [
   'session',
   'cookie',
   'code PIN',
+  'pin_code',
+  'pincode',
+  'PIN',
   'Pincode',
   'digicode',
   'code d\'accès',
@@ -87,7 +90,7 @@ test('normalisation compacte : NFKD, apostrophe, camelCase, sans espaces', () =>
 });
 
 test('noms : secrets masqués, identifiants métier et code postal visibles', () => {
-  assert.equal(MASKED_NAMES.length, 41);
+  assert.equal(MASKED_NAMES.length, 44);
   assert.equal(VISIBLE_NAMES.length, 10);
   for (const name of MASKED_NAMES) assert.equal(isSensitiveName(name), true, name);
   for (const name of VISIBLE_NAMES) assert.equal(isSensitiveName(name), false, name);
@@ -99,6 +102,16 @@ test('noms : secrets masqués, identifiants métier et code postal visibles', ()
   assert.equal(maskKindForType('password'), 'secret');
   assert.equal(maskKindForType('signature'), 'signature');
   assert.equal(maskKindForType('text'), '');
+});
+
+test('code PIN, pin_code, pincode, PIN et Pincode sont masqués', () => {
+  assert.equal(isSensitiveName('code PIN'), true);
+  assert.equal(isSensitiveName('pin_code'), true);
+  assert.equal(isSensitiveName('pincode'), true);
+  assert.equal(isSensitiveName('PIN'), true);
+  assert.equal(isSensitiveName('Pincode'), true);
+  assert.equal(isSensitiveName('opinion'), false);
+  assert.equal(isSensitiveName('Code postal'), false);
 });
 
 test('valeurs : JWT, entropie, Luhn, IBAN, jamais une chaîne vide', () => {
