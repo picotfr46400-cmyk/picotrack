@@ -15,8 +15,8 @@ test('hotfix saisie: case groupe conserve un break valide', () => {
 
 test('cache-buster et overlay core-supervision sont branchés', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/app\.secured\.js\?v=20261008n/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008f/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008p/g) || []).length, 2);
+  assert.match(html, /core-supervision\.js\?v=20261008p/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);

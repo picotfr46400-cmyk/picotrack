@@ -1,6 +1,7 @@
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
+const { notifyAfterWrite, syncFormMailRules, handleMailAction, requestOrigin } = require('./_mail-rules');
 const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
 const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota, assertShortLoginsAvailable } = require('./function');
 const submissionAudit = require('./_submission-audit');
@@ -963,6 +964,11 @@ async function handleSave(req, body) {
     if (auditService) assertRecordAllowed('services', auditService, 'create', profile, 'Création de demande refusée par les rôles du service.');
   }
 
+  let previousInstance = null;
+  if (entity === 'service_instances' && id) {
+    previousInstance = await readOneById(req, 'service_instances', id, record.environment_code || env);
+  }
+
   if (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles') {
     let existingRow = null;
     if (id && entity !== 'app_roles') {
@@ -1088,6 +1094,28 @@ async function handleSave(req, body) {
   if (companionLicenses && companionLicenses.length) {
     const { url, serviceRole } = getSupabaseConfig(req);
     await commitCompanionLicenseChange(url, serviceRole, profileSnapshot, companionLicenses, companionActivating);
+  }
+  const savedRow = Array.isArray(saved) ? saved[0] : saved;
+  if (entity === 'submissions' || entity === 'service_instances') {
+    await notifyAfterWrite({
+      req,
+      entity,
+      isCreate: !id,
+      id: id || savedRow?.id,
+      environmentCode: record.environment_code || env,
+      record,
+      saved: savedRow || record,
+      previous: previousInstance,
+      profile,
+      origin: requestOrigin(req),
+      form: auditForm
+    });
+  } else if (entity === 'forms') {
+    await syncFormMailRules({
+      req,
+      profile,
+      form: Object.assign({}, record, savedRow || {}, { id: savedRow?.id || record.id || id })
+    });
   }
   return saved;
 }
@@ -1441,6 +1469,18 @@ async function handler(req, res) {
         const profile = await getUserProfile(user.id, req);
         req.picoReaderProfile = profile;
         result = await handleIntegrations(req, body, profile);
+        break;
+      }
+      case 'mail_rules_list':
+      case 'mail_rules_save':
+      case 'mail_rules_delete':
+      case 'mail_outbox_list':
+      case 'mail_outbox_resend':
+      case 'mail_test': {
+        const user = await requireAuth(req);
+        const profile = await getUserProfile(user.id, req);
+        req.picoReaderProfile = profile;
+        result = await handleMailAction(req, Object.assign({}, body, { action }), profile);
         break;
       }
       default:

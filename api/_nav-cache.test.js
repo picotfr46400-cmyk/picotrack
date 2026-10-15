@@ -55,12 +55,12 @@ test('cache-buster : app.secured.js différent de v2 a un ?v= différent', () =>
   }
 });
 
-test('index.html : Babel absent, React conservé, cache-buster 20261008n sur le bundle modifié', () => {
+test('index.html : Babel absent, React conservé, cache-buster 20261008p sur le bundle modifié', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008n/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008f/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008p/g) || []).length, 2);
+  assert.match(html, /core-supervision\.js\?v=20261008p/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);

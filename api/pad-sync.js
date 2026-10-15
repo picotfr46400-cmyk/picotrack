@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { sendJson, setCors, verifyToken, sbRest } = require('./_pad-security');
 const submissionAudit = require('./_submission-audit');
+const { notifyAfterWrite, requestOrigin } = require('./_mail-rules');
 
 const REQUEST_DEADLINE_MS = 10000;
 const MIN_CALL_MS = 50;
@@ -229,6 +230,30 @@ function retryResult(item) {
   };
 }
 
+async function notifyPadMail(req, mailWrites, session, license) {
+  if (!mailWrites.length) return;
+  const left = req && typeof req.picoRemainingMs === 'function' ? req.picoRemainingMs() : 0;
+  if (left < MIN_CALL_MS) return;
+  const budget = Math.max(0, left - RESPONSE_SLACK_MS);
+  try {
+    await notifyAfterWrite({
+      req,
+      writes: mailWrites,
+      profile: {
+        email: license && license.email || '',
+        label: (license && (license.label || license.device_name)) || 'Tablette',
+        environment_code: session.environmentCode,
+        role: license && license.role || '',
+        license_type: license && license.license_type || 'pad'
+      },
+      environmentCode: session.environmentCode,
+      origin: requestOrigin(req),
+      deadline: Date.now() + budget,
+      perCallMs: Math.min(2000, budget)
+    });
+  } catch (_) {}
+}
+
 async function handler(req, res) {
   setCors(req, res);
   if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return; }
@@ -261,6 +286,7 @@ async function handler(req, res) {
     };
     const results = [];
     const retry = [];
+    const mailWrites = [];
     let failure = null;
     let interrupted = false;
     let license;
@@ -298,6 +324,15 @@ async function handler(req, res) {
         if (item.type === 'form_submission') {
           const written = await insertSubmission(req, environmentCode, payload, resolved.key);
           const row = written.row;
+          mailWrites.push({
+            entity: 'submissions',
+            isCreate: true,
+            environmentCode,
+            saved: row,
+            record: row,
+            padActionId: item.id,
+            padLicenseId: session.licenseId
+          });
           await submissionAudit.recordPadSync(req, {
             rest, environmentCode, licenseId: session.licenseId, license,
             deviceCapturedAt: item.created_at, submission: row, actionId: item.id
@@ -307,6 +342,24 @@ async function handler(req, res) {
           const submission = await insertSubmission(req, environmentCode, payload, resolved.key);
           const instance = await insertServiceInstance(req, environmentCode, payload, submission.row, resolved.key);
           const duplicate = submission.duplicate && instance.duplicate;
+          mailWrites.push({
+            entity: 'submissions',
+            isCreate: true,
+            environmentCode,
+            saved: submission.row,
+            record: submission.row,
+            padActionId: item.id,
+            padLicenseId: session.licenseId
+          });
+          mailWrites.push({
+            entity: 'service_instances',
+            isCreate: true,
+            environmentCode,
+            saved: instance.row,
+            record: instance.row,
+            padActionId: item.id,
+            padLicenseId: session.licenseId
+          });
           await submissionAudit.recordPadSync(req, {
             rest, environmentCode, licenseId: session.licenseId, license,
             deviceCapturedAt: item.created_at, submission: submission.row, instance: instance.row, actionId: item.id
@@ -333,6 +386,7 @@ async function handler(req, res) {
       }
     }
     await submissionAudit.flushAudit(req, rest);
+    await notifyPadMail(req, mailWrites, session, license);
     if (req.picoAuditDeferred) {
       for (const result of results) {
         if (result.status !== 'applied') continue;
