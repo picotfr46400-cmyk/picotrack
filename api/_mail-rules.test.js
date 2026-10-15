@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
 const records = require('./records');
 const sendMail = require('./send-mail');
@@ -953,6 +954,159 @@ test('connexion refusée rend la place, timeout après DATA la garde', async () 
   assert.equal(blocked, 0);
   assert.equal(held.status, 'sending');
   assert.match(afterData.outbox.find(row => row.target_id === 'sub-data-2').last_error, /Plafond de destinataires atteint/);
+
+  const refusedCode = createMemoryStore();
+  await refusedCode.saveRule(submissionRule());
+  await notifyAfterWrite(writeInput(refusedCode, {
+    id: 'sub-550',
+    saved: { id: 'sub-550', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Nord' } },
+    mailEnv: limits,
+    transport: async () => {
+      const err = new Error('Message failed: 550 rejected');
+      err.code = 'EMESSAGE';
+      err.command = 'DATA';
+      err.responseCode = 550;
+      err.response = '550 rejected';
+      err.afterData = true;
+      throw err;
+    }
+  }));
+  assert.equal(refusedCode.outbox[0].status, 'failed');
+  let afterReject = 0;
+  await notifyAfterWrite(writeInput(refusedCode, {
+    id: 'sub-550-next',
+    saved: { id: 'sub-550-next', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Sud' } },
+    mailEnv: limits,
+    transport: async () => {
+      afterReject += 1;
+      return { provider: 'fake' };
+    }
+  }));
+  assert.equal(afterReject, 1);
+
+  const dropped = createMemoryStore();
+  await dropped.saveRule(submissionRule());
+  await notifyAfterWrite(writeInput(dropped, {
+    id: 'sub-reset',
+    saved: { id: 'sub-reset', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Est' } },
+    mailEnv: limits,
+    transport: async () => {
+      const err = new Error('socket hang up');
+      err.code = 'ECONNRESET';
+      err.command = 'CONN';
+      err.afterData = true;
+      throw err;
+    }
+  }));
+  assert.equal(dropped.outbox[0].status, 'sending');
+  let afterDrop = 0;
+  await notifyAfterWrite(writeInput(dropped, {
+    id: 'sub-reset-2',
+    saved: { id: 'sub-reset-2', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Ouest' } },
+    mailEnv: limits,
+    transport: async () => {
+      afterDrop += 1;
+      return { provider: 'fake' };
+    }
+  }));
+  assert.equal(afterDrop, 0);
+  assert.equal(dropped.outbox[0].status, 'sending');
+});
+
+function startSilentSmtpSink() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer(socket => {
+      let buffer = '';
+      let readingBody = false;
+      let silent = false;
+      socket.write('220 sink.local ESMTP\r\n');
+      socket.on('data', chunk => {
+        if (silent) return;
+        buffer += chunk.toString('latin1');
+        if (readingBody) {
+          const lines = buffer.split(/\r?\n/);
+          const incomplete = buffer.endsWith('\n') ? '' : (lines.pop() || '');
+          for (const line of lines) {
+            if (line === '.') {
+              silent = true;
+              readingBody = false;
+              buffer = '';
+              return;
+            }
+          }
+          buffer = incomplete;
+          return;
+        }
+        let breakAt = buffer.indexOf('\n');
+        while (breakAt !== -1) {
+          const line = buffer.slice(0, breakAt).replace(/\r$/, '');
+          buffer = buffer.slice(breakAt + 1);
+          const upper = line.toUpperCase();
+          if (upper.startsWith('EHLO') || upper.startsWith('HELO')) socket.write('250 sink\r\n');
+          else if (upper.startsWith('MAIL FROM') || upper.startsWith('RCPT TO') || upper === 'RSET' || upper === 'NOOP') socket.write('250 OK\r\n');
+          else if (upper === 'DATA') {
+            readingBody = true;
+            socket.write('354 End data with <CR><LF>.<CR><LF>\r\n');
+            break;
+          } else if (upper === 'QUIT') socket.write('221 bye\r\n');
+          else socket.write('250 OK\r\n');
+          breakAt = buffer.indexOf('\n');
+        }
+      });
+      socket.on('error', () => {});
+    });
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      resolve({ server, port: address.port });
+    });
+  });
+}
+
+test('nodemailer : silence après le contenu, bail d’au moins 15 s, la place reste tenue', { timeout: 40000 }, async () => {
+  assert.ok(CLAIM_LEASE_MS >= 15000);
+  const sink = await startSilentSmtpSink();
+  const limits = {
+    MAIL_TRANSPORT: 'smtp',
+    SMTP_HOST: '127.0.0.1',
+    SMTP_PORT: String(sink.port),
+    SMTP_FROM: 'PicoTrack <notifications@noreply.picotrack.fr>',
+    MAIL_HOURLY_LIMIT: '1',
+    MAIL_DAILY_LIMIT: '1'
+  };
+  const store = createMemoryStore();
+  await store.saveRule(submissionRule());
+  try {
+    await notifyAfterWrite(writeInput(store, {
+      id: 'sub-sink',
+      saved: { id: 'sub-sink', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Nord' } },
+      mailEnv: limits,
+      budgetMs: 25000,
+      perCallMs: 20000
+    }));
+    const held = store.outbox.find(row => row.target_id === 'sub-sink');
+    assert.equal(held.status, 'sending');
+    assert.equal(held.attempts, 1);
+    assert.ok(Date.parse(held.claimed_until) - Date.now() >= 15000);
+    let blocked = 0;
+    await notifyAfterWrite(writeInput(store, {
+      id: 'sub-sink-2',
+      saved: { id: 'sub-sink-2', form_id: 'form-1', environment_code: 'DEMO', values: { client: 'Sud' } },
+      mailEnv: limits,
+      budgetMs: 2000,
+      perCallMs: 1500,
+      transport: async () => {
+        blocked += 1;
+        return { provider: 'fake' };
+      }
+    }));
+    assert.equal(blocked, 0);
+    assert.equal(held.status, 'sending');
+    assert.equal(held.attempts, 1);
+    assert.match(store.outbox.find(row => row.target_id === 'sub-sink-2').last_error, /Plafond de destinataires atteint/);
+  } finally {
+    await new Promise(resolve => sink.server.close(resolve));
+  }
 });
 
 test('règle déjà enregistrée : 11 destinataires refusés à l’enregistrement, 12 déjà stockés avertissent', async () => {
@@ -1348,7 +1502,20 @@ test('crochet d’audit : mail envoyé, sans dépendre du journal des saisies', 
 });
 
 test('migration outbox : unicité complète, RLS forcée, service_role seulement', () => {
-  const sql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261009010000_mail_outbox.sql'), 'utf8');
+  const migrations = path.join(__dirname, '../supabase/migrations');
+  const mailNames = [
+    '20261009130000_mail_outbox.sql',
+    '20261009140000_mail_quota.sql',
+    '20261009150000_mail_uncertain_release.sql'
+  ];
+  for (const name of mailNames) {
+    assert.equal(name > '20261009120000_match_short_logins.sql', true, name);
+    assert.equal(fs.existsSync(path.join(migrations, name)), true, name);
+  }
+  assert.equal(fs.existsSync(path.join(migrations, '20261009010000_mail_outbox.sql')), false);
+  assert.equal(fs.existsSync(path.join(migrations, '20261009020000_mail_quota.sql')), false);
+  assert.equal(fs.existsSync(path.join(migrations, '20261009030000_mail_uncertain_release.sql')), false);
+  const sql = fs.readFileSync(path.join(migrations, '20261009130000_mail_outbox.sql'), 'utf8');
   const unique = sql.split('\n').find(line => /unique\s*\(\s*idempotency_key\s*\)/i.test(line));
   assert.ok(unique);
   assert.equal(/where/i.test(unique), false);
@@ -1375,7 +1542,7 @@ test('migration outbox : unicité complète, RLS forcée, service_role seulement
   assert.equal(/create policy/i.test(sql), false);
   assert.equal(/seule migration/i.test(sql), false);
 
-  const quota = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261009020000_mail_quota.sql'), 'utf8');
+  const quota = fs.readFileSync(path.join(migrations, '20261009140000_mail_quota.sql'), 'utf8');
   assert.match(quota, /create table if not exists public\.mail_quota/);
   assert.match(quota, /function public\.claim_mail_quota/);
   assert.match(quota, /function public\.finish_mail_outbox/);
@@ -1391,7 +1558,7 @@ test('migration outbox : unicité complète, RLS forcée, service_role seulement
   const finishSql = quota.slice(quota.indexOf('function public.finish_mail_outbox'));
   assert.match(finishSql, /p_status = 'failed'/);
   assert.equal(/uncertain/.test(finishSql), false);
-  const release = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261009030000_mail_uncertain_release.sql'), 'utf8');
+  const release = fs.readFileSync(path.join(migrations, '20261009150000_mail_uncertain_release.sql'), 'utf8');
   assert.match(release, /function public\.release_uncertain_mail/);
   assert.match(release, /security definer/i);
   assert.match(release, /set search_path = public/);

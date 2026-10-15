@@ -1,6 +1,6 @@
 -- Compteur de plafond, dans la même opération que le claim.
 -- À appliquer à la main, d'abord sur la démo, jamais sur EFC. L'application ne lance pas ce fichier.
--- Après 20261009010000_mail_outbox.sql.
+-- Après 20261009130000_mail_outbox.sql.
 
 alter table public.mail_outbox
   add column if not exists quota_recipients integer not null default 0,

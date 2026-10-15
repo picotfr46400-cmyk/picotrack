@@ -647,14 +647,25 @@ function hourlyLimit(env = process.env) {
   return limitFrom(env, 'MAIL_HOURLY_LIMIT', DEFAULT_HOURLY_LIMIT);
 }
 
+function explicitTransportFailure(error) {
+  const code = String(error.code || error.errno || '').toUpperCase();
+  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAUTH') return true;
+  const responseCode = Number(error.responseCode || 0);
+  if (responseCode >= 400 && responseCode <= 599) return true;
+  return /(?:^|:\s*)[45]\d{2}\b/.test(String(error.response || ''));
+}
+
+function timeoutOrCutoff(error) {
+  const code = String(error.code || error.errno || '').toUpperCase();
+  if (code === 'ETIMEDOUT' || code === 'ESOCKET' || code === 'ECONNECTION' || code === 'ECONNRESET' || code === 'EPIPE' || code === 'ECONNABORTED') return true;
+  return /timeout|timed out|etimedout|econnreset|epipe|socket hang up|connection closed|unexpectedly closed/.test(String(error.message || '').toLowerCase());
+}
+
 function transportFailureIsUncertain(error) {
   if (!error || typeof error !== 'object') return false;
-  const code = String(error.code || error.errno || '').toUpperCase();
-  const text = String(error.message || '').toLowerCase();
-  const timedOut = code === 'ETIMEDOUT' || /timeout|timed out|etimedout/.test(text);
-  if (!timedOut) return false;
-  if (error.afterData === true) return true;
-  return String(error.command || '').toUpperCase() === 'DATA';
+  if (explicitTransportFailure(error)) return false;
+  if (error.afterData !== true) return false;
+  return timeoutOrCutoff(error);
 }
 
 function withTimeout(promise, ms) {

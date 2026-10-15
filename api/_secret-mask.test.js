@@ -36,6 +36,7 @@ const MASKED_NAMES = [
   'session',
   'cookie',
   'code PIN',
+  'Pincode',
   'digicode',
   'code d\'accès',
   'code d\u2019accès',
@@ -86,7 +87,7 @@ test('normalisation compacte : NFKD, apostrophe, camelCase, sans espaces', () =>
 });
 
 test('noms : secrets masqués, identifiants métier et code postal visibles', () => {
-  assert.equal(MASKED_NAMES.length, 40);
+  assert.equal(MASKED_NAMES.length, 41);
   assert.equal(VISIBLE_NAMES.length, 10);
   for (const name of MASKED_NAMES) assert.equal(isSensitiveName(name), true, name);
   for (const name of VISIBLE_NAMES) assert.equal(isSensitiveName(name), false, name);

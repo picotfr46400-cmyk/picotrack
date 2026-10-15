@@ -2,7 +2,7 @@
 -- À appliquer à la main, une base client à la fois. L'application ne lance pas ce fichier.
 -- Ordre dans le fichier : mail_rules, mail_outbox, claim_mail_outbox, expire_mail_outbox.
 -- L'unicité d'idempotence et l'unicité (environment_code, client_key) sont des contraintes complètes, sans prédicat.
--- Ce fichier est postérieur aux migrations du journal de saisie (20261008234500).
+-- Ce fichier est postérieur à 20261009120000_match_short_logins.sql.
 
 create extension if not exists pgcrypto;
 

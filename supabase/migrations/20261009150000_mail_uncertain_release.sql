@@ -1,6 +1,6 @@
 -- Rend la place d'un envoi uncertain avant un renvoi manuel.
 -- À appliquer à la main, d'abord sur la démo, jamais sur EFC.
--- Après 20261009020000_mail_quota.sql.
+-- Après 20261009140000_mail_quota.sql.
 
 create or replace function public.release_uncertain_mail(
   p_id uuid,

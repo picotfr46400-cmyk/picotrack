@@ -17,6 +17,7 @@ const COMPACT_PHRASES = [
   'codedacces',
   'codeacces',
   'codepin',
+  'pincode',
   'token',
   'secret',
   'session',

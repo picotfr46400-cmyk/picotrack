@@ -103,6 +103,26 @@ function smtpTransportOptions(env = process.env) {
   };
 }
 
+// Le timeout de socket de nodemailer remonte toujours command=CONN.
+// Le flux du message ne démarre qu'après le 354 de DATA : c'est là que le drapeau est posé.
+function installSmtpDataPhase() {
+  const SMTPConnection = require('nodemailer/lib/smtp-connection');
+  const proto = SMTPConnection && SMTPConnection.prototype;
+  if (!proto || proto._picoDataPhaseInstalled) return;
+  proto._picoDataPhaseInstalled = true;
+  const createSendStream = proto._createSendStream;
+  proto._createSendStream = function picoCreateSendStream(callback) {
+    this._picoDataStarted = true;
+    return createSendStream.call(this, callback);
+  };
+  const formatError = proto._formatError;
+  proto._formatError = function picoFormatError(message, type, response, command) {
+    const err = formatError.call(this, message, type, response, command);
+    if (this._picoDataStarted && err && typeof err === 'object') err.afterData = true;
+    return err;
+  };
+}
+
 function smtpMessageId(outboxId) {
   const key = String(outboxId || '').trim();
   if (!key) return '';
@@ -160,34 +180,26 @@ async function sendSmtp(message, env = process.env) {
     throw err;
   }
   const nodemailer = require('nodemailer');
+  installSmtpDataPhase();
   const options = smtpTransportOptions(env);
   const transporter = nodemailer.createTransport(options);
   const messageId = smtpMessageId(message && message.outboxId);
-  try {
-    const info = await transporter.sendMail({
-      from: env.SMTP_FROM,
-      messageId: messageId || undefined,
-      to: message.to,
-      cc: message.cc && message.cc.length ? message.cc : undefined,
-      bcc: message.bcc && message.bcc.length ? message.bcc : undefined,
-      replyTo: message.replyTo && message.replyTo.length ? message.replyTo : undefined,
-      subject: message.subject,
-      html: message.html,
-      text: message.text || undefined,
-      attachments: (message.attachments || []).map(item => ({
-        filename: item.filename,
-        content: Buffer.from(String(item.content || ''), 'base64')
-      }))
-    });
-    return { id: info && info.messageId, provider: 'smtp' };
-  } catch (error) {
-    const command = String(error && error.command || '').toUpperCase();
-    const code = String(error && (error.code || error.errno) || '').toUpperCase();
-    const text = String(error && error.message || '').toLowerCase();
-    const timedOut = code === 'ETIMEDOUT' || /timeout|timed out|etimedout/.test(text);
-    if (error && typeof error === 'object' && timedOut && command === 'DATA') error.afterData = true;
-    throw error;
-  }
+  const info = await transporter.sendMail({
+    from: env.SMTP_FROM,
+    messageId: messageId || undefined,
+    to: message.to,
+    cc: message.cc && message.cc.length ? message.cc : undefined,
+    bcc: message.bcc && message.bcc.length ? message.bcc : undefined,
+    replyTo: message.replyTo && message.replyTo.length ? message.replyTo : undefined,
+    subject: message.subject,
+    html: message.html,
+    text: message.text || undefined,
+    attachments: (message.attachments || []).map(item => ({
+      filename: item.filename,
+      content: Buffer.from(String(item.content || ''), 'base64')
+    }))
+  });
+  return { id: info && info.messageId, provider: 'smtp' };
 }
 
 async function deliverMail(message, env = process.env) {

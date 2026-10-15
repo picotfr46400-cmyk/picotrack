@@ -233,7 +233,7 @@ function ensureFixtures() {
   applyMigration('20261008221500_submission_audit_log.sql');
   applyMigration('20261008233000_submission_audit_idempotence_purge.sql');
   applyMigration('20261008234500_business_idempotency_key.sql');
-  applyMigration('20261009030000_mail_uncertain_release.sql');
+  applyMigration('20261009150000_mail_uncertain_release.sql');
 }
 
 function reset() {
