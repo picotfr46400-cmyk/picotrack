@@ -34,6 +34,10 @@ const EVENTS = new Set([
   'workflow.action'
 ]);
 const MAX_RECIPIENTS = 10;
+const USER_PAGE_SIZE = 500;
+const MAX_ROLE_USERS = 5000;
+const RECIPIENT_READ_ERROR = 'Lecture des destinataires impossible. Le mail n\'a pas été envoyé.';
+const RECIPIENT_BOUND_ERROR = `Trop d'utilisateurs actifs (plus de ${MAX_ROLE_USERS}) pour connaître tous les destinataires. Le mail n'a pas été envoyé.`;
 const MAX_ATTEMPTS = 3;
 const DEFAULT_BUDGET_MS = 3000;
 const DEFAULT_PER_CALL_MS = 2000;
@@ -337,6 +341,48 @@ function userHasRole(user, role) {
   return roles.some(item => String(item || '').trim().toLowerCase() === want);
 }
 
+function recipientReadError(message) {
+  const err = new Error(message || RECIPIENT_READ_ERROR);
+  err.recipientRead = true;
+  return err;
+}
+
+function userRowId(user) {
+  if (!user || user.id == null) return '';
+  return String(user.id).trim();
+}
+
+// Pages stables (order=id.asc, curseur id exclusif). Une page courte termine.
+// Au-delà de MAX_ROLE_USERS, ou si une page est illisible, on refuse la liste
+// entière : l'appelant ne reçoit jamais un sous-ensemble.
+async function readAllUsers(fetchPage) {
+  const users = [];
+  const seen = new Set();
+  let after = '';
+  for (;;) {
+    let page;
+    try {
+      page = await fetchPage(after);
+    } catch (err) {
+      if (err && err.recipientRead === true) throw err;
+      throw recipientReadError(RECIPIENT_READ_ERROR);
+    }
+    if (!Array.isArray(page) || page.length > USER_PAGE_SIZE) throw recipientReadError(RECIPIENT_READ_ERROR);
+    if (!page.length) return users;
+    for (const user of page) {
+      const id = userRowId(user);
+      if (!id || seen.has(id)) throw recipientReadError(RECIPIENT_READ_ERROR);
+      seen.add(id);
+      users.push(user);
+      if (users.length > MAX_ROLE_USERS) throw recipientReadError(RECIPIENT_BOUND_ERROR);
+    }
+    if (page.length < USER_PAGE_SIZE) return users;
+    const next = userRowId(page[page.length - 1]);
+    if (!next || next === after) throw recipientReadError(RECIPIENT_READ_ERROR);
+    after = next;
+  }
+}
+
 async function collectAudience(audience, ctx, listUsers) {
   const spec = audience && typeof audience === 'object' ? audience : {};
   const found = normalizeEmails(spec.fixed || spec.emails || []);
@@ -347,8 +393,15 @@ async function collectAudience(audience, ctx, listUsers) {
   if (spec.author && ctx.authorEmail) found.push(...normalizeEmails(ctx.authorEmail));
   const roles = Array.isArray(spec.roles) ? spec.roles : [];
   if (roles.length && typeof listUsers === 'function') {
-    const users = await listUsers(ctx.environmentCode);
-    for (const user of Array.isArray(users) ? users : []) {
+    let users;
+    try {
+      users = await listUsers(ctx.environmentCode);
+    } catch (err) {
+      if (err && err.recipientRead === true) throw err;
+      throw recipientReadError(RECIPIENT_READ_ERROR);
+    }
+    if (!Array.isArray(users)) throw recipientReadError(RECIPIENT_READ_ERROR);
+    for (const user of users) {
       if (!userActive(user) || !userInEnvironment(user, ctx.environmentCode)) continue;
       if (!roles.some(role => userHasRole(user, role))) continue;
       found.push(...normalizeEmails(user.email));
@@ -889,6 +942,8 @@ function createMemoryStore() {
     async getOutbox(env, id) {
       return outbox.find(item => item.id === id && String(item.environment_code).toUpperCase() === String(env).toUpperCase()) || null;
     },
+    // Hors plafond, hors dédoublonnage, hors décision d'envoi et hors affichage admin.
+    // Voir le même compteur sur le store Supabase.
     async countSentRecipients(env, since) {
       const start = new Date(since).getTime();
       return outbox.reduce((sum, item) => {
@@ -1058,17 +1113,24 @@ function createSqlStore(query) {
       const rows = await one(`select row_to_json(t) as row from (select * from public.mail_outbox where id = ${sqlText(id)}::uuid and environment_code = ${sqlText(env)} limit 1) t`);
       return rows[0] ? (rows[0].row || rows[0]) : null;
     },
+    // Hors plafond, hors dédoublonnage, hors décision d'envoi et hors affichage admin.
+    // Voir le même compteur sur le store Supabase.
     async countSentRecipients(env, since) {
       const rows = await one(`select row_to_json(t) as row from (select recipients from public.mail_outbox where environment_code = ${sqlText(env)} and status in ('sent', 'sending') and updated_at >= ${sqlText(new Date(since).toISOString())}::timestamptz) t`);
       return rows.reduce((sum, item) => sum + recipientTotal((item.row || item).recipients), 0);
     },
     async listUsers(env) {
-      try {
-        const rows = await one(`select row_to_json(t) as row from (select id, email, role, roles, environment_code, active from public.user_profiles where environment_code = ${sqlText(env)} and active = true limit 500) t`);
+      return readAllUsers(async (after) => {
+        const cursor = after ? ` and id > ${sqlText(after)}` : '';
+        const rows = await one(`select row_to_json(t) as row from (
+          select id, email, role, roles, environment_code, active
+          from public.user_profiles
+          where environment_code = ${sqlText(env)} and active = true${cursor}
+          order by id asc
+          limit ${USER_PAGE_SIZE}
+        ) t`);
         return rows.map(item => item.row || item);
-      } catch (_) {
-        return [];
-      }
+      });
     },
     async getForm(env, id) {
       const rows = await one(`select row_to_json(t) as row from (select id, nom, fields, triggers, environment_code from public.forms where id = ${sqlText(id)} and environment_code = ${sqlText(env)} limit 1) t`);
@@ -1278,6 +1340,11 @@ function createSupabaseStore(req) {
       const rows = await rest(`mail_outbox?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(env)}&select=*&limit=1`, { method: 'GET', prefer: '' });
       return firstRow(rows);
     },
+    // Ce compteur ne sert ni au plafond, ni au dédoublonnage, ni à une décision d'envoi,
+    // ni à l'affichage admin. Le plafond est réservé dans claim_mail_quota (table mail_quota) ;
+    // en mémoire, c'est legacyUsage. Le dédoublonnage est capRecipients / recipientTotal.
+    // L'admin lit listRecent (40 lignes), pas cette somme. La limite de 1000 lignes
+    // ne retire donc aucun destinataire et ne change aucun envoi.
     async countSentRecipients(env, since) {
       const start = encodeURIComponent(new Date(since).toISOString());
       const rows = await rest(
@@ -1287,11 +1354,12 @@ function createSupabaseStore(req) {
       return (Array.isArray(rows) ? rows : []).reduce((sum, row) => sum + recipientTotal(row.recipients), 0);
     },
     async listUsers(env) {
-      const rows = await rest(
-        `user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,role,roles,environment_code,active&limit=500`,
-        { method: 'GET', prefer: '' }
-      );
-      return Array.isArray(rows) ? rows : [];
+      const base = `user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,role,roles,environment_code,active&order=id.asc&limit=${USER_PAGE_SIZE}`;
+      return readAllUsers(async (after) => {
+        const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+        const rows = await rest(`${base}${cursor}`, { method: 'GET', prefer: '' });
+        return rows;
+      });
     },
     async getForm(env, id) {
       const rows = await rest(
@@ -1632,9 +1700,21 @@ async function sendOutboxRow(row, deps, deadline) {
     environmentCode: env,
     attachPdf: !!(rule && rule.config && rule.config.attachPdf)
   };
-  const resolved = rule
-    ? await resolveRecipients(rule, ctx, userEnv => deps.store.listUsers(userEnv))
-    : { to: [], cc: [], bcc: [], uncapped: 0 };
+  let resolved;
+  try {
+    resolved = rule
+      ? await resolveRecipients(rule, ctx, userEnv => deps.store.listUsers(userEnv))
+      : { to: [], cc: [], bcc: [], uncapped: 0 };
+  } catch (err) {
+    if (!err || err.recipientRead !== true) throw err;
+    await markCurrent(deps.store, row, env, {
+      status: 'failed',
+      last_error: String(err.message || RECIPIENT_READ_ERROR).slice(0, 500),
+      recipients: { to: [], cc: [], bcc: [] },
+      warning: null
+    });
+    return 'failed';
+  }
   let warning = null;
   const recipients = { to: resolved.to, cc: resolved.cc, bcc: resolved.bcc };
   if (resolved.uncapped > MAX_RECIPIENTS) warning = IMPLICIT_WARNING;
@@ -2035,6 +2115,10 @@ tryAttachSubmissionAudit();
 module.exports = {
   EVENTS,
   MAX_RECIPIENTS,
+  MAX_ROLE_USERS,
+  USER_PAGE_SIZE,
+  RECIPIENT_READ_ERROR,
+  RECIPIENT_BOUND_ERROR,
   MAX_ATTEMPTS,
   PDF_BYTE_LIMIT,
   PDF_OMITTED_MENTION,
@@ -2062,6 +2146,7 @@ module.exports = {
   handleMailAction,
   createMemoryStore,
   createSqlStore,
+  createSupabaseStore,
   setMailAuditHook,
   formatParis,
   requestOrigin: originFromReq,

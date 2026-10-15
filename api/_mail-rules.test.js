@@ -16,8 +16,14 @@ const {
   canManageMailRules,
   conditionsPass,
   createMemoryStore,
+  createSqlStore,
+  createSupabaseStore,
   formatParis,
   handleMailAction,
+  MAX_ROLE_USERS,
+  USER_PAGE_SIZE,
+  RECIPIENT_READ_ERROR,
+  RECIPIENT_BOUND_ERROR,
   idempotencyKey,
   normalizeRuleRecord,
   notifyAfterWrite,
@@ -282,6 +288,211 @@ test('destinataires : rôle cloisonné, inactifs exclus, dédoublonnage et plafo
   assert.equal(capped.to.length, 8);
   assert.equal(capped.cc.length, 2);
   assert.equal(capped.bcc.length, 0);
+});
+
+function roleUsers(count, extra = {}) {
+  return Array.from({ length: count }, (_, index) => {
+    const n = String(index + 1).padStart(4, '0');
+    return Object.assign({
+      id: `u${n}`,
+      email: `u${n}@example.com`,
+      role: 'manager',
+      roles: [],
+      environment_code: 'DEMO',
+      active: true
+    }, extra);
+  });
+}
+
+function pageOf(all, url) {
+  const params = new URL(String(url)).searchParams;
+  assert.equal(params.get('order'), 'id.asc');
+  assert.equal(Number(params.get('limit')), USER_PAGE_SIZE);
+  const cursor = params.get('id');
+  let start = 0;
+  if (cursor) {
+    assert.equal(cursor.startsWith('gt.'), true);
+    const after = decodeURIComponent(cursor.slice(3));
+    start = all.findIndex(user => user.id === after) + 1;
+    assert.equal(start > 0, true, after);
+  }
+  return all.slice(start, start + USER_PAGE_SIZE);
+}
+
+function jsonFetch(status, payload) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => 'application/json' },
+    json: async () => payload,
+    text: async () => JSON.stringify(payload)
+  };
+}
+
+async function withUserFetch(all, run, options = {}) {
+  const previous = {
+    SUPABASE_URL: process.env.SUPABASE_URL,
+    SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    fetch: global.fetch
+  };
+  process.env.SUPABASE_URL = 'https://mail-test.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-test';
+  const calls = [];
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (!u.includes('/rest/v1/user_profiles?')) return jsonFetch(200, []);
+    calls.push(u);
+    if (options.failPage && calls.length === options.failPage) return jsonFetch(500, { message: 'lecture coupée' });
+    if (options.repeatFirstPage && calls.length > 1) return jsonFetch(200, pageOf(all, calls[0]));
+    return jsonFetch(200, pageOf(all, u));
+  };
+  try {
+    return await run(calls);
+  } finally {
+    global.fetch = previous.fetch;
+    for (const key of ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+}
+
+function remoteUsers() {
+  return createSupabaseStore({ headers: { host: 'localhost' } });
+}
+
+test('501 et plus destinataires de rôle sont tous servis', async () => {
+  for (const count of [501, 1000, MAX_ROLE_USERS]) {
+    const all = roleUsers(count);
+    await withUserFetch(all, async (calls) => {
+      const listed = await remoteUsers().listUsers('DEMO');
+      assert.equal(listed.length, count);
+      assert.deepEqual(listed.map(user => user.id), all.map(user => user.id));
+      assert.equal(calls.length, Math.ceil(count / USER_PAGE_SIZE) + (count % USER_PAGE_SIZE === 0 ? 1 : 0));
+      const resolved = await resolveRecipients({
+        config: { to: { fixed: [], fields: [], author: false, roles: ['manager'] }, cc: {}, bcc: {} }
+      }, { fields: [], values: {}, environmentCode: 'DEMO' }, env => remoteUsers().listUsers(env));
+      assert.equal(resolved.uncapped, count);
+    });
+  }
+
+  const all = roleUsers(501);
+  await withUserFetch(all, async (calls) => {
+    const store = createMemoryStore();
+    store.listUsers = env => remoteUsers().listUsers(env);
+    await store.saveRule(submissionRule({ to: { fixed: [], roles: ['manager'] } }));
+    const sent = [];
+    const result = await notifyAfterWrite(writeInput(store, {
+      transport: async (message) => {
+        sent.push(message);
+        return { provider: 'fake' };
+      }
+    }));
+    assert.equal(result.ok, true);
+    assert.equal(sent.length, 1);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].includes('order=id.asc'), true);
+    assert.equal(calls[0].includes('id=gt.'), false);
+    assert.equal(calls[1].includes('order=id.asc') && calls[1].includes('id=gt.u0500'), true);
+    assert.deepEqual(sent[0].to, all.slice(0, 10).map(user => user.email));
+    assert.equal(store.outbox[0].status, 'sent');
+    assert.match(store.outbox[0].warning, /10 premiers/);
+  });
+});
+
+test('échec de lecture des destinataires : aucun envoi partiel', async () => {
+  const all = roleUsers(501);
+  const admin = {
+    role: 'environment_admin',
+    environment_code: 'DEMO',
+    active: true,
+    email: 'admin@example.com',
+    license_type: 'supervision'
+  };
+  await withUserFetch(all, async (calls) => {
+    const store = createMemoryStore();
+    store.listUsers = env => remoteUsers().listUsers(env);
+    await store.saveRule(submissionRule({
+      to: { fixed: ['qa@example.com'], roles: ['manager'] }
+    }));
+    const sent = [];
+    const result = await notifyAfterWrite(writeInput(store, {
+      transport: async (message) => {
+        sent.push(message);
+        return { provider: 'fake' };
+      }
+    }));
+    assert.equal(result.ok, true);
+    assert.equal(sent.length, 0);
+    assert.equal(calls.length, 2);
+    assert.equal(store.outbox.length, 1);
+    assert.equal(store.outbox[0].status, 'failed');
+    assert.equal(store.outbox[0].last_error, RECIPIENT_READ_ERROR);
+    assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
+    assert.equal(JSON.stringify(store.outbox).includes('qa@example.com'), false);
+    assert.equal(JSON.stringify(store.outbox).includes('u0001@example.com'), false);
+    const listed = await handleMailAction({}, { action: 'mail_outbox_list' }, admin, { store });
+    assert.equal(listed.rows[0].status, 'failed');
+    assert.equal(listed.rows[0].last_error, RECIPIENT_READ_ERROR);
+  }, { failPage: 2 });
+
+  await withUserFetch(roleUsers(MAX_ROLE_USERS + 1), async () => {
+    const store = createMemoryStore();
+    store.listUsers = env => remoteUsers().listUsers(env);
+    await store.saveRule(submissionRule({
+      to: { fixed: ['qa@example.com'], roles: ['manager'] }
+    }));
+    const sent = [];
+    await notifyAfterWrite(writeInput(store, {
+      transport: async (message) => {
+        sent.push(message);
+        return { provider: 'fake' };
+      }
+    }));
+    assert.equal(sent.length, 0);
+    assert.equal(store.outbox[0].status, 'failed');
+    assert.equal(store.outbox[0].last_error, RECIPIENT_BOUND_ERROR);
+    assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
+    assert.equal(JSON.stringify(store.outbox).includes('qa@example.com'), false);
+  });
+
+  await withUserFetch(roleUsers(USER_PAGE_SIZE), async () => {
+    await assert.rejects(
+      () => remoteUsers().listUsers('DEMO'),
+      err => err && err.recipientRead === true && err.message === RECIPIENT_READ_ERROR
+    );
+  }, { repeatFirstPage: true });
+
+  const allSql = roleUsers(501);
+  const pages = [];
+  const sqlStore = createSqlStore(async (sql) => {
+    pages.push(sql);
+    assert.match(sql, /order by id asc/);
+    assert.match(sql, /limit 500/);
+    const cursor = sql.match(/ and id > '([^']+)'/);
+    const start = cursor ? allSql.findIndex(user => user.id === cursor[1]) + 1 : 0;
+    if (cursor) assert.equal(start > 0, true);
+    return allSql.slice(start, start + USER_PAGE_SIZE).map(row => ({ row }));
+  });
+  const listed = await sqlStore.listUsers('DEMO');
+  assert.equal(listed.length, 501);
+  assert.deepEqual(listed.map(user => user.email), allSql.map(user => user.email));
+  assert.equal(pages.length, 2);
+  assert.equal(/ id > /.test(pages[0]), false);
+  assert.match(pages[1], /id > 'u0500'/);
+
+  let reads = 0;
+  const failing = createSqlStore(async () => {
+    reads += 1;
+    if (reads > 1) throw new Error('db down');
+    return allSql.slice(0, USER_PAGE_SIZE).map(row => ({ row }));
+  });
+  await assert.rejects(
+    () => failing.listUsers('DEMO'),
+    err => err && err.recipientRead === true && err.message === RECIPIENT_READ_ERROR
+  );
 });
 
 test('enregistrement : 11 destinataires refusés, environnement vide jamais DEMO', async () => {

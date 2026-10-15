@@ -18,6 +18,8 @@ const TO = 'qa@example.com';
 const USER_ID = 'user-1';
 const SESSION = 'sess-token';
 let latencyMs = 0;
+const userListGets = [];
+let failUserListAt = 0;
 
 const JSON_COLS = new Set(['values', 'fields', 'triggers', 'config', 'recipients', 'payload', 'roles', 'resolved_permissions', 'permissions', 'detail']);
 const UUID_COLS = {
@@ -237,6 +239,8 @@ function ensureFixtures() {
 }
 
 function reset() {
+  userListGets.length = 0;
+  failUserListAt = 0;
   psql('truncate public.mail_outbox, public.mail_rules, public.mail_quota, public.submissions, public.forms, public.licenses, public.user_profiles, public.active_device_sessions restart identity cascade');
   const fields = JSON.stringify([
     { id: 'reponse', nom: 'Réponse', type: 'text' },
@@ -339,6 +343,14 @@ function startAdapter() {
       const table = tableMatch[1];
       const method = req.method || 'GET';
       const prefer = req.headers.prefer || '';
+      if (method === 'GET' && table === 'user_profiles' && url.searchParams.get('order') === 'id.asc') {
+        userListGets.push(`${url.pathname}${url.search}`);
+        if (failUserListAt > 0 && userListGets.length === failUserListAt) {
+          res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ message: 'lecture coupée' }));
+          return;
+        }
+      }
       let rows = [];
       if (method === 'GET') rows = selectRows(table, url.searchParams);
       else if (method === 'POST') rows = insertRows(table, body, url.searchParams, prefer);
@@ -648,6 +660,92 @@ async function main() {
     if (previousDaily == null) delete process.env.MAIL_DAILY_LIMIT;
     else process.env.MAIL_DAILY_LIMIT = previousDaily;
     latencyMs = 0;
+    reset();
+    pointSmtp(fast.port);
+    const previousHour = process.env.MAIL_HOURLY_LIMIT;
+    const previousDay = process.env.MAIL_DAILY_LIMIT;
+    process.env.MAIL_HOURLY_LIMIT = '60';
+    process.env.MAIL_DAILY_LIMIT = '300';
+    psql(`insert into public.user_profiles (id, email, role, roles, environment_code, active, license_type)
+      select 'u' || lpad(i::text, 4, '0'),
+             'u' || lpad(i::text, 4, '0') || '@example.com',
+             'manager', '[]'::jsonb, '${ENV}', true, 'supervision'
+      from generate_series(1, 501) as i`);
+    psql(`insert into public.user_profiles (id, email, role, roles, environment_code, active, license_type) values
+      ('u-off', 'off@example.com', 'manager', '[]'::jsonb, '${ENV}', false, 'supervision'),
+      ('u-other', 'other@example.com', 'manager', '[]'::jsonb, 'OTHER', true, 'supervision')`);
+    const roleConfig = {
+      to: { fixed: [], fields: [], author: false, roles: ['manager'] },
+      cc: { fixed: [], fields: [], author: false, roles: [] },
+      bcc: { fixed: [], fields: [], author: false, roles: [] },
+      subject: 'Saisie {{formulaire}}',
+      body: 'Réponse {{reponse}} {{client}}',
+      attachPdf: false,
+      conditions: [],
+      clientKey: 'manual:pg'
+    };
+    psql(`update public.mail_rules set config = ${sqlText(JSON.stringify(roleConfig))}::jsonb where client_key = 'manual:pg'`);
+    userListGets.length = 0;
+    const beforeRole = fast.messages();
+    const roleSend = await syncPad([{
+      id: 'act-role-501',
+      type: 'form_submission',
+      payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Roles' } }
+    }]);
+    assert.equal(roleSend.status, 200, JSON.stringify(roleSend.payload));
+    assert.equal(fast.messages() - beforeRole, 1);
+    assert.equal(userListGets.length, 2, userListGets.join('\n'));
+    assert.equal(userListGets[0].includes('order=id.asc'), true);
+    assert.equal(userListGets[0].includes('id=gt.'), false);
+    assert.equal(userListGets[1].includes('order=id.asc'), true);
+    assert.equal(userListGets[1].includes('id=gt.'), true);
+    const roleRows = rowsOf('select row_to_json(t) from (select status, last_error, warning, recipients from public.mail_outbox) t');
+    assert.equal(roleRows.length, 1, JSON.stringify(roleRows));
+    assert.equal(roleRows[0].status, 'sent', JSON.stringify(roleRows[0]));
+    assert.match(roleRows[0].warning || '', /10 premiers/);
+    const roleTo = (roleRows[0].recipients && roleRows[0].recipients.to) || [];
+    assert.deepEqual(roleTo, Array.from({ length: 10 }, (_, index) => `u${String(index + 1).padStart(4, '0')}@example.com`));
+    assert.equal(roleTo.includes('u0501@example.com'), false);
+    assert.equal(roleTo.includes('off@example.com'), false);
+    assert.equal(roleTo.includes('other@example.com'), false);
+
+    reset();
+    pointSmtp(fast.port);
+    process.env.MAIL_HOURLY_LIMIT = '60';
+    process.env.MAIL_DAILY_LIMIT = '300';
+    psql(`insert into public.user_profiles (id, email, role, roles, environment_code, active, license_type)
+      select 'u' || lpad(i::text, 4, '0'),
+             'u' || lpad(i::text, 4, '0') || '@example.com',
+             'manager', '[]'::jsonb, '${ENV}', true, 'supervision'
+      from generate_series(1, 501) as i`);
+    psql(`update public.mail_rules set config = ${sqlText(JSON.stringify(Object.assign({}, roleConfig, {
+      to: { fixed: [TO], fields: [], author: false, roles: ['manager'] }
+    })))}::jsonb where client_key = 'manual:pg'`);
+    failUserListAt = 2;
+    userListGets.length = 0;
+    const beforeFail = fast.messages();
+    const roleFail = await syncPad([{
+      id: 'act-role-fail',
+      type: 'form_submission',
+      payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Coupure' } }
+    }]);
+    assert.equal(roleFail.status, 200, JSON.stringify(roleFail.payload));
+    assert.equal(fast.messages() - beforeFail, 0);
+    assert.equal(userListGets.length, 2, userListGets.join('\n'));
+    const failedRead = rowsOf('select row_to_json(t) from (select status, last_error, recipients from public.mail_outbox) t');
+    assert.equal(failedRead.length, 1, JSON.stringify(failedRead));
+    assert.equal(failedRead[0].status, 'failed', JSON.stringify(failedRead[0]));
+    assert.match(failedRead[0].last_error || '', /Lecture des destinataires impossible/);
+    const failedTo = (failedRead[0].recipients && failedRead[0].recipients.to) || [];
+    assert.deepEqual(failedTo, []);
+    assert.equal(JSON.stringify(failedRead[0].recipients || {}).includes(TO), false);
+    assert.equal(JSON.stringify(failedRead[0].recipients || {}).includes('u0001@example.com'), false);
+    assert.equal(quotaReserved('hour'), 0);
+    failUserListAt = 0;
+    if (previousHour == null) delete process.env.MAIL_HOURLY_LIMIT;
+    else process.env.MAIL_HOURLY_LIMIT = previousHour;
+    if (previousDay == null) delete process.env.MAIL_DAILY_LIMIT;
+    else process.env.MAIL_DAILY_LIMIT = previousDay;
     console.log('mail-rules-pg ok');
   } finally {
     latencyMs = 0;
