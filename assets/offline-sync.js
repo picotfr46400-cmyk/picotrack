@@ -5,13 +5,13 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   const LEGACY_KEY = 'pt_pad_offline_queue_v17';
   const DB_NAME = 'picotrack-offline';
-  const SECRET_KEYS = new Set([
+  const TRANSPORT_SECRET_KEYS = new Set([
     'password', 'password_hash', 'pass', 'passwd', 'token', 'access_token', 'refresh_token',
     'padsessiontoken', 'sessiontoken', 'authorization', 'licensekey', 'license_key',
     'apikey', 'api_key', 'secret', 'service_role', 'supa_key', 'supa_url',
     'pico_session_token', 'pt_active_session_token', 'bearer'
   ]);
-  const QUEUED_ENTITIES = new Set(['submissions', 'service_instances', 'appointments']);
+  const VALUE_KEYS = new Set(['values', 'form_data']);
 
   function scopeKey(channel, environmentCode, userId) {
     return [String(channel || 'pad'), String(environmentCode || '').toUpperCase(), String(userId || '')].join('|');
@@ -44,17 +44,33 @@
     return JSON.parse(JSON.stringify(value));
   }
 
-  function stripSecrets(value, depth) {
-    if (depth > 8) return null;
-    if (Array.isArray(value)) return value.map(item => stripSecrets(item, (depth || 0) + 1));
+  function blobRefused() {
+    const err = new Error('Fichier binaire refusé : il ne peut pas être envoyé tel quel.');
+    err.code = 'BLOB_REFUSED';
+    return err;
+  }
+
+  function isBlob(value) {
+    return typeof Blob !== 'undefined' && value instanceof Blob;
+  }
+
+  function stripSecrets(value, keepEntered) {
     if (!value || typeof value !== 'object') return value;
-    if (typeof Blob !== 'undefined' && value instanceof Blob) return value;
+    if (isBlob(value)) throw blobRefused();
+    if (Array.isArray(value)) return value.map(item => stripSecrets(item, keepEntered));
     const out = {};
     for (const [key, val] of Object.entries(value)) {
-      if (SECRET_KEYS.has(String(key).toLowerCase())) continue;
-      out[key] = stripSecrets(val, (depth || 0) + 1);
+      const lower = String(key).toLowerCase();
+      if (!keepEntered && TRANSPORT_SECRET_KEYS.has(lower)) continue;
+      out[key] = stripSecrets(val, keepEntered || VALUE_KEYS.has(lower));
     }
     return out;
+  }
+
+  function canonicalType(type) {
+    if (type === 'form_submission' || type === 'create_submission') return 'form_submission';
+    if (type === 'service_instance' || type === 'create_instance') return 'service_instance';
+    return '';
   }
 
   function isQuotaError(err) {
@@ -72,11 +88,11 @@
     if (!result || result.networkError) return 'transient';
     const status = Number(result.status) || (result.ok ? 200 : 0);
     const error = String(result.error || '');
-    if (status === 401 && /licence inactive|supprim/i.test(error)) return 'rejected';
-    if (status === 401 || /session expir|session pad expir|authentification requise/i.test(error)) return 'session';
     if (result.ok && result.duplicate) return 'duplicate';
-    if (result.ok) return 'confirmed';
-    if (status === 400 || status === 403 || status === 413 || status === 422) return 'rejected';
+    if (result.ok && status === 200) return 'confirmed';
+    if (status === 401 && /session expir|session pad expir|authentification requise/i.test(error) && !/licence inactive|supprim/i.test(error)) return 'session';
+    if (/type de file pad inconnu/i.test(error)) return 'rejected';
+    if (status >= 400 && status < 500) return 'rejected';
     return 'transient';
   }
 
@@ -90,6 +106,9 @@
         text: state.quotaMessage || 'Espace de stockage insuffisant sur cet appareil.',
         retry: false
       };
+    }
+    if (state && state.notice) {
+      return { level: 'error', text: state.notice, retry: false };
     }
     if (!online) {
       const extra = pending ? ' · ' + pending + ' action' + (pending > 1 ? 's' : '') + ' en attente' : '';
@@ -123,20 +142,22 @@
     return { proceed: true, drop: true, warned: true, message: message };
   }
 
-  function wireType(type) {
-    if (type === 'create_submission') return 'form_submission';
-    if (type === 'create_instance') return 'service_instance';
-    return type;
-  }
-
   function toWireAction(action) {
+    const payload = stripSecrets(action.payload || {});
+    const type = canonicalType(action.type) || action.type;
+    if (type === 'service_instance') {
+      const instance = Object.assign({}, payload.instance || {});
+      if (instance.form_data == null && payload.values != null) instance.form_data = payload.values;
+      if (!payload.serviceId && instance.service_id) payload.serviceId = instance.service_id;
+      payload.instance = instance;
+    }
     const wire = {
       id: action.id,
       clientActionId: action.clientActionId || action.id,
-      type: wireType(action.type),
+      type: type,
       created_at: action.deviceCapturedAt,
       deviceCapturedAt: action.deviceCapturedAt,
-      payload: stripSecrets(action.payload || {})
+      payload: payload
     };
     const key = suppliedIdempotencyKey(action);
     if (key) wire.idempotency_key = key;
@@ -156,40 +177,9 @@
     return { ok: true, status: 200, duplicate: !!one.duplicate, confirmed: true };
   }
 
-  function attachAppointments(payload, uuid) {
-    const form = payload.form || {};
-    const values = payload.values || {};
-    const fields = Array.isArray(form.fields) ? form.fields : [];
-    const appointments = [];
-    fields.forEach(field => {
-      if (!field || field.type !== 'appointment') return;
-      const slot = values[field.id];
-      if (!slot || typeof slot !== 'object' || !slot.date || !slot.start_time) return;
-      const start = String(slot.start_time).slice(0, 5);
-      const end = String(slot.end_time || slot.start_time).slice(0, 5);
-      appointments.push({
-        clientActionId: uuid(),
-        form_id: String(payload.formId || form.id || ''),
-        field_id: String(field.id || field.name || 'appointment'),
-        title: (form.nom || 'Planning') + ' - ' + (field.nom || 'Rendez-vous'),
-        customer_name: '',
-        date: slot.date,
-        start_time: start + ':00',
-        end_time: end + ':00',
-        status: field.manualValidation ? 'pending' : 'confirmed',
-        parallel_slots: Math.max(1, parseInt(field.parallelSlots || field.capacity || 1, 10) || 1),
-        capacity_group: String(field.id || '')
-      });
-    });
-    if (appointments.length) payload.appointments = appointments;
-    return payload;
-  }
-
-  function shouldQueueEntity(entity, context) {
-    if (!QUEUED_ENTITIES.has(entity)) return false;
-    if (context && context.bypass) return false;
-    if (context && context.pad) return true;
-    if (context && context.online === false) return true;
+  function shouldQueueEntity(entity, context, id) {
+    if (!context || !context.pad || context.bypass) return false;
+    if (entity === 'submissions' || entity === 'service_instances') return !id;
     return false;
   }
 
@@ -222,6 +212,7 @@
     let flushing = false;
     let quota = false;
     let quotaMessage = '';
+    let notice = '';
     let syncing = false;
     let lastError = '';
     let sessionPaused = false;
@@ -245,8 +236,8 @@
       const id = String(input.id || uuid());
       const userId = String(input.userId || '');
       const environmentCode = String(input.environmentCode || '').toUpperCase();
-      const channel = input.channel || 'pad';
-      const payload = attachAppointments(stripSecrets(input.payload || {}), uuid);
+      const channel = 'pad';
+      const payload = stripSecrets(input.payload || {});
       const supplied = suppliedIdempotencyKey(input);
       const idempotencyKey = supplied || (input.preserveMissingKey ? '' : uuid());
       seq += 1;
@@ -269,19 +260,45 @@
       return action;
     }
 
+    function markRefused(message) {
+      notice = message || 'Action refusée.';
+      lastError = notice;
+    }
+
     async function enqueue(input) {
-      const action = build(input);
+      const channel = input.channel || 'pad';
+      if (channel !== 'pad') {
+        const message = 'La file hors ligne est réservée à la tablette.';
+        markRefused(message);
+        return { refused: true, pendingSync: false, error: message };
+      }
+      const type = canonicalType(input.type);
+      if (!type) {
+        const message = 'Cette action ne peut pas être faite hors ligne.';
+        markRefused(message);
+        return { refused: true, pendingSync: false, error: message };
+      }
+      let action;
+      try {
+        action = build(Object.assign({}, input, { type: type, channel: 'pad' }));
+      } catch (err) {
+        if (err && err.code === 'BLOB_REFUSED') {
+          markRefused(err.message);
+          return { refused: true, pendingSync: false, error: err.message };
+        }
+        throw err;
+      }
       try {
         await store.putAction(clone(action));
         memory.set(action.id, action);
         quota = false;
         quotaMessage = '';
+        notice = '';
       } catch (err) {
         if (!isQuotaError(err)) throw err;
         quota = true;
-        quotaMessage = 'Espace de stockage insuffisant sur cet appareil. L’action reste affichée mais n’a pas pu être écrite dans la mémoire locale.';
-        action.lastError = quotaMessage;
-        memory.set(action.id, action);
+        quotaMessage = 'Espace de stockage insuffisant sur cet appareil.';
+        return { refused: true, pendingSync: false, error: quotaMessage, quota: true };
       }
       return action;
     }
@@ -304,6 +321,7 @@
         syncing: syncing,
         quota: quota,
         quotaMessage: quotaMessage,
+        notice: notice,
         sessionPaused: sessionPaused,
         lastError: lastError,
         pending: mine.filter(action => action.status !== 'rejected').length,
@@ -340,6 +358,16 @@
         for (const action of rows) {
           if (stopped) break;
           if (action.status === 'rejected') continue;
+          if (!canonicalType(action.type) || (action.channel && action.channel !== 'pad')) {
+            action.status = 'rejected';
+            action.lastError = action.channel && action.channel !== 'pad'
+              ? 'La file hors ligne est réservée à la tablette.'
+              : 'Type d’action non pris en charge.';
+            lastError = action.lastError;
+            await store.putAction(clone(action)).catch(() => {});
+            memory.set(action.id, action);
+            continue;
+          }
           if (online() === false) break;
           const fresh = session();
           if (!fresh || currentScope(fresh) !== key || fresh.expired || !fresh.token) {
@@ -348,8 +376,22 @@
             break;
           }
           action.attempts = (action.attempts || 0) + 1;
+          let wire;
           try {
-            const result = await transport(toWireAction(action), fresh);
+            wire = toWireAction(action);
+          } catch (err) {
+            if (err && err.code === 'BLOB_REFUSED') {
+              action.status = 'rejected';
+              action.lastError = err.message;
+              lastError = action.lastError;
+              await store.putAction(clone(action)).catch(() => {});
+              memory.set(action.id, action);
+              continue;
+            }
+            throw err;
+          }
+          try {
+            const result = await transport(wire, fresh);
             const kind = classifySyncResult(result);
             if (kind === 'confirmed' || kind === 'duplicate') {
               await store.deleteAction(action.id).catch(() => {});
@@ -425,17 +467,19 @@
       let count = 0;
       for (const item of items) {
         if (!item || item.status === 'synced') continue;
+        const type = canonicalType(item.type || 'form_submission');
+        if (!type) continue;
         const keptKey = suppliedIdempotencyKey(item);
         await enqueue({
           id: item.id,
           idempotency_key: keptKey,
           preserveMissingKey: !keptKey,
-          type: item.type || 'form_submission',
+          type: type,
           payload: item.payload || {},
           deviceCapturedAt: item.created_at,
           userId: identity && identity.userId,
           environmentCode: identity && identity.environmentCode,
-          channel: (identity && identity.channel) || 'pad'
+          channel: 'pad'
         });
         count += 1;
       }
@@ -474,6 +518,7 @@
       readReference: readReference,
       viewState: viewState,
       markQuota: markQuota,
+      markRefused: markRefused,
       backoffDelay: function () { return backoffMs(transientAttempts); },
       toWireAction: toWireAction
     };
@@ -657,20 +702,37 @@
     function enqueueGlobal(type, payload) {
       const current = currentIdentity(win);
       const body = payload || {};
+      const accepted = canonicalType(type);
+      if (!current || current.channel !== 'pad' || !accepted) {
+        const message = !current || current.channel !== 'pad'
+          ? 'La file hors ligne est réservée à la tablette.'
+          : 'Cette action ne peut pas être faite hors ligne.';
+        engine.markRefused(message);
+        afterChange();
+        return { refused: true, pendingSync: false, error: message, type: type };
+      }
+      try {
+        stripSecrets(body);
+      } catch (err) {
+        const message = err && err.code === 'BLOB_REFUSED' ? err.message : 'Action refusée.';
+        engine.markRefused(message);
+        afterChange();
+        return { refused: true, pendingSync: false, error: message, type: type };
+      }
       const idempotencyKey = suppliedIdempotencyKey({ payload: body, idempotency_key: body.idempotency_key }) || defaultUuid();
       const id = defaultUuid();
       const deviceCapturedAt = new Date().toISOString();
       engine.enqueue({
         id: id,
         idempotency_key: idempotencyKey,
-        type: type,
+        type: accepted,
         payload: body,
         deviceCapturedAt: deviceCapturedAt,
         userId: current.userId,
         environmentCode: current.environmentCode,
-        channel: current.channel || 'pad'
+        channel: 'pad'
       }).then(afterChange).catch(afterChange);
-      return { id: id, idempotency_key: idempotencyKey, clientActionId: id, deviceCapturedAt: deviceCapturedAt, pendingSync: true, type: type };
+      return { id: id, idempotency_key: idempotencyKey, clientActionId: id, deviceCapturedAt: deviceCapturedAt, pendingSync: true, type: accepted };
     }
 
     // Le bundle assigne sa file localStorage après ce script. On garde la nôtre.
@@ -689,8 +751,7 @@
       booted = true;
       wire();
       engine.load().then(function () {
-        const identity = readPadIdentity(storage) || readWebIdentity(storage);
-        return engine.migrateLegacy(storage, identity);
+        return engine.migrateLegacy(storage, readPadIdentity(storage));
       }).then(function () {
         return restoreReference(win, engine);
       }).then(function () {
@@ -754,18 +815,49 @@
     if (!db || db.__ptOfflineWrapped || typeof db.save !== 'function') return;
     const original = db.save;
     db.save = function (entity, record, id) {
-      if (!shouldQueueEntity(entity, contextOf(win))) return original.apply(this, arguments);
+      const context = contextOf(win);
+      if (!context.pad || context.bypass) return original.apply(this, arguments);
+      const type = canonicalType(typeForEntity(entity, id));
+      if (!type) {
+        if (context.online !== false) return original.apply(this, arguments);
+        const message = 'Cette action ne peut pas être faite hors ligne.';
+        if (engine.markRefused) engine.markRefused(message);
+        if (afterChange) afterChange();
+        return Promise.reject(Object.assign(new Error(message), { refused: true }));
+      }
       const current = identityOf(win);
-      const type = typeForEntity(entity, id);
-      const recordKey = suppliedIdempotencyKey(record || {});
+      const row = record || {};
+      const values = row.values || row.form_data || {};
+      const payload = {
+        formId: row.form_id || row.formId || null,
+        values: values
+      };
+      if (type === 'service_instance') {
+        payload.serviceId = row.service_id || row.serviceId || null;
+        payload.instance = {
+          service_id: payload.serviceId,
+          status_id: row.status_id || row.current_status_id || null,
+          current_status_id: row.current_status_id || row.status_id || null,
+          reference: row.reference || row.ref || null,
+          ref: row.ref || row.reference || null,
+          priority: row.priority,
+          events: row.events,
+          assigned_to: row.assigned_to || '',
+          created_by: row.created_by || ''
+        };
+      }
       return engine.enqueue({
         type: type,
-        idempotency_key: recordKey,
-        payload: { entity: entity, id: id || null, record: record || {}, formId: record && (record.form_id || record.formId), serviceId: record && (record.service_id || record.serviceId), values: record && record.values, instance: record },
+        idempotency_key: suppliedIdempotencyKey(row),
+        payload: payload,
         userId: current.userId,
         environmentCode: current.environmentCode,
-        channel: current.channel || 'pad'
+        channel: 'pad'
       }).then(function (action) {
+        if (action && action.refused) {
+          if (afterChange) afterChange();
+          return Promise.reject(Object.assign(new Error(action.error || 'Action refusée.'), { refused: true }));
+        }
         if (afterChange) afterChange();
         return { id: id || action.id, pendingSync: true, queued: true };
       });
@@ -786,19 +878,6 @@
       };
       wrapped.__ptOffline = true;
       try { win.clearPadConfig = wrapped; } catch (_) {}
-    }
-    if (typeof win.ptSignOut === 'function' && !win.ptSignOut.__ptOffline) {
-      const original = win.ptSignOut;
-      const wrapped = function () {
-        const current = readWebIdentity(storage);
-        const count = current ? engine.list().filter(action => action.scopeKey === scopeKey('web', current.environmentCode, current.userId)).length : 0;
-        const decision = logoutDecision(count, win.confirm ? win.confirm.bind(win) : null);
-        if (!decision.proceed) return;
-        const done = decision.drop && current ? engine.dropScope('web', current.environmentCode, current.userId) : Promise.resolve();
-        return done.then(function () { return original.apply(win, arguments); });
-      };
-      wrapped.__ptOffline = true;
-      try { win.ptSignOut = wrapped; } catch (_) {}
     }
   }
 
@@ -885,53 +964,26 @@
   }
 
   async function transportFor(win, action, current) {
-    if (!current || !current.token) {
+    if (!current || current.channel !== 'pad') {
+      return { ok: false, status: 400, error: 'La file hors ligne est réservée à la tablette.' };
+    }
+    if (!current.token) {
       return { ok: false, status: 401, error: 'Session expirée' };
     }
-    if ((current.channel || 'pad') === 'pad') {
-      let response;
-      try {
-        response = await fetch('/api/pad-sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          cache: 'no-store',
-          body: JSON.stringify({ pad: { sessionToken: current.token }, actions: [action] })
-        });
-      } catch (_) {
-        return { ok: false, networkError: true, error: 'Connexion interrompue pendant l’envoi' };
-      }
-      let body = {};
-      try { body = await response.json(); } catch (_) { body = {}; }
-      return outcomeFromPadResponse(response.status, body);
+    let response;
+    try {
+      response = await fetch('/api/pad-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ pad: { sessionToken: current.token }, actions: [action] })
+      });
+    } catch (_) {
+      return { ok: false, networkError: true, error: 'Connexion interrompue pendant l’envoi' };
     }
-    const response = await fetch('/api/records', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: current.authorization || ('Bearer ' + current.token),
-        'X-PicoTrack-Session': current.picoSession || ''
-      },
-      body: JSON.stringify(recordsBody(action))
-    });
     let body = {};
     try { body = await response.json(); } catch (_) { body = {}; }
-    if (!response.ok) return { ok: false, status: response.status, error: body.error || body.message || 'Synchronisation refusée' };
-    return { ok: true, status: response.status, confirmed: true };
-  }
-
-  function recordsBody(action) {
-    const payload = action.payload || {};
-    const record = payload.record || {};
-    if (action.type === 'workflow_step' || action.type === 'update_instance' || action.type === 'create_instance' || action.type === 'service_instance') {
-      return { action: 'save', entity: 'service_instances', id: payload.id || undefined, record: record.service_id ? record : payload.instance || record };
-    }
-    if (action.type === 'appointment') {
-      return { action: 'save', entity: 'appointments', record: payload.appointment || record };
-    }
-    if (action.type === 'update_submission') {
-      return { action: 'save', entity: 'submissions', id: payload.id, record: { form_id: payload.formId || record.form_id, values: payload.values || record.values || {}, device: 'desktop' } };
-    }
-    return { action: 'save', entity: 'submissions', record: { form_id: payload.formId || record.form_id, values: payload.values || record.values || {}, device: 'desktop' } };
+    return outcomeFromPadResponse(response.status, body);
   }
 
   return {
@@ -946,6 +998,7 @@
     toWireAction: toWireAction,
     suppliedIdempotencyKey: suppliedIdempotencyKey,
     outcomeFromPadResponse: outcomeFromPadResponse,
+    canonicalType: canonicalType,
     shouldQueueEntity: shouldQueueEntity,
     typeForEntity: typeForEntity,
     createMemoryStore: createMemoryStore,
