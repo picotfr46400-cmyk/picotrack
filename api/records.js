@@ -1576,7 +1576,41 @@ async function handleSave(req, body) {
   if (id) await assertNotPlatformTarget(req, entity, id, profile);
   if (!id) delete record.id;
 
-  if (!id && (entity === 'submissions' || entity === 'service_instances') && String(record.device || '').toLowerCase() === 'pad') {
+  const suppliedKey = String(
+    (source && (source.idempotency_key || source.idempotencyKey))
+    || body.idempotency_key
+    || ''
+  ).trim();
+  if (entity === 'service_instances' && id && suppliedKey) {
+    const padSync = require('./pad-sync');
+    const written = await padSync.applyWorkflowStep(req, record.environment_code || env, {
+      instanceId: id,
+      serviceId: record.service_id,
+      instance: record,
+      statusId: record.current_status_id || record.status_id
+    }, suppliedKey, profile);
+    const saved = written && written.row ? [written.row] : [];
+    await submissionAudit.recordSave(req, {
+      serviceRest, user, profile, entity, id, record, env,
+      before: previousInstance, form: auditForm, service: auditService, saved
+    });
+    await notifyAfterWrite({
+      req,
+      entity,
+      isCreate: false,
+      id,
+      environmentCode: record.environment_code || env,
+      record,
+      saved: written && written.row || record,
+      previous: previousInstance || (written && written.previous) || null,
+      profile,
+      origin: requestOrigin(req),
+      form: auditForm
+    });
+    return saved;
+  }
+  if (!id && (entity === 'submissions' || entity === 'service_instances')) {
+    if (suppliedKey) record.idempotency_key = suppliedKey;
     const padSync = require('./pad-sync');
     const savedRow = await padSync.insertPadRecord(req, {
       entity,
@@ -1589,6 +1623,19 @@ async function handleSave(req, body) {
     await submissionAudit.recordSave(req, {
       serviceRest, user, profile, entity, id, record, env,
       before: null, form: auditForm, service: auditService, saved
+    });
+    await notifyAfterWrite({
+      req,
+      entity,
+      isCreate: true,
+      id: savedRow && savedRow.id,
+      environmentCode: record.environment_code || env,
+      record,
+      saved: savedRow || record,
+      previous: null,
+      profile,
+      origin: requestOrigin(req),
+      form: auditForm
     });
     return saved;
   }

@@ -70,7 +70,26 @@
   function canonicalType(type) {
     if (type === 'form_submission' || type === 'create_submission') return 'form_submission';
     if (type === 'service_instance' || type === 'create_instance') return 'service_instance';
+    if (type === 'workflow_step') return 'workflow_step';
     return '';
+  }
+
+  function readableRefusal(result) {
+    const status = Number(result && result.status) || 0;
+    const raw = String(result && result.error || '');
+    if (raw && raw.length <= 160 && !/supabase|sql|stack|42703|password|token|exception|at \//i.test(raw)) return raw;
+    if (status === 403) return 'Droits insuffisants pour cette action.';
+    if (status === 404) return 'Élément introuvable.';
+    if (status === 409) return 'Cette action entre en conflit avec une donnée déjà enregistrée.';
+    if (status === 400) return 'Cette action n’a pas pu être enregistrée.';
+    return 'Cette action a été refusée.';
+  }
+
+  function dependencyTarget(action) {
+    if (!action || action.type !== 'workflow_step') return '';
+    const payload = action.payload || {};
+    const instance = payload.instance && typeof payload.instance === 'object' ? payload.instance : {};
+    return String(payload.instanceId || payload.instance_id || payload.dependsOn || instance.id || '');
   }
 
   function isQuotaError(err) {
@@ -124,7 +143,8 @@
     }
     if (rejected.length) {
       const reason = rejected[0].lastError || 'refusée par le serveur';
-      return { level: 'error', text: 'Refusé : ' + reason, retry: true, rejected: rejected };
+      const label = rejected.length + ' rejetée' + (rejected.length > 1 ? 's' : '');
+      return { level: 'error', text: label + ' : ' + reason, retry: true, rejected: rejected };
     }
     if (pending && state && state.lastError) {
       return { level: 'error', text: state.lastError, retry: true, pending: pending };
@@ -178,8 +198,9 @@
   }
 
   function shouldQueueEntity(entity, context, id) {
-    if (!context || !context.pad || context.bypass) return false;
-    if (entity === 'submissions' || entity === 'service_instances') return !id;
+    if (!context || context.bypass) return false;
+    if (entity === 'submissions') return !id;
+    if (entity === 'service_instances') return true;
     return false;
   }
 
@@ -236,7 +257,7 @@
       const id = String(input.id || uuid());
       const userId = String(input.userId || '');
       const environmentCode = String(input.environmentCode || '').toUpperCase();
-      const channel = 'pad';
+      const channel = input.channel === 'web' ? 'web' : 'pad';
       const payload = stripSecrets(input.payload || {});
       const supplied = suppliedIdempotencyKey(input);
       const idempotencyKey = supplied || (input.preserveMissingKey ? '' : uuid());
@@ -266,9 +287,9 @@
     }
 
     async function enqueue(input) {
-      const channel = input.channel || 'pad';
-      if (channel !== 'pad') {
-        const message = 'La file hors ligne est réservée à la tablette.';
+      const channel = input.channel === 'web' ? 'web' : (input.channel || 'pad');
+      if (channel !== 'pad' && channel !== 'web') {
+        const message = 'La file hors ligne est réservée à la tablette et au web.';
         markRefused(message);
         return { refused: true, pendingSync: false, error: message };
       }
@@ -280,7 +301,7 @@
       }
       let action;
       try {
-        action = build(Object.assign({}, input, { type: type, channel: 'pad' }));
+        action = build(Object.assign({}, input, { type: type, channel: channel }));
       } catch (err) {
         if (err && err.code === 'BLOB_REFUSED') {
           markRefused(err.message);
@@ -358,10 +379,14 @@
         for (const action of rows) {
           if (stopped) break;
           if (action.status === 'rejected') continue;
-          if (!canonicalType(action.type) || (action.channel && action.channel !== 'pad')) {
+          const target = dependencyTarget(action);
+          if (target && rows.some(other => other !== action && String(other.id) === target && (other.status === 'pending' || other.status === 'rejected' || other.status === 'syncing'))) {
+            continue;
+          }
+          if (!canonicalType(action.type) || (action.channel && action.channel !== 'pad' && action.channel !== 'web')) {
             action.status = 'rejected';
-            action.lastError = action.channel && action.channel !== 'pad'
-              ? 'La file hors ligne est réservée à la tablette.'
+            action.lastError = action.channel && action.channel !== 'pad' && action.channel !== 'web'
+              ? 'La file hors ligne est réservée à la tablette et au web.'
               : 'Type d’action non pris en charge.';
             lastError = action.lastError;
             await store.putAction(clone(action)).catch(() => {});
@@ -394,6 +419,7 @@
             const result = await transport(wire, fresh);
             const kind = classifySyncResult(result);
             if (kind === 'confirmed' || kind === 'duplicate') {
+              action.status = 'synced';
               await store.deleteAction(action.id).catch(() => {});
               memory.delete(action.id);
               sent.push(action.id);
@@ -401,7 +427,7 @@
               transientAttempts = 0;
             } else if (kind === 'rejected') {
               action.status = 'rejected';
-              action.lastError = (result && result.error) || 'Action refusée par le serveur';
+              action.lastError = readableRefusal(result);
               lastError = action.lastError;
               await store.putAction(clone(action)).catch(() => {});
               memory.set(action.id, action);
@@ -418,7 +444,6 @@
               lastError = action.lastError;
               transientAttempts += 1;
               await store.putAction(clone(action)).catch(() => {});
-              stopped = true;
             }
           } catch (_) {
             action.status = 'pending';
@@ -426,7 +451,6 @@
             lastError = action.lastError;
             transientAttempts += 1;
             await store.putAction(clone(action)).catch(() => {});
-            stopped = true;
           }
         }
       } finally {
@@ -703,9 +727,9 @@
       const current = currentIdentity(win);
       const body = payload || {};
       const accepted = canonicalType(type);
-      if (!current || current.channel !== 'pad' || !accepted) {
-        const message = !current || current.channel !== 'pad'
-          ? 'La file hors ligne est réservée à la tablette.'
+      if (!current || (current.channel !== 'pad' && current.channel !== 'web') || !accepted) {
+        const message = !current || (current.channel !== 'pad' && current.channel !== 'web')
+          ? 'La file hors ligne est réservée à la tablette et au web.'
           : 'Cette action ne peut pas être faite hors ligne.';
         engine.markRefused(message);
         afterChange();
@@ -730,7 +754,7 @@
         deviceCapturedAt: deviceCapturedAt,
         userId: current.userId,
         environmentCode: current.environmentCode,
-        channel: 'pad'
+        channel: current.channel === 'web' ? 'web' : 'pad'
       }).then(afterChange).catch(afterChange);
       return { id: id, idempotency_key: idempotencyKey, clientActionId: id, deviceCapturedAt: deviceCapturedAt, pendingSync: true, type: accepted };
     }
@@ -802,8 +826,9 @@
         if (env) web.environmentCode = String(env).toUpperCase();
       } catch (_) {}
     }
-    if (web && web.token) return web;
-    return pad || web || { channel: padMode ? 'pad' : 'web', userId: '', environmentCode: '', token: '' };
+    if (!padMode && web && web.token) return web;
+    if (padMode) return pad || { channel: 'pad', userId: '', environmentCode: '', token: '' };
+    return web || { channel: 'web', userId: '', environmentCode: '', token: '' };
   }
 
   function identityOf(win) {
@@ -816,7 +841,7 @@
     const original = db.save;
     db.save = function (entity, record, id) {
       const context = contextOf(win);
-      if (!context.pad || context.bypass) return original.apply(this, arguments);
+      if (context.bypass) return original.apply(this, arguments);
       const type = canonicalType(typeForEntity(entity, id));
       if (!type) {
         if (context.online !== false) return original.apply(this, arguments);
@@ -825,13 +850,39 @@
         if (afterChange) afterChange();
         return Promise.reject(Object.assign(new Error(message), { refused: true }));
       }
+      if (context.online !== false && id) return original.apply(this, arguments);
       const current = identityOf(win);
+      const channel = context.pad ? 'pad' : 'web';
+      if (!current || current.channel !== channel || !current.userId) {
+        if (context.online !== false) return original.apply(this, arguments);
+        const message = 'Cette action ne peut pas être faite hors ligne.';
+        if (engine.markRefused) engine.markRefused(message);
+        if (afterChange) afterChange();
+        return Promise.reject(Object.assign(new Error(message), { refused: true }));
+      }
       const row = record || {};
       const values = row.values || row.form_data || {};
       const payload = {
-        formId: row.form_id || row.formId || null,
-        values: values
+        formId: row.form_id || row.formId || null
       };
+      if (type === 'workflow_step') {
+        payload.instanceId = id;
+        payload.dependsOn = id;
+        payload.serviceId = row.service_id || row.serviceId || null;
+        payload.statusId = row.current_status_id || row.status_id || null;
+        payload.instance = {
+          id: id,
+          service_id: payload.serviceId,
+          status_id: row.status_id || row.current_status_id || null,
+          current_status_id: row.current_status_id || row.status_id || null,
+          reference: row.reference || row.ref || null,
+          ref: row.ref || row.reference || null,
+          priority: row.priority,
+          assigned_to: row.assigned_to || ''
+        };
+      } else {
+        payload.values = values;
+      }
       if (type === 'service_instance') {
         payload.serviceId = row.service_id || row.serviceId || null;
         payload.instance = {
@@ -852,7 +903,7 @@
         payload: payload,
         userId: current.userId,
         environmentCode: current.environmentCode,
-        channel: 'pad'
+        channel: channel
       }).then(function (action) {
         if (action && action.refused) {
           if (afterChange) afterChange();
@@ -963,26 +1014,96 @@
     }
   }
 
+  function recordsBody(action, current) {
+    const payload = action.payload || {};
+    const key = suppliedIdempotencyKey(action);
+    if (action.type === 'workflow_step') {
+      const instance = Object.assign({}, payload.instance || {});
+      return {
+        action: 'save',
+        entity: 'service_instances',
+        id: payload.instanceId || instance.id,
+        idempotency_key: key,
+        client_id: action.id,
+        client_created_at: action.deviceCapturedAt,
+        record: Object.assign({}, instance, {
+          id: payload.instanceId || instance.id,
+          service_id: payload.serviceId || instance.service_id,
+          current_status_id: payload.statusId || instance.current_status_id,
+          status_id: payload.statusId || instance.status_id,
+          device: 'web',
+          environment_code: current.environmentCode,
+          idempotency_key: key
+        })
+      };
+    }
+    if (action.type === 'service_instance') {
+      const instance = Object.assign({}, payload.instance || {});
+      if (instance.form_data == null && payload.values != null) instance.form_data = payload.values;
+      return {
+        action: 'save',
+        entity: 'service_instances',
+        idempotency_key: key,
+        client_id: action.id,
+        client_created_at: action.deviceCapturedAt,
+        record: Object.assign({}, instance, {
+          service_id: payload.serviceId || instance.service_id,
+          form_data: instance.form_data,
+          device: 'web',
+          environment_code: current.environmentCode,
+          idempotency_key: key
+        })
+      };
+    }
+    return {
+      action: 'save',
+      entity: 'submissions',
+      idempotency_key: key,
+      client_id: action.id,
+      client_created_at: action.deviceCapturedAt,
+      record: {
+        form_id: payload.formId || payload.form_id,
+        values: payload.values || {},
+        device: 'web',
+        environment_code: current.environmentCode,
+        idempotency_key: key
+      }
+    };
+  }
+
   async function transportFor(win, action, current) {
-    if (!current || current.channel !== 'pad') {
-      return { ok: false, status: 400, error: 'La file hors ligne est réservée à la tablette.' };
+    if (!current || (current.channel !== 'pad' && current.channel !== 'web')) {
+      return { ok: false, status: 400, error: 'La file hors ligne est réservée à la tablette et au web.' };
     }
     if (!current.token) {
       return { ok: false, status: 401, error: 'Session expirée' };
     }
+    const web = current.channel === 'web';
     let response;
     try {
-      response = await fetch('/api/pad-sync', {
+      response = await fetch(web ? '/api/records' : '/api/pad-sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: web ? {
+          'Content-Type': 'application/json',
+          Authorization: current.authorization || ('Bearer ' + current.token),
+          'x-picotrack-session': current.picoSession || current.token
+        } : { 'Content-Type': 'application/json' },
         cache: 'no-store',
-        body: JSON.stringify({ pad: { sessionToken: current.token }, actions: [action] })
+        body: JSON.stringify(web
+          ? recordsBody(action, current)
+          : { pad: { sessionToken: current.token }, actions: [action] })
       });
     } catch (_) {
       return { ok: false, networkError: true, error: 'Connexion interrompue pendant l’envoi' };
     }
     let body = {};
     try { body = await response.json(); } catch (_) { body = {}; }
+    if (web) {
+      if (response.status >= 200 && response.status < 300 && body && (Array.isArray(body) ? body[0] && body[0].id : body.id)) {
+        return { ok: true, status: 200, confirmed: true, duplicate: false, row: Array.isArray(body) ? body[0] : body };
+      }
+      return { ok: false, status: response.status || 0, error: (body && body.error) || 'Cette action n’a pas pu être enregistrée.' };
+    }
     return outcomeFromPadResponse(response.status, body);
   }
 
@@ -1009,6 +1130,10 @@
     install: install,
     captureReference: captureReference,
     restoreReference: restoreReference,
-    wrapDatabase: wrapDatabase
+    wrapDatabase: wrapDatabase,
+    transportFor: transportFor,
+    recordsBody: recordsBody,
+    readableRefusal: readableRefusal,
+    dependencyTarget: dependencyTarget
   };
 });

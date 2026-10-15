@@ -259,6 +259,91 @@ async function insertServiceInstance(req, environmentCode, payload, submission, 
   return writeIdempotent(req, 'service_instances', row, key, timeoutMs);
 }
 
+function storedDevice(record) {
+  const device = String(record && record.device || '').toLowerCase();
+  if (device === 'web' || device === 'desktop' || device === 'pad') return device;
+  return 'pad';
+}
+
+function copyTenant(row, record) {
+  if (record && record.tenant_id != null && record.tenant_id !== '') row.tenant_id = record.tenant_id;
+  return row;
+}
+
+function publicRefusal(status) {
+  if (status === 403) return 'Droits insuffisants pour cette action.';
+  if (status === 404) return 'Élément introuvable.';
+  if (status === 409) return 'Cette action entre en conflit avec une donnée déjà enregistrée.';
+  return 'Cette action n’a pas pu être enregistrée.';
+}
+
+function refusalError(status, message) {
+  const err = new Error(message || publicRefusal(status));
+  err.status = status;
+  return err;
+}
+
+async function assertWorkflowWrite(req, environmentCode, instance, actor) {
+  const serviceId = instance && instance.service_id;
+  if (!serviceId) throw refusalError(404);
+  const timeoutMs = nextTimeout(req);
+  if (!timeoutMs) throw deadlineError();
+  const rows = await sbRest(req, `services?id=eq.${encodeURIComponent(serviceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=id,permissions&limit=1`, { method: 'GET', prefer: '', timeoutMs });
+  const service = firstRow(rows);
+  if (!service) throw refusalError(404);
+  const perms = service.permissions && typeof service.permissions === 'object' && !Array.isArray(service.permissions) ? service.permissions : {};
+  const edit = Array.isArray(perms.edit) ? perms.edit.map((role) => String(role || '').trim().toLowerCase()).filter(Boolean) : [];
+  if (!edit.length) return;
+  const roles = [actor && actor.role, actor && actor.license_type].map((role) => String(role || '').trim().toLowerCase()).filter(Boolean);
+  if (String(actor && actor.license_type || '').toLowerCase() === 'pad') roles.push('pad');
+  if (!edit.some((role) => roles.includes(role))) throw refusalError(403);
+}
+
+async function applyWorkflowStep(req, environmentCode, payload, key, actor) {
+  const instanceId = String(payload && (payload.instanceId || payload.instance_id) || (payload && payload.instance && payload.instance.id) || '').trim();
+  if (!instanceId) throw refusalError(400, 'Dossier manquant pour cette étape.');
+  if (!key) throw new Error('Clé d’idempotence manquante');
+  const readTimeout = nextTimeout(req);
+  if (!readTimeout) throw deadlineError();
+  const found = await sbRest(req, `service_instances?id=eq.${encodeURIComponent(instanceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=${READ_COLUMNS.service_instances}&limit=1`, { method: 'GET', prefer: '', timeoutMs: readTimeout });
+  const current = firstRow(found);
+  if (!current) throw refusalError(404);
+  await assertWorkflowWrite(req, environmentCode, current, actor);
+  const events = Array.isArray(current.events) ? current.events.slice() : [];
+  if (events.some((event) => event && (event.idempotency_key === key || event.idempotencyKey === key))) {
+    return { row: current, duplicate: true, previous: current };
+  }
+  const inst = payload.instance && typeof payload.instance === 'object' ? payload.instance : {};
+  const patch = { updated_at: new Date().toISOString() };
+  for (const field of ['status_id', 'current_status_id', 'priority', 'assigned_to', 'reference', 'ref']) {
+    if (inst[field] !== undefined) patch[field] = inst[field];
+  }
+  const nextStatus = payload.statusId || payload.status_id || patch.current_status_id || patch.status_id;
+  if (nextStatus) {
+    patch.current_status_id = nextStatus;
+    patch.status_id = nextStatus;
+  }
+  patch.events = events.concat([{
+    id: key,
+    type: 'status_changed',
+    at: payload.at || new Date().toISOString(),
+    idempotency_key: key,
+    payload: {
+      fromStatus: current.current_status_id || current.status_id || null,
+      toStatus: patch.current_status_id || null
+    }
+  }]);
+  const writeTimeout = nextTimeout(req);
+  if (!writeTimeout) throw deadlineError();
+  const updated = await sbRest(req, `service_instances?id=eq.${encodeURIComponent(instanceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}`, {
+    method: 'PATCH',
+    prefer: 'return=representation',
+    timeoutMs: writeTimeout,
+    body: patch
+  });
+  return { row: firstRow(updated) || Object.assign({}, current, patch), duplicate: false, previous: current };
+}
+
 async function insertPadRecord(req, spec) {
   const entity = spec && spec.entity === 'service_instances' ? 'service_instances' : 'submissions';
   const record = spec && spec.record || {};
@@ -280,20 +365,20 @@ async function insertPadRecord(req, spec) {
   if (!req.picoRemainingMs) armRequestClock(req);
   const timeoutMs = Number(spec && spec.timeoutMs) || REQUEST_DEADLINE_MS;
   if (entity === 'submissions') {
-    const written = await writeIdempotent(req, 'submissions', {
+    const written = await writeIdempotent(req, 'submissions', copyTenant({
       environment_code: record.environment_code,
       form_id: record.form_id,
       values: record.values || {},
-      device: 'pad'
-    }, key, timeoutMs);
+      device: storedDevice(record)
+    }, record), key, timeoutMs);
     return written.row;
   }
-  const row = {
+  const row = copyTenant({
     environment_code: record.environment_code,
     service_id: record.service_id,
     submission_id: record.submission_id ?? null,
-    device: 'pad'
-  };
+    device: storedDevice(record)
+  }, record);
   for (const field of INSTANCE_FIELDS) {
     if (record[field] !== undefined) row[field] = record[field];
   }
@@ -431,6 +516,7 @@ async function handler(req, res) {
     const profile = padProfile(license, environmentCode);
     for (let index = 0; index < prepared.length; index++) {
       const { item, payload } = prepared[index];
+      if (prepared[index].held) continue;
       if (!nextTimeout(req)) {
         queueRetries(index);
         break;
@@ -497,30 +583,69 @@ async function handler(req, res) {
             duplicate,
             already_applied: duplicate
           }));
+        } else if (item.type === 'workflow_step') {
+          const written = await applyWorkflowStep(req, environmentCode, payload, resolved.key, license);
+          if (!written.duplicate) {
+            mailWrites.push({
+              entity: 'service_instances',
+              isCreate: false,
+              environmentCode,
+              saved: written.row,
+              record: written.row,
+              previous: written.previous,
+              padActionId: item.id,
+              padLicenseId: session.licenseId
+            });
+          }
+          const submissionId = written.row && written.row.submission_id;
+          if (submissionId) {
+            await submissionAudit.recordPadSync(req, {
+              rest, environmentCode, licenseId: session.licenseId, license,
+              deviceCapturedAt: item.created_at, submission: { id: submissionId }, instance: written.row, actionId: item.id
+            });
+          }
+          results.push(appliedResult(item, { row: written.row, duplicate: written.duplicate, already_applied: written.duplicate }));
         } else {
           throw new Error('Type de file PAD inconnu : ' + item.type);
         }
       } catch (err) {
         if (isPadAuthError(err)) throw err;
         const refused = Number(err && err.status) || 0;
-        if (refused === 403 || refused === 404) {
+        if (refused === 400 || refused === 403 || refused === 404 || refused === 409) {
+          const requestId = crypto.randomUUID();
+          console.error('[pad-sync]', requestId, err && (err.stack || err.message || err));
           results.push({
             actionId: item.id,
             type: item.type,
+            status: 'rejected',
+            httpStatus: refused,
             ok: false,
-            status: refused,
-            error: err.message || 'Synchronisation refusée'
+            error: publicRefusal(refused)
           });
           continue;
         }
         const timedOut = err && (err.code === 'DEADLINE' || err.status === 504);
-        if (timedOut) interrupted = true;
-        else {
-          failure = { requestId: crypto.randomUUID(), err };
-          console.error('[pad-sync]', failure.requestId, err && (err.stack || err.message || err));
+        if (timedOut) {
+          interrupted = true;
+          queueRetries(index);
+          break;
         }
-        queueRetries(index);
-        break;
+        failure = { requestId: crypto.randomUUID(), err };
+        console.error('[pad-sync]', failure.requestId, err && (err.stack || err.message || err));
+        retry.push(item.id);
+        results.push(retryResult(item));
+        const anchor = String(item.id || '');
+        for (let restIndex = index + 1; restIndex < prepared.length; restIndex++) {
+          const next = prepared[restIndex];
+          if (next.held) continue;
+          const nextPayload = next.payload || {};
+          const target = String(nextPayload.instanceId || nextPayload.instance_id || (nextPayload.instance && nextPayload.instance.id) || '');
+          if (next.item.type === 'workflow_step' && target && target === anchor) {
+            next.held = true;
+            retry.push(next.item.id);
+            results.push(retryResult(next.item));
+          }
+        }
       }
     }
     await submissionAudit.flushAudit(req, rest);
@@ -535,6 +660,13 @@ async function handler(req, res) {
         result.already_applied = false;
         if (!retry.includes(result.actionId)) retry.push(result.actionId);
       }
+    }
+    if (!retry.length && results.length === 1 && results[0].status === 'rejected') {
+      return sendJson(res, results[0].httpStatus || 400, {
+        ok: false,
+        error: results[0].error,
+        results
+      });
     }
     if (retry.length) {
       const requestId = failure ? failure.requestId : crypto.randomUUID();
@@ -579,5 +711,6 @@ handler.REQUEST_DEADLINE_MS = REQUEST_DEADLINE_MS;
 handler.resolveIdempotencyKey = resolveIdempotencyKey;
 handler.deriveIdempotencyKey = deriveIdempotencyKey;
 handler.insertPadRecord = insertPadRecord;
+handler.applyWorkflowStep = applyWorkflowStep;
 handler.DERIVED_KEY_WARN = DERIVED_KEY_WARN;
 module.exports = handler;

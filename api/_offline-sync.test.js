@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const offline = require('../assets/offline-sync');
 const padSync = require('./pad-sync');
+const records = require('./records');
 const { signPayload } = require('./_pad-security');
 
 const USER_A = { channel: 'pad', userId: 'lic-a', environmentCode: 'EFC', token: 'token-a' };
@@ -46,8 +47,9 @@ test('file persistante : ajout, ordre, retrait seulement après confirmation', a
   assert.ok(first.seq < second.seq && second.seq < third.seq);
 
   await engine.flush();
-  assert.deepEqual(engine.list().map(action => action.id), [second.id, third.id]);
+  assert.deepEqual(engine.list().map(action => action.id), [second.id]);
   assert.equal((await store.allActions()).some(action => action.id === first.id), false);
+  assert.equal((await store.allActions()).some(action => action.id === third.id), false);
 
   const restarted = offline.createOfflineSync({
     store,
@@ -56,7 +58,7 @@ test('file persistante : ajout, ordre, retrait seulement après confirmation', a
     transport: async () => ({ ok: true, confirmed: true })
   });
   await restarted.load();
-  assert.deepEqual(restarted.list().map(action => action.id), [second.id, third.id]);
+  assert.deepEqual(restarted.list().map(action => action.id), [second.id]);
   assert.equal(restarted.list()[0].status === 'syncing', false);
 });
 
@@ -143,7 +145,7 @@ test('refus 4xx : l’action suivante part quand même', async () => {
 
 test('hors saisie ou hors tablette : refus à l’écran, rien en file', async () => {
   const { engine } = harness(async () => ({ ok: true, confirmed: true }));
-  for (const type of ['workflow_step', 'update_submission', 'appointment', 'photo', 'signature']) {
+  for (const type of ['update_submission', 'appointment', 'photo', 'signature']) {
     const refused = await engine.enqueue({ type, payload: { formId: 'f1', values: { etape: 'faite' } }, ...USER_A });
     assert.equal(refused.refused, true, type);
     assert.equal(refused.pendingSync, false, type);
@@ -155,11 +157,11 @@ test('hors saisie ou hors tablette : refus à l’écran, rien en file', async (
     userId: 'user-web',
     environmentCode: 'EFC'
   });
-  assert.equal(web.refused, true);
-  assert.match(web.error, /réservée à la tablette/);
-  assert.equal(engine.list().length, 0);
-  assert.match(offline.statusView(engine.viewState()).text, /réservée à la tablette/);
-  assert.equal(offline.statusView(engine.viewState()).level, 'error');
+  assert.equal(web.refused, undefined);
+  assert.equal(web.channel, 'web');
+  assert.equal(web.type, 'form_submission');
+  assert.match(web.idempotency_key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(engine.list().length, 1);
 
   const blob = await engine.enqueue({
     type: 'form_submission',
@@ -168,7 +170,8 @@ test('hors saisie ou hors tablette : refus à l’écran, rien en file', async (
   });
   assert.equal(blob.refused, true);
   assert.match(blob.error, /binaire/);
-  assert.equal(engine.list().length, 0);
+  assert.equal(engine.list().length, 1);
+  assert.equal(engine.list()[0].id, web.id);
   assert.equal(JSON.stringify(new Blob(['png'])), '{}');
   assert.match(offline.statusView(engine.viewState()).text, /binaire/);
 });
@@ -184,7 +187,7 @@ test('action refusée visible avec la raison, sans retrait', async () => {
   await engine.retry();
   assert.equal(calls.length, 2);
   const view = offline.statusView(engine.viewState());
-  assert.match(view.text, /Refusé : Droits insuffisants/);
+  assert.match(view.text, /rejetée : Droits insuffisants/);
   assert.equal(view.retry, true);
 });
 
@@ -344,15 +347,15 @@ test('référence restaurée et file seulement hors ligne ou en PAD', async () =
   assert.equal(win.rendered, 1);
 
   assert.equal(offline.shouldQueueEntity('submissions', { pad: true, online: true }), true);
-  assert.equal(offline.shouldQueueEntity('service_instances', { pad: true, online: false }, 'abc'), false);
-  assert.equal(offline.shouldQueueEntity('service_instances', { pad: false, online: false }), false);
-  assert.equal(offline.shouldQueueEntity('submissions', { pad: false, online: true }), false);
+  assert.equal(offline.shouldQueueEntity('service_instances', { pad: true, online: false }, 'abc'), true);
+  assert.equal(offline.shouldQueueEntity('service_instances', { pad: false, online: false }), true);
+  assert.equal(offline.shouldQueueEntity('submissions', { pad: false, online: true }), true);
   assert.equal(offline.shouldQueueEntity('appointments', { pad: true, online: false }), false);
   assert.equal(offline.shouldQueueEntity('forms', { pad: true, online: false }), false);
   assert.equal(offline.typeForEntity('service_instances', 'abc'), 'workflow_step');
   assert.equal(offline.typeForEntity('submissions', ''), 'create_submission');
   assert.equal(offline.canonicalType('create_submission'), 'form_submission');
-  assert.equal(offline.canonicalType('workflow_step'), '');
+  assert.equal(offline.canonicalType('workflow_step'), 'workflow_step');
 
   let direct = 0;
   const db = { save: () => { direct += 1; return Promise.resolve({ id: 'server' }); } };
@@ -366,9 +369,11 @@ test('référence restaurée et file seulement hors ligne ou en PAD', async () =
   offline.wrapDatabase(wrapped, {
     enqueue: async (input) => { queued.push(input); return { id: 'local-1' }; }
   });
-  const webSaved = await wrapped.DB.save('submissions', { form_id: 'f1', values: { nom: 'hors ligne' } });
-  assert.equal(webSaved.pendingSync, undefined);
-  assert.equal(direct, 1);
+  await assert.rejects(
+    wrapped.DB.save('submissions', { form_id: 'f1', values: { nom: 'hors ligne' } }),
+    /hors ligne/
+  );
+  assert.equal(direct, 0);
   assert.equal(queued.length, 0);
 
   const photo = 'PHOTO-UNIQUE';
@@ -387,21 +392,25 @@ test('référence restaurée et file seulement hors ligne ou en PAD', async () =
   offline.wrapDatabase(padWin, padEngine);
   const queuedSave = await padWin.DB.save('submissions', { form_id: 'f1', values: { nom: 'Ada', photo: photo } });
   assert.equal(queuedSave.pendingSync, true);
-  assert.equal(direct, 1);
+  assert.equal(direct, 0);
   const stored = padEngine.list()[0];
   assert.equal(stored.type, 'form_submission');
   assert.equal(stored.payload.record, undefined);
   assert.equal(stored.payload.instance, undefined);
   assert.equal(JSON.stringify(stored.payload).split(photo).length - 1, 1);
+  const stepSave = await padWin.DB.save('service_instances', { service_id: 's1', current_status_id: 'fait', form_data: { etape: 'faite' } }, 'inst-1');
+  assert.equal(stepSave.pendingSync, true);
+  assert.equal(padEngine.list().length, 2);
+  assert.equal(padEngine.list()[1].type, 'workflow_step');
+  assert.equal(padEngine.list()[1].payload.instance.form_data, undefined);
+  assert.equal(JSON.stringify(padEngine.list()[1].payload).split('faite').length - 1, 0);
   await assert.rejects(
-    padWin.DB.save('service_instances', { service_id: 's1', form_data: { etape: 'faite' } }, 'inst-1'),
+    padWin.DB.save('appointments', { title: 'rdv' }),
     /hors ligne/
   );
-  assert.equal(padEngine.list().length, 1);
-  assert.match(offline.statusView(padEngine.viewState()).text, /ne peut pas être faite hors ligne/);
   padWin.navigator.onLine = true;
   await padWin.DB.save('service_instances', { service_id: 's1' }, 'inst-1');
-  assert.equal(direct, 2);
+  assert.equal(direct, 1);
 });
 
 test('service worker : politique v2, sans précache, public.html hors cache', () => {
@@ -424,9 +433,9 @@ self.addEventListener('fetch',event=>{
   assert.equal(sw.includes('cache.add'), false);
   assert.equal(sw.includes('public.html'), false);
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
-  assert.match(html, /offline-sync\.js\?v=20261008r/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008n/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008f/);
+  assert.match(html, /offline-sync\.js\?v=20261008s/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008p/g) || []).length, 2);
+  assert.match(html, /core-supervision\.js\?v=20261008p/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.match(fs.readFileSync(path.join(__dirname, '../build.js'), 'utf8'), /offline-sync\.js/);
   assert.equal(fs.readFileSync(path.join(__dirname, 'pad-sync.js'), 'utf8').includes('Type de file PAD inconnu'), true);
@@ -652,92 +661,261 @@ test('pad-sync : la file réutilise la clé et le POST unique déduplique', asyn
   });
 });
 
-test('étape puis saisie : la saisie arrive en base, l’étape ne bloque pas', async () => {
+test('une étape attend sa saisie refusée, une saisie indépendante part', async () => {
+  const sent = [];
+  const { engine } = harness(async (action) => {
+    sent.push(action.type);
+    if (action.type === 'service_instance') return { ok: false, status: 409, error: 'Cette action entre en conflit avec une donnée déjà enregistrée.' };
+    return { ok: true, confirmed: true };
+  });
+  const created = await engine.enqueue({
+    id: 'inst-local',
+    type: 'service_instance',
+    payload: { formId: 'f1', serviceId: 's1', values: { nom: 'dossier' } },
+    ...USER_A
+  });
+  await engine.enqueue({
+    type: 'workflow_step',
+    payload: { instanceId: created.id, statusId: 'fait', instance: { id: created.id, service_id: 's1', current_status_id: 'fait' } },
+    ...USER_A
+  });
+  await engine.enqueue({
+    type: 'form_submission',
+    payload: { formId: 'f1', values: { nom: 'libre' } },
+    ...USER_A
+  });
+  await engine.flush();
+  assert.deepEqual(sent, ['service_instance', 'form_submission']);
+  const step = engine.list().find(action => action.type === 'workflow_step');
+  assert.equal(step.status, 'pending');
+  assert.equal(engine.list().find(action => action.id === created.id).status, 'rejected');
+  assert.equal(engine.list().some(action => action.payload && action.payload.values && action.payload.values.nom === 'libre'), false);
+});
+
+function padBackend({ instances, services, submissions, patches }) {
+  return async (url, options) => {
+    const href = String(url);
+    const method = options.method || 'GET';
+    const body = options.body ? JSON.parse(options.body) : null;
+    if (href.includes('/licenses') && method === 'GET') {
+      return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', device_name: 'Tab' }]);
+    }
+    if (href.includes('/licenses') && method === 'PATCH') return jsonResponse(200, [{ id: 'lic-1' }]);
+    if (href.includes('/submission_audit_log') && method === 'POST') return jsonResponse(201, []);
+    if (href.includes('/services') && method === 'GET') {
+      const id = decodeURIComponent((href.match(/id=eq\.([^&]+)/) || [])[1] || '');
+      const service = services.get(id);
+      return jsonResponse(200, service ? [service] : []);
+    }
+    if (href.includes('/service_instances') && method === 'GET') {
+      const id = decodeURIComponent((href.match(/id=eq\.([^&]+)/) || [])[1] || '');
+      const row = instances.get(id);
+      return jsonResponse(200, row ? [row] : []);
+    }
+    if (href.includes('/service_instances') && method === 'PATCH') {
+      const id = decodeURIComponent((href.match(/id=eq\.([^&]+)/) || [])[1] || '');
+      const current = instances.get(id);
+      if (!current) return jsonResponse(200, []);
+      const next = { ...current, ...body };
+      instances.set(id, next);
+      patches.push(next);
+      return jsonResponse(200, [next]);
+    }
+    if (href.includes('/submissions') && method === 'POST') {
+      const key = body && body.idempotency_key;
+      if (submissions.has(key)) return jsonResponse(200, []);
+      const row = { ...body, id: 'sub-' + (submissions.size + 1), created_at: '2026-10-08T10:00:00.000Z' };
+      submissions.set(key, row);
+      return jsonResponse(201, [row]);
+    }
+    if (href.includes('/submissions') && method === 'GET') {
+      const key = decodeURIComponent((href.match(/idempotency_key=eq\.([^&]+)/) || [])[1] || '');
+      return jsonResponse(200, submissions.has(key) ? [submissions.get(key)] : []);
+    }
+    return jsonResponse(200, []);
+  };
+}
+
+test('une étape de workflow passe, puis un rejeu ne la double pas', async () => {
+  await withPadServer(async () => {
+    const instances = new Map([['inst-9', {
+      id: 'inst-9', service_id: 'svc-1', environment_code: 'EFC', submission_id: 'sub-x',
+      current_status_id: 'ouvert', status_id: 'ouvert', events: [], device: 'pad'
+    }]]);
+    const services = new Map([['svc-1', { id: 'svc-1', environment_code: 'EFC', permissions: {} }]]);
+    const patches = [];
+    global.fetch = padBackend({ instances, services, submissions: new Map(), patches });
+    const key = 'dddddddd-dddd-4ddd-8ddd-eeeeeeeeeeee';
+    const action = {
+      id: 'step-ok',
+      type: 'workflow_step',
+      idempotency_key: key,
+      created_at: '2026-10-08T08:00:00.000Z',
+      payload: {
+        instanceId: 'inst-9',
+        serviceId: 'svc-1',
+        statusId: 'fait',
+        instance: { id: 'inst-9', service_id: 'svc-1', current_status_id: 'fait', status_id: 'fait' }
+      }
+    };
+    const first = await callPad([action]);
+    assert.equal(first.status, 200, JSON.stringify(first.payload));
+    assert.equal(first.payload.results[0].status, 'applied');
+    assert.equal(first.payload.results[0].duplicate, false);
+    assert.equal(instances.get('inst-9').current_status_id, 'fait');
+    assert.equal(instances.get('inst-9').events.length, 1);
+    assert.equal(instances.get('inst-9').events[0].idempotency_key, key);
+    const second = await callPad([action]);
+    assert.equal(second.status, 200, JSON.stringify(second.payload));
+    assert.equal(second.payload.results[0].duplicate, true);
+    assert.equal(instances.get('inst-9').events.length, 1);
+    assert.equal(patches.length, 1);
+    assert.match(padSync.toString(), /REQUEST_DEADLINE_MS|applyWorkflowStep/);
+    assert.equal(padSync.REQUEST_DEADLINE_MS, 10000);
+  });
+});
+
+test('étape refusée en 403 puis 3 saisies : les saisies arrivent, l’étape est rejetée', async () => {
   await withPadServer(async () => {
     const submissions = new Map();
-    global.fetch = async (url, options) => {
+    const instances = new Map([['inst-ro', {
+      id: 'inst-ro', service_id: 'svc-ro', environment_code: 'EFC', submission_id: 'sub-ro',
+      current_status_id: 'ouvert', status_id: 'ouvert', events: [], device: 'pad'
+    }]]);
+    const services = new Map([['svc-ro', { id: 'svc-ro', environment_code: 'EFC', permissions: { edit: ['superviseur'] } }]]);
+    global.fetch = padBackend({ instances, services, submissions, patches: [] });
+    const { engine } = harness(async (action) => {
+      const result = await callPad([action]);
+      return offline.outcomeFromPadResponse(result.status, result.payload);
+    });
+    const step = await engine.enqueue({
+      type: 'workflow_step',
+      payload: { instanceId: 'inst-ro', serviceId: 'svc-ro', statusId: 'fait', instance: { id: 'inst-ro', service_id: 'svc-ro', current_status_id: 'fait' } },
+      ...USER_A
+    });
+    const keys = [];
+    for (const nom of ['Une', 'Deux', 'Trois']) {
+      const saved = await engine.enqueue({
+        type: 'form_submission',
+        payload: { formId: 'form-1', values: { nom } },
+        ...USER_A
+      });
+      keys.push(saved.idempotency_key);
+    }
+    await engine.flush();
+    assert.equal(submissions.size, 3);
+    assert.deepEqual([...submissions.values()].map(row => row.values.nom), ['Une', 'Deux', 'Trois']);
+    assert.equal(engine.list().some(action => keys.includes(action.idempotency_key)), false);
+    const rejected = engine.list().filter(action => action.status === 'rejected');
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].id, step.id);
+    assert.equal(rejected[0].type, 'workflow_step');
+    assert.match(rejected[0].lastError, /Droits insuffisants/);
+    assert.equal(/supabase|stack|42703|svc-ro/i.test(rejected[0].lastError), false);
+    const view = offline.statusView(engine.viewState());
+    assert.match(view.text, /rejetée/);
+    assert.match(view.text, /Droits insuffisants/);
+    assert.equal(instances.get('inst-ro').current_status_id, 'ouvert');
+    await engine.flush();
+    assert.equal(submissions.size, 3);
+    assert.equal(engine.list().filter(action => action.status === 'rejected').length, 1);
+  });
+});
+
+test('web : réponse perdue, renvoi, rechargement, une seule saisie avec le même id', async () => {
+  await withPadServer(async () => {
+    const submissions = new Map();
+    const profile = {
+      id: 'sup-1', email: 'marie@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision',
+      environment_code: 'EFC', active: true, firstname: 'Marie', lastname: 'Martin'
+    };
+    global.fetch = async (url, options = {}) => {
       const href = String(url);
       const method = options.method || 'GET';
-      const body = options.body ? JSON.parse(options.body) : null;
-      if (href.includes('/licenses') && method === 'GET') {
-        return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', device_name: 'Tab' }]);
+      if (href.endsWith('/api/records')) {
+        const res = mockRes();
+        await records({
+          method: 'POST',
+          headers: {
+            host: 'localhost',
+            authorization: options.headers.Authorization || options.headers.authorization,
+            'x-picotrack-session': options.headers['x-picotrack-session']
+          },
+          body: JSON.parse(options.body)
+        }, res);
+        return jsonResponse(res.statusCode, JSON.parse(res.body || '{}'));
       }
-      if (href.includes('/licenses') && method === 'PATCH') return jsonResponse(200, [{ id: 'lic-1' }]);
-      if (href.includes('/submission_audit_log') && method === 'POST') return jsonResponse(201, []);
-      if (href.includes('/submissions') && method === 'POST') {
-        const key = body && body.idempotency_key;
+      const body = options.body ? JSON.parse(options.body) : null;
+      if (href.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
+      if (href.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
+      if (href.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [], permissions: {} }]);
+      if (href.includes('/rest/v1/submissions') && method === 'POST') {
+        assert.match(href, /on_conflict=environment_code,idempotency_key/);
+        const key = body.idempotency_key;
         if (submissions.has(key)) return jsonResponse(200, []);
-        const row = { ...body, id: 'sub-step-1', created_at: '2026-10-08T10:00:00.000Z' };
+        const row = { ...body, id: 'sub-web-1', created_at: '2026-10-08T10:00:00.000Z' };
         submissions.set(key, row);
         return jsonResponse(201, [row]);
       }
-      if (href.includes('/submissions') && method === 'GET') {
+      if (href.includes('/rest/v1/submissions') && method === 'GET') {
         const key = decodeURIComponent((href.match(/idempotency_key=eq\.([^&]+)/) || [])[1] || '');
         return jsonResponse(200, submissions.has(key) ? [submissions.get(key)] : []);
       }
-      return jsonResponse(404, { message: 'unexpected ' + method + ' ' + href });
+      if (href.includes('submission_audit_log')) return jsonResponse(200, []);
+      return jsonResponse(200, []);
     };
-
+    const web = {
+      channel: 'web', userId: 'sup-1', environmentCode: 'EFC', token: 'session-token',
+      authorization: 'Bearer session-token', picoSession: 'sess-1'
+    };
+    const born = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const store = offline.createMemoryStore();
-    await store.putAction({
-      id: 'step-1',
-      clientActionId: 'step-1',
-      seq: 1,
-      type: 'workflow_step',
-      payload: { instanceId: 'inst-1', values: { etape: 'faite' } },
-      deviceCapturedAt: '2026-10-08T08:00:00.000Z',
-      status: 'pending',
-      attempts: 0,
-      lastError: '',
-      userId: USER_A.userId,
-      environmentCode: USER_A.environmentCode,
-      channel: 'pad',
-      scopeKey: offline.scopeKey('pad', 'EFC', 'lic-a')
-    });
-    const born = 'cccccccc-cccc-4ccc-8ddd-eeeeeeeeeeee';
-    const sent = [];
+    let lose = true;
     const engine = offline.createOfflineSync({
       store,
       now: () => '2026-10-08T08:15:00.000Z',
       online: () => true,
-      session: () => USER_A,
+      session: () => web,
       uuid: sequentialUuid(),
-      transport: async (action) => {
-        sent.push(action.type);
-        const result = await callPad([action]);
-        return offline.outcomeFromPadResponse(result.status, result.payload);
+      transport: async (action, session) => {
+        const result = await offline.transportFor({}, action, session);
+        if (lose) {
+          lose = false;
+          return { ok: false, networkError: true, error: 'réponse perdue' };
+        }
+        return result;
       }
     });
-    await engine.load();
-    const refusedStep = await engine.enqueue({
-      type: 'workflow_step',
-      payload: { instanceId: 'inst-2', values: { etape: 'encore' } },
-      ...USER_A
-    });
-    assert.equal(refusedStep.refused, true);
-    const saisie = await engine.enqueue({
+    const queued = await engine.enqueue({
       idempotency_key: born,
       type: 'form_submission',
-      payload: { formId: 'form-1', values: { nom: 'Ada', lot: 'L-42' } },
-      ...USER_A
+      channel: 'web',
+      payload: { formId: 'form-1', values: { nom: 'Web' } },
+      ...web
     });
-    assert.equal(saisie.pendingSync, undefined);
-    assert.equal(saisie.type, 'form_submission');
+    assert.equal(queued.idempotency_key, born);
     await engine.flush();
-
-    assert.deepEqual(sent, ['form_submission']);
     assert.equal(submissions.size, 1);
-    const row = submissions.get(born);
-    assert.equal(row.values.nom, 'Ada');
-    assert.equal(row.values.lot, 'L-42');
-    assert.equal(row.form_id, 'form-1');
-    assert.equal(row.device, 'pad');
-    assert.equal(row.environment_code, 'EFC');
-    assert.equal(engine.list().some(action => action.id === saisie.id), false);
-    const step = engine.list().find(action => action.id === 'step-1');
-    assert.equal(step.status, 'rejected');
-    assert.match(step.lastError, /non pris en charge/);
-    assert.equal(engine.list().some(action => action.type === 'workflow_step' && action.id !== 'step-1'), false);
+    assert.equal(engine.list().length, 1);
+    assert.equal(engine.list()[0].idempotency_key, born);
+    await engine.flush();
+    assert.equal(submissions.size, 1);
+    assert.equal([...submissions.values()][0].id, 'sub-web-1');
+    assert.equal([...submissions.values()][0].idempotency_key, born);
+    assert.equal([...submissions.values()][0].device, 'web');
+    assert.equal(engine.list().length, 0);
+    const restarted = offline.createOfflineSync({
+      store,
+      online: () => true,
+      session: () => web,
+      transport: async (action, session) => offline.transportFor({}, action, session)
+    });
+    await restarted.load();
+    await restarted.flush();
+    assert.equal(restarted.list().length, 0);
+    assert.equal(submissions.size, 1);
+    assert.equal([...submissions.values()][0].id, 'sub-web-1');
   });
 });
 
