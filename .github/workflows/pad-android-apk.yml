@@ -19,6 +19,8 @@ on:
       - "vercel.json"
       - "assets/app.secured.js"
       - "app.secured-v45.js"
+      - "package.json"
+      - "package-lock.json"
   push:
     branches: [v2]
     paths:
@@ -31,6 +33,8 @@ on:
       - "vercel.json"
       - "assets/app.secured.js"
       - "app.secured-v45.js"
+      - "package.json"
+      - "package-lock.json"
 
 permissions:
   contents: read
