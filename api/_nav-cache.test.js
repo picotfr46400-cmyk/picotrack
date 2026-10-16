@@ -23,18 +23,27 @@ function gitShow(rev, file) {
   });
 }
 
-function v2Revision() {
-  for (const rev of ['origin/v2', 'v2']) {
+function deployBranches() {
+  const config = JSON.parse(fs.readFileSync(path.join(__dirname, '../vercel.json'), 'utf8'));
+  const enabled = config.git && config.git.deploymentEnabled ? config.git.deploymentEnabled : {};
+  return Object.keys(enabled)
+    .filter(name => enabled[name] === true && !/[*?]/.test(name))
+    .sort();
+}
+
+function branchRevision(name) {
+  const branch = String(name || '').replace(/^origin\//, '');
+  for (const rev of [`origin/${branch}`, branch]) {
     try {
       gitShow(rev, 'index.html');
       return rev;
     } catch (_) { /* ref absente */ }
   }
-  execFileSync('git', ['fetch', '--depth=1', 'origin', 'v2'], {
+  execFileSync('git', ['fetch', '--no-tags', '--depth=1000', 'origin', branch], {
     cwd: path.join(__dirname, '..'),
     stdio: ['ignore', 'pipe', 'pipe']
   });
-  return 'origin/v2';
+  return `origin/${branch}`;
 }
 
 function letterOf(token) {
@@ -56,40 +65,48 @@ function historicalBusters(rev, fileName) {
   return found;
 }
 
-function assertFreshCache(rev, fileName, filePath) {
-  const baseFile = gitShow(rev, filePath);
-  const currentFile = fs.readFileSync(path.join(__dirname, '..', filePath), 'utf8');
-  const currentHtml = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  const baseHtml = gitShow(rev, 'index.html');
-  const current = cacheBusters(currentHtml, fileName);
-  const base = cacheBusters(baseHtml, fileName);
-  assert.equal(new Set(current).size, 1, fileName);
-  if (baseFile === currentFile) {
-    assert.deepEqual(current, base, fileName);
-    return;
-  }
-  const token = current[0];
-  const history = historicalBusters(rev, fileName);
-  assert.equal(history.has(token), false, `${fileName} réutilise ${token}`);
-  const highest = [...history].map(letterOf).filter(Boolean).sort().at(-1);
-  assert.equal(letterOf(token) > highest, true, `${fileName} ${token} doit dépasser ${highest}`);
-}
-
-test('cache-buster : une lettre neuve, au-dessus de tout l’historique v2', () => {
-  const rev = v2Revision();
+function deepen(rev) {
+  const branch = String(rev).replace(/^origin\//, '');
   const count = Number(execFileSync('git', ['rev-list', '--count', rev], {
     cwd: path.join(__dirname, '..'),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe']
   }));
   if (count < 50) {
-    execFileSync('git', ['fetch', '--no-tags', '--depth=1000', 'origin', 'v2'], {
+    execFileSync('git', ['fetch', '--no-tags', '--depth=1000', 'origin', branch], {
       cwd: path.join(__dirname, '..'),
       stdio: ['ignore', 'pipe', 'pipe']
     });
   }
-  assertFreshCache(rev, 'app.secured.js', 'assets/app.secured.js');
-  assertFreshCache(rev, 'core-supervision.js', 'assets/core-supervision.js');
+}
+
+function assertFreshCache(revs, fileName, filePath) {
+  const currentFile = fs.readFileSync(path.join(__dirname, '..', filePath), 'utf8');
+  const currentHtml = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
+  const current = cacheBusters(currentHtml, fileName);
+  assert.equal(new Set(current).size, 1, fileName);
+  for (const rev of revs) {
+    const baseFile = gitShow(rev, filePath);
+    const base = cacheBusters(gitShow(rev, 'index.html'), fileName);
+    if (baseFile === currentFile) {
+      assert.deepEqual(current, base, `${fileName} inchangé sur ${rev}`);
+      continue;
+    }
+    const token = current[0];
+    const history = historicalBusters(rev, fileName);
+    assert.equal(history.has(token), false, `${fileName} réutilise ${token} (${rev})`);
+    const highest = [...history].map(letterOf).filter(Boolean).sort().at(-1);
+    assert.equal(letterOf(token) > highest, true, `${fileName} ${token} doit dépasser ${highest} (${rev})`);
+  }
+}
+
+test('cache-buster : une lettre neuve, au-dessus de l’historique de chaque branche déployée', () => {
+  const branches = deployBranches();
+  assert.deepEqual(branches, ['main', 'v2']);
+  const revs = branches.map(branchRevision);
+  for (const rev of revs) deepen(rev);
+  assertFreshCache(revs, 'app.secured.js', 'assets/app.secured.js');
+  assertFreshCache(revs, 'core-supervision.js', 'assets/core-supervision.js');
 });
 
 test('index.html : Babel absent, React conservé, cache-buster 20261008r sur le bundle modifié', () => {

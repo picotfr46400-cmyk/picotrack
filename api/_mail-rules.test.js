@@ -996,6 +996,47 @@ test('cron multi-clients : deux bases envoient, un client en échec n’arrête 
   }
 });
 
+test('base injoignable : erreur inconnue visible, jamais pending false', async () => {
+  const store = createMemoryStore();
+  store.listRetryable = async () => {
+    throw new Error('connect ECONNREFUSED');
+  };
+  const drained = await processMailQueue({
+    store,
+    environmentCode: 'EFC',
+    deadline: Date.now() + 5000
+  });
+  assert.equal(drained.ok, false);
+  assert.equal(drained.pending, true);
+  assert.equal(drained.error, 'Erreur inconnue');
+  assert.equal(drained.pending === false, false);
+
+  store.listRetryableAny = async () => [{ id: 'row-1', environment_code: 'EFC', status: 'pending', attempts: 0 }];
+  const daily = await runDailyMailQueue({
+    clients: [{ id: 'AAA', host: 'aaa.picotrack.fr', store }],
+    deadline: Date.now() + 5000
+  });
+  assert.equal(daily.pending, true);
+  assert.equal(daily.pending === false, false);
+  assert.equal(daily.clients[0].error, 'Erreur inconnue');
+
+  const remote = createSupabaseStore(null, {
+    url: 'https://down.supabase.co',
+    serviceRole: 'service-test',
+    anonKey: 'anon-test'
+  });
+  const previousFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error('connect ECONNREFUSED');
+  };
+  try {
+    await assert.rejects(() => remote.listRetryable('EFC', 5), /ECONNREFUSED/);
+    await assert.rejects(() => remote.listRetryableAny(5), /ECONNREFUSED/);
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
 test('enregistrement : 11 destinataires refusés, environnement vide jamais DEMO', async () => {
   const many = Array.from({ length: 11 }, (_, index) => `u${index}@example.com`);
   await assert.rejects(

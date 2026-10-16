@@ -310,7 +310,7 @@ function decodePng(buf, room) {
     } catch (_) {
       return null;
     }
-    if (!raw || raw.length !== maxOutputLength) return null;
+    if (!raw || raw.length !== maxOutputLength) return { rejected: true, decodedBytes: raw ? raw.length : maxOutputLength };
     const stride = width * channels;
     const rgb = Buffer.alloc(rgbBytes);
     let src = 0;
@@ -318,7 +318,7 @@ function decodePng(buf, room) {
     for (let y = 0; y < height; y++) {
       const filter = raw[src];
       src += 1;
-      if (filter > 4 || src + stride > raw.length) return null;
+      if (filter > 4 || src + stride > raw.length) return { rejected: true, decodedBytes: raw.length };
       const row = Buffer.alloc(stride);
       for (let i = 0; i < stride; i++) {
         const left = i >= channels ? row[i - channels] : 0;
@@ -477,9 +477,11 @@ function acceptImageSource(value, out, budget) {
   if (imageBudgetExhausted(budget)) return omitImage(out, budget);
   budget.attempts += 1;
   const image = decodeImageBuffer(buf, MAX_DECODED_BYTES - budget.decodedBytes);
-  if (!image) return omitImage(out, budget);
-  budget.decodedBytes += image.decodedBytes;
-  if (budget.decodedBytes >= MAX_DECODED_BYTES) budget.closed = true;
+  if (image && image.decodedBytes) {
+    budget.decodedBytes += image.decodedBytes;
+    if (budget.decodedBytes >= MAX_DECODED_BYTES) budget.closed = true;
+  }
+  if (!image || image.rejected) return omitImage(out, budget);
   if (image.kind === 'jpeg' && budget.jpegBytes + image.buf.length > MAX_JPEG_BUDGET) return omitImage(out, budget);
   if (budget.embeddedBytes + embeddedLowerBound(image) > MAX_EMBEDDED_BUDGET) return omitImage(out, budget);
   if (imageBudgetExhausted(budget)) return omitImage(out, budget);

@@ -163,6 +163,7 @@ async function loadActorCatalog(req, environmentCode, license) {
     });
   } catch (err) {
     if (err && (err.code === 'DEADLINE' || err.status === 504)) throw err.code === 'DEADLINE' ? err : deadlineError();
+    if (access.roleKeysCapError(err)) throw access.roleKeysCapRefusal();
     throw access.unavailable(err);
   }
   if (!Array.isArray(rows)) throw access.unavailable();
@@ -658,6 +659,9 @@ async function handler(req, res) {
       serviceIndex = await servicesPromise;
     } catch (err) {
       if (isPadAuthError(err)) throw err;
+      if (err && err.status === 400) {
+        return sendJson(res, 400, { ok: false, error: err.message || 'Trop de rôles pour cette requête.' });
+      }
       const requestId = crypto.randomUUID();
       if (err && err.code === 'DEADLINE') console.warn('[pad-sync] délai de requête, lecture licence', requestId);
       else console.error('[pad-sync]', requestId, err && (err.stack || err.message || err));
