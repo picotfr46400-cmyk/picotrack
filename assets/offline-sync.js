@@ -11,7 +11,8 @@
     'apikey', 'api_key', 'secret', 'service_role', 'supa_key', 'supa_url',
     'pico_session_token', 'pt_active_session_token', 'bearer'
   ]);
-  const VALUE_KEYS = new Set(['values', 'form_data']);
+  const VALUE_KEYS = new Set(['values', 'form_data', 'photos', 'comment', 'events']);
+  const SERVER_FAULT_LIMIT = 3;
 
   function scopeKey(channel, environmentCode, userId) {
     return [String(channel || 'pad'), String(environmentCode || '').toUpperCase(), String(userId || '')].join('|');
@@ -88,8 +89,39 @@
   function dependencyTarget(action) {
     if (!action || action.type !== 'workflow_step') return '';
     const payload = action.payload || {};
+    if (payload.dependsOn) return String(payload.dependsOn);
     const instance = payload.instance && typeof payload.instance === 'object' ? payload.instance : {};
-    return String(payload.instanceId || payload.instance_id || payload.dependsOn || instance.id || '');
+    return String(payload.instanceId || payload.instance_id || instance.id || '');
+  }
+
+  function pendingCreateId(engine, instanceId) {
+    if (!engine || typeof engine.list !== 'function') return '';
+    const wanted = String(instanceId || '');
+    if (!wanted) return '';
+    const found = engine.list().find((action) => {
+      if (!action || canonicalType(action.type) !== 'service_instance') return false;
+      if (action.status === 'rejected' || action.status === 'synced') return false;
+      const payload = action.payload || {};
+      return String(action.id) === wanted || String(payload.localInstanceId || '') === wanted;
+    });
+    return found ? String(found.id) : '';
+  }
+
+  function stepFields(row) {
+    const formData = row && (row.form_data !== undefined ? row.form_data : row.formData);
+    const events = row && Array.isArray(row.events) ? row.events : [];
+    const latest = events.length ? events[events.length - 1] : null;
+    const eventPayload = latest && latest.payload && typeof latest.payload === 'object' ? latest.payload : {};
+    const comment = String(eventPayload.comment || (latest && latest.comment) || (row && row.comment) || '').trim();
+    let photos = [];
+    let photosInsideForm = false;
+    if (Array.isArray(eventPayload.photos)) photos = eventPayload.photos;
+    else if (row && Array.isArray(row.photos)) photos = row.photos;
+    else if (formData && typeof formData === 'object' && Array.isArray(formData.photos)) {
+      photos = formData.photos;
+      photosInsideForm = true;
+    }
+    return { formData, comment, photos, photosInsideForm };
   }
 
   function isQuotaError(err) {
@@ -109,7 +141,8 @@
     const error = String(result.error || '');
     if (result.ok && result.duplicate) return 'duplicate';
     if (result.ok && status === 200) return 'confirmed';
-    if (status === 401 && /session expir|session pad expir|authentification requise/i.test(error) && !/licence inactive|supprim/i.test(error)) return 'session';
+    if (status === 401) return 'session';
+    if (status === 500) return 'fault';
     if (/type de file pad inconnu/i.test(error)) return 'rejected';
     if (status >= 400 && status < 500) return 'rejected';
     return 'transient';
@@ -194,7 +227,7 @@
         error: (one && one.error) || (body && body.error) || 'Synchronisation momentanément indisponible.'
       };
     }
-    return { ok: true, status: 200, duplicate: !!one.duplicate, confirmed: true };
+    return { ok: true, status: 200, duplicate: !!one.duplicate, confirmed: true, row: one.row || null };
   }
 
   function shouldQueueEntity(entity, context, id) {
@@ -237,6 +270,8 @@
     let syncing = false;
     let lastError = '';
     let sessionPaused = false;
+    let heldToken = '';
+    let sawSignedOut = false;
     let transientAttempts = 0;
     const memory = new Map();
 
@@ -363,11 +398,20 @@
         return { skipped: 'no-session' };
       }
       if (current.expired || !current.token) {
+        if (heldToken) sawSignedOut = true;
         sessionPaused = true;
         syncing = false;
         lastError = 'Session expirée. Les actions restent sur cet appareil jusqu’à la reconnexion du même utilisateur.';
         return { skipped: 'session' };
       }
+      if (heldToken && current.token === heldToken && !sawSignedOut) {
+        sessionPaused = true;
+        syncing = false;
+        lastError = 'Session expirée. Les actions restent sur cet appareil jusqu’à la reconnexion du même utilisateur.';
+        return { skipped: 'session' };
+      }
+      heldToken = '';
+      sawSignedOut = false;
       flushing = true;
       syncing = true;
       sessionPaused = false;
@@ -419,12 +463,22 @@
             const result = await transport(wire, fresh);
             const kind = classifySyncResult(result);
             if (kind === 'confirmed' || kind === 'duplicate') {
+              if (canonicalType(action.type) === 'service_instance' && result && result.row && result.row.id != null) {
+                await adoptServerId(rows, action.id, result.row.id);
+              }
               action.status = 'synced';
               await store.deleteAction(action.id).catch(() => {});
               memory.delete(action.id);
               sent.push(action.id);
               lastError = '';
               transientAttempts = 0;
+            } else if (kind === 'fault') {
+              action.lastError = 'Cette action n’a pas pu être enregistrée.';
+              action.status = (action.attempts || 0) >= SERVER_FAULT_LIMIT ? 'rejected' : 'pending';
+              if (action.status === 'pending') transientAttempts += 1;
+              lastError = action.lastError;
+              await store.putAction(clone(action)).catch(() => {});
+              memory.set(action.id, action);
             } else if (kind === 'rejected') {
               action.status = 'rejected';
               action.lastError = readableRefusal(result);
@@ -433,7 +487,9 @@
               memory.set(action.id, action);
             } else if (kind === 'session') {
               action.status = 'pending';
-              action.lastError = (result && result.error) || 'Session expirée';
+              action.lastError = 'Session expirée';
+              heldToken = String((fresh && fresh.token) || '');
+              sawSignedOut = false;
               sessionPaused = true;
               lastError = 'Session expirée. Les actions restent sur cet appareil jusqu’à la reconnexion du même utilisateur.';
               await store.putAction(clone(action)).catch(() => {});
@@ -458,6 +514,24 @@
         syncing = false;
       }
       return { sent: sent };
+    }
+
+    async function adoptServerId(rows, localId, serverId) {
+      const local = String(localId || '');
+      const remote = String(serverId || '');
+      if (!local || !remote || local === remote) return;
+      for (const other of rows) {
+        if (!other || canonicalType(other.type) !== 'workflow_step') continue;
+        const payload = other.payload || {};
+        const instance = payload.instance && typeof payload.instance === 'object' ? payload.instance : null;
+        const linked = String(payload.dependsOn || payload.instanceId || payload.instance_id || (instance && instance.id) || '');
+        if (linked !== local && String(payload.instanceId || '') !== local && String(payload.dependsOn || '') !== local) continue;
+        payload.instanceId = remote;
+        if (instance) instance.id = remote;
+        other.payload = payload;
+        memory.set(other.id, other);
+        await store.putAction(clone(other)).catch(() => {});
+      }
     }
 
     async function retry() {
@@ -850,7 +924,7 @@
         if (afterChange) afterChange();
         return Promise.reject(Object.assign(new Error(message), { refused: true }));
       }
-      if (context.online !== false && id) return original.apply(this, arguments);
+      if (context.online !== false && id && !pendingCreateId(engine, id)) return original.apply(this, arguments);
       const current = identityOf(win);
       const channel = context.pad ? 'pad' : 'web';
       if (!current || current.channel !== channel || !current.userId) {
@@ -866,10 +940,15 @@
         formId: row.form_id || row.formId || null
       };
       if (type === 'workflow_step') {
+        const content = stepFields(row);
+        const linked = pendingCreateId(engine, id);
         payload.instanceId = id;
-        payload.dependsOn = id;
+        payload.dependsOn = linked || id;
         payload.serviceId = row.service_id || row.serviceId || null;
         payload.statusId = row.current_status_id || row.status_id || null;
+        if (content.formData !== undefined) payload.form_data = content.formData;
+        if (content.comment) payload.comment = content.comment;
+        if (content.photos.length && !content.photosInsideForm) payload.photos = content.photos;
         payload.instance = {
           id: id,
           service_id: payload.serviceId,
@@ -1031,6 +1110,8 @@
           service_id: payload.serviceId || instance.service_id,
           current_status_id: payload.statusId || instance.current_status_id,
           status_id: payload.statusId || instance.status_id,
+          form_data: payload.form_data !== undefined ? payload.form_data : instance.form_data,
+          events: [{ payload: { comment: payload.comment || '', photos: payload.photos || [] } }],
           device: 'web',
           environment_code: current.environmentCode,
           idempotency_key: key
@@ -1134,6 +1215,7 @@
     transportFor: transportFor,
     recordsBody: recordsBody,
     readableRefusal: readableRefusal,
-    dependencyTarget: dependencyTarget
+    dependencyTarget: dependencyTarget,
+    serverFaultLimit: SERVER_FAULT_LIMIT
   };
 });

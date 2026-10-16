@@ -305,7 +305,8 @@ test('secrets absents de la file, cloison logout, indicateur et backoff', async 
   assert.equal(offline.statusView({ online: true, pending: 0 }).text, 'Tout est envoyé');
   assert.equal(offline.classifySyncResult({ ok: true, duplicate: true }), 'duplicate');
   assert.equal(offline.classifySyncResult({ ok: false, status: 401, error: 'Session PAD expirée' }), 'session');
-  assert.equal(offline.classifySyncResult({ ok: false, status: 401, error: 'Licence PAD inactive ou supprimée' }), 'rejected');
+  assert.equal(offline.classifySyncResult({ ok: false, status: 401, error: 'Licence PAD inactive ou supprimée' }), 'session');
+  assert.equal(offline.classifySyncResult({ ok: false, status: 401, error: 'jeton illisible' }), 'session');
   assert.equal(offline.classifySyncResult({ ok: false, status: 409, error: 'conflit' }), 'rejected');
   assert.equal(offline.classifySyncResult({ ok: false, status: 422, error: 'Formulaire invalide' }), 'rejected');
   assert.equal(offline.classifySyncResult({ ok: false, status: 503, error: 'Type de file PAD inconnu : workflow_step' }), 'rejected');
@@ -403,7 +404,8 @@ test('référence restaurée et file seulement hors ligne ou en PAD', async () =
   assert.equal(padEngine.list().length, 2);
   assert.equal(padEngine.list()[1].type, 'workflow_step');
   assert.equal(padEngine.list()[1].payload.instance.form_data, undefined);
-  assert.equal(JSON.stringify(padEngine.list()[1].payload).split('faite').length - 1, 0);
+  assert.equal(padEngine.list()[1].payload.form_data.etape, 'faite');
+  assert.equal(JSON.stringify(padEngine.list()[1].payload).split('faite').length - 1, 1);
   await assert.rejects(
     padWin.DB.save('appointments', { title: 'rdv' }),
     /hors ligne/
@@ -976,9 +978,9 @@ test('pad-sync : session invalide et hors 200 ne confirment pas la file', async 
       created_at: '2026-10-08T08:00:00.000Z',
       payload: { values: {} }
     }]);
-    assert.equal(retry.status, 503);
+    assert.equal(retry.status, 400);
     assert.equal(offline.outcomeFromPadResponse(retry.status, retry.payload).confirmed, undefined);
-    assert.equal(offline.classifySyncResult(offline.outcomeFromPadResponse(retry.status, retry.payload)), 'transient');
+    assert.equal(offline.classifySyncResult(offline.outcomeFromPadResponse(retry.status, retry.payload)), 'rejected');
   });
 });
 
@@ -1001,6 +1003,356 @@ function jsonResponse(status, body) {
     json: async () => body
   };
 }
+
+test('B1 : l’horloge est armée et un 500 répété finit dans rejetées', async () => {
+  await withPadServer(async () => {
+    const instances = new Map([['inst-b1', {
+      id: 'inst-b1', service_id: 'svc-1', environment_code: 'EFC',
+      current_status_id: 'ouvert', status_id: 'ouvert', events: [], updated_at: '2026-10-08T00:00:00.000Z'
+    }]]);
+    const services = new Map([['svc-1', { id: 'svc-1', environment_code: 'EFC', permissions: {} }]]);
+    const profile = {
+      id: 'sup-1', email: 'marie@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision',
+      environment_code: 'EFC', active: true
+    };
+    global.fetch = async (url, options = {}) => {
+      const href = String(url);
+      const method = options.method || 'GET';
+      if (href.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
+      if (href.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
+      if (href.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (href.includes('/services')) return jsonResponse(200, [services.get('svc-1')]);
+      if (href.includes('/service_instances') && method === 'GET') return jsonResponse(200, [instances.get('inst-b1')]);
+      if (href.includes('/service_instances') && method === 'PATCH') {
+        const body = JSON.parse(options.body);
+        const next = { ...instances.get('inst-b1'), ...body };
+        instances.set('inst-b1', next);
+        return jsonResponse(200, [next]);
+      }
+      return jsonResponse(200, []);
+    };
+    const bare = { headers: { host: 'localhost' } };
+    const direct = await padSync.applyWorkflowStep(bare, 'EFC', {
+      instanceId: 'inst-b1', statusId: 'fait', instance: { current_status_id: 'fait' }
+    }, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', { role: 'pad_user', license_type: 'pad' });
+    assert.equal(typeof bare.picoRemainingMs, 'function');
+    assert.equal(direct.duplicate, false);
+    const res = mockRes();
+    await records({
+      method: 'POST',
+      headers: { host: 'localhost', authorization: 'Bearer session-token', 'x-picotrack-session': 'sess-1' },
+      body: {
+        action: 'save',
+        entity: 'service_instances',
+        id: 'inst-b1',
+        idempotency_key: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        record: { service_id: 'svc-1', current_status_id: 'clos', status_id: 'clos' }
+      }
+    }, res);
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(String(res.body).includes('Délai de synchronisation'), false);
+  });
+
+  const { engine, calls } = harness(async () => ({ ok: false, status: 500, error: 'TypeError: boom at /srv/pad-sync.js' }));
+  const key = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  await engine.enqueue({
+    type: 'workflow_step',
+    idempotency_key: key,
+    payload: { instanceId: 'inst-b1', statusId: 'fait' },
+    ...USER_A
+  });
+  for (let i = 0; i < offline.serverFaultLimit; i++) await engine.flush();
+  const row = engine.list()[0];
+  assert.equal(row.status, 'rejected');
+  assert.equal(row.idempotency_key, key);
+  assert.equal(row.lastError, 'Cette action n’a pas pu être enregistrée.');
+  assert.equal(row.lastError.includes('TypeError'), false);
+  const sent = calls.length;
+  await engine.flush();
+  assert.equal(calls.length, sent);
+});
+
+test('B2 : un 401 met la session en pause, garde la clé, et repart après reconnexion', async () => {
+  let deny = true;
+  const { engine, calls, state } = harness(async () => {
+    if (deny) return { ok: false, status: 401, error: 'jeton illisible sans le mot session' };
+    return { ok: true, confirmed: true };
+  });
+  const key = '12121212-1212-4121-8121-121212121212';
+  await engine.enqueue({
+    type: 'form_submission',
+    idempotency_key: key,
+    payload: { formId: 'f1', values: { nom: 'reprise' } },
+    ...USER_A
+  });
+  await engine.flush();
+  assert.equal(engine.list()[0].status, 'pending');
+  assert.equal(engine.list()[0].idempotency_key, key);
+  assert.equal(engine.viewState().sessionPaused, true);
+  assert.equal(engine.viewState().rejected.length, 0);
+  await engine.flush();
+  assert.equal(calls.length, 1);
+  deny = false;
+  state.session = { ...USER_A, token: 'token-reconnecte' };
+  await engine.flush();
+  assert.equal(calls.length, 2);
+  assert.equal(engine.list().length, 0);
+});
+
+test('B3 : l’étape envoie signature, photos et commentaire', async () => {
+  const store = offline.createMemoryStore();
+  const engine = offline.createOfflineSync({
+    store,
+    online: () => false,
+    session: () => USER_A,
+    uuid: sequentialUuid(),
+    transport: async () => ({ ok: true, confirmed: true })
+  });
+  const win = {
+    DB: { save: () => Promise.resolve({ id: 'server' }) },
+    localStorage: { getItem: () => JSON.stringify({ licenseId: 'lic-a', code: 'EFC', padSessionToken: 'token-a' }), setItem() {}, removeItem() {} },
+    isPadMode: () => true,
+    navigator: { onLine: false }
+  };
+  offline.wrapDatabase(win, engine);
+  await win.DB.save('service_instances', {
+    service_id: 's1',
+    current_status_id: 'fait',
+    form_data: { signature: 'SIGN-UNIQUE' },
+    events: [{ type: 'commented', payload: { comment: 'Vu sur place', photos: ['photo-1'] } }]
+  }, 'inst-b3');
+  const queued = engine.list()[0];
+  assert.equal(queued.type, 'workflow_step');
+  assert.equal(queued.payload.form_data.signature, 'SIGN-UNIQUE');
+  assert.equal(queued.payload.comment, 'Vu sur place');
+  assert.deepEqual(queued.payload.photos, ['photo-1']);
+  assert.equal(JSON.stringify(queued.payload).split('SIGN-UNIQUE').length - 1, 1);
+  assert.equal(JSON.stringify(queued.payload).split('photo-1').length - 1, 1);
+
+  await withPadServer(async () => {
+    const instances = new Map([['inst-b3', {
+      id: 'inst-b3', service_id: 's1', environment_code: 'EFC',
+      current_status_id: 'ouvert', events: [], updated_at: '2026-10-08T00:00:00.000Z'
+    }]]);
+    global.fetch = padBackend({
+      instances,
+      services: new Map([['s1', { id: 's1', environment_code: 'EFC', permissions: {} }]]),
+      submissions: new Map(),
+      patches: []
+    });
+    const wire = offline.toWireAction(queued);
+    const out = await callPad([wire]);
+    assert.equal(out.status, 200, JSON.stringify(out.payload));
+    const saved = instances.get('inst-b3');
+    assert.equal(saved.form_data.signature, 'SIGN-UNIQUE');
+    assert.equal(saved.events.length, 1);
+    assert.equal(saved.events[0].payload.comment, 'Vu sur place');
+    assert.deepEqual(saved.events[0].payload.photos, ['photo-1']);
+  });
+});
+
+test('B4 : une étape sur une instance locale part avec l’id serveur après le 200', async () => {
+  const sent = [];
+  const { engine } = harness(async (action) => {
+    sent.push({ type: action.type, instanceId: action.payload && action.payload.instanceId });
+    if (action.type === 'service_instance') return { ok: true, status: 200, confirmed: true, row: { id: 'srv-42' } };
+    return { ok: true, status: 200, confirmed: true };
+  });
+  const created = await engine.enqueue({
+    id: 'local-inst',
+    type: 'service_instance',
+    payload: { formId: 'f1', serviceId: 's1', values: { nom: 'dossier' } },
+    ...USER_A
+  });
+  await engine.enqueue({
+    type: 'workflow_step',
+    payload: { instanceId: created.id, dependsOn: created.id, statusId: 'fait', instance: { id: created.id, service_id: 's1' } },
+    ...USER_A
+  });
+  await engine.flush();
+  assert.deepEqual(sent.map(item => item.type), ['service_instance', 'workflow_step']);
+  assert.equal(sent[1].instanceId, 'srv-42');
+  assert.equal(engine.list().length, 0);
+});
+
+test('B5 : deux étapes parallèles s’ajoutent, la même clé n’écrit qu’une fois', async () => {
+  await withPadServer(async () => {
+    const state = {
+      id: 'inst-par',
+      service_id: 'svc-1',
+      environment_code: 'EFC',
+      current_status_id: 'ouvert',
+      status_id: 'ouvert',
+      events: [],
+      updated_at: '2026-10-08T00:00:00.000Z',
+      submission_id: 'sub-par'
+    };
+    let wave = 0;
+    let waiting = 0;
+    let release = null;
+    const gate = () => new Promise((resolve) => { release = resolve; });
+    let door = gate();
+    let mailReads = 0;
+    global.fetch = async (url, options = {}) => {
+      const href = String(url);
+      const method = options.method || 'GET';
+      if (href.includes('/licenses') && method === 'GET') {
+        return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad' }]);
+      }
+      if (href.includes('/licenses') && method === 'PATCH') return jsonResponse(200, [{ id: 'lic-1' }]);
+      if (href.includes('mail_rules')) { mailReads += 1; return jsonResponse(200, []); }
+      if (href.includes('/services') && method === 'GET') {
+        return jsonResponse(200, [{ id: 'svc-1', environment_code: 'EFC', permissions: {} }]);
+      }
+      if (href.includes('submission_audit_log')) return jsonResponse(200, []);
+      if (href.includes('/service_instances') && method === 'GET') {
+        if (wave === 0) {
+          waiting += 1;
+          if (waiting === 4) { wave = 1; release(); }
+          else await door;
+        }
+        return jsonResponse(200, [{ ...state, events: state.events.slice() }]);
+      }
+      if (href.includes('/service_instances') && method === 'PATCH') {
+        const expected = decodeURIComponent((href.match(/updated_at=eq\.([^&]+)/) || [])[1] || '');
+        const body = JSON.parse(options.body);
+        if (!expected || expected !== state.updated_at) return jsonResponse(200, []);
+        state.updated_at = body.updated_at;
+        state.events = body.events;
+        state.current_status_id = body.current_status_id || state.current_status_id;
+        state.status_id = body.status_id || state.status_id;
+        state.form_data = body.form_data || state.form_data;
+        return jsonResponse(200, [{ ...state, events: state.events.slice() }]);
+      }
+      return jsonResponse(200, []);
+    };
+    const keys = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444'];
+    const calls = keys.map((key, index) => callPad([{
+      id: 'step-' + index,
+      type: 'workflow_step',
+      idempotency_key: key,
+      created_at: '2026-10-08T08:00:00.000Z',
+      payload: { instanceId: 'inst-par', statusId: 's' + index, instance: { service_id: 'svc-1', current_status_id: 's' + index } }
+    }]));
+    const results = await Promise.all(calls);
+    assert.equal(results.every(item => item.status === 200), true, JSON.stringify(results.map(item => item.payload)));
+    assert.equal(state.events.length, 4);
+    assert.equal(new Set(state.events.map(event => event.idempotency_key)).size, 4);
+
+    wave = 1;
+    waiting = 0;
+    door = gate();
+    let sameWaiting = 0;
+    let sameRelease = null;
+    const sameDoor = new Promise((resolve) => { sameRelease = resolve; });
+    const sameKey = '55555555-5555-4555-8555-555555555555';
+    const beforeMails = mailReads;
+    const previousFetch = global.fetch;
+    global.fetch = async (url, options = {}) => {
+      const href = String(url);
+      const method = options.method || 'GET';
+      if (href.includes('/service_instances') && method === 'GET' && wave === 1) {
+        sameWaiting += 1;
+        if (sameWaiting === 2) { wave = 2; sameRelease(); }
+        else await sameDoor;
+      }
+      return previousFetch(url, options);
+    };
+    const pair = await Promise.all([0, 1].map((index) => callPad([{
+      id: 'same-' + index,
+      type: 'workflow_step',
+      idempotency_key: sameKey,
+      created_at: '2026-10-08T08:05:00.000Z',
+      payload: { instanceId: 'inst-par', statusId: 'meme', instance: { service_id: 'svc-1', current_status_id: 'meme' } }
+    }])));
+    const duplicates = pair.filter(item => item.payload.results && item.payload.results[0] && item.payload.results[0].duplicate);
+    assert.equal(duplicates.length, 1, JSON.stringify(pair.map(item => item.payload)));
+    assert.equal(state.events.filter(event => event.idempotency_key === sameKey).length, 1);
+    assert.equal(mailReads - beforeMails, 1);
+  });
+});
+
+test('B6 : une saisie bureau en ligne sans clé crée deux lignes', async () => {
+  await withPadServer(async () => {
+    const profile = {
+      id: 'sup-1', email: 'marie@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision',
+      environment_code: 'EFC', active: true
+    };
+    let seq = 0;
+    const posts = [];
+    global.fetch = async (url, options = {}) => {
+      const href = String(url);
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      if (href.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
+      if (href.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
+      if (href.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', permissions: {} }]);
+      if (href.includes('/rest/v1/submissions') && method === 'POST') {
+        posts.push(href);
+        assert.equal(href.includes('on_conflict'), false);
+        assert.equal(body.idempotency_key, undefined);
+        seq += 1;
+        return jsonResponse(200, [{ id: 'desk-' + seq }]);
+      }
+      if (href.includes('submission_audit_log')) return jsonResponse(200, []);
+      return jsonResponse(200, []);
+    };
+    const record = { form_id: 'form-1', values: { client: 'bureau' }, device: 'desktop' };
+    const first = mockRes();
+    const second = mockRes();
+    const headers = { host: 'localhost', authorization: 'Bearer session-token', 'x-picotrack-session': 'sess-1' };
+    await records({ method: 'POST', headers, body: { action: 'save', entity: 'submissions', record } }, first);
+    await records({ method: 'POST', headers, body: { action: 'save', entity: 'submissions', record: { ...record } } }, second);
+    assert.equal(first.statusCode, 200, first.body);
+    assert.equal(second.statusCode, 200, second.body);
+    const a = JSON.parse(first.body);
+    const b = JSON.parse(second.body);
+    assert.equal(a[0].id, 'desk-1');
+    assert.equal(b[0].id, 'desk-2');
+    assert.equal(posts.length, 2);
+  });
+});
+
+test('B7 : une instance PAD sans formulaire répond 400 et n’est pas renvoyée', async () => {
+  await withPadServer(async () => {
+    global.fetch = async (url, options = {}) => {
+      const href = String(url);
+      if (href.includes('/licenses') && (options.method || 'GET') === 'GET') {
+        return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', role: 'pad_user', license_type: 'pad' }]);
+      }
+      return jsonResponse(200, []);
+    };
+    const out = await callPad([{
+      id: 'inst-no-form',
+      type: 'service_instance',
+      idempotency_key: 'abababab-abab-4aba-8aba-abababababab',
+      created_at: '2026-10-08T08:00:00.000Z',
+      payload: { serviceId: 's1', values: { nom: 'sans formulaire' }, instance: { service_id: 's1' } }
+    }]);
+    assert.equal(out.status, 400, JSON.stringify(out.payload));
+    assert.equal(out.payload.results[0].status, 'rejected');
+    assert.equal(JSON.stringify(out.payload).toLowerCase().includes('supabase'), false);
+    let hits = 0;
+    const { engine } = harness(async (action) => {
+      hits += 1;
+      const again = await callPad([action]);
+      return offline.outcomeFromPadResponse(again.status, again.payload);
+    });
+    await engine.enqueue({
+      id: 'inst-no-form-2',
+      type: 'service_instance',
+      idempotency_key: 'bcbcbcbc-bcbc-4bcb-8bcb-bcbcbcbcbcbc',
+      payload: { serviceId: 's1', values: { nom: 'encore' }, instance: { service_id: 's1' } },
+      ...USER_A
+    });
+    await engine.flush();
+    await engine.flush();
+    assert.equal(hits, 1);
+    assert.equal(engine.list()[0].status, 'rejected');
+    assert.equal(engine.list()[0].idempotency_key, 'bcbcbcbc-bcbc-4bcb-8bcb-bcbcbcbcbcbc');
+  });
+});
 
 function createFakeIndexedDB() {
   const maps = {};

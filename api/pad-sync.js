@@ -90,6 +90,7 @@ function requestBudgetMs(req) {
 }
 
 function armRequestClock(req) {
+  if (!req || typeof req.picoRemainingMs === 'function') return;
   const startedAt = clock(req);
   const deadlineAt = startedAt + requestBudgetMs(req);
   req.picoRemainingMs = () => deadlineAt - clock(req);
@@ -233,7 +234,7 @@ async function writeIdempotent(req, table, row, key, timeoutMs) {
 
 async function insertSubmission(req, environmentCode, payload, key, timeoutMs) {
   const formId = payload.formId ?? payload.form_id;
-  if (formId == null || formId === '') throw new Error('Formulaire manquant dans la synchronisation PAD');
+  if (formId == null || formId === '') throw refusalError(400, 'Formulaire manquant pour cette saisie.');
   return writeIdempotent(req, 'submissions', {
     environment_code: environmentCode,
     form_id: formId,
@@ -299,49 +300,96 @@ async function assertWorkflowWrite(req, environmentCode, instance, actor) {
   if (!edit.some((role) => roles.includes(role))) throw refusalError(403);
 }
 
+function nextVersion(previous) {
+  const now = new Date().toISOString();
+  if (now !== String(previous || '')) return now;
+  const parsed = Date.parse(previous || '');
+  if (!Number.isNaN(parsed)) {
+    const bumped = new Date(parsed + 1).toISOString();
+    if (bumped !== String(previous)) return bumped;
+  }
+  return String(previous || '0') + '.1';
+}
+
+function versionFilter(updatedAt) {
+  if (updatedAt == null || updatedAt === '') return 'updated_at=is.null';
+  return 'updated_at=eq.' + encodeURIComponent(String(updatedAt));
+}
+
+function stepContent(payload) {
+  const inst = payload && payload.instance && typeof payload.instance === 'object' ? payload.instance : {};
+  const formData = payload && payload.form_data !== undefined ? payload.form_data
+    : payload && payload.formData !== undefined ? payload.formData
+    : inst.form_data !== undefined ? inst.form_data
+    : inst.formData;
+  const events = Array.isArray(payload && payload.events) ? payload.events : (Array.isArray(inst.events) ? inst.events : []);
+  const latest = events.length ? events[events.length - 1] : null;
+  const eventPayload = latest && latest.payload && typeof latest.payload === 'object' ? latest.payload : {};
+  const comment = String((payload && payload.comment) || eventPayload.comment || (latest && latest.comment) || '').trim();
+  let photos = payload && Array.isArray(payload.photos) ? payload.photos
+    : Array.isArray(eventPayload.photos) ? eventPayload.photos
+    : (latest && Array.isArray(latest.photos) ? latest.photos : null);
+  if (!photos && formData && typeof formData === 'object' && Array.isArray(formData.photos)) photos = formData.photos;
+  return { formData, comment, photos: Array.isArray(photos) ? photos : [] };
+}
+
 async function applyWorkflowStep(req, environmentCode, payload, key, actor) {
+  armRequestClock(req);
   const instanceId = String(payload && (payload.instanceId || payload.instance_id) || (payload && payload.instance && payload.instance.id) || '').trim();
   if (!instanceId) throw refusalError(400, 'Dossier manquant pour cette étape.');
   if (!key) throw new Error('Clé d’idempotence manquante');
-  const readTimeout = nextTimeout(req);
-  if (!readTimeout) throw deadlineError();
-  const found = await sbRest(req, `service_instances?id=eq.${encodeURIComponent(instanceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=${READ_COLUMNS.service_instances}&limit=1`, { method: 'GET', prefer: '', timeoutMs: readTimeout });
-  const current = firstRow(found);
-  if (!current) throw refusalError(404);
-  await assertWorkflowWrite(req, environmentCode, current, actor);
-  const events = Array.isArray(current.events) ? current.events.slice() : [];
-  if (events.some((event) => event && (event.idempotency_key === key || event.idempotencyKey === key))) {
-    return { row: current, duplicate: true, previous: current };
-  }
+  const content = stepContent(payload);
   const inst = payload.instance && typeof payload.instance === 'object' ? payload.instance : {};
-  const patch = { updated_at: new Date().toISOString() };
-  for (const field of ['status_id', 'current_status_id', 'priority', 'assigned_to', 'reference', 'ref']) {
-    if (inst[field] !== undefined) patch[field] = inst[field];
-  }
-  const nextStatus = payload.statusId || payload.status_id || patch.current_status_id || patch.status_id;
-  if (nextStatus) {
-    patch.current_status_id = nextStatus;
-    patch.status_id = nextStatus;
-  }
-  patch.events = events.concat([{
-    id: key,
-    type: 'status_changed',
-    at: payload.at || new Date().toISOString(),
-    idempotency_key: key,
-    payload: {
+  let guarded = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const readTimeout = nextTimeout(req);
+    if (!readTimeout) throw deadlineError();
+    const found = await sbRest(req, `service_instances?id=eq.${encodeURIComponent(instanceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=${READ_COLUMNS.service_instances}&limit=1`, { method: 'GET', prefer: '', timeoutMs: readTimeout });
+    const current = firstRow(found);
+    if (!current) throw refusalError(404);
+    if (!guarded) {
+      await assertWorkflowWrite(req, environmentCode, current, actor);
+      guarded = true;
+    }
+    const events = Array.isArray(current.events) ? current.events.slice() : [];
+    if (events.some((event) => event && (event.idempotency_key === key || event.idempotencyKey === key))) {
+      return { row: current, duplicate: true, previous: current };
+    }
+    const patch = { updated_at: nextVersion(current.updated_at) };
+    for (const field of ['status_id', 'current_status_id', 'priority', 'assigned_to', 'reference', 'ref']) {
+      if (inst[field] !== undefined) patch[field] = inst[field];
+    }
+    const nextStatus = payload.statusId || payload.status_id || patch.current_status_id || patch.status_id;
+    if (nextStatus) {
+      patch.current_status_id = nextStatus;
+      patch.status_id = nextStatus;
+    }
+    if (content.formData !== undefined) patch.form_data = content.formData;
+    const eventPayload = {
       fromStatus: current.current_status_id || current.status_id || null,
       toStatus: patch.current_status_id || null
-    }
-  }]);
-  const writeTimeout = nextTimeout(req);
-  if (!writeTimeout) throw deadlineError();
-  const updated = await sbRest(req, `service_instances?id=eq.${encodeURIComponent(instanceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}`, {
-    method: 'PATCH',
-    prefer: 'return=representation',
-    timeoutMs: writeTimeout,
-    body: patch
-  });
-  return { row: firstRow(updated) || Object.assign({}, current, patch), duplicate: false, previous: current };
+    };
+    if (content.comment) eventPayload.comment = content.comment;
+    if (content.photos.length) eventPayload.photos = content.photos;
+    patch.events = events.concat([{
+      id: key,
+      type: content.comment && !nextStatus ? 'commented' : 'status_changed',
+      at: payload.at || new Date().toISOString(),
+      idempotency_key: key,
+      payload: eventPayload
+    }]);
+    const writeTimeout = nextTimeout(req);
+    if (!writeTimeout) throw deadlineError();
+    const updated = await sbRest(req, `service_instances?id=eq.${encodeURIComponent(instanceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}&${versionFilter(current.updated_at)}`, {
+      method: 'PATCH',
+      prefer: 'return=representation',
+      timeoutMs: writeTimeout,
+      body: patch
+    });
+    const row = firstRow(updated);
+    if (row) return { row, duplicate: false, previous: current };
+  }
+  throw Object.assign(new Error('Conflit d’étape, à renvoyer'), { status: 503 });
 }
 
 async function insertPadRecord(req, spec) {
@@ -712,5 +760,6 @@ handler.resolveIdempotencyKey = resolveIdempotencyKey;
 handler.deriveIdempotencyKey = deriveIdempotencyKey;
 handler.insertPadRecord = insertPadRecord;
 handler.applyWorkflowStep = applyWorkflowStep;
+handler.armRequestClock = armRequestClock;
 handler.DERIVED_KEY_WARN = DERIVED_KEY_WARN;
 module.exports = handler;

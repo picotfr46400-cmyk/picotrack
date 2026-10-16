@@ -1583,11 +1583,14 @@ async function handleSave(req, body) {
   ).trim();
   if (entity === 'service_instances' && id && suppliedKey) {
     const padSync = require('./pad-sync');
+    padSync.armRequestClock(req);
     const written = await padSync.applyWorkflowStep(req, record.environment_code || env, {
       instanceId: id,
       serviceId: record.service_id,
       instance: record,
-      statusId: record.current_status_id || record.status_id
+      statusId: record.current_status_id || record.status_id,
+      form_data: record.form_data,
+      events: record.events
     }, suppliedKey, profile);
     const saved = written && written.row ? [written.row] : [];
     await submissionAudit.recordSave(req, {
@@ -1609,7 +1612,7 @@ async function handleSave(req, body) {
     });
     return saved;
   }
-  if (!id && (entity === 'submissions' || entity === 'service_instances')) {
+  if (!id && suppliedKey && (entity === 'submissions' || entity === 'service_instances')) {
     if (suppliedKey) record.idempotency_key = suppliedKey;
     const padSync = require('./pad-sync');
     const savedRow = await padSync.insertPadRecord(req, {
