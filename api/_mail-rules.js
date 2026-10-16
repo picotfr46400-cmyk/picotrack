@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { serviceRest, listConfiguredClients } = require('./_server-supabase');
 const { normalizeLicenseType } = require('./_license-type');
+const { normalizeRoleName, roleTokens } = require('./_access');
 const {
   EMAIL_RE,
   escapeHtml,
@@ -339,12 +340,14 @@ function userInEnvironment(user, environmentCode) {
   return String(user && user.environment_code || '').trim().toUpperCase() === String(environmentCode || '').trim().toUpperCase();
 }
 
+function roleNamesOf(value) {
+  return roleTokens(value).map(item => normalizeRoleName(item)).filter(Boolean);
+}
+
 function userHasRole(user, role) {
-  const want = String(role || '').trim().toLowerCase();
+  const want = normalizeRoleName(role);
   if (!want || !user || typeof user !== 'object') return false;
-  if (String(user.role || '').trim().toLowerCase() === want) return true;
-  const roles = Array.isArray(user.roles) ? user.roles : [];
-  return roles.some(item => String(item || '').trim().toLowerCase() === want);
+  return roleNamesOf(user.role).concat(roleNamesOf(user.roles), roleNamesOf(user.license_roles)).includes(want);
 }
 
 function isRetryableOutbox(row) {
@@ -2312,6 +2315,7 @@ module.exports = {
   CLAIM_LEASE_MS,
   UNCERTAIN_ERROR,
   canManageMailRules,
+  userHasRole,
   assertMailAdmin,
   isSensitiveField,
   isSensitiveName,

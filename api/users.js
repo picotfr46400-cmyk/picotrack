@@ -1,6 +1,7 @@
 const { getSupabaseConfig, json, setCors, bearer, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
 const { interpretedLicenseType, seatLicenseType } = require('./_license-type');
 const { normalizeEmail } = require('./_email');
+const { canManageUsers, isPlatform, projectAppRoles, unavailable, readPaged, APP_ROLE_CATALOG_BOUND, normalizeRoleToken } = require('./_access');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
@@ -24,7 +25,7 @@ function safeObject(value) {
 }
 
 function isPlatformRow(row) {
-  const role = String(row?.role || '').toLowerCase();
+  const role = normalizeRoleToken(row?.role);
   const scope = String(row?.scope || '').toLowerCase();
   const env = String(row?.environment_code || '').toUpperCase();
   const perms = safeObject(row?.resolved_permissions);
@@ -34,7 +35,7 @@ function isPlatformRow(row) {
 function canReadLicenseKey(profile) {
   if (!profile || profile.active === false) return false;
   if (isPlatformProfile(profile)) return true;
-  const role = String(profile.role || '').toLowerCase();
+  const role = normalizeRoleToken(profile.role);
   const rawType = String(profile.license_type || '').toLowerCase();
   const type = interpretedLicenseType(profile.license_type) === 'pad' ? 'pad' : rawType;
   const perms = safeObject(profile.resolved_permissions);
@@ -133,6 +134,23 @@ async function readBody(req) {
   });
 }
 
+async function readCatalog(req, path) {
+  try {
+    const rows = await serviceRest(path, { method: 'GET', prefer: '', req });
+    if (!Array.isArray(rows)) throw unavailable();
+    return rows;
+  } catch (err) {
+    throw unavailable(err);
+  }
+}
+
+async function pageCatalog(req, path, pageSize, bound) {
+  return readPaged(pageSize, (after) => {
+    const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+    return readCatalog(req, `${path}&order=id.asc&limit=${pageSize}${cursor}`);
+  }, bound);
+}
+
 async function handleSummary(req, body) {
   const { profile } = await requireProfile(req);
   const environmentCode = sameEnv(profile, body.environment_code || body.env || profile.environment_code);
@@ -155,16 +173,23 @@ async function handleSummary(req, body) {
   if (revealPermissions) profileSelect += ',resolved_permissions';
   const roleSelect = 'id,name,description,permissions,active,created_at,updated_at,environment_code';
 
-  const profileQuery = activeEq => serviceRest(`user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=${activeEq}&select=${profileSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []);
-  const licenseQuery = activeEq => serviceRest(`licenses?environment_code=eq.${encodeURIComponent(env)}&active=${activeEq}&select=${licenseSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []);
+  const profileQuery = activeEq => pageCatalog(req, `user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=${activeEq}&select=${profileSelect}`, 200, 20000);
+  const licenseQuery = activeEq => pageCatalog(req, `licenses?environment_code=eq.${encodeURIComponent(env)}&active=${activeEq}&select=${licenseSelect}`, 200, 20000);
   const [limitsRows, profilesRows, licensesRows, inactiveProfiles, inactiveLicenses, rolesRows] = await Promise.all([
-    serviceRest(`environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,lecture_limit&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []),
+    readCatalog(req, `environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,lecture_limit&limit=1`),
     licenseStatus === 'inactive' ? Promise.resolve([]) : profileQuery('eq.true'),
     licenseStatus === 'inactive' ? Promise.resolve([]) : licenseQuery('eq.true'),
     licenseStatus === 'active' ? Promise.resolve([]) : profileQuery('eq.false'),
     licenseStatus === 'active' ? Promise.resolve([]) : licenseQuery('eq.false'),
-    serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=name.asc&limit=100`, { method: 'GET', prefer: '', req }).catch(() => [])
+    // Le catalogue roles du résumé est trié par id croissant, clé de pagination.
+    readPaged(100, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return readCatalog(req, `app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=id.asc&limit=100${cursor}`);
+    }, APP_ROLE_CATALOG_BOUND)
   ]);
+  const roleServices = canManageUsers(profile, rolesRows) && !isPlatform(profile)
+    ? await pageCatalog(req, `services?environment_code=eq.${encodeURIComponent(env)}&select=id,form_id`, 500, 5000)
+    : [];
 
   const rows = [];
   const seen = new Set();
@@ -208,7 +233,7 @@ async function handleSummary(req, body) {
     success: true,
     environment_code: env,
     rows,
-    roles: Array.isArray(rolesRows) ? rolesRows : [],
+    roles: projectAppRoles(profile, rolesRows, roleServices),
     counts,
     limits: {
       environment_code: normalizeEnvironmentCode(limits.environment_code || env),

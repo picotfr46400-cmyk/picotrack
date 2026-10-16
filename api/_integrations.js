@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
 const { parseWebhookUrl, pinnedWebhookFetch } = require('./_webhook-url');
+const access = require('./_access');
 
 const INTEGRATIONS_NAME = '__picotrack_integrations';
 const MAX_KEYS = 20;
@@ -154,6 +155,9 @@ async function dispatchWebhook(url, payload, timeoutMs = 8000) {
 }
 
 async function handleIntegrations(req, body, profile) {
+  if (!access.canManageIntegrations(profile)) {
+    throw Object.assign(new Error('Intégrations réservées aux administrateurs de l’environnement.'), { status: 403 });
+  }
   const rawAction = cleanString(body.action || 'integrations_load', 60);
   const action = rawAction.replace(/^integrations_/, '') || 'load';
   const env = envFrom(profile, body.environment_code || body.env);

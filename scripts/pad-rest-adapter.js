@@ -1,31 +1,83 @@
 'use strict';
 
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { execFileSync } = require('child_process');
 
-const TABLES = {
-  submissions: ['id', 'form_id', 'values', 'device', 'created_at', 'tenant_id', 'environment_code', 'idempotency_key'],
-  service_instances: ['id', 'service_id', 'ref', 'form_data', 'status_id', 'priority', 'events', 'device', 'created_at', 'updated_at', 'tenant_id', 'assigned_to', 'environment_code', 'created_by', 'current_status_id', 'reference', 'submission_id', 'idempotency_key'],
-  licenses: ['id', 'label', 'email', 'role', 'license_type', 'device_name', 'active', 'environment_code', 'last_seen'],
+function splitColumnDefs(body) {
+  const parts = [];
+  let current = '';
+  let depth = 0;
+  let quote = '';
+  for (const ch of body) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '\'' || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    if (ch === ')' && depth) depth -= 1;
+    if (ch === ',' && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+function parseReferenceSchema(sql) {
+  const tables = {};
+  const kinds = {};
+  const re = /create table ([a-z_]+) \((.*)\);/g;
+  let match;
+  while ((match = re.exec(sql))) {
+    const columns = [];
+    for (const part of splitColumnDefs(match[2])) {
+      const name = part.split(/\s+/)[0].replace(/"/g, '');
+      const type = (part.slice(part.split(/\s+/)[0].length).trim().split(/\s+/)[0] || '').replace(/[^a-z]/gi, '').toLowerCase();
+      if (!name) continue;
+      columns.push(name);
+      kinds[`${match[1]}.${name}`] = type;
+    }
+    tables[match[1]] = columns;
+  }
+  return { tables, kinds };
+}
+
+const reference = parseReferenceSchema(fs.readFileSync(path.join(__dirname, 'schema-public.sql'), 'utf8'));
+if (!reference.tables.licenses || !reference.tables.licenses.includes('roles')) {
+  throw new Error('licenses.roles absent du schéma de référence');
+}
+
+const TABLES = Object.assign({}, reference.tables, {
+  submissions: reference.tables.submissions.concat(reference.tables.submissions.includes('idempotency_key') ? [] : ['idempotency_key']),
+  service_instances: reference.tables.service_instances.concat(reference.tables.service_instances.includes('idempotency_key') ? [] : ['idempotency_key']),
   pad_sync_receipts: ['environment_code', 'action_id', 'submission_id', 'service_instance_id', 'status', 'created_at', 'updated_at'],
   submission_audit_log: ['id', 'environment_code', 'submission_id', 'service_instance_id', 'event_type', 'occurred_at', 'device_captured_at', 'actor_id', 'actor_name', 'actor_role', 'actor_license_type', 'origin', 'device_label', 'detail', 'created_at', 'idempotency_key']
-};
+});
 
-const BIGINT = new Set([
-  'submissions.id', 'submissions.form_id',
-  'service_instances.id', 'service_instances.service_id', 'service_instances.submission_id'
-]);
-const JSONB = new Set([
-  'submissions.values', 'service_instances.form_data', 'service_instances.events', 'submission_audit_log.detail'
-]);
+const BIGINT = new Set();
+const JSONB = new Set(['submission_audit_log.detail']);
+const BOOL = new Set();
 const TIME = new Set([
-  'submissions.created_at',
-  'service_instances.created_at', 'service_instances.updated_at',
-  'licenses.last_seen',
   'pad_sync_receipts.created_at', 'pad_sync_receipts.updated_at',
   'submission_audit_log.occurred_at', 'submission_audit_log.device_captured_at', 'submission_audit_log.created_at'
 ]);
-const BOOL = new Set(['licenses.active']);
+for (const [typed, type] of Object.entries(reference.kinds)) {
+  if (type === 'jsonb') JSONB.add(typed);
+  if (type === 'boolean') BOOL.add(typed);
+  if (type === 'bigint' || type === 'bigserial' || type === 'integer' || type === 'int' || type === 'smallint') BIGINT.add(typed);
+  if (type === 'timestamptz' || type === 'timestamp' || type === 'date') TIME.add(typed);
+}
 
 function quote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
@@ -77,10 +129,88 @@ function readBody(req) {
   });
 }
 
+function unquoteFilterToken(value) {
+  const trimmed = String(value || '').trim();
+  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).replace(/""/g, '"');
+  }
+  return trimmed;
+}
+
+function splitTop(value, sep) {
+  const parts = [];
+  let current = '';
+  let depth = 0;
+  let quoted = false;
+  for (let index = 0; index < String(value || '').length; index += 1) {
+    const ch = value[index];
+    if (quoted) {
+      current += ch;
+      if (ch === '"') {
+        if (value[index + 1] === '"') {
+          current += value[index + 1];
+          index += 1;
+          continue;
+        }
+        quoted = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      quoted = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === sep && depth === 0) {
+      if (current) parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function columnPredicate(table, column, op, value) {
+  if (!TABLES[table].includes(column)) {
+    throw Object.assign(new Error(`column ${table}.${column} does not exist`), { code: '42703', status: 400 });
+  }
+  if (op === 'eq') return `${ident(column)} = ${literal(table, column, value)}`;
+  if (op === 'in') {
+    const values = splitTop(String(value || '').replace(/^\(/, '').replace(/\)$/, ''), ',')
+      .map(unquoteFilterToken)
+      .filter(item => item !== '')
+      .map(item => literal(table, column, item));
+    return values.length ? `${ident(column)} in (${values.join(', ')})` : 'false';
+  }
+  throw Object.assign(new Error(`filtre refusé ${column}`), { status: 400 });
+}
+
+function orSql(table, raw) {
+  const inner = String(raw || '').trim().replace(/^\(/, '').replace(/\)$/, '');
+  const parts = splitTop(inner, ',').map((bit) => {
+    const dot = bit.indexOf('.');
+    if (dot <= 0) throw Object.assign(new Error('filtre or refusé'), { status: 400 });
+    const column = bit.slice(0, dot);
+    const rest = bit.slice(dot + 1);
+    const opDot = rest.indexOf('.');
+    if (opDot <= 0) throw Object.assign(new Error('filtre or refusé'), { status: 400 });
+    return columnPredicate(table, column, rest.slice(0, opDot), rest.slice(opDot + 1));
+  });
+  return parts.length ? `(${parts.join(' or ')})` : 'false';
+}
+
 function filtersOf(table, url) {
   const filters = [];
   for (const [key, raw] of url.searchParams.entries()) {
     if (key === 'select' || key === 'limit' || key === 'on_conflict' || key === 'order') continue;
+    if (key === 'or') {
+      filters.push(orSql(table, raw));
+      continue;
+    }
     if (!TABLES[table].includes(key)) {
       throw Object.assign(new Error(`column ${table}.${key} does not exist`), { code: '42703', status: 400 });
     }
@@ -91,8 +221,7 @@ function filtersOf(table, url) {
     } else if (raw.startsWith('lt.')) {
       filters.push(`${ident(key)} < ${quote(raw.slice(3))}::timestamptz`);
     } else if (raw.startsWith('in.(') && raw.endsWith(')')) {
-      const values = raw.slice(4, -1).split(',').filter(Boolean).map((value) => literal(table, key, value));
-      filters.push(values.length ? `${ident(key)} in (${values.join(', ')})` : 'false');
+      filters.push(columnPredicate(table, key, 'in', raw.slice(3)));
     } else {
       throw Object.assign(new Error(`filtre refusé ${key}`), { status: 400 });
     }
