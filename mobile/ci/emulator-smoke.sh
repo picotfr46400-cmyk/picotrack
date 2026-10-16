@@ -29,7 +29,7 @@ adb shell am start -W -n "$PKG/fr.picotrack.pad.LauncherActivity" || fail "lance
 found=0; reached=0
 for i in $(seq 1 40); do
   sleep 3
-  focus="$(adb shell dumpsys window windows 2>/dev/null | tr -d '\r' | grep -E 'mCurrentFocus|mFocusedApp' | head -2)"
+  focus="$( { adb shell dumpsys window; adb shell dumpsys activity activities; } 2>/dev/null | tr -d "\r" | grep -E "mCurrentFocus|mFocusedApp|topResumedActivity|mResumedActivity" | head -4)"
   echo "$focus" | grep -q "WebViewFallbackActivity" && reached=1
   if [ "$REQUIRE_LOGIN" = 1 ] && [ "$reached" = 1 ]; then
     adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 && adb pull /sdcard/ui.xml "$OUT/ui.xml" >/dev/null 2>&1
