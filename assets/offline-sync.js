@@ -11,8 +11,10 @@
     'apikey', 'api_key', 'secret', 'service_role', 'supa_key', 'supa_url',
     'pico_session_token', 'pt_active_session_token', 'bearer'
   ]);
-  const VALUE_KEYS = new Set(['values', 'form_data', 'photos', 'comment', 'events']);
-  const SERVER_FAULT_LIMIT = 3;
+  const VALUE_KEYS = new Set(['values', 'form_data', 'photos', 'comment', 'events', 'files']);
+  const TRANSIENT_LIMIT = 10;
+  const TRANSIENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  const VERIFY_REASON = 'À vérifier : l’envoi a échoué de façon répétée.';
 
   function scopeKey(channel, environmentCode, userId) {
     return [String(channel || 'pad'), String(environmentCode || '').toUpperCase(), String(userId || '')].join('|');
@@ -135,6 +137,62 @@
     return Math.min(60000, 2000 * Math.pow(2, Math.min(n, 5)));
   }
 
+  function giveUp(action, nowIso) {
+    if ((Number(action && action.attempts) || 0) >= TRANSIENT_LIMIT) return true;
+    const captured = Date.parse(action && action.deviceCapturedAt || '');
+    const current = Date.parse(nowIso || '');
+    if (Number.isNaN(captured) || Number.isNaN(current)) return false;
+    return current - captured >= TRANSIENT_MAX_AGE_MS;
+  }
+
+  function publicTemporary(result) {
+    const status = Number(result && result.status) || 0;
+    const raw = String(result && result.error || '');
+    if (!result || result.networkError || status >= 500 || /supabase|sql|stack|typeerror|exception|at \//i.test(raw)) {
+      return 'Synchronisation momentanément indisponible.';
+    }
+    if (raw && raw.length <= 160) return raw;
+    return 'Connexion interrompue pendant l’envoi';
+  }
+
+  function absorbStepFiles(payload, stepKey) {
+    if (!payload || typeof payload !== 'object') return;
+    const existing = Array.isArray(payload.files) ? payload.files.filter((file) => file && file.idempotency_key) : [];
+    const form = payload.form_data && typeof payload.form_data === 'object' && !Array.isArray(payload.form_data)
+      ? Object.assign({}, payload.form_data) : null;
+    const files = existing.slice();
+    let photoIndex = files.filter((file) => file.kind === 'photo').length;
+    if (form && form.signature != null && String(form.signature) !== '' && !files.some((file) => file.kind === 'signature')) {
+      files.push({
+        kind: 'signature',
+        name: 'signature',
+        content: String(form.signature),
+        idempotency_key: stepKey + ':signature:0'
+      });
+    }
+    const photos = [];
+    if (Array.isArray(payload.photos)) photos.push.apply(photos, payload.photos);
+    if (form && Array.isArray(form.photos)) photos.push.apply(photos, form.photos);
+    photos.forEach((photo) => {
+      const content = photo && typeof photo === 'object' && photo.content != null ? String(photo.content) : String(photo);
+      files.push({
+        kind: 'photo',
+        name: 'photo-' + photoIndex,
+        content: content,
+        idempotency_key: stepKey + ':photo:' + photoIndex
+      });
+      photoIndex += 1;
+    });
+    if (form) {
+      delete form.signature;
+      delete form.photos;
+      if (Object.keys(form).length) payload.form_data = form;
+      else delete payload.form_data;
+    }
+    delete payload.photos;
+    if (files.length) payload.files = files;
+  }
+
   function classifySyncResult(result) {
     if (!result || result.networkError) return 'transient';
     const status = Number(result.status) || (result.ok ? 200 : 0);
@@ -142,7 +200,6 @@
     if (result.ok && result.duplicate) return 'duplicate';
     if (result.ok && status === 200) return 'confirmed';
     if (status === 401) return 'session';
-    if (status === 500) return 'fault';
     if (/type de file pad inconnu/i.test(error)) return 'rejected';
     if (status >= 400 && status < 500) return 'rejected';
     return 'transient';
@@ -198,6 +255,8 @@
   function toWireAction(action) {
     const payload = stripSecrets(action.payload || {});
     const type = canonicalType(action.type) || action.type;
+    const key = suppliedIdempotencyKey(action);
+    if (type === 'workflow_step' && key) absorbStepFiles(payload, key);
     if (type === 'service_instance') {
       const instance = Object.assign({}, payload.instance || {});
       if (instance.form_data == null && payload.values != null) instance.form_data = payload.values;
@@ -212,7 +271,6 @@
       deviceCapturedAt: action.deviceCapturedAt,
       payload: payload
     };
-    const key = suppliedIdempotencyKey(action);
     if (key) wire.idempotency_key = key;
     return wire;
   }
@@ -296,6 +354,7 @@
       const payload = stripSecrets(input.payload || {});
       const supplied = suppliedIdempotencyKey(input);
       const idempotencyKey = supplied || (input.preserveMissingKey ? '' : uuid());
+      if (input.type === 'workflow_step' && idempotencyKey) absorbStepFiles(payload, idempotencyKey);
       seq += 1;
       const action = {
         id: id,
@@ -472,10 +531,16 @@
               sent.push(action.id);
               lastError = '';
               transientAttempts = 0;
-            } else if (kind === 'fault') {
-              action.lastError = 'Cette action n’a pas pu être enregistrée.';
-              action.status = (action.attempts || 0) >= SERVER_FAULT_LIMIT ? 'rejected' : 'pending';
-              if (action.status === 'pending') transientAttempts += 1;
+            } else if (kind === 'fault' || kind === 'transient') {
+              if (giveUp(action, now())) {
+                action.status = 'rejected';
+                action.verify = true;
+                action.lastError = VERIFY_REASON;
+              } else {
+                action.status = 'pending';
+                action.lastError = publicTemporary(result);
+                transientAttempts += 1;
+              }
               lastError = action.lastError;
               await store.putAction(clone(action)).catch(() => {});
               memory.set(action.id, action);
@@ -502,11 +567,18 @@
               await store.putAction(clone(action)).catch(() => {});
             }
           } catch (_) {
-            action.status = 'pending';
-            action.lastError = 'Connexion interrompue pendant l’envoi';
+            if (giveUp(action, now())) {
+              action.status = 'rejected';
+              action.verify = true;
+              action.lastError = VERIFY_REASON;
+            } else {
+              action.status = 'pending';
+              action.lastError = 'Connexion interrompue pendant l’envoi';
+              transientAttempts += 1;
+            }
             lastError = action.lastError;
-            transientAttempts += 1;
             await store.putAction(clone(action)).catch(() => {});
+            memory.set(action.id, action);
           }
         }
       } finally {
@@ -1110,8 +1182,10 @@
           service_id: payload.serviceId || instance.service_id,
           current_status_id: payload.statusId || instance.current_status_id,
           status_id: payload.statusId || instance.status_id,
-          form_data: payload.form_data !== undefined ? payload.form_data : instance.form_data,
-          events: [{ payload: { comment: payload.comment || '', photos: payload.photos || [] } }],
+          form_data: payload.form_data,
+          files: payload.files || [],
+          comment: payload.comment || '',
+          events: [{ payload: { comment: payload.comment || '', fields: payload.form_data || {} } }],
           device: 'web',
           environment_code: current.environmentCode,
           idempotency_key: key
@@ -1216,6 +1290,9 @@
     recordsBody: recordsBody,
     readableRefusal: readableRefusal,
     dependencyTarget: dependencyTarget,
-    serverFaultLimit: SERVER_FAULT_LIMIT
+    transientLimit: TRANSIENT_LIMIT,
+    transientMaxAgeMs: TRANSIENT_MAX_AGE_MS,
+    verifyReason: VERIFY_REASON,
+    serverFaultLimit: TRANSIENT_LIMIT
   };
 });
