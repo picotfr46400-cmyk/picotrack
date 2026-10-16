@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { sendJson, setCors, verifyToken, sbRest } = require('./_pad-security');
 const submissionAudit = require('./_submission-audit');
-const { notifyAfterWrite, requestOrigin } = require('./_mail-rules');
+const { notifyAfterWrite, processMailQueue, requestOrigin } = require('./_mail-rules');
 
 const REQUEST_DEADLINE_MS = 10000;
 const MIN_CALL_MS = 50;
@@ -236,20 +236,40 @@ async function notifyPadMail(req, mailWrites, session, license) {
   if (left < MIN_CALL_MS) return;
   const budget = Math.max(0, left - RESPONSE_SLACK_MS);
   try {
-    await notifyAfterWrite({
+    return await notifyAfterWrite({
       req,
       writes: mailWrites,
-      profile: {
-        email: license && license.email || '',
-        label: (license && (license.label || license.device_name)) || 'Tablette',
-        environment_code: session.environmentCode,
-        role: license && license.role || '',
-        license_type: license && license.license_type || 'pad'
-      },
+      profile: padMailProfile(license, session),
       environmentCode: session.environmentCode,
       origin: requestOrigin(req),
       deadline: Date.now() + budget,
-      perCallMs: Math.min(2000, budget)
+      perCallMs: Math.min(2000, budget),
+      enqueueOnly: true
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+function padMailProfile(license, session) {
+  return {
+    email: license && license.email || '',
+    label: (license && (license.label || license.device_name)) || 'Tablette',
+    environment_code: session.environmentCode,
+    role: license && license.role || '',
+    license_type: license && license.license_type || 'pad'
+  };
+}
+
+async function drainPadMail(req, session, license, enqueued) {
+  if (!session || !session.environmentCode) return;
+  try {
+    await processMailQueue({
+      req,
+      environmentCode: session.environmentCode,
+      profile: padMailProfile(license, session),
+      origin: requestOrigin(req),
+      rows: enqueued && enqueued.rows
     });
   } catch (_) {}
 }
@@ -386,7 +406,7 @@ async function handler(req, res) {
       }
     }
     await submissionAudit.flushAudit(req, rest);
-    await notifyPadMail(req, mailWrites, session, license);
+    const enqueued = await notifyPadMail(req, mailWrites, session, license);
     if (req.picoAuditDeferred) {
       for (const result of results) {
         if (result.status !== 'applied') continue;
@@ -404,20 +424,22 @@ async function handler(req, res) {
         const reason = req.picoAuditDeferred ? 'journal non confirmé' : (interrupted ? 'action interrompue' : 'actions non commencées');
         console.warn('[pad-sync] délai de requête, ' + reason, requestId, retry.join(','));
       }
-      return sendJson(res, 503, {
+      sendJson(res, 503, {
         ok: false,
         error: 'Synchronisation momentanément indisponible.',
         request_id: requestId,
         retry,
         results
       });
+    } else {
+      const seenTimeout = nextTimeout(req);
+      if (seenTimeout) {
+        await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}`, { method: 'PATCH', body: { last_seen: new Date().toISOString() }, timeoutMs: seenTimeout }).catch(() => null);
+      }
+      sendJson(res, 200, { ok: true, synced: results.length, results });
     }
-
-    const seenTimeout = nextTimeout(req);
-    if (seenTimeout) {
-      await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}`, { method: 'PATCH', body: { last_seen: new Date().toISOString() }, timeoutMs: seenTimeout }).catch(() => null);
-    }
-    return sendJson(res, 200, { ok: true, synced: results.length, results });
+    await drainPadMail(req, session, license, enqueued);
+    return;
   } catch (err) {
     const requestId = crypto.randomUUID();
     console.error('[pad-sync]', requestId, err && (err.stack || err.message || err));

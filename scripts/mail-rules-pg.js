@@ -18,6 +18,7 @@ const TO = 'qa@example.com';
 const USER_ID = 'user-1';
 const SESSION = 'sess-token';
 let latencyMs = 0;
+let userListLatencyMs = 0;
 const userListGets = [];
 let failUserListAt = 0;
 
@@ -344,6 +345,7 @@ function startAdapter() {
       const method = req.method || 'GET';
       const prefer = req.headers.prefer || '';
       if (method === 'GET' && table === 'user_profiles' && url.searchParams.get('order') === 'id.asc') {
+        if (userListLatencyMs) await new Promise(resolve => setTimeout(resolve, userListLatencyMs));
         userListGets.push(`${url.pathname}${url.search}`);
         if (failUserListAt > 0 && userListGets.length === failUserListAt) {
           res.writeHead(500, { 'content-type': 'application/json' });
@@ -546,9 +548,12 @@ async function main() {
     })));
     assert.equal(batch.status, 200, JSON.stringify(batch.payload));
     assert.equal(countOutbox(), 25);
-    const pending = outboxRows().filter(row => row.status === 'pending').length;
-    assert.ok(pending >= 1, 'au moins une ligne encore pending');
-    assert.ok(fast.messages() - beforeFast < 25);
+    const batchRows = outboxRows();
+    const sentBatch = batchRows.filter(row => row.status === 'sent');
+    const waitingBatch = batchRows.filter(row => row.status === 'pending' && Number(row.attempts || 0) === 0);
+    assert.equal(sentBatch.length + waitingBatch.length, 25, JSON.stringify(batchRows));
+    assert.equal(fast.messages() - beforeFast, sentBatch.length);
+    assert.equal(quotaReserved('hour'), sentBatch.length);
 
     reset();
     pointSmtp(fast.port);
@@ -767,9 +772,80 @@ async function main() {
     else process.env.MAIL_HOURLY_LIMIT = previousHour;
     if (previousDay == null) delete process.env.MAIL_DAILY_LIMIT;
     else process.env.MAIL_DAILY_LIMIT = previousDay;
+
+    reset();
+    pointSmtp(fast.port);
+    process.env.MAIL_HOURLY_LIMIT = '60';
+    process.env.MAIL_DAILY_LIMIT = '300';
+    psql(`insert into public.user_profiles (id, email, role, roles, environment_code, active, license_type)
+      select 'u' || lpad(i::text, 4, '0'),
+             'u' || lpad(i::text, 4, '0') || '@example.com',
+             'manager', '[]'::jsonb, '${ENV}', true, 'supervision'
+      from generate_series(1, 3500) as i`);
+    const slowRole = {
+      to: { fixed: [], fields: [], author: false, roles: ['manager'] },
+      cc: { fixed: [], fields: [], author: false, roles: [] },
+      bcc: { fixed: [], fields: [], author: false, roles: [] },
+      subject: 'Saisie {{formulaire}}',
+      body: 'Réponse {{reponse}}',
+      attachPdf: false,
+      conditions: [],
+      clientKey: 'manual:pg'
+    };
+    psql(`update public.mail_rules set config = ${sqlText(JSON.stringify(slowRole))}::jsonb where client_key = 'manual:pg'`);
+    userListGets.length = 0;
+    userListLatencyMs = 1400;
+    const beforeSlow = fast.messages();
+    const mark = { at: 0, lists: -1, quota: -1 };
+    const started = Date.now();
+    const observed = await new Promise((resolve, reject) => {
+      const res = {
+        statusCode: 200,
+        headers: {},
+        body: '',
+        setHeader(name, value) { this.headers[name] = value; },
+        end(payload) {
+          mark.at = Date.now();
+          mark.lists = userListGets.length;
+          mark.quota = quotaReserved('hour');
+          this.body = payload == null ? '' : String(payload);
+        }
+      };
+      Promise.resolve(padSync({
+        method: 'POST',
+        headers: { host: 'localhost', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          pad: { sessionToken: padToken() },
+          actions: [{ id: 'act-role-slow', type: 'form_submission', payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Lent' } } }]
+        })
+      }, res)).then(() => resolve({
+        status: res.statusCode,
+        payload: res.body ? JSON.parse(res.body) : {}
+      }), reject);
+    });
+    const responseMs = mark.at - started;
+    assert.equal(observed.status, 200, JSON.stringify(observed.payload));
+    assert.equal(responseMs < 10000, true, `réponse pad ${responseMs} ms`);
+    assert.equal(mark.lists, 0, userListGets.join('\n'));
+    assert.equal(mark.quota, 0);
+    assert.equal(fast.messages() - beforeSlow, 1);
+    const slowRows = rowsOf('select row_to_json(t) from (select status, recipients, warning from public.mail_outbox) t');
+    assert.equal(slowRows.length, 1, JSON.stringify(slowRows));
+    assert.equal(slowRows[0].status, 'sent', JSON.stringify(slowRows[0]));
+    assert.deepEqual((slowRows[0].recipients && slowRows[0].recipients.to) || [], Array.from({ length: 10 }, (_, index) => `u${String(index + 1).padStart(4, '0')}@example.com`));
+    assert.match(slowRows[0].warning || '', /10 premiers/);
+    assert.equal(userListGets.length > 1, true, String(userListGets.length));
+    const beforeReplay = fast.messages();
+    userListLatencyMs = 0;
+    const replaySlow = await syncPad([{ id: 'act-role-slow', type: 'form_submission', payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Lent' } } }]);
+    assert.equal(replaySlow.status, 200, JSON.stringify(replaySlow.payload));
+    assert.equal(fast.messages() - beforeReplay, 0);
+    assert.equal(rowsOf('select row_to_json(t) from (select status from public.mail_outbox) t').length, 1);
+    userListLatencyMs = 0;
     console.log('mail-rules-pg ok');
   } finally {
     latencyMs = 0;
+    userListLatencyMs = 0;
     await fast.close();
     await slow.close();
     await reject.close();

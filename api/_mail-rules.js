@@ -39,6 +39,9 @@ const MAX_ROLE_USERS = 5000;
 const RECIPIENT_READ_ERROR = 'Lecture des destinataires impossible, nouvel essai plus tard.';
 const RECIPIENT_BOUND_ERROR = `Trop d'utilisateurs actifs (plus de ${MAX_ROLE_USERS}) pour connaître tous les destinataires. Le mail n'a pas été envoyé.`;
 const MAX_ATTEMPTS = 3;
+const VERCEL_MAX_DURATION_MS = 20000;
+const QUEUE_DEADLINE_MARGIN_MS = 2000;
+const QUEUE_BUDGET_MS = VERCEL_MAX_DURATION_MS - QUEUE_DEADLINE_MARGIN_MS;
 const DEFAULT_BUDGET_MS = 3000;
 const DEFAULT_PER_CALL_MS = 2000;
 const DEFAULT_DAILY_LIMIT = 300;
@@ -1849,6 +1852,14 @@ async function dispatchWithinBudget(input) {
     planned.push(...rows);
   }
   const inserted = planned.length ? await store.insertOutboxBatch(planned) : [];
+  if (input.enqueueOnly) {
+    return {
+      ok: true,
+      pending: inserted.some(row => row && row.status === 'pending'),
+      queued: inserted.length,
+      rows: inserted
+    };
+  }
   const queue = [];
   const seen = new Set();
   for (const row of inserted) {
@@ -1887,6 +1898,50 @@ async function dispatchWithinBudget(input) {
     if (result === 'capped') break;
   }
   return { ok: true, pending, queued: inserted.length };
+}
+
+async function processMailQueue(input) {
+  const deadline = Number(input && input.deadline) || (Date.now() + QUEUE_BUDGET_MS);
+  if (!input || Date.now() >= deadline) return { ok: true, pending: true };
+  const store = input.store || createSupabaseStore(input.req);
+  const env = input.environmentCode;
+  if (!env) return { ok: true, pending: false };
+  const rules = await store.listRules(env).catch(() => []);
+  const listed = await store.listRetryable(env, 40).catch(() => []);
+  const seen = new Set();
+  const rows = [];
+  for (const row of (Array.isArray(input.rows) ? input.rows : [])) {
+    if (!row || !row.id || seen.has(row.id) || !isRetryableOutbox(row)) continue;
+    seen.add(row.id);
+    rows.push(row);
+  }
+  for (const row of listed) {
+    if (!row || !row.id || seen.has(row.id)) continue;
+    seen.add(row.id);
+    rows.push(row);
+  }
+  const deps = {
+    store,
+    transport: input.transport,
+    renderPdf: input.renderPdf,
+    perCallMs: input.perCallMs ?? DEFAULT_PER_CALL_MS,
+    now: input.now,
+    env: input.mailEnv || process.env,
+    input,
+    formCache: new Map(),
+    rules: Array.isArray(rules) ? rules : []
+  };
+  let pending = false;
+  for (const row of rows) {
+    if (Date.now() >= deadline) {
+      pending = true;
+      break;
+    }
+    const result = await sendOutboxRow(row, deps, deadline);
+    if (result === 'pending' || result === 'capped') pending = true;
+    if (result === 'capped') break;
+  }
+  return { ok: true, pending };
 }
 
 async function notifyAfterWrite(input) {
@@ -2141,6 +2196,8 @@ module.exports = {
   ruleMatches,
   normalizeRuleRecord,
   notifyAfterWrite,
+  processMailQueue,
+  QUEUE_BUDGET_MS,
   syncFormMailRules,
   handleMailAction,
   createMemoryStore,
