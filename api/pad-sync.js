@@ -7,9 +7,11 @@ const access = require('./_access');
 const REQUEST_DEADLINE_MS = 10000;
 const MIN_CALL_MS = 50;
 const RESPONSE_SLACK_MS = 50;
+const GENERIC_SYNC_ERROR = 'Synchronisation momentanément indisponible.';
 const READ_COLUMNS = {
   submissions: 'id,form_id,values,device,created_at,environment_code,idempotency_key',
-  service_instances: 'id,service_id,submission_id,ref,form_data,status_id,priority,events,device,created_at,updated_at,assigned_to,environment_code,created_by,current_status_id,reference,idempotency_key'
+  service_instances: 'id,service_id,submission_id,ref,form_data,status_id,priority,events,device,created_at,updated_at,assigned_to,environment_code,created_by,current_status_id,reference,idempotency_key',
+  workflow_step_files: 'id,environment_code,idempotency_key,step_key,kind,name,content'
 };
 const INSTANCE_FIELDS = ['ref', 'form_data', 'status_id', 'priority', 'events', 'assigned_to', 'created_by', 'current_status_id', 'reference'];
 
@@ -59,13 +61,15 @@ function deriveIdempotencyKey(parts) {
 function resolveIdempotencyKey(licenseId, item) {
   const supplied = String(item && item.idempotency_key || '').trim();
   if (UUID_V4.test(supplied)) return { key: supplied.toLowerCase(), derived: false };
+  const localId = String(item && item.id || '').trim();
+  if (!localId) return { key: '', derived: false };
   const payload = item && item.payload || {};
   return {
     derived: true,
     key: deriveIdempotencyKey({
       license: licenseId,
       form: payload.formId ?? payload.form_id ?? '',
-      localId: item && item.id,
+      localId,
       createdAt: item && item.created_at,
       content: {
         type: item && item.type || '',
@@ -90,6 +94,7 @@ function requestBudgetMs(req) {
 }
 
 function armRequestClock(req) {
+  if (!req || typeof req.picoRemainingMs === 'function') return;
   const startedAt = clock(req);
   const deadlineAt = startedAt + requestBudgetMs(req);
   req.picoRemainingMs = () => deadlineAt - clock(req);
@@ -233,7 +238,7 @@ async function writeIdempotent(req, table, row, key, timeoutMs) {
 
 async function insertSubmission(req, environmentCode, payload, key, timeoutMs) {
   const formId = payload.formId ?? payload.form_id;
-  if (formId == null || formId === '') throw new Error('Formulaire manquant dans la synchronisation PAD');
+  if (formId == null || formId === '') throw refusalError(400, 'Formulaire manquant pour cette saisie.');
   return writeIdempotent(req, 'submissions', {
     environment_code: environmentCode,
     form_id: formId,
@@ -259,45 +264,283 @@ async function insertServiceInstance(req, environmentCode, payload, submission, 
   return writeIdempotent(req, 'service_instances', row, key, timeoutMs);
 }
 
+function storedDevice(record) {
+  const device = String(record && record.device || '').toLowerCase();
+  if (device === 'web' || device === 'desktop' || device === 'pad') return device;
+  return 'pad';
+}
+
+function copyTenant(row, record) {
+  if (record && record.tenant_id != null && record.tenant_id !== '') row.tenant_id = record.tenant_id;
+  return row;
+}
+
+function publicRefusal(status) {
+  if (status === 403) return 'Droits insuffisants pour cette action.';
+  if (status === 404) return 'Élément introuvable.';
+  if (status === 409) return 'Cette action entre en conflit avec une donnée déjà enregistrée.';
+  return 'Cette action n’a pas pu être enregistrée.';
+}
+
+function refusalError(status, message) {
+  const err = new Error(message || publicRefusal(status));
+  err.status = status;
+  return err;
+}
+
+function normalizeSyncError(err) {
+  if (err && err.code === 'DEADLINE') return refusalError(503, GENERIC_SYNC_ERROR);
+  const status = Number(err && err.status) || 0;
+  if (status === 401) return refusalError(401, 'Authentification requise.');
+  if (status >= 400 && status < 500) return refusalError(status, publicRefusal(status));
+  return refusalError(503, GENERIC_SYNC_ERROR);
+}
+
+function nextVersion(previous) {
+  const now = new Date().toISOString();
+  if (now !== String(previous || '')) return now;
+  const parsed = Date.parse(previous || '');
+  if (!Number.isNaN(parsed)) {
+    const bumped = new Date(parsed + 1).toISOString();
+    if (bumped !== String(previous)) return bumped;
+  }
+  return String(previous || '0') + '.1';
+}
+
+function versionFilter(updatedAt) {
+  if (updatedAt == null || updatedAt === '') return 'updated_at=is.null';
+  return 'updated_at=eq.' + encodeURIComponent(String(updatedAt));
+}
+
+function stepContent(payload) {
+  const inst = payload && payload.instance && typeof payload.instance === 'object' ? payload.instance : {};
+  const formData = payload && payload.form_data !== undefined ? payload.form_data
+    : payload && payload.formData !== undefined ? payload.formData
+    : inst.form_data !== undefined ? inst.form_data
+    : inst.formData;
+  const events = Array.isArray(payload && payload.events) ? payload.events : (Array.isArray(inst.events) ? inst.events : []);
+  const latest = events.length ? events[events.length - 1] : null;
+  const eventPayload = latest && latest.payload && typeof latest.payload === 'object' ? latest.payload : {};
+  const comment = String((payload && payload.comment) || eventPayload.comment || (latest && latest.comment) || '').trim();
+  let photos = payload && Array.isArray(payload.photos) ? payload.photos
+    : Array.isArray(eventPayload.photos) ? eventPayload.photos
+    : (latest && Array.isArray(latest.photos) ? latest.photos : null);
+  if (!photos && formData && typeof formData === 'object' && Array.isArray(formData.photos)) photos = formData.photos;
+  return { formData, comment, photos: Array.isArray(photos) ? photos : [] };
+}
+
+function plainFields(formData) {
+  if (!formData || typeof formData !== 'object' || Array.isArray(formData)) return {};
+  const fields = Object.assign({}, formData);
+  delete fields.signature;
+  delete fields.photos;
+  return fields;
+}
+
+function fileContent(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object' && value.content != null) return String(value.content);
+  return String(value);
+}
+
+function collectFiles(payload, stepKey) {
+  const explicit = Array.isArray(payload && payload.files) ? payload.files : [];
+  if (explicit.length) {
+    return explicit.map((file, index) => {
+      const kind = String(file && file.kind || 'photo');
+      return {
+        kind,
+        name: String(file && file.name || kind),
+        content: fileContent(file && file.content),
+        idempotency_key: String(file && (file.idempotency_key || file.idempotencyKey) || (stepKey + ':' + kind + ':' + index))
+      };
+    });
+  }
+  const content = stepContent(payload);
+  const files = [];
+  const form = content.formData && typeof content.formData === 'object' ? content.formData : null;
+  if (form && form.signature != null && String(form.signature) !== '') {
+    files.push({
+      kind: 'signature',
+      name: 'signature',
+      content: String(form.signature),
+      idempotency_key: stepKey + ':signature:0'
+    });
+  }
+  content.photos.forEach((photo, index) => {
+    files.push({
+      kind: 'photo',
+      name: 'photo-' + index,
+      content: fileContent(photo),
+      idempotency_key: stepKey + ':photo:' + index
+    });
+  });
+  return files;
+}
+
+function sameStepContent(event, incoming) {
+  const stored = event && event.payload && typeof event.payload === 'object' ? event.payload : {};
+  const storedFiles = Array.isArray(stored.files) ? stored.files : [];
+  const incomingFiles = incoming.files || [];
+  if (storedFiles.length !== incomingFiles.length) return false;
+  for (let index = 0; index < incomingFiles.length; index++) {
+    const left = storedFiles[index] || {};
+    const right = incomingFiles[index] || {};
+    if (String(left.idempotency_key || '') !== String(right.idempotency_key || '')) return false;
+    if (String(left.kind || '') !== String(right.kind || '')) return false;
+    if (left.id != null && right.id != null && String(left.id) !== String(right.id)) return false;
+  }
+  if (String(stored.comment || '') !== String(incoming.comment || '')) return false;
+  if (String(stored.toStatus || '') !== String(incoming.statusId || '')) return false;
+  const storedFields = stored.fields && typeof stored.fields === 'object' ? stored.fields : {};
+  return JSON.stringify(canonicalValue(storedFields)) === JSON.stringify(canonicalValue(incoming.fields || {}));
+}
+
+async function readInstance(req, environmentCode, instanceId) {
+  const readTimeout = nextTimeout(req);
+  if (!readTimeout) throw deadlineError();
+  const found = await sbRest(req, `service_instances?id=eq.${encodeURIComponent(instanceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=${READ_COLUMNS.service_instances}&limit=1`, { method: 'GET', prefer: '', timeoutMs: readTimeout });
+  return firstRow(found);
+}
+
+async function storeStepFiles(req, environmentCode, stepKey, files) {
+  const stored = [];
+  for (const file of files) {
+    const written = await writeIdempotent(req, 'workflow_step_files', {
+      environment_code: environmentCode,
+      step_key: stepKey,
+      kind: file.kind,
+      name: file.name,
+      content: file.content
+    }, file.idempotency_key);
+    if (String(written.row && written.row.content != null ? written.row.content : '') !== String(file.content)) {
+      throw refusalError(409);
+    }
+    stored.push({
+      id: written.row.id,
+      idempotency_key: file.idempotency_key,
+      kind: file.kind,
+      name: file.name
+    });
+  }
+  return stored;
+}
+
+async function applyWorkflowStep(req, environmentCode, payload, key, actor) {
+  armRequestClock(req);
+  const instanceId = String(payload && (payload.instanceId || payload.instance_id) || (payload && payload.instance && payload.instance.id) || '').trim();
+  if (!instanceId) throw refusalError(400, 'Dossier manquant pour cette étape.');
+  if (!key) throw new Error('Clé d’idempotence manquante');
+  const opened = await readInstance(req, environmentCode, instanceId);
+  if (!opened) throw refusalError(404);
+  const content = stepContent(payload);
+  const fields = plainFields(content.formData);
+  const statusId = payload.statusId || payload.status_id || null;
+  const files = await storeStepFiles(req, environmentCode, key, collectFiles(payload, key));
+  const incoming = { files, fields, comment: content.comment, statusId: statusId || '' };
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const current = await readInstance(req, environmentCode, instanceId);
+    if (!current) throw refusalError(404);
+    const events = Array.isArray(current.events) ? current.events.slice() : [];
+    const existing = events.find((event) => event && (event.idempotency_key === key || event.idempotencyKey === key));
+    if (existing) {
+      if (sameStepContent(existing, incoming)) return { row: current, duplicate: true, previous: current };
+      throw refusalError(409);
+    }
+    const patch = { updated_at: nextVersion(current.updated_at) };
+    if (statusId) {
+      patch.current_status_id = statusId;
+      patch.status_id = statusId;
+    }
+    const eventPayload = {
+      fromStatus: current.current_status_id || current.status_id || null,
+      toStatus: statusId
+    };
+    if (content.comment) eventPayload.comment = content.comment;
+    if (Object.keys(fields).length) eventPayload.fields = fields;
+    if (files.length) eventPayload.files = files;
+    patch.events = events.concat([{
+      id: key,
+      type: content.comment && !statusId ? 'commented' : 'status_changed',
+      at: payload.at || new Date().toISOString(),
+      idempotency_key: key,
+      payload: eventPayload
+    }]);
+    const writeTimeout = nextTimeout(req);
+    if (!writeTimeout) throw deadlineError();
+    const updated = await sbRest(req, `service_instances?id=eq.${encodeURIComponent(instanceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}&${versionFilter(current.updated_at)}`, {
+      method: 'PATCH',
+      prefer: 'return=representation',
+      timeoutMs: writeTimeout,
+      body: patch
+    });
+    const row = firstRow(updated);
+    if (row) return { row, duplicate: false, previous: current };
+  }
+  throw Object.assign(new Error('Conflit d’étape, à renvoyer'), { status: 503 });
+}
+
+async function insertPlain(req, table, row, timeoutMs) {
+  const postTimeout = nextTimeout(req, timeoutMs);
+  if (!postTimeout) throw deadlineError();
+  const inserted = await sbRest(req, table, {
+    method: 'POST',
+    prefer: 'return=representation',
+    timeoutMs: postTimeout,
+    body: row
+  });
+  const created = firstRow(inserted);
+  if (!created) throw new Error('Saisie introuvable après insertion');
+  return created;
+}
+
+function submissionRow(record) {
+  return copyTenant({
+    environment_code: record.environment_code,
+    form_id: record.form_id,
+    values: record.values || {},
+    device: storedDevice(record)
+  }, record);
+}
+
+function instanceRow(record) {
+  const row = copyTenant({
+    environment_code: record.environment_code,
+    service_id: record.service_id,
+    submission_id: record.submission_id ?? null,
+    device: storedDevice(record)
+  }, record);
+  for (const field of INSTANCE_FIELDS) {
+    if (record[field] !== undefined) row[field] = record[field];
+  }
+  return row;
+}
+
 async function insertPadRecord(req, spec) {
   const entity = spec && spec.entity === 'service_instances' ? 'service_instances' : 'submissions';
   const record = spec && spec.record || {};
   const supplied = String(record.idempotency_key || '').trim();
-  let key;
+  const localId = String(spec && spec.localId || '').trim();
+  let key = '';
   if (UUID_V4.test(supplied)) key = supplied.toLowerCase();
-  else {
+  else if (localId) {
     key = deriveIdempotencyKey({
       license: spec && spec.license,
       form: record.form_id || record.service_id || '',
-      localId: spec && spec.localId,
+      localId,
       createdAt: spec && spec.createdAt,
       content: entity === 'service_instances'
         ? { form_data: record.form_data || {}, service_id: record.service_id || null, submission_id: record.submission_id || null }
         : { values: record.values || {} }
     });
-    console.warn(DERIVED_KEY_WARN, record.environment_code || '', String((spec && (spec.localId || spec.createdAt)) || ''));
+    console.warn(DERIVED_KEY_WARN, record.environment_code || '', localId);
   }
   if (!req.picoRemainingMs) armRequestClock(req);
   const timeoutMs = Number(spec && spec.timeoutMs) || REQUEST_DEADLINE_MS;
-  if (entity === 'submissions') {
-    const written = await writeIdempotent(req, 'submissions', {
-      environment_code: record.environment_code,
-      form_id: record.form_id,
-      values: record.values || {},
-      device: 'pad'
-    }, key, timeoutMs);
-    return written.row;
-  }
-  const row = {
-    environment_code: record.environment_code,
-    service_id: record.service_id,
-    submission_id: record.submission_id ?? null,
-    device: 'pad'
-  };
-  for (const field of INSTANCE_FIELDS) {
-    if (record[field] !== undefined) row[field] = record[field];
-  }
-  const written = await writeIdempotent(req, 'service_instances', row, key, timeoutMs);
+  const row = entity === 'submissions' ? submissionRow(record) : instanceRow(record);
+  if (!key) return insertPlain(req, entity, row, timeoutMs);
+  const written = await writeIdempotent(req, entity, row, key, timeoutMs);
   return written.row;
 }
 
@@ -431,6 +674,7 @@ async function handler(req, res) {
     const profile = padProfile(license, environmentCode);
     for (let index = 0; index < prepared.length; index++) {
       const { item, payload } = prepared[index];
+      if (prepared[index].held) continue;
       if (!nextTimeout(req)) {
         queueRetries(index);
         break;
@@ -497,30 +741,84 @@ async function handler(req, res) {
             duplicate,
             already_applied: duplicate
           }));
+        } else if (item.type === 'workflow_step') {
+          const instanceId = String(payload.instanceId || payload.instance_id || (inst && inst.id) || '').trim();
+          const current = instanceId
+            ? await loadById(req, 'service_instances', environmentCode, instanceId, 'id,service_id,current_status_id,status_id')
+            : null;
+          if (!current) throw refusalError(404);
+          const stepService = await loadById(req, 'services', environmentCode, current.service_id, 'id,form_id,permissions');
+          if (!stepService) throw refusalError(404);
+          const requestedStatus = String(payload.statusId || payload.status_id || '');
+          let level = access.instanceLevel(profile, catalog, current);
+          access.assertLevel(level, 'write');
+          if (requestedStatus) {
+            const target = access.effectiveLevel(profile, catalog, 'status', requestedStatus, current.service_id);
+            access.assertLevel(target, 'write');
+            if (target !== 'normal') level = target;
+          }
+          if (level === 'normal' && !access.legacyAllows(stepService, 'create', profile)) throw refusalError(403);
+          const written = await applyWorkflowStep(req, environmentCode, payload, resolved.key, license);
+          if (!written.duplicate) {
+            mailWrites.push({
+              entity: 'service_instances',
+              isCreate: false,
+              environmentCode,
+              saved: written.row,
+              record: written.row,
+              previous: written.previous,
+              padActionId: item.id,
+              padLicenseId: session.licenseId
+            });
+          }
+          const submissionId = written.row && written.row.submission_id;
+          if (submissionId) {
+            await submissionAudit.recordPadSync(req, {
+              rest, environmentCode, licenseId: session.licenseId, license,
+              deviceCapturedAt: item.created_at, submission: { id: submissionId }, instance: written.row, actionId: item.id
+            });
+          }
+          results.push(appliedResult(item, { row: written.row, duplicate: written.duplicate, already_applied: written.duplicate }));
         } else {
           throw new Error('Type de file PAD inconnu : ' + item.type);
         }
       } catch (err) {
         if (isPadAuthError(err)) throw err;
         const refused = Number(err && err.status) || 0;
-        if (refused === 403 || refused === 404) {
+        if (refused === 400 || refused === 403 || refused === 404 || refused === 409) {
+          const raw = String(err && err.message || '');
+          const leak = /supabase|secret_sql|42703/i.test(raw);
           results.push({
             actionId: item.id,
             type: item.type,
             ok: false,
             status: refused,
-            error: err.message || 'Synchronisation refusée'
+            error: (!raw || leak) ? publicRefusal(refused) : raw
           });
           continue;
         }
         const timedOut = err && (err.code === 'DEADLINE' || err.status === 504);
-        if (timedOut) interrupted = true;
-        else {
-          failure = { requestId: crypto.randomUUID(), err };
-          console.error('[pad-sync]', failure.requestId, err && (err.stack || err.message || err));
+        if (timedOut) {
+          interrupted = true;
+          queueRetries(index);
+          break;
         }
-        queueRetries(index);
-        break;
+        failure = { requestId: crypto.randomUUID(), err };
+        console.error('[pad-sync]', failure.requestId, err && (err.stack || err.message || err));
+        retry.push(item.id);
+        results.push(retryResult(item));
+        const anchor = String(item.id || '');
+        for (let restIndex = index + 1; restIndex < prepared.length; restIndex++) {
+          const next = prepared[restIndex];
+          if (next.held) continue;
+          const nextPayload = next.payload || {};
+          const target = String(nextPayload.instanceId || nextPayload.instance_id || (nextPayload.instance && nextPayload.instance.id) || '');
+          if (next.item.type === 'workflow_step' && target && target === anchor) {
+            next.held = true;
+            retry.push(next.item.id);
+            results.push(retryResult(next.item));
+          }
+        }
       }
     }
     await submissionAudit.flushAudit(req, rest);
@@ -579,5 +877,9 @@ handler.REQUEST_DEADLINE_MS = REQUEST_DEADLINE_MS;
 handler.resolveIdempotencyKey = resolveIdempotencyKey;
 handler.deriveIdempotencyKey = deriveIdempotencyKey;
 handler.insertPadRecord = insertPadRecord;
+handler.applyWorkflowStep = applyWorkflowStep;
+handler.armRequestClock = armRequestClock;
+handler.normalizeSyncError = normalizeSyncError;
+handler.GENERIC_SYNC_ERROR = GENERIC_SYNC_ERROR;
 handler.DERIVED_KEY_WARN = DERIVED_KEY_WARN;
 module.exports = handler;

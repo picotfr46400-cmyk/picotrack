@@ -1576,19 +1576,84 @@ async function handleSave(req, body) {
   if (id) await assertNotPlatformTarget(req, entity, id, profile);
   if (!id) delete record.id;
 
-  if (!id && (entity === 'submissions' || entity === 'service_instances') && String(record.device || '').toLowerCase() === 'pad') {
+  const suppliedKey = String(
+    (source && (source.idempotency_key || source.idempotencyKey))
+    || body.idempotency_key
+    || ''
+  ).trim();
+  const localId = String(body.client_id || body.local_id || (source && (source.client_id || source.local_id)) || '').trim();
+  const uuidKey = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(suppliedKey);
+  if (entity === 'service_instances' && id && suppliedKey) {
     const padSync = require('./pad-sync');
-    const savedRow = await padSync.insertPadRecord(req, {
-      entity,
-      record,
-      license: String(profile && profile.id || ''),
-      localId: String(body.client_id || body.local_id || (source && source.local_id) || '').trim(),
-      createdAt: String(body.client_created_at || (source && source.created_at) || '').trim()
-    });
+    padSync.armRequestClock(req);
+    let written;
+    try {
+      written = await padSync.applyWorkflowStep(req, record.environment_code || env, {
+        instanceId: id,
+        serviceId: record.service_id,
+        statusId: record.current_status_id || record.status_id,
+        form_data: source && source.form_data !== undefined ? source.form_data : record.form_data,
+        events: source && source.events !== undefined ? source.events : record.events,
+        files: source && source.files,
+        comment: source && source.comment
+      }, uuidKey ? suppliedKey.toLowerCase() : suppliedKey, profile);
+    } catch (err) {
+      throw padSync.normalizeSyncError(err);
+    }
+    const saved = written && written.row ? [written.row] : [];
+    if (!written || !written.duplicate) {
+      await submissionAudit.recordSave(req, {
+        serviceRest, user, profile, entity, id, record, env,
+        before: previousInstance, form: auditForm, service: auditService, saved
+      });
+      await notifyAfterWrite({
+        req,
+        entity,
+        isCreate: false,
+        id,
+        environmentCode: record.environment_code || env,
+        record,
+        saved: written && written.row || record,
+        previous: previousInstance || (written && written.previous) || null,
+        profile,
+        origin: requestOrigin(req),
+        form: auditForm
+      });
+    }
+    return saved;
+  }
+  if (!id && (uuidKey || localId) && (entity === 'submissions' || entity === 'service_instances')) {
+    if (uuidKey) record.idempotency_key = suppliedKey.toLowerCase();
+    const padSync = require('./pad-sync');
+    let savedRow;
+    try {
+      savedRow = await padSync.insertPadRecord(req, {
+        entity,
+        record,
+        license: String(profile && profile.id || ''),
+        localId,
+        createdAt: String(body.client_created_at || (source && source.created_at) || '').trim()
+      });
+    } catch (err) {
+      throw padSync.normalizeSyncError(err);
+    }
     const saved = savedRow ? [savedRow] : [];
     await submissionAudit.recordSave(req, {
       serviceRest, user, profile, entity, id, record, env,
       before: null, form: auditForm, service: auditService, saved
+    });
+    await notifyAfterWrite({
+      req,
+      entity,
+      isCreate: true,
+      id: savedRow && savedRow.id,
+      environmentCode: record.environment_code || env,
+      record,
+      saved: savedRow || record,
+      previous: null,
+      profile,
+      origin: requestOrigin(req),
+      form: auditForm
     });
     return saved;
   }

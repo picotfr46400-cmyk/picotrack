@@ -1648,14 +1648,20 @@ test('records PAD réutilise la même insertion atomique', async () => {
       return jsonResponse(200, []);
     };
     try {
-      const record = { form_id: 'form-1', values: { client: 'PAD records' }, device: 'pad' };
+      const record = {
+        form_id: 'form-1',
+        values: { client: 'PAD records' },
+        device: 'pad',
+        idempotency_key: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+      };
       const first = await callJson(records, { action: 'save', entity: 'submissions', record });
       const second = await callJson(records, { action: 'save', entity: 'submissions', record });
       assert.equal(first.status, 200, first.payload.error || '');
       assert.equal(second.status, 200, second.payload.error || '');
       assert.equal(String(first.payload[0].id), String(second.payload[0].id));
       assert.equal(submissions.size, 1);
-      assert.equal(warnings.some((line) => line.includes(padSync.DERIVED_KEY_WARN)), true);
+      assert.equal([...submissions.values()][0].idempotency_key, record.idempotency_key);
+      assert.equal(warnings.some((line) => line.includes(padSync.DERIVED_KEY_WARN)), false);
     } finally {
       console.warn = previousWarn;
     }
