@@ -694,11 +694,12 @@ async function main() {
     }]);
     assert.equal(roleSend.status, 200, JSON.stringify(roleSend.payload));
     assert.equal(fast.messages() - beforeRole, 1);
-    assert.equal(userListGets.length, 2, userListGets.join('\n'));
+    assert.equal(userListGets.length, 3, userListGets.join('\n'));
     assert.equal(userListGets[0].includes('order=id.asc'), true);
     assert.equal(userListGets[0].includes('id=gt.'), false);
     assert.equal(userListGets[1].includes('order=id.asc'), true);
     assert.equal(userListGets[1].includes('id=gt.'), true);
+    assert.equal(userListGets[2].includes('id=gt.'), true);
     const roleRows = rowsOf('select row_to_json(t) from (select status, last_error, warning, recipients from public.mail_outbox) t');
     assert.equal(roleRows.length, 1, JSON.stringify(roleRows));
     assert.equal(roleRows[0].status, 'sent', JSON.stringify(roleRows[0]));
@@ -753,8 +754,9 @@ async function main() {
     }]);
     assert.equal(roleRetry.status, 200, JSON.stringify(roleRetry.payload));
     assert.equal(fast.messages() - beforeRetry, 1);
-    assert.equal(userListGets.length, 2, userListGets.join('\n'));
+    assert.equal(userListGets.length, 3, userListGets.join('\n'));
     assert.equal(userListGets[1].includes('id=gt.'), true);
+    assert.equal(userListGets[2].includes('id=gt.'), true);
     const retried = rowsOf('select row_to_json(t) from (select status, recipients from public.mail_outbox) t');
     assert.equal(retried.length, 1, JSON.stringify(retried));
     assert.equal(retried[0].status, 'sent', JSON.stringify(retried[0]));

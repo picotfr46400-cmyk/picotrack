@@ -333,12 +333,27 @@ function userInEnvironment(user, environmentCode) {
   return String(user && user.environment_code || '').trim().toUpperCase() === String(environmentCode || '').trim().toUpperCase();
 }
 
+// Même jeton que api/_access.js (token). Tabulations et retours sont retirés,
+// la casse est ignorée, guillemets et accolades de bord aussi. Les espaces
+// internes ne sont pas compactés : _access.js ne le fait pas, donc
+// « chef  de poste » ne correspond pas à « chef de poste ».
+function roleToken(value) {
+  return String(value ?? '').replace(/[\t\r\n\f\v]/g, '').trim().toLowerCase().replace(/^[\s"'{}]+|[\s"'{}]+$/g, '').trim();
+}
+
 function userHasRole(user, role) {
-  const want = String(role || '').trim().toLowerCase();
+  const want = roleToken(role);
   if (!want) return false;
-  if (String(user.role || '').trim().toLowerCase() === want) return true;
-  const roles = Array.isArray(user.roles) ? user.roles : [];
-  return roles.some(item => String(item || '').trim().toLowerCase() === want);
+  if (roleToken(user && user.role) === want) return true;
+  const roles = Array.isArray(user && user.roles) ? user.roles : [];
+  return roles.some(item => roleToken(item) === want);
+}
+
+function isRetryableOutbox(row) {
+  const attempts = Number(row && row.attempts || 0);
+  if (!row || attempts >= MAX_ATTEMPTS) return false;
+  if (row.status === 'pending') return true;
+  return row.status === 'failed' && attempts >= 1;
 }
 
 function recipientReadError(message) {
@@ -354,17 +369,25 @@ function userRowId(user) {
   return String(user.id).trim();
 }
 
-// Pages stables (order=id.asc, curseur id exclusif). Une page courte termine.
-// Au-delà de MAX_ROLE_USERS, ou si une page est illisible, on refuse la liste
-// entière : l'appelant ne reçoit jamais un sous-ensemble.
-async function readAllUsers(fetchPage) {
+// Pages stables (order=id.asc, curseur id exclusif). On ne s'arrête que sur une
+// page vide : une page plus courte que USER_PAGE_SIZE n'est pas la fin, car
+// max-rows peut être inférieur à 500. Avant chaque page, si l'échéance est
+// dépassée, la liste entière est refusée. L'appelant ne reçoit jamais un
+// sous-ensemble (échéance, borne ou page illisible).
+async function readAllUsers(fetchPage, deadline) {
   const users = [];
   const seen = new Set();
   let after = '';
   for (;;) {
+    let budget = 1500;
+    if (deadline != null) {
+      const remaining = Math.floor(Number(deadline) - Date.now());
+      if (remaining <= 0) throw recipientReadError(RECIPIENT_READ_ERROR);
+      budget = Math.min(remaining, 1500);
+    }
     let page;
     try {
-      page = await fetchPage(after);
+      page = await fetchPage(after, budget);
     } catch (err) {
       if (err && err.recipientRead === true) throw err;
       throw recipientReadError(RECIPIENT_READ_ERROR);
@@ -378,7 +401,6 @@ async function readAllUsers(fetchPage) {
       users.push(user);
       if (users.length > MAX_ROLE_USERS) throw recipientReadError(RECIPIENT_BOUND_ERROR);
     }
-    if (page.length < USER_PAGE_SIZE) return users;
     const next = userRowId(page[page.length - 1]);
     if (!next || next === after) throw recipientReadError(RECIPIENT_READ_ERROR);
     after = next;
@@ -397,7 +419,7 @@ async function collectAudience(audience, ctx, listUsers) {
   if (roles.length && typeof listUsers === 'function') {
     let users;
     try {
-      users = await listUsers(ctx.environmentCode);
+      users = await listUsers(ctx.environmentCode, ctx.deadline);
     } catch (err) {
       if (err && err.recipientRead === true) throw err;
       throw recipientReadError(RECIPIENT_READ_ERROR);
@@ -930,8 +952,7 @@ function createMemoryStore() {
       await this.expireUncertain(env);
       return outbox.filter(item => {
         if (String(item.environment_code).toUpperCase() !== String(env).toUpperCase()) return false;
-        if (Number(item.attempts || 0) >= MAX_ATTEMPTS) return false;
-        return item.status === 'pending' || item.status === 'failed';
+        return isRetryableOutbox(item);
       }).slice(0, limit);
     },
     async listRecent(env, limit = 40) {
@@ -944,18 +965,8 @@ function createMemoryStore() {
     async getOutbox(env, id) {
       return outbox.find(item => item.id === id && String(item.environment_code).toUpperCase() === String(env).toUpperCase()) || null;
     },
-    // Hors plafond, hors dédoublonnage, hors décision d'envoi et hors affichage admin.
-    // Voir le même compteur sur le store Supabase.
-    async countSentRecipients(env, since) {
-      const start = new Date(since).getTime();
-      return outbox.reduce((sum, item) => {
-        if (String(item.environment_code).toUpperCase() !== String(env).toUpperCase()) return sum;
-        if (item.status !== 'sent' && item.status !== 'sending') return sum;
-        if (new Date(item.updated_at || item.created_at).getTime() < start) return sum;
-        return sum + recipientTotal(item.recipients);
-      }, 0);
-    },
-    async listUsers(env) {
+    async listUsers(env, deadline) {
+      if (deadline != null && Date.now() >= Number(deadline)) throw recipientReadError(RECIPIENT_READ_ERROR);
       return users.filter(user => userInEnvironment(user, env));
     },
     async getForm(env, id) {
@@ -1100,12 +1111,14 @@ function createSqlStore(query) {
         select row_to_json(t) as row from (
           select * from public.mail_outbox
           where environment_code = ${sqlText(env)}
-            and attempts < ${MAX_ATTEMPTS}
-            and status in ('pending', 'failed')
+            and (
+              (status = 'pending' and attempts < ${MAX_ATTEMPTS})
+              or (status = 'failed' and attempts >= 1 and attempts < ${MAX_ATTEMPTS})
+            )
           order by created_at asc
           limit ${Number(limit) || 5}
         ) t`);
-      return rows.map(item => item.row || item);
+      return rows.map(item => item.row || item).filter(isRetryableOutbox);
     },
     async listRecent(env, limit = 40) {
       const rows = await one(`select row_to_json(t) as row from (select * from public.mail_outbox where environment_code = ${sqlText(env)} order by created_at desc limit ${Number(limit) || 40}) t`);
@@ -1115,13 +1128,7 @@ function createSqlStore(query) {
       const rows = await one(`select row_to_json(t) as row from (select * from public.mail_outbox where id = ${sqlText(id)}::uuid and environment_code = ${sqlText(env)} limit 1) t`);
       return rows[0] ? (rows[0].row || rows[0]) : null;
     },
-    // Hors plafond, hors dédoublonnage, hors décision d'envoi et hors affichage admin.
-    // Voir le même compteur sur le store Supabase.
-    async countSentRecipients(env, since) {
-      const rows = await one(`select row_to_json(t) as row from (select recipients from public.mail_outbox where environment_code = ${sqlText(env)} and status in ('sent', 'sending') and updated_at >= ${sqlText(new Date(since).toISOString())}::timestamptz) t`);
-      return rows.reduce((sum, item) => sum + recipientTotal((item.row || item).recipients), 0);
-    },
-    async listUsers(env) {
+    async listUsers(env, deadline) {
       return readAllUsers(async (after) => {
         const cursor = after ? ` and id > ${sqlText(after)}` : '';
         const rows = await one(`select row_to_json(t) as row from (
@@ -1132,7 +1139,7 @@ function createSqlStore(query) {
           limit ${USER_PAGE_SIZE}
         ) t`);
         return rows.map(item => item.row || item);
-      });
+      }, deadline);
     },
     async getForm(env, id) {
       const rows = await one(`select row_to_json(t) as row from (select id, nom, fields, triggers, environment_code from public.forms where id = ${sqlText(id)} and environment_code = ${sqlText(env)} limit 1) t`);
@@ -1180,7 +1187,11 @@ function envOf(profile, requested) {
 }
 
 function createSupabaseStore(req) {
-  const timeoutFor = ms => Math.max(200, Math.min(1500, ms || 1500));
+  const timeoutFor = ms => {
+    const n = Number(ms);
+    if (!(n > 0)) return 1500;
+    return Math.min(1500, n);
+  };
   async function rest(path, options, budgetMs) {
     return serviceRest(path, Object.assign({ req, timeoutMs: timeoutFor(budgetMs) }, options));
   }
@@ -1318,15 +1329,12 @@ function createSupabaseStore(req) {
           body: { p_environment_code: env },
           prefer: 'return=representation'
         }).catch(() => null);
+        const retry = `or=(and(status.eq.pending,attempts.lt.${MAX_ATTEMPTS}),and(status.eq.failed,attempts.gte.1,attempts.lt.${MAX_ATTEMPTS}))`;
         const rows = await rest(
-          `mail_outbox?environment_code=eq.${encodeURIComponent(env)}&status=in.(pending,failed)&attempts=lt.${MAX_ATTEMPTS}&select=*&order=created_at.asc&limit=${limit}`,
+          `mail_outbox?environment_code=eq.${encodeURIComponent(env)}&${retry}&select=*&order=created_at.asc&limit=${limit}`,
           { method: 'GET', prefer: '' }
         );
-        return (Array.isArray(rows) ? rows : []).filter(row => {
-          if (!row) return false;
-          if (Number(row.attempts || 0) >= MAX_ATTEMPTS) return false;
-          return row.status === 'pending' || row.status === 'failed';
-        }).slice(0, limit);
+        return (Array.isArray(rows) ? rows : []).filter(isRetryableOutbox).slice(0, limit);
       } catch (_) {
         return [];
       }
@@ -1342,26 +1350,13 @@ function createSupabaseStore(req) {
       const rows = await rest(`mail_outbox?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(env)}&select=*&limit=1`, { method: 'GET', prefer: '' });
       return firstRow(rows);
     },
-    // Ce compteur ne sert ni au plafond, ni au dédoublonnage, ni à une décision d'envoi,
-    // ni à l'affichage admin. Le plafond est réservé dans claim_mail_quota (table mail_quota) ;
-    // en mémoire, c'est legacyUsage. Le dédoublonnage est capRecipients / recipientTotal.
-    // L'admin lit listRecent (40 lignes), pas cette somme. La limite de 1000 lignes
-    // ne retire donc aucun destinataire et ne change aucun envoi.
-    async countSentRecipients(env, since) {
-      const start = encodeURIComponent(new Date(since).toISOString());
-      const rows = await rest(
-        `mail_outbox?environment_code=eq.${encodeURIComponent(env)}&status=in.(sent,sending)&updated_at=gte.${start}&select=recipients&limit=1000`,
-        { method: 'GET', prefer: '' }
-      );
-      return (Array.isArray(rows) ? rows : []).reduce((sum, row) => sum + recipientTotal(row.recipients), 0);
-    },
-    async listUsers(env) {
+    async listUsers(env, deadline) {
       const base = `user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,role,roles,environment_code,active&order=id.asc&limit=${USER_PAGE_SIZE}`;
-      return readAllUsers(async (after) => {
+      return readAllUsers(async (after, budget) => {
         const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
-        const rows = await rest(`${base}${cursor}`, { method: 'GET', prefer: '' });
+        const rows = await rest(`${base}${cursor}`, { method: 'GET', prefer: '' }, budget);
         return rows;
-      });
+      }, deadline);
     },
     async getForm(env, id) {
       const rows = await rest(
@@ -1700,12 +1695,13 @@ async function sendOutboxRow(row, deps, deadline) {
     date: (loaded.row && loaded.row.created_at) || new Date(),
     link: submissionLink(deps.input && deps.input.origin, submissionId),
     environmentCode: env,
-    attachPdf: !!(rule && rule.config && rule.config.attachPdf)
+    attachPdf: !!(rule && rule.config && rule.config.attachPdf),
+    deadline
   };
   let resolved;
   try {
     resolved = rule
-      ? await resolveRecipients(rule, ctx, userEnv => deps.store.listUsers(userEnv))
+      ? await resolveRecipients(rule, ctx, (userEnv, userDeadline) => deps.store.listUsers(userEnv, userDeadline))
       : { to: [], cc: [], bcc: [], uncapped: 0 };
   } catch (err) {
     if (!err || err.recipientRead !== true) throw err;
@@ -1858,7 +1854,7 @@ async function dispatchWithinBudget(input) {
   for (const row of inserted) {
     if (!row || !row.id || row.status === 'skipped' || seen.has(row.id)) continue;
     seen.add(row.id);
-    if (row.status === 'pending' || row.status === 'failed') queue.push(row);
+    if (isRetryableOutbox(row)) queue.push(row);
   }
   if (Date.now() < deadline && occurrences[0]) {
     const retries = await store.listRetryable(occurrences[0].environmentCode, 40).catch(() => []);

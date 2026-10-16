@@ -340,13 +340,29 @@ async function withUserFetch(all, run, options = {}) {
   process.env.SUPABASE_ANON_KEY = 'anon-test';
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-test';
   const calls = [];
-  global.fetch = async (url) => {
+  global.fetch = async (url, init) => {
     const u = String(url);
     if (!u.includes('/rest/v1/user_profiles?')) return jsonFetch(200, []);
     calls.push(u);
+    if (options.pageDelayMs) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, options.pageDelayMs);
+        const signal = init && init.signal;
+        if (!signal) return;
+        const abort = () => {
+          clearTimeout(timer);
+          const err = new Error('The operation was aborted');
+          err.name = 'TimeoutError';
+          reject(err);
+        };
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      });
+    }
     if (options.failPage && calls.length === options.failPage) return jsonFetch(500, { message: 'lecture coupée' });
     if (options.repeatFirstPage && calls.length > 1) return jsonFetch(200, pageOf(all, calls[0]));
-    return jsonFetch(200, pageOf(all, u));
+    const page = pageOf(all, u);
+    return jsonFetch(200, options.maxRows ? page.slice(0, options.maxRows) : page);
   };
   try {
     return await run(calls);
@@ -370,7 +386,7 @@ test('501 et plus destinataires de rôle sont tous servis', async () => {
       const listed = await remoteUsers().listUsers('DEMO');
       assert.equal(listed.length, count);
       assert.deepEqual(listed.map(user => user.id), all.map(user => user.id));
-      assert.equal(calls.length, Math.ceil(count / USER_PAGE_SIZE) + (count % USER_PAGE_SIZE === 0 ? 1 : 0));
+      assert.equal(calls.length, Math.ceil(count / USER_PAGE_SIZE) + 1);
       const resolved = await resolveRecipients({
         config: { to: { fixed: [], fields: [], author: false, roles: ['manager'] }, cc: {}, bcc: {} }
       }, { fields: [], values: {}, environmentCode: 'DEMO' }, env => remoteUsers().listUsers(env));
@@ -392,10 +408,11 @@ test('501 et plus destinataires de rôle sont tous servis', async () => {
     }));
     assert.equal(result.ok, true);
     assert.equal(sent.length, 1);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     assert.equal(calls[0].includes('order=id.asc'), true);
     assert.equal(calls[0].includes('id=gt.'), false);
     assert.equal(calls[1].includes('order=id.asc') && calls[1].includes('id=gt.u0500'), true);
+    assert.equal(calls[2].includes('id=gt.u0501'), true);
     assert.deepEqual(sent[0].to, all.slice(0, 10).map(user => user.email));
     assert.equal(store.outbox[0].status, 'sent');
     assert.match(store.outbox[0].warning, /10 premiers/);
@@ -445,8 +462,9 @@ test('échec de lecture des destinataires : aucun envoi partiel, nouvel essai pl
     assert.equal(result.ok, true);
     assert.equal(result.pending, false);
     assert.equal(sent.length, 1);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     assert.equal(calls[1].includes('id=gt.u0500'), true);
+    assert.equal(calls[2].includes('id=gt.u0501'), true);
     assert.equal(store.outbox.length, 1);
     assert.equal(store.outbox[0].status, 'sent');
     assert.deepEqual(sent[0].to, ['qa@example.com'].concat(all.slice(0, 9).map(user => user.email)));
@@ -454,7 +472,7 @@ test('échec de lecture des destinataires : aucun envoi partiel, nouvel essai pl
     assert.match(store.outbox[0].warning, /10 premiers/);
   });
 
-  await withUserFetch(roleUsers(MAX_ROLE_USERS + 1), async () => {
+  await withUserFetch(roleUsers(MAX_ROLE_USERS + 1), async (calls) => {
     const store = createMemoryStore();
     store.listUsers = env => remoteUsers().listUsers(env);
     await store.saveRule(submissionRule({
@@ -472,6 +490,18 @@ test('échec de lecture des destinataires : aucun envoi partiel, nouvel essai pl
     assert.equal(store.outbox[0].last_error, RECIPIENT_BOUND_ERROR);
     assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
     assert.equal(JSON.stringify(store.outbox).includes('qa@example.com'), false);
+    const seen = calls.length;
+    await notifyAfterWrite(writeInput(store, {
+      transport: async (message) => {
+        sent.push(message);
+        return { provider: 'fake' };
+      }
+    }));
+    assert.equal(calls.length, seen);
+    assert.equal(sent.length, 0);
+    assert.equal(store.outbox.length, 1);
+    assert.equal(store.outbox[0].status, 'failed');
+    assert.equal(Number(store.outbox[0].attempts || 0), 0);
   });
 
   await withUserFetch(roleUsers(USER_PAGE_SIZE), async () => {
@@ -495,9 +525,10 @@ test('échec de lecture des destinataires : aucun envoi partiel, nouvel essai pl
   const listed = await sqlStore.listUsers('DEMO');
   assert.equal(listed.length, 501);
   assert.deepEqual(listed.map(user => user.email), allSql.map(user => user.email));
-  assert.equal(pages.length, 2);
+  assert.equal(pages.length, 3);
   assert.equal(/ id > /.test(pages[0]), false);
   assert.match(pages[1], /id > 'u0500'/);
+  assert.match(pages[2], /id > 'u0501'/);
 
   let reads = 0;
   const failing = createSqlStore(async () => {
@@ -509,6 +540,131 @@ test('échec de lecture des destinataires : aucun envoi partiel, nouvel essai pl
     () => failing.listUsers('DEMO'),
     err => err && err.recipientRead === true && err.message === RECIPIENT_READ_ERROR
   );
+});
+
+test('page courte : max-rows inférieur à 500 ne perd personne', async () => {
+  const all = roleUsers(250);
+  await withUserFetch(all, async (calls) => {
+    const listed = await remoteUsers().listUsers('DEMO');
+    assert.equal(listed.length, 250);
+    assert.deepEqual(listed.map(user => user.id), all.map(user => user.id));
+    assert.equal(calls.length, 4);
+    assert.equal(calls[3].includes('id=gt.u0250'), true);
+  }, { maxRows: 100 });
+});
+
+test('rôle : même jeton que _access.js, espaces internes conservés', async () => {
+  const users = [
+    { email: 'a@example.com', role: '  "Manager"\n', environment_code: 'DEMO', active: true },
+    { email: 'b@example.com', roles: ['chef  de poste'], environment_code: 'DEMO', active: true },
+    { email: 'c@example.com', role: 'chef de poste', environment_code: 'DEMO', active: true }
+  ];
+  const list = async () => users;
+  const managers = await resolveRecipients({
+    config: { to: { roles: ['manager'] }, cc: {}, bcc: {} }
+  }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
+  assert.deepEqual(managers.to, ['a@example.com']);
+  const spaced = await resolveRecipients({
+    config: { to: { roles: ['chef de poste'] }, cc: {}, bcc: {} }
+  }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
+  assert.deepEqual(spaced.to, ['c@example.com']);
+  const exact = await resolveRecipients({
+    config: { to: { roles: ['chef  de poste'] }, cc: {}, bcc: {} }
+  }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
+  assert.deepEqual(exact.to, ['b@example.com']);
+});
+
+test('failed à 0 essai n’est pas repris, pending et failed après essai le sont', async () => {
+  const memory = createMemoryStore();
+  const stamp = (id, status, attempts) => ({
+    id,
+    environment_code: 'DEMO',
+    status,
+    attempts,
+    recipients: { to: [], cc: [], bcc: [] },
+    event: 'submission.created',
+    target_id: id,
+    payload: {},
+    created_at: '2026-01-01T00:00:00.000Z'
+  });
+  memory.outbox.push(
+    stamp('bound', 'failed', 0),
+    stamp('wait', 'pending', 0),
+    stamp('smtp', 'failed', 1),
+    stamp('done', 'failed', 3)
+  );
+  const rows = await memory.listRetryable('DEMO', 10);
+  assert.deepEqual(rows.map(row => row.id), ['wait', 'smtp']);
+
+  const queries = [];
+  const sql = createSqlStore(async (query) => {
+    queries.push(query);
+    return [];
+  });
+  await sql.listRetryable('DEMO', 5);
+  const select = queries.find(query => /from public\.mail_outbox/.test(query));
+  assert.match(select, /status = 'pending'/);
+  assert.match(select, /status = 'failed'/);
+  assert.match(select, /attempts >= 1/);
+
+  const previous = {
+    SUPABASE_URL: process.env.SUPABASE_URL,
+    SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    fetch: global.fetch
+  };
+  process.env.SUPABASE_URL = 'https://mail-test.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-test';
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(String(url));
+    return jsonFetch(200, []);
+  };
+  try {
+    const listed = await remoteUsers().listRetryable('DEMO', 5);
+    assert.deepEqual(listed, []);
+    const query = urls.find(url => url.includes('/mail_outbox?'));
+    assert.equal(query.includes('status.eq.pending'), true);
+    assert.equal(query.includes('status.eq.failed'), true);
+    assert.equal(query.includes('attempts.gte.1'), true);
+    assert.equal(query.includes('status=in.(pending,failed)'), false);
+  } finally {
+    global.fetch = previous.fetch;
+    for (const key of ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
+test('synchro : 1 400 ms par page reste sous 10 s, ligne en attente', async () => {
+  const all = roleUsers(4000);
+  await withUserFetch(all, async (calls) => {
+    const store = createMemoryStore();
+    store.listUsers = (env, userDeadline) => remoteUsers().listUsers(env, userDeadline);
+    await store.saveRule(submissionRule({ to: { fixed: ['qa@example.com'], roles: ['manager'] } }));
+    const sent = [];
+    const started = Date.now();
+    const result = await notifyAfterWrite(writeInput(store, {
+      deadline: started + 10000 - 50,
+      transport: async (message) => {
+        sent.push(message);
+        return { provider: 'fake' };
+      }
+    }));
+    const elapsed = Date.now() - started;
+    assert.equal(elapsed < 10000, true, `synchro ${elapsed} ms`);
+    assert.equal(sent.length, 0);
+    assert.equal(result.pending, true);
+    assert.equal(store.outbox[0].status, 'pending');
+    assert.equal(store.outbox[0].last_error, RECIPIENT_READ_ERROR);
+    assert.equal(Number(store.outbox[0].attempts || 0), 0);
+    assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
+    assert.equal(JSON.stringify(store.outbox).includes('qa@example.com'), false);
+    assert.equal(calls.length >= 2, true, String(calls.length));
+    assert.equal(calls.length < 9, true, String(calls.length));
+  }, { pageDelayMs: 1400 });
 });
 
 test('enregistrement : 11 destinataires refusés, environnement vide jamais DEMO', async () => {
