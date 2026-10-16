@@ -65,7 +65,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git -c "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf=https://github.com/" fetch --no-tags --depth=1 origin "$BASE_SHA"
           if git diff --name-only FETCH_HEAD HEAD -- mobile/ | grep -q .; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
@@ -79,7 +79,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git -c "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf=https://github.com/" fetch --no-tags --depth=1 origin "$BASE_SHA"
           git show FETCH_HEAD:mobile/android/tenant.properties > "$RUNNER_TEMP/base-tenant.properties"
           node mobile/ci/check-version-bump.mjs "$RUNNER_TEMP/base-tenant.properties" mobile/android/tenant.properties mobile/configure.mjs
 
