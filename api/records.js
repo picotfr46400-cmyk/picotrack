@@ -1426,15 +1426,12 @@ async function handler(req, res) {
   if (req) req.picoMailDeadline = mailDeadline;
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
   if (req.method === 'GET') {
-    const header = String(req.headers && (req.headers.authorization || req.headers.Authorization) || '');
-    if (header.startsWith('Bearer ')) {
-      if (!cronAuthorized(req)) return json(res, 401, { error: 'Non autorisé' });
-      try {
-        const drained = await runDailyMailQueue({ req, deadline: mailDeadline, origin: requestOrigin(req) });
-        return json(res, 200, { ok: true, pending: !!(drained && drained.pending) });
-      } catch (err) {
-        return json(res, 500, { error: 'File mail indisponible' });
-      }
+    if (!cronAuthorized(req)) return json(res, 401, { error: 'Non autorisé' });
+    try {
+      const drained = await runDailyMailQueue({ deadline: mailDeadline, mailEnv: process.env });
+      return json(res, 200, { ok: true, pending: !!(drained && drained.pending) });
+    } catch (err) {
+      return json(res, 500, { error: 'File mail indisponible' });
     }
   }
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });

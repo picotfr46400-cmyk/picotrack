@@ -50,8 +50,13 @@ test('cache-buster : app.secured.js différent de v2 a un ?v= différent', () =>
   if (baseBundle !== currentBundle) assert.notEqual(currentBusters[0], baseBusters[0]);
   const baseOverlay = gitShow(rev, 'assets/core-supervision.js');
   const currentOverlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
+  const baseOverlayBusters = cacheBusters(baseHtml, 'core-supervision.js');
+  const currentOverlayBusters = cacheBusters(currentHtml, 'core-supervision.js');
   if (baseOverlay === currentOverlay) {
-    assert.deepEqual(cacheBusters(currentHtml, 'core-supervision.js'), cacheBusters(baseHtml, 'core-supervision.js'));
+    assert.deepEqual(currentOverlayBusters, baseOverlayBusters);
+  } else {
+    assert.equal(currentOverlayBusters.length >= 1, true);
+    assert.notEqual(currentOverlayBusters[0], baseOverlayBusters[0]);
   }
 });
 
@@ -60,7 +65,7 @@ test('index.html : Babel absent, React conservé, cache-buster 20261008p sur le 
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
   assert.equal((html.match(/app\.secured\.js\?v=20261008p/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008p/);
+  assert.match(html, /core-supervision\.js\?v=20261008q/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);

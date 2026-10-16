@@ -1,9 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
-const { serviceRest } = require('./_server-supabase');
+const { serviceRest, listConfiguredClients } = require('./_server-supabase');
 const { normalizeLicenseType } = require('./_license-type');
-const { roleTokens } = require('./_role-token');
 const {
   EMAIL_RE,
   escapeHtml,
@@ -341,10 +340,11 @@ function userInEnvironment(user, environmentCode) {
 }
 
 function userHasRole(user, role) {
-  const wanted = roleTokens(role);
-  if (!wanted.length) return false;
-  const have = roleTokens(user && user.role).concat(roleTokens(user && user.roles));
-  return wanted.some(token => have.includes(token));
+  const want = String(role || '').trim().toLowerCase();
+  if (!want || !user || typeof user !== 'object') return false;
+  if (String(user.role || '').trim().toLowerCase() === want) return true;
+  const roles = Array.isArray(user.roles) ? user.roles : [];
+  return roles.some(item => String(item || '').trim().toLowerCase() === want);
 }
 
 function isRetryableOutbox(row) {
@@ -1202,14 +1202,14 @@ function envOf(profile, requested) {
   throw err;
 }
 
-function createSupabaseStore(req) {
+function createSupabaseStore(req, config) {
   const timeoutFor = ms => {
     const n = Number(ms);
     if (!(n > 0)) return 1500;
     return Math.min(1500, n);
   };
   async function rest(path, options, budgetMs) {
-    return serviceRest(path, Object.assign({ req, timeoutMs: timeoutFor(budgetMs) }, options));
+    return serviceRest(path, Object.assign({ req, config, timeoutMs: timeoutFor(budgetMs) }, options));
   }
   return {
     async listRules(env) {
@@ -1995,12 +1995,22 @@ async function processMailQueue(input) {
   return { ok: true, pending };
 }
 
-async function runDailyMailQueue(input) {
-  const deadline = Number(input && input.deadline);
-  if (!input || !(deadline > Date.now())) return { ok: true, pending: true };
-  const store = input.store || createSupabaseStore(input.req);
+function shareDeadline(startedAt, deadline, index, count) {
+  const slots = Math.max(1, Number(count) || 1);
+  const span = Math.max(0, Number(deadline) - Number(startedAt));
+  if (index >= slots - 1) return Number(deadline);
+  return Number(startedAt) + Math.floor(span * (index + 1) / slots);
+}
+
+function clientMailOrigin(client) {
+  const host = String(client && client.host || '').trim().toLowerCase();
+  if (!host || host.includes('*') || host.includes('/')) return '';
+  return `https://${host}`;
+}
+
+async function drainClientQueue(store, input, deadline, origin) {
   const peek = typeof store.listRetryableAny === 'function'
-    ? await store.listRetryableAny(40).catch(() => [])
+    ? await store.listRetryableAny(40)
     : [];
   const envs = [];
   for (const row of peek) {
@@ -2015,20 +2025,54 @@ async function runDailyMailQueue(input) {
     }
     const result = await processMailQueue({
       store,
-      req: input.req,
       environmentCode: env,
       deadline,
-      profile: input.profile,
-      origin: input.origin,
+      origin,
       transport: input.transport,
       renderPdf: input.renderPdf,
       mailEnv: input.mailEnv,
       now: input.now,
+      profile: input.profile,
       limit: 40
     });
     if (result && result.pending) pending = true;
   }
-  return { ok: true, pending };
+  return { pending };
+}
+
+async function runDailyMailQueue(input) {
+  const deadline = Number(input && input.deadline);
+  if (!input || !(deadline > Date.now())) return { ok: true, pending: true, clients: [] };
+  const configured = Array.isArray(input.clients)
+    ? input.clients
+    : listConfiguredClients(input.mailEnv || process.env);
+  if (!configured.length) return { ok: true, pending: false, clients: [] };
+  const started = Date.now();
+  const results = [];
+  let pending = false;
+  for (let index = 0; index < configured.length; index += 1) {
+    const client = configured[index] || {};
+    const clientDeadline = shareDeadline(started, deadline, index, configured.length);
+    if (!(clientDeadline > Date.now())) {
+      pending = true;
+      results.push({ id: client.id || '', pending: true, error: 'échéance' });
+      continue;
+    }
+    try {
+      const store = client.store || createSupabaseStore(null, {
+        url: client.url,
+        serviceRole: client.serviceRole,
+        anonKey: client.anonKey
+      });
+      const outcome = await drainClientQueue(store, input, clientDeadline, clientMailOrigin(client));
+      if (outcome.pending) pending = true;
+      results.push({ id: client.id || '', pending: !!outcome.pending, error: null });
+    } catch (err) {
+      pending = true;
+      results.push({ id: client.id || '', pending: true, error: err && err.message ? err.message : String(err) });
+    }
+  }
+  return { ok: true, pending, clients: results };
 }
 
 async function notifyAfterWrite(input) {

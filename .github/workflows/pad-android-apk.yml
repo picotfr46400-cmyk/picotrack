@@ -71,8 +71,34 @@ jobs:
       - name: Test tenant config and GPS bridge
         run: node --test mobile/configure.test.mjs mobile/pad-device.test.mjs mobile/ci/check-dependency-downgrades.test.mjs
 
-      - name: versionCode strictly greater than base branch
+      - name: Mobile tree changed against base
+        id: mobile
         if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          body=$(mktemp)
+          status=$(curl -sS -o "$body" -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}")
+          if [ "$status" != "200" ]; then
+            echo "compare API ${status}" >&2
+            cat "$body" >&2
+            exit 1
+          fi
+          if jq -r '.files[].filename // empty' "$body" | grep -q '^mobile/'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: versionCode strictly greater than base branch
+        if: github.event_name == 'pull_request' && steps.mobile.outputs.changed == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           REPO: ${{ github.repository }}
