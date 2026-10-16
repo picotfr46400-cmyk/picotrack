@@ -244,7 +244,13 @@ async function requireAuth(req){
   await validateActiveDeviceSession(req,user,profile);
   return user;
 }
-async function serviceRest(path,{method='GET',body,prefer='return=representation',req,timeoutMs=15000}={}){const {url,serviceRole}=getSupabaseConfig(req);if(!url||!serviceRole)throw missingTenantDbError();const r=await fetchUpstream(`${url}/rest/v1/${path}`,{method,headers:{apikey:serviceRole,Authorization:`Bearer ${serviceRole}`,'Content-Type':'application/json',Prefer:prefer},body:body===undefined?undefined:JSON.stringify(body)},timeoutMs);const text=await r.text();let payload=null;try{payload=text?JSON.parse(text):null}catch{payload={message:text}};if(!r.ok){const err=new Error(payload?.message||payload?.error||text||`Supabase ${r.status}`);err.status=r.status;err.payload=payload;throw err;}return payload||[]}
+async function serviceRest(path,{method='GET',body,prefer='return=representation',req,timeoutMs=15000,config}={}){
+  const explicit=config&&typeof config==='object';
+  const cfg=explicit?config:getSupabaseConfig(req);
+  const url=normalizeSupabaseUrl(cfg&&cfg.url);
+  const serviceRole=String(cfg&&cfg.serviceRole||'').trim();
+  if(!url||!serviceRole)throw missingTenantDbError();
+  const r=await fetchUpstream(`${url}/rest/v1/${path}`,{method,headers:{apikey:serviceRole,Authorization:`Bearer ${serviceRole}`,'Content-Type':'application/json',Prefer:prefer},body:body===undefined?undefined:JSON.stringify(body)},timeoutMs);const text=await r.text();let payload=null;try{payload=text?JSON.parse(text):null}catch{payload={message:text}};if(!r.ok){const err=new Error(payload?.message||payload?.error||text||`Supabase ${r.status}`);err.status=r.status;err.payload=payload;throw err;}return payload||[]}
 async function getUserProfile(userId,req){const rows=await serviceRest(`user_profiles?id=eq.${encodeURIComponent(userId)}&select=id,email,role,roles,environment_code,active,license_type,tenant_id,resolved_permissions&limit=1`,{method:'GET',prefer:'',req});return Array.isArray(rows)?rows[0]:null}
 function isAdminProfile(profile){const role=String(profile?.role||'').toLowerCase();const roles=Array.isArray(profile?.roles)?profile.roles.map(r=>String(r).toLowerCase()):[];const perms=profile?.resolved_permissions||{};return profile?.active!==false&&(role==='super_admin'||role==='admin'||role==='client_admin'||role==='environment_admin'||role==='platform_admin'||roles.includes('super_admin')||roles.includes('admin')||roles.includes('client_admin')||roles.includes('environment_admin')||perms.manage_users===true||perms.manage_global_licenses===true||perms.platform_admin===true)}
 async function requireAdmin(req){const user=await requireAuth(req);const profile=await getUserProfile(user.id,req);if(!isAdminProfile(profile)){const err=new Error('Droits administrateur requis');err.status=403;throw err;}return {user,profile}}
@@ -275,4 +281,108 @@ function takeAttempt(key,limit=8,windowMs=10*60*1000,now=Date.now()){
   return {allowed:row.fails<limit,fail(){row.fails+=1;},ok(){rateBuckets.delete(key);}};
 }
 function resetRateLimits(){rateBuckets.clear();}
-module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,fetchUpstream,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost,allowsLegacySupabaseFallback,isEfcCanonicalHost,isExactLocalHost,redactRow,redactPayload,clientIp,takeAttempt,resetRateLimits,MISSING_TENANT_DB,KNOWN_EFC_PROJECT_REF};
+function envPick(env,...names){
+  const source=env||process.env;
+  for(const name of names){
+    const value=source[name];
+    if(value!==undefined&&String(value).trim()!=='')return String(value).trim();
+  }
+  return '';
+}
+const RESERVED_CLIENT_PREFIXES=new Set(['SUPABASE','VITE','NEXT','PUBLIC','PICOTRACK','URL','SERVICE']);
+const CLIENT_PREFIX_PATTERNS=[
+  /^([A-Z][A-Z0-9]*)_SUPABASE_URL$/,
+  /^([A-Z][A-Z0-9]*)_SUPABASE_ANON_KEY$/,
+  /^([A-Z][A-Z0-9]*)_SUPABASE_SERVICE_ROLE_KEY$/,
+  /^PICOTRACK_([A-Z][A-Z0-9]*)_SUPABASE_URL$/,
+  /^PICOTRACK_([A-Z][A-Z0-9]*)_SUPABASE_ANON_KEY$/,
+  /^PICOTRACK_([A-Z][A-Z0-9]*)_SUPABASE_SERVICE_ROLE_KEY$/,
+  /^([A-Z][A-Z0-9]*)_URL_SUPABASE_VITE$/,
+  /^([A-Z][A-Z0-9]*)_VITE_SUPABASE_URL$/,
+  /^([A-Z][A-Z0-9]*)_VITE_SUPABASE_ANON_KEY$/,
+  /^([A-Z][A-Z0-9]*)_SERVICE_ROLE_KEY$/
+];
+function clientKeysForPrefix(prefix, env){
+  const anonKey=envPick(env,`${prefix}_SUPABASE_ANON_KEY`,`PICOTRACK_${prefix}_SUPABASE_ANON_KEY`,`${prefix}_VITE_SUPABASE_ANON_KEY`);
+  const serviceRole=envPick(env,`${prefix}_SUPABASE_SERVICE_ROLE_KEY`,`PICOTRACK_${prefix}_SUPABASE_SERVICE_ROLE_KEY`,`${prefix}_SERVICE_ROLE_KEY`);
+  const url=normalizeSupabaseUrl(envPick(env,`${prefix}_SUPABASE_URL`,`PICOTRACK_${prefix}_SUPABASE_URL`,`${prefix}_URL_SUPABASE_VITE`,`${prefix}_VITE_SUPABASE_URL`)||deriveSupabaseUrlFromAnonKey(anonKey));
+  return {url,anonKey,serviceRole};
+}
+function hostForClientPrefix(prefix){
+  const code=String(prefix||'').toLowerCase();
+  if(code==='prod')return 'picotrack.fr';
+  if(code==='demo')return 'demo.picotrack.fr';
+  return `${code}.picotrack.fr`;
+}
+function legacyClientKeys(env){
+  const anonKey=envPick(env,'VITE_SUPABASE_ANON_KEY','SUPABASE_ANON_KEY','SUPABASE_ANON_PUBLIC_KEY','NEXT_PUBLIC_SUPABASE_ANON_KEY');
+  const serviceRole=envPick(env,'SUPABASE_SERVICE_ROLE_KEY','SUPABASE_SERVICE_KEY','SERVICE_ROLE_KEY','SUPABASE_SERVICE_ROLE');
+  const url=normalizeSupabaseUrl(envPick(env,'URL_SUPABASE_VITE','VITE_SUPABASE_URL','SUPABASE_URL','NEXT_PUBLIC_SUPABASE_URL','PICOTRACK_SUPABASE_URL')||deriveSupabaseUrlFromAnonKey(anonKey));
+  return {url,anonKey,serviceRole};
+}
+// Clients des variables d'hôte : une base et une clé par client. Pas de table tenants, pas de base partagée.
+function listConfiguredClients(env){
+  const source=env||process.env;
+  const clients=[];
+  const seenUrls=new Set();
+  const legacy=legacyClientKeys(source);
+  function add(client){
+    const url=normalizeSupabaseUrl(client&&client.url);
+    const serviceRole=String(client&&client.serviceRole||'').trim();
+    if(!url||!serviceRole||seenUrls.has(url))return;
+    const dedicatedEfc=client.id==='efc'||client.id==='EFC'||cleanHost(client.host)==='efc.picotrack.fr';
+    if(!dedicatedEfc&&legacy.url&&url===legacy.url)return;
+    if(!dedicatedEfc&&isEfcProjectConfig({url,anonKey:client.anonKey}))return;
+    seenUrls.add(url);
+    clients.push({
+      id:String(client.id||url),
+      host:cleanHost(client.host||''),
+      url,
+      anonKey:String(client.anonKey||'').trim(),
+      serviceRole
+    });
+  }
+  const raw=envPick(source,'PICOTRACK_CONFIG_JSON','PICOTRACK_CLIENTS_JSON','PICOTRACK_SUPABASE_CONFIG_JSON');
+  if(raw){
+    try{
+      const cfg=JSON.parse(raw);
+      if(Array.isArray(cfg)){
+        for(const entry of cfg){
+          const hosts=[entry?.host,entry?.domain,entry?.hostname,...(Array.isArray(entry?.hosts)?entry.hosts:[])].map(cleanHost).filter(host=>host&&!host.includes('*'));
+          if(!hosts.length)continue;
+          const normalized=normalizeConfigEntry(entry,hosts[0]);
+          if(!normalized)continue;
+          add({id:hosts[0],host:hosts[0],url:normalized.url,anonKey:normalized.anonKey,serviceRole:normalized.serviceRole});
+        }
+      }else if(cfg&&typeof cfg==='object'){
+        for(const [key,entry] of Object.entries(cfg)){
+          if(String(key).includes('*'))continue;
+          const host=cleanHost(key);
+          if(!host)continue;
+          const normalized=normalizeConfigEntry(entry,host);
+          if(!normalized)continue;
+          add({id:host,host,url:normalized.url,anonKey:normalized.anonKey,serviceRole:normalized.serviceRole});
+        }
+      }
+    }catch(_){}
+  }
+  const prefixes=new Set();
+  for(const key of Object.keys(source)){
+    for(const pattern of CLIENT_PREFIX_PATTERNS){
+      const match=pattern.exec(key);
+      if(!match)continue;
+      const prefix=match[1];
+      if(!RESERVED_CLIENT_PREFIXES.has(prefix))prefixes.add(prefix);
+    }
+  }
+  for(const prefix of [...prefixes].sort()){
+    const keys=clientKeysForPrefix(prefix,source);
+    add({id:prefix,host:hostForClientPrefix(prefix),url:keys.url,anonKey:keys.anonKey,serviceRole:keys.serviceRole});
+  }
+  if(legacy.url&&legacy.serviceRole&&!seenUrls.has(legacy.url)){
+    add({id:'efc',host:'efc.picotrack.fr',url:legacy.url,anonKey:legacy.anonKey,serviceRole:legacy.serviceRole});
+  }
+  clients.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+  return clients;
+}
+module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,fetchUpstream,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost,allowsLegacySupabaseFallback,isEfcCanonicalHost,isExactLocalHost,redactRow,redactPayload,clientIp,takeAttempt,resetRateLimits,listConfiguredClients,MISSING_TENANT_DB,KNOWN_EFC_PROJECT_REF};

@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { serviceRest } = require('./_server-supabase');
+const { serviceRest, listConfiguredClients } = require('./_server-supabase');
 const { normalizeLicenseType } = require('./_license-type');
 const {
   EMAIL_RE,
@@ -34,7 +34,17 @@ const EVENTS = new Set([
   'workflow.action'
 ]);
 const MAX_RECIPIENTS = 10;
+const USER_PAGE_SIZE = 500;
+const MAX_ROLE_USERS = 5000;
+const RECIPIENT_READ_ERROR = 'Lecture des destinataires impossible, nouvel essai plus tard.';
+const RECIPIENT_BOUND_ERROR = `Trop d'utilisateurs actifs (plus de ${MAX_ROLE_USERS}) pour connaître tous les destinataires. Le mail n'a pas été envoyé.`;
 const MAX_ATTEMPTS = 3;
+const VERCEL_MAX_DURATION_MS = 20000;
+const QUEUE_DEADLINE_MARGIN_MS = 2000;
+const INVOCATION_BUDGET_MS = VERCEL_MAX_DURATION_MS - QUEUE_DEADLINE_MARGIN_MS;
+const QUEUE_BUDGET_MS = INVOCATION_BUDGET_MS;
+const OPPORTUNISTIC_LIMIT = 3;
+const STALE_PENDING_MS = 60 * 60 * 1000;
 const DEFAULT_BUDGET_MS = 3000;
 const DEFAULT_PER_CALL_MS = 2000;
 const DEFAULT_DAILY_LIMIT = 300;
@@ -331,10 +341,68 @@ function userInEnvironment(user, environmentCode) {
 
 function userHasRole(user, role) {
   const want = String(role || '').trim().toLowerCase();
-  if (!want) return false;
+  if (!want || !user || typeof user !== 'object') return false;
   if (String(user.role || '').trim().toLowerCase() === want) return true;
   const roles = Array.isArray(user.roles) ? user.roles : [];
   return roles.some(item => String(item || '').trim().toLowerCase() === want);
+}
+
+function isRetryableOutbox(row) {
+  const attempts = Number(row && row.attempts || 0);
+  if (!row || attempts >= MAX_ATTEMPTS) return false;
+  if (row.status === 'pending') return true;
+  return row.status === 'failed' && attempts >= 1;
+}
+
+function recipientReadError(message) {
+  const text = message || RECIPIENT_READ_ERROR;
+  const err = new Error(text);
+  err.recipientRead = true;
+  err.recipientRetry = text === RECIPIENT_READ_ERROR;
+  return err;
+}
+
+function userRowId(user) {
+  if (!user || user.id == null) return '';
+  return String(user.id).trim();
+}
+
+// Pages stables (order=id.asc, curseur id exclusif). On ne s'arrête que sur une
+// page vide : une page plus courte que USER_PAGE_SIZE n'est pas la fin, car
+// max-rows peut être inférieur à 500. Avant chaque page, si l'échéance est
+// dépassée, la liste entière est refusée. L'appelant ne reçoit jamais un
+// sous-ensemble (échéance, borne ou page illisible).
+async function readAllUsers(fetchPage, deadline) {
+  const users = [];
+  const seen = new Set();
+  let after = '';
+  for (;;) {
+    let budget = 1500;
+    if (deadline != null) {
+      const remaining = Math.floor(Number(deadline) - Date.now());
+      if (remaining <= 0) throw recipientReadError(RECIPIENT_READ_ERROR);
+      budget = Math.min(remaining, 1500);
+    }
+    let page;
+    try {
+      page = await fetchPage(after, budget);
+    } catch (err) {
+      if (err && err.recipientRead === true) throw err;
+      throw recipientReadError(RECIPIENT_READ_ERROR);
+    }
+    if (!Array.isArray(page) || page.length > USER_PAGE_SIZE) throw recipientReadError(RECIPIENT_READ_ERROR);
+    if (!page.length) return users;
+    for (const user of page) {
+      const id = userRowId(user);
+      if (!id || seen.has(id)) throw recipientReadError(RECIPIENT_READ_ERROR);
+      seen.add(id);
+      users.push(user);
+      if (users.length > MAX_ROLE_USERS) throw recipientReadError(RECIPIENT_BOUND_ERROR);
+    }
+    const next = userRowId(page[page.length - 1]);
+    if (!next || next === after) throw recipientReadError(RECIPIENT_READ_ERROR);
+    after = next;
+  }
 }
 
 async function collectAudience(audience, ctx, listUsers) {
@@ -347,8 +415,15 @@ async function collectAudience(audience, ctx, listUsers) {
   if (spec.author && ctx.authorEmail) found.push(...normalizeEmails(ctx.authorEmail));
   const roles = Array.isArray(spec.roles) ? spec.roles : [];
   if (roles.length && typeof listUsers === 'function') {
-    const users = await listUsers(ctx.environmentCode);
-    for (const user of Array.isArray(users) ? users : []) {
+    let users;
+    try {
+      users = await listUsers(ctx.environmentCode, ctx.deadline);
+    } catch (err) {
+      if (err && err.recipientRead === true) throw err;
+      throw recipientReadError(RECIPIENT_READ_ERROR);
+    }
+    if (!Array.isArray(users)) throw recipientReadError(RECIPIENT_READ_ERROR);
+    for (const user of users) {
       if (!userActive(user) || !userInEnvironment(user, ctx.environmentCode)) continue;
       if (!roles.some(role => userHasRole(user, role))) continue;
       found.push(...normalizeEmails(user.email));
@@ -875,9 +950,13 @@ function createMemoryStore() {
       await this.expireUncertain(env);
       return outbox.filter(item => {
         if (String(item.environment_code).toUpperCase() !== String(env).toUpperCase()) return false;
-        if (Number(item.attempts || 0) >= MAX_ATTEMPTS) return false;
-        return item.status === 'pending' || item.status === 'failed';
+        return isRetryableOutbox(item);
       }).slice(0, limit);
+    },
+    async listRetryableAny(limit = 40) {
+      const envs = new Set(outbox.map(item => item.environment_code).filter(Boolean));
+      for (const env of envs) await this.expireUncertain(env);
+      return outbox.filter(isRetryableOutbox).slice(0, limit);
     },
     async listRecent(env, limit = 40) {
       return outbox
@@ -889,16 +968,8 @@ function createMemoryStore() {
     async getOutbox(env, id) {
       return outbox.find(item => item.id === id && String(item.environment_code).toUpperCase() === String(env).toUpperCase()) || null;
     },
-    async countSentRecipients(env, since) {
-      const start = new Date(since).getTime();
-      return outbox.reduce((sum, item) => {
-        if (String(item.environment_code).toUpperCase() !== String(env).toUpperCase()) return sum;
-        if (item.status !== 'sent' && item.status !== 'sending') return sum;
-        if (new Date(item.updated_at || item.created_at).getTime() < start) return sum;
-        return sum + recipientTotal(item.recipients);
-      }, 0);
-    },
-    async listUsers(env) {
+    async listUsers(env, deadline) {
+      if (deadline != null && Date.now() >= Number(deadline)) throw recipientReadError(RECIPIENT_READ_ERROR);
       return users.filter(user => userInEnvironment(user, env));
     },
     async getForm(env, id) {
@@ -1043,12 +1114,27 @@ function createSqlStore(query) {
         select row_to_json(t) as row from (
           select * from public.mail_outbox
           where environment_code = ${sqlText(env)}
-            and attempts < ${MAX_ATTEMPTS}
-            and status in ('pending', 'failed')
+            and (
+              (status = 'pending' and attempts < ${MAX_ATTEMPTS})
+              or (status = 'failed' and attempts >= 1 and attempts < ${MAX_ATTEMPTS})
+            )
           order by created_at asc
           limit ${Number(limit) || 5}
         ) t`);
-      return rows.map(item => item.row || item);
+      return rows.map(item => item.row || item).filter(isRetryableOutbox);
+    },
+    async listRetryableAny(limit = 40) {
+      const rows = await one(`
+        select row_to_json(t) as row from (
+          select * from public.mail_outbox
+          where (
+            (status = 'pending' and attempts < ${MAX_ATTEMPTS})
+            or (status = 'failed' and attempts >= 1 and attempts < ${MAX_ATTEMPTS})
+          )
+          order by created_at asc
+          limit ${Number(limit) || 40}
+        ) t`);
+      return rows.map(item => item.row || item).filter(isRetryableOutbox);
     },
     async listRecent(env, limit = 40) {
       const rows = await one(`select row_to_json(t) as row from (select * from public.mail_outbox where environment_code = ${sqlText(env)} order by created_at desc limit ${Number(limit) || 40}) t`);
@@ -1058,17 +1144,18 @@ function createSqlStore(query) {
       const rows = await one(`select row_to_json(t) as row from (select * from public.mail_outbox where id = ${sqlText(id)}::uuid and environment_code = ${sqlText(env)} limit 1) t`);
       return rows[0] ? (rows[0].row || rows[0]) : null;
     },
-    async countSentRecipients(env, since) {
-      const rows = await one(`select row_to_json(t) as row from (select recipients from public.mail_outbox where environment_code = ${sqlText(env)} and status in ('sent', 'sending') and updated_at >= ${sqlText(new Date(since).toISOString())}::timestamptz) t`);
-      return rows.reduce((sum, item) => sum + recipientTotal((item.row || item).recipients), 0);
-    },
-    async listUsers(env) {
-      try {
-        const rows = await one(`select row_to_json(t) as row from (select id, email, role, roles, environment_code, active from public.user_profiles where environment_code = ${sqlText(env)} and active = true limit 500) t`);
+    async listUsers(env, deadline) {
+      return readAllUsers(async (after) => {
+        const cursor = after ? ` and id > ${sqlText(after)}` : '';
+        const rows = await one(`select row_to_json(t) as row from (
+          select id, email, role, roles, environment_code, active
+          from public.user_profiles
+          where environment_code = ${sqlText(env)} and active = true${cursor}
+          order by id asc
+          limit ${USER_PAGE_SIZE}
+        ) t`);
         return rows.map(item => item.row || item);
-      } catch (_) {
-        return [];
-      }
+      }, deadline);
     },
     async getForm(env, id) {
       const rows = await one(`select row_to_json(t) as row from (select id, nom, fields, triggers, environment_code from public.forms where id = ${sqlText(id)} and environment_code = ${sqlText(env)} limit 1) t`);
@@ -1115,10 +1202,14 @@ function envOf(profile, requested) {
   throw err;
 }
 
-function createSupabaseStore(req) {
-  const timeoutFor = ms => Math.max(200, Math.min(1500, ms || 1500));
+function createSupabaseStore(req, config) {
+  const timeoutFor = ms => {
+    const n = Number(ms);
+    if (!(n > 0)) return 1500;
+    return Math.min(1500, n);
+  };
   async function rest(path, options, budgetMs) {
-    return serviceRest(path, Object.assign({ req, timeoutMs: timeoutFor(budgetMs) }, options));
+    return serviceRest(path, Object.assign({ req, config, timeoutMs: timeoutFor(budgetMs) }, options));
   }
   return {
     async listRules(env) {
@@ -1254,15 +1345,24 @@ function createSupabaseStore(req) {
           body: { p_environment_code: env },
           prefer: 'return=representation'
         }).catch(() => null);
+        const retry = `or=(and(status.eq.pending,attempts.lt.${MAX_ATTEMPTS}),and(status.eq.failed,attempts.gte.1,attempts.lt.${MAX_ATTEMPTS}))`;
         const rows = await rest(
-          `mail_outbox?environment_code=eq.${encodeURIComponent(env)}&status=in.(pending,failed)&attempts=lt.${MAX_ATTEMPTS}&select=*&order=created_at.asc&limit=${limit}`,
+          `mail_outbox?environment_code=eq.${encodeURIComponent(env)}&${retry}&select=*&order=created_at.asc&limit=${limit}`,
           { method: 'GET', prefer: '' }
         );
-        return (Array.isArray(rows) ? rows : []).filter(row => {
-          if (!row) return false;
-          if (Number(row.attempts || 0) >= MAX_ATTEMPTS) return false;
-          return row.status === 'pending' || row.status === 'failed';
-        }).slice(0, limit);
+        return (Array.isArray(rows) ? rows : []).filter(isRetryableOutbox).slice(0, limit);
+      } catch (_) {
+        return [];
+      }
+    },
+    async listRetryableAny(limit = 40) {
+      try {
+        const retry = `or=(and(status.eq.pending,attempts.lt.${MAX_ATTEMPTS}),and(status.eq.failed,attempts.gte.1,attempts.lt.${MAX_ATTEMPTS}))`;
+        const rows = await rest(
+          `mail_outbox?${retry}&select=*&order=created_at.asc&limit=${limit}`,
+          { method: 'GET', prefer: '' }
+        );
+        return (Array.isArray(rows) ? rows : []).filter(isRetryableOutbox).slice(0, limit);
       } catch (_) {
         return [];
       }
@@ -1278,20 +1378,13 @@ function createSupabaseStore(req) {
       const rows = await rest(`mail_outbox?id=eq.${encodeURIComponent(id)}&environment_code=eq.${encodeURIComponent(env)}&select=*&limit=1`, { method: 'GET', prefer: '' });
       return firstRow(rows);
     },
-    async countSentRecipients(env, since) {
-      const start = encodeURIComponent(new Date(since).toISOString());
-      const rows = await rest(
-        `mail_outbox?environment_code=eq.${encodeURIComponent(env)}&status=in.(sent,sending)&updated_at=gte.${start}&select=recipients&limit=1000`,
-        { method: 'GET', prefer: '' }
-      );
-      return (Array.isArray(rows) ? rows : []).reduce((sum, row) => sum + recipientTotal(row.recipients), 0);
-    },
-    async listUsers(env) {
-      const rows = await rest(
-        `user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,role,roles,environment_code,active&limit=500`,
-        { method: 'GET', prefer: '' }
-      );
-      return Array.isArray(rows) ? rows : [];
+    async listUsers(env, deadline) {
+      const base = `user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,email,role,roles,environment_code,active&order=id.asc&limit=${USER_PAGE_SIZE}`;
+      return readAllUsers(async (after, budget) => {
+        const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+        const rows = await rest(`${base}${cursor}`, { method: 'GET', prefer: '' }, budget);
+        return rows;
+      }, deadline);
     },
     async getForm(env, id) {
       const rows = await rest(
@@ -1467,6 +1560,9 @@ async function mailPdf(ctx, deps, remainingMs) {
 function publicOutbox(row) {
   if (!row) return null;
   const recipients = row.recipients && typeof row.recipients === 'object' ? row.recipients : {};
+  const created = row.created_at ? new Date(row.created_at).getTime() : NaN;
+  const stale = row.status === 'pending' && Number.isFinite(created) && (Date.now() - created) >= STALE_PENDING_MS;
+  const bound = row.status === 'failed' && String(row.last_error || '') === RECIPIENT_BOUND_ERROR;
   return {
     id: row.id,
     environment_code: row.environment_code,
@@ -1479,7 +1575,11 @@ function publicOutbox(row) {
     attempts: row.attempts,
     last_error: row.last_error,
     warning: row.warning,
-    created_at: row.created_at
+    created_at: row.created_at,
+    stale,
+    attention: stale
+      ? 'En attente depuis plus d’une heure.'
+      : (bound ? RECIPIENT_BOUND_ERROR : null)
   };
 }
 
@@ -1630,11 +1730,25 @@ async function sendOutboxRow(row, deps, deadline) {
     date: (loaded.row && loaded.row.created_at) || new Date(),
     link: submissionLink(deps.input && deps.input.origin, submissionId),
     environmentCode: env,
-    attachPdf: !!(rule && rule.config && rule.config.attachPdf)
+    attachPdf: !!(rule && rule.config && rule.config.attachPdf),
+    deadline
   };
-  const resolved = rule
-    ? await resolveRecipients(rule, ctx, userEnv => deps.store.listUsers(userEnv))
-    : { to: [], cc: [], bcc: [], uncapped: 0 };
+  let resolved;
+  try {
+    resolved = rule
+      ? await resolveRecipients(rule, ctx, (userEnv, userDeadline) => deps.store.listUsers(userEnv, userDeadline))
+      : { to: [], cc: [], bcc: [], uncapped: 0 };
+  } catch (err) {
+    if (!err || err.recipientRead !== true) throw err;
+    const retry = err.recipientRetry === true;
+    await markCurrent(deps.store, row, env, {
+      status: retry ? 'pending' : 'failed',
+      last_error: String(err.message || (retry ? RECIPIENT_READ_ERROR : RECIPIENT_BOUND_ERROR)).slice(0, 500),
+      recipients: { to: [], cc: [], bcc: [] },
+      warning: null
+    });
+    return retry ? 'pending' : 'failed';
+  }
   let warning = null;
   const recipients = { to: resolved.to, cc: resolved.cc, bcc: resolved.bcc };
   if (resolved.uncapped > MAX_RECIPIENTS) warning = IMPLICIT_WARNING;
@@ -1770,12 +1884,20 @@ async function dispatchWithinBudget(input) {
     planned.push(...rows);
   }
   const inserted = planned.length ? await store.insertOutboxBatch(planned) : [];
+  if (input.enqueueOnly) {
+    return {
+      ok: true,
+      pending: inserted.some(row => row && row.status === 'pending'),
+      queued: inserted.length,
+      rows: inserted
+    };
+  }
   const queue = [];
   const seen = new Set();
   for (const row of inserted) {
     if (!row || !row.id || row.status === 'skipped' || seen.has(row.id)) continue;
     seen.add(row.id);
-    if (row.status === 'pending' || row.status === 'failed') queue.push(row);
+    if (isRetryableOutbox(row)) queue.push(row);
   }
   if (Date.now() < deadline && occurrences[0]) {
     const retries = await store.listRetryable(occurrences[0].environmentCode, 40).catch(() => []);
@@ -1808,6 +1930,149 @@ async function dispatchWithinBudget(input) {
     if (result === 'capped') break;
   }
   return { ok: true, pending, queued: inserted.length };
+}
+
+function invocationDeadline(start) {
+  return Number(start) + INVOCATION_BUDGET_MS;
+}
+
+function continueAfterResponse(promise) {
+  const pending = Promise.resolve(promise);
+  try {
+    const { waitUntil } = require('@vercel/functions');
+    if (typeof waitUntil === 'function') waitUntil(pending);
+  } catch (_) {}
+  return pending;
+}
+
+async function processMailQueue(input) {
+  const deadline = Number(input && input.deadline);
+  if (!input || !(deadline > Date.now())) return { ok: true, pending: true };
+  const store = input.store || createSupabaseStore(input.req);
+  const env = input.environmentCode;
+  if (!env) return { ok: true, pending: false };
+  const rules = await store.listRules(env).catch(() => []);
+  const limit = input.limit == null ? OPPORTUNISTIC_LIMIT : Number(input.limit);
+  const listed = await store.listRetryable(env, Math.max(1, limit > 0 ? limit : 1)).catch(() => []);
+  const seen = new Set();
+  const rows = [];
+  for (const row of (Array.isArray(input.rows) ? input.rows : [])) {
+    if (!row || !row.id || seen.has(row.id) || !isRetryableOutbox(row)) continue;
+    seen.add(row.id);
+    rows.push(row);
+  }
+  if (limit > 0) {
+    let extra = 0;
+    for (const row of listed) {
+      if (extra >= limit) break;
+      if (!row || !row.id || seen.has(row.id) || !isRetryableOutbox(row)) continue;
+      seen.add(row.id);
+      rows.push(row);
+      extra += 1;
+    }
+  }
+  const deps = {
+    store,
+    transport: input.transport,
+    renderPdf: input.renderPdf,
+    perCallMs: input.perCallMs ?? DEFAULT_PER_CALL_MS,
+    now: input.now,
+    env: input.mailEnv || process.env,
+    input,
+    formCache: new Map(),
+    rules: Array.isArray(rules) ? rules : []
+  };
+  let pending = false;
+  for (const row of rows) {
+    if (Date.now() >= deadline) {
+      pending = true;
+      break;
+    }
+    const result = await sendOutboxRow(row, deps, deadline);
+    if (result === 'pending' || result === 'capped') pending = true;
+    if (result === 'capped') break;
+  }
+  return { ok: true, pending };
+}
+
+function shareDeadline(startedAt, deadline, index, count) {
+  const slots = Math.max(1, Number(count) || 1);
+  const span = Math.max(0, Number(deadline) - Number(startedAt));
+  if (index >= slots - 1) return Number(deadline);
+  return Number(startedAt) + Math.floor(span * (index + 1) / slots);
+}
+
+function clientMailOrigin(client) {
+  const host = String(client && client.host || '').trim().toLowerCase();
+  if (!host || host.includes('*') || host.includes('/')) return '';
+  return `https://${host}`;
+}
+
+async function drainClientQueue(store, input, deadline, origin) {
+  const peek = typeof store.listRetryableAny === 'function'
+    ? await store.listRetryableAny(40)
+    : [];
+  const envs = [];
+  for (const row of peek) {
+    const env = row && row.environment_code;
+    if (env && !envs.includes(env)) envs.push(env);
+  }
+  let pending = false;
+  for (const env of envs) {
+    if (Date.now() >= deadline) {
+      pending = true;
+      break;
+    }
+    const result = await processMailQueue({
+      store,
+      environmentCode: env,
+      deadline,
+      origin,
+      transport: input.transport,
+      renderPdf: input.renderPdf,
+      mailEnv: input.mailEnv,
+      now: input.now,
+      profile: input.profile,
+      limit: 40
+    });
+    if (result && result.pending) pending = true;
+  }
+  return { pending };
+}
+
+async function runDailyMailQueue(input) {
+  const deadline = Number(input && input.deadline);
+  if (!input || !(deadline > Date.now())) return { ok: true, pending: true, clients: [] };
+  const configured = Array.isArray(input.clients)
+    ? input.clients
+    : listConfiguredClients(input.mailEnv || process.env);
+  if (!configured.length) return { ok: true, pending: false, clients: [] };
+  const started = Date.now();
+  const results = [];
+  let pending = false;
+  for (let index = 0; index < configured.length; index += 1) {
+    const client = configured[index] || {};
+    const clientDeadline = shareDeadline(started, deadline, index, configured.length);
+    if (!(clientDeadline > Date.now())) {
+      pending = true;
+      results.push({ id: client.id || '', pending: true, error: 'échéance' });
+      continue;
+    }
+    try {
+      const store = client.store || createSupabaseStore(null, {
+        url: client.url,
+        serviceRole: client.serviceRole,
+        anonKey: client.anonKey
+      });
+      const outcome = await drainClientQueue(store, input, clientDeadline, clientMailOrigin(client));
+      if (outcome.pending) pending = true;
+      results.push({ id: client.id || '', pending: !!outcome.pending, error: null });
+    } catch (err) {
+      pending = true;
+      results.push({ id: client.id || '', pending: true, error: err && err.message ? err.message : String(err) });
+    }
+  }
+  return { ok: true, pending, clients: results };
 }
 
 async function notifyAfterWrite(input) {
@@ -2035,6 +2300,10 @@ tryAttachSubmissionAudit();
 module.exports = {
   EVENTS,
   MAX_RECIPIENTS,
+  MAX_ROLE_USERS,
+  USER_PAGE_SIZE,
+  RECIPIENT_READ_ERROR,
+  RECIPIENT_BOUND_ERROR,
   MAX_ATTEMPTS,
   PDF_BYTE_LIMIT,
   PDF_OMITTED_MENTION,
@@ -2058,10 +2327,19 @@ module.exports = {
   ruleMatches,
   normalizeRuleRecord,
   notifyAfterWrite,
+  processMailQueue,
+  runDailyMailQueue,
+  continueAfterResponse,
+  invocationDeadline,
+  QUEUE_BUDGET_MS,
+  INVOCATION_BUDGET_MS,
+  OPPORTUNISTIC_LIMIT,
+  STALE_PENDING_MS,
   syncFormMailRules,
   handleMailAction,
   createMemoryStore,
   createSqlStore,
+  createSupabaseStore,
   setMailAuditHook,
   formatParis,
   requestOrigin: originFromReq,

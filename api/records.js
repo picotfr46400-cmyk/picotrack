@@ -1,7 +1,8 @@
+const crypto = require('crypto');
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
-const { notifyAfterWrite, syncFormMailRules, handleMailAction, requestOrigin } = require('./_mail-rules');
+const { notifyAfterWrite, syncFormMailRules, handleMailAction, processMailQueue, runDailyMailQueue, continueAfterResponse, INVOCATION_BUDGET_MS, OPPORTUNISTIC_LIMIT, requestOrigin } = require('./_mail-rules');
 const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
 const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota, assertShortLoginsAvailable } = require('./function');
 const submissionAudit = require('./_submission-audit');
@@ -1108,7 +1109,8 @@ async function handleSave(req, body) {
       previous: previousInstance,
       profile,
       origin: requestOrigin(req),
-      form: auditForm
+      form: auditForm,
+      deadline: req.picoMailDeadline
     });
   } else if (entity === 'forms') {
     await syncFormMailRules({
@@ -1410,9 +1412,28 @@ async function handleExportSubmissionPdf(req, body) {
   };
 }
 
+function cronAuthorized(req) {
+  const secret = String(process.env.CRON_SECRET || '');
+  const header = String(req && req.headers && (req.headers.authorization || req.headers.Authorization) || '');
+  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';
+  if (!secret || !token || token.length !== secret.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(secret));
+}
+
 async function handler(req, res) {
   setCors(req, res);
+  const mailDeadline = Date.now() + INVOCATION_BUDGET_MS;
+  if (req) req.picoMailDeadline = mailDeadline;
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
+  if (req.method === 'GET') {
+    if (!cronAuthorized(req)) return json(res, 401, { error: 'Non autorisé' });
+    try {
+      const drained = await runDailyMailQueue({ deadline: mailDeadline, mailEnv: process.env });
+      return json(res, 200, { ok: true, pending: !!(drained && drained.pending) });
+    } catch (err) {
+      return json(res, 500, { error: 'File mail indisponible' });
+    }
+  }
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
 
   try {
@@ -1488,7 +1509,19 @@ async function handler(req, res) {
     }
 
     result = projectClientResult(action, body, result, req.picoReaderProfile);
-    return json(res, 200, redactRecordsPayload(result, req.picoReaderProfile));
+    const payload = redactRecordsPayload(result, req.picoReaderProfile);
+    json(res, 200, payload);
+    if (action === 'initial_load' && result && result.environment_code) {
+      await continueAfterResponse(processMailQueue({
+        req,
+        environmentCode: result.environment_code,
+        deadline: mailDeadline,
+        profile: req.picoReaderProfile,
+        origin: requestOrigin(req),
+        limit: OPPORTUNISTIC_LIMIT
+      }).catch(() => null));
+    }
+    return;
   } catch (err) {
     return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}) });
   }

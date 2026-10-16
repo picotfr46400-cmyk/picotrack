@@ -16,11 +16,23 @@ const {
   canManageMailRules,
   conditionsPass,
   createMemoryStore,
+  createSqlStore,
+  createSupabaseStore,
   formatParis,
   handleMailAction,
+  MAX_ROLE_USERS,
+  USER_PAGE_SIZE,
+  RECIPIENT_READ_ERROR,
+  RECIPIENT_BOUND_ERROR,
   idempotencyKey,
   normalizeRuleRecord,
   notifyAfterWrite,
+  processMailQueue,
+  runDailyMailQueue,
+  invocationDeadline,
+  INVOCATION_BUDGET_MS,
+  STALE_PENDING_MS,
+  QUEUE_BUDGET_MS,
   occurrencesFromWrite,
   renderMailTemplate,
   renderMailText,
@@ -282,6 +294,671 @@ test('destinataires : rôle cloisonné, inactifs exclus, dédoublonnage et plafo
   assert.equal(capped.to.length, 8);
   assert.equal(capped.cc.length, 2);
   assert.equal(capped.bcc.length, 0);
+});
+
+function roleUsers(count, extra = {}) {
+  return Array.from({ length: count }, (_, index) => {
+    const n = String(index + 1).padStart(4, '0');
+    return Object.assign({
+      id: `u${n}`,
+      email: `u${n}@example.com`,
+      role: 'manager',
+      roles: [],
+      environment_code: 'DEMO',
+      active: true
+    }, extra);
+  });
+}
+
+function pageOf(all, url) {
+  const params = new URL(String(url)).searchParams;
+  assert.equal(params.get('order'), 'id.asc');
+  assert.equal(Number(params.get('limit')), USER_PAGE_SIZE);
+  const cursor = params.get('id');
+  let start = 0;
+  if (cursor) {
+    assert.equal(cursor.startsWith('gt.'), true);
+    const after = decodeURIComponent(cursor.slice(3));
+    start = all.findIndex(user => user.id === after) + 1;
+    assert.equal(start > 0, true, after);
+  }
+  return all.slice(start, start + USER_PAGE_SIZE);
+}
+
+function jsonFetch(status, payload) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => 'application/json' },
+    json: async () => payload,
+    text: async () => JSON.stringify(payload)
+  };
+}
+
+async function withUserFetch(all, run, options = {}) {
+  const previous = {
+    SUPABASE_URL: process.env.SUPABASE_URL,
+    SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    fetch: global.fetch
+  };
+  process.env.SUPABASE_URL = 'https://mail-test.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-test';
+  const calls = [];
+  global.fetch = async (url, init) => {
+    const u = String(url);
+    if (!u.includes('/rest/v1/user_profiles?')) return jsonFetch(200, []);
+    calls.push(u);
+    if (options.pageDelayMs) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, options.pageDelayMs);
+        const signal = init && init.signal;
+        if (!signal) return;
+        const abort = () => {
+          clearTimeout(timer);
+          const err = new Error('The operation was aborted');
+          err.name = 'TimeoutError';
+          reject(err);
+        };
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      });
+    }
+    if (options.failPage && calls.length === options.failPage) return jsonFetch(500, { message: 'lecture coupée' });
+    if (options.repeatFirstPage && calls.length > 1) return jsonFetch(200, pageOf(all, calls[0]));
+    const page = pageOf(all, u);
+    return jsonFetch(200, options.maxRows ? page.slice(0, options.maxRows) : page);
+  };
+  try {
+    return await run(calls);
+  } finally {
+    global.fetch = previous.fetch;
+    for (const key of ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+}
+
+function remoteUsers() {
+  return createSupabaseStore({ headers: { host: 'localhost' } });
+}
+
+test('501 et plus destinataires de rôle sont tous servis', async () => {
+  for (const count of [501, 1000, MAX_ROLE_USERS]) {
+    const all = roleUsers(count);
+    await withUserFetch(all, async (calls) => {
+      const listed = await remoteUsers().listUsers('DEMO');
+      assert.equal(listed.length, count);
+      assert.deepEqual(listed.map(user => user.id), all.map(user => user.id));
+      assert.equal(calls.length, Math.ceil(count / USER_PAGE_SIZE) + 1);
+      const resolved = await resolveRecipients({
+        config: { to: { fixed: [], fields: [], author: false, roles: ['manager'] }, cc: {}, bcc: {} }
+      }, { fields: [], values: {}, environmentCode: 'DEMO' }, env => remoteUsers().listUsers(env));
+      assert.equal(resolved.uncapped, count);
+    });
+  }
+
+  const all = roleUsers(501);
+  await withUserFetch(all, async (calls) => {
+    const store = createMemoryStore();
+    store.listUsers = env => remoteUsers().listUsers(env);
+    await store.saveRule(submissionRule({ to: { fixed: [], roles: ['manager'] } }));
+    const sent = [];
+    const result = await notifyAfterWrite(writeInput(store, {
+      transport: async (message) => {
+        sent.push(message);
+        return { provider: 'fake' };
+      }
+    }));
+    assert.equal(result.ok, true);
+    assert.equal(sent.length, 1);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].includes('order=id.asc'), true);
+    assert.equal(calls[0].includes('id=gt.'), false);
+    assert.equal(calls[1].includes('order=id.asc') && calls[1].includes('id=gt.u0500'), true);
+    assert.equal(calls[2].includes('id=gt.u0501'), true);
+    assert.deepEqual(sent[0].to, all.slice(0, 10).map(user => user.email));
+    assert.equal(store.outbox[0].status, 'sent');
+    assert.match(store.outbox[0].warning, /10 premiers/);
+  });
+});
+
+test('échec de lecture des destinataires : aucun envoi partiel, nouvel essai plus tard', async () => {
+  const all = roleUsers(501);
+  const admin = {
+    role: 'environment_admin',
+    environment_code: 'DEMO',
+    active: true,
+    email: 'admin@example.com',
+    license_type: 'supervision'
+  };
+  const store = createMemoryStore();
+  await store.saveRule(submissionRule({
+    to: { fixed: ['qa@example.com'], roles: ['manager'] }
+  }));
+  const sent = [];
+  const transport = async (message) => {
+    sent.push(message);
+    return { provider: 'fake' };
+  };
+  await withUserFetch(all, async (calls) => {
+    store.listUsers = env => remoteUsers().listUsers(env);
+    const result = await notifyAfterWrite(writeInput(store, { transport }));
+    assert.equal(result.ok, true);
+    assert.equal(result.pending, true);
+    assert.equal(sent.length, 0);
+    assert.equal(calls.length, 2);
+    assert.equal(store.outbox.length, 1);
+    assert.equal(store.outbox[0].status, 'pending');
+    assert.equal(Number(store.outbox[0].attempts || 0), 0);
+    assert.equal(store.outbox[0].last_error, RECIPIENT_READ_ERROR);
+    assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
+    assert.equal(JSON.stringify(store.outbox).includes('qa@example.com'), false);
+    assert.equal(JSON.stringify(store.outbox).includes('u0001@example.com'), false);
+    const listed = await handleMailAction({}, { action: 'mail_outbox_list' }, admin, { store });
+    assert.equal(listed.rows[0].status, 'pending');
+    assert.equal(listed.rows[0].last_error, RECIPIENT_READ_ERROR);
+  }, { failPage: 2 });
+
+  await withUserFetch(all, async (calls) => {
+    store.listUsers = env => remoteUsers().listUsers(env);
+    const result = await notifyAfterWrite(writeInput(store, { transport }));
+    assert.equal(result.ok, true);
+    assert.equal(result.pending, false);
+    assert.equal(sent.length, 1);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[1].includes('id=gt.u0500'), true);
+    assert.equal(calls[2].includes('id=gt.u0501'), true);
+    assert.equal(store.outbox.length, 1);
+    assert.equal(store.outbox[0].status, 'sent');
+    assert.deepEqual(sent[0].to, ['qa@example.com'].concat(all.slice(0, 9).map(user => user.email)));
+    assert.equal(sent[0].to.includes('u0501@example.com'), false);
+    assert.match(store.outbox[0].warning, /10 premiers/);
+  });
+
+  await withUserFetch(roleUsers(MAX_ROLE_USERS + 1), async (calls) => {
+    const store = createMemoryStore();
+    store.listUsers = env => remoteUsers().listUsers(env);
+    await store.saveRule(submissionRule({
+      to: { fixed: ['qa@example.com'], roles: ['manager'] }
+    }));
+    const sent = [];
+    await notifyAfterWrite(writeInput(store, {
+      transport: async (message) => {
+        sent.push(message);
+        return { provider: 'fake' };
+      }
+    }));
+    assert.equal(sent.length, 0);
+    assert.equal(store.outbox[0].status, 'failed');
+    assert.equal(store.outbox[0].last_error, RECIPIENT_BOUND_ERROR);
+    assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
+    assert.equal(JSON.stringify(store.outbox).includes('qa@example.com'), false);
+    const seen = calls.length;
+    await notifyAfterWrite(writeInput(store, {
+      transport: async (message) => {
+        sent.push(message);
+        return { provider: 'fake' };
+      }
+    }));
+    assert.equal(calls.length, seen);
+    assert.equal(sent.length, 0);
+    assert.equal(store.outbox.length, 1);
+    assert.equal(store.outbox[0].status, 'failed');
+    assert.equal(Number(store.outbox[0].attempts || 0), 0);
+    const listed = await handleMailAction({}, { action: 'mail_outbox_list' }, admin, { store });
+    assert.equal(listed.rows[0].status, 'failed');
+    assert.equal(listed.rows[0].last_error, RECIPIENT_BOUND_ERROR);
+    assert.equal(listed.rows[0].attention, RECIPIENT_BOUND_ERROR);
+    assert.equal(listed.rows[0].stale, false);
+    const again = await processMailQueue({
+      store,
+      environmentCode: 'DEMO',
+      deadline: Date.now() + 1000,
+      transport: async () => ({ provider: 'fake' })
+    });
+    assert.equal(again.pending, false);
+    assert.equal(sent.length, 0);
+    assert.equal(store.outbox[0].status, 'failed');
+  });
+
+  await withUserFetch(roleUsers(USER_PAGE_SIZE), async () => {
+    await assert.rejects(
+      () => remoteUsers().listUsers('DEMO'),
+      err => err && err.recipientRead === true && err.message === RECIPIENT_READ_ERROR
+    );
+  }, { repeatFirstPage: true });
+
+  const allSql = roleUsers(501);
+  const pages = [];
+  const sqlStore = createSqlStore(async (sql) => {
+    pages.push(sql);
+    assert.match(sql, /order by id asc/);
+    assert.match(sql, /limit 500/);
+    const cursor = sql.match(/ and id > '([^']+)'/);
+    const start = cursor ? allSql.findIndex(user => user.id === cursor[1]) + 1 : 0;
+    if (cursor) assert.equal(start > 0, true);
+    return allSql.slice(start, start + USER_PAGE_SIZE).map(row => ({ row }));
+  });
+  const listed = await sqlStore.listUsers('DEMO');
+  assert.equal(listed.length, 501);
+  assert.deepEqual(listed.map(user => user.email), allSql.map(user => user.email));
+  assert.equal(pages.length, 3);
+  assert.equal(/ id > /.test(pages[0]), false);
+  assert.match(pages[1], /id > 'u0500'/);
+  assert.match(pages[2], /id > 'u0501'/);
+
+  let reads = 0;
+  const failing = createSqlStore(async () => {
+    reads += 1;
+    if (reads > 1) throw new Error('db down');
+    return allSql.slice(0, USER_PAGE_SIZE).map(row => ({ row }));
+  });
+  await assert.rejects(
+    () => failing.listUsers('DEMO'),
+    err => err && err.recipientRead === true && err.message === RECIPIENT_READ_ERROR
+  );
+});
+
+test('page courte : max-rows inférieur à 500 ne perd personne', async () => {
+  const all = roleUsers(250);
+  await withUserFetch(all, async (calls) => {
+    const listed = await remoteUsers().listUsers('DEMO');
+    assert.equal(listed.length, 250);
+    assert.deepEqual(listed.map(user => user.id), all.map(user => user.id));
+    assert.equal(calls.length, 4);
+    assert.equal(calls[3].includes('id=gt.u0250'), true);
+  }, { maxRows: 100 });
+});
+
+test('rôle : comparaison v2, trim et minuscules, sans second normaliseur', async () => {
+  const users = [
+    { email: 'a@example.com', role: '  Manager', environment_code: 'DEMO', active: true },
+    { email: 'b@example.com', roles: ['Chef de poste'], environment_code: 'DEMO', active: true },
+    { email: 'c@example.com', role: 'chef de poste', environment_code: 'DEMO', active: true }
+  ];
+  const list = async () => users;
+  const managers = await resolveRecipients({
+    config: { to: { roles: ['manager'] }, cc: {}, bcc: {} }
+  }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
+  assert.deepEqual(managers.to, ['a@example.com']);
+  const spaced = await resolveRecipients({
+    config: { to: { roles: ['chef de poste'] }, cc: {}, bcc: {} }
+  }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
+  assert.deepEqual(spaced.to, ['b@example.com', 'c@example.com']);
+  assert.equal(fs.existsSync(path.join(__dirname, '_role-token.js')), false);
+});
+
+test('failed à 0 essai n’est pas repris, pending et failed après essai le sont', async () => {
+  const memory = createMemoryStore();
+  const stamp = (id, status, attempts) => ({
+    id,
+    environment_code: 'DEMO',
+    status,
+    attempts,
+    recipients: { to: [], cc: [], bcc: [] },
+    event: 'submission.created',
+    target_id: id,
+    payload: {},
+    created_at: '2026-01-01T00:00:00.000Z'
+  });
+  memory.outbox.push(
+    stamp('bound', 'failed', 0),
+    stamp('wait', 'pending', 0),
+    stamp('smtp', 'failed', 1),
+    stamp('done', 'failed', 3)
+  );
+  const rows = await memory.listRetryable('DEMO', 10);
+  assert.deepEqual(rows.map(row => row.id), ['wait', 'smtp']);
+
+  const queries = [];
+  const sql = createSqlStore(async (query) => {
+    queries.push(query);
+    return [];
+  });
+  await sql.listRetryable('DEMO', 5);
+  const select = queries.find(query => /from public\.mail_outbox/.test(query));
+  assert.match(select, /status = 'pending'/);
+  assert.match(select, /status = 'failed'/);
+  assert.match(select, /attempts >= 1/);
+
+  const previous = {
+    SUPABASE_URL: process.env.SUPABASE_URL,
+    SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    fetch: global.fetch
+  };
+  process.env.SUPABASE_URL = 'https://mail-test.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-test';
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(String(url));
+    return jsonFetch(200, []);
+  };
+  try {
+    const listed = await remoteUsers().listRetryable('DEMO', 5);
+    assert.deepEqual(listed, []);
+    const query = urls.find(url => url.includes('/mail_outbox?'));
+    assert.equal(query.includes('status.eq.pending'), true);
+    assert.equal(query.includes('status.eq.failed'), true);
+    assert.equal(query.includes('attempts.gte.1'), true);
+    assert.equal(query.includes('status=in.(pending,failed)'), false);
+  } finally {
+    global.fetch = previous.fetch;
+    for (const key of ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
+test('file : 1 400 ms par page, enfilage sans lecture, puis un seul envoi', async () => {
+  const all = roleUsers(501);
+  await withUserFetch(all, async (calls) => {
+    const store = createMemoryStore();
+    store.listUsers = (env, userDeadline) => remoteUsers().listUsers(env, userDeadline);
+    await store.saveRule(submissionRule({ to: { fixed: ['qa@example.com'], roles: ['manager'] } }));
+    const sent = [];
+    const transport = async (message) => {
+      sent.push(message);
+      return { provider: 'fake' };
+    };
+    const started = Date.now();
+    const queued = await notifyAfterWrite(writeInput(store, {
+      deadline: started + 10000,
+      enqueueOnly: true,
+      transport
+    }));
+    const elapsed = Date.now() - started;
+    assert.equal(elapsed < 10000, true, `enfilage ${elapsed} ms`);
+    assert.equal(calls.length, 0);
+    assert.equal(sent.length, 0);
+    assert.equal(queued.queued, 1);
+    assert.equal(store.outbox[0].status, 'pending');
+    assert.equal(Number(store.outbox[0].attempts || 0), 0);
+    assert.equal(store.outbox[0].quota_hour, undefined);
+    assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
+    assert.equal(store.outbox[0].payload.form_id, 'form-1');
+    assert.equal(store.outbox[0].payload.submission_id, 'sub-1');
+    const processed = await processMailQueue({
+      store,
+      environmentCode: 'DEMO',
+      transport,
+      deadline: Date.now() + QUEUE_BUDGET_MS,
+      form: formOf(),
+      origin: 'https://demo.example.com',
+      profile: { email: 'auteur@example.com', environment_code: 'DEMO' },
+      mailEnv: { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' }
+    });
+    assert.equal(processed.pending, false);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].to, ['qa@example.com'].concat(all.slice(0, 9).map(user => user.email)));
+    assert.equal(sent[0].to.includes('u0501@example.com'), false);
+    assert.equal(store.outbox[0].status, 'sent');
+    assert.match(store.outbox[0].warning, /10 premiers/);
+    await processMailQueue({
+      store,
+      environmentCode: 'DEMO',
+      transport,
+      deadline: Date.now() + QUEUE_BUDGET_MS,
+      form: formOf(),
+      origin: 'https://demo.example.com',
+      mailEnv: { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' }
+    });
+    assert.equal(sent.length, 1);
+  }, { pageDelayMs: 1400 });
+
+  await withUserFetch(roleUsers(501), async () => {
+    const store = createMemoryStore();
+    store.listUsers = (env, userDeadline) => remoteUsers().listUsers(env, userDeadline);
+    await store.saveRule(submissionRule({ to: { fixed: ['qa@example.com'], roles: ['manager'] } }));
+    const sent = [];
+    await notifyAfterWrite(writeInput(store, { enqueueOnly: true, transport: async (message) => { sent.push(message); return { provider: 'fake' }; } }));
+    await processMailQueue({
+      store,
+      environmentCode: 'DEMO',
+      transport: async (message) => { sent.push(message); return { provider: 'fake' }; },
+      deadline: Date.now() + 200,
+      form: formOf(),
+      origin: 'https://demo.example.com',
+      mailEnv: { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' }
+    });
+    assert.equal(sent.length, 0);
+    assert.equal(store.outbox[0].status, 'pending');
+    assert.equal(Number(store.outbox[0].attempts || 0), 0);
+    assert.equal(store.outbox[0].quota_hour, undefined);
+    assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
+  }, { pageDelayMs: 1400 });
+});
+
+test('échéance unique : requête lente puis un seul envoi au passage suivant', async () => {
+  const all = roleUsers(501);
+  const store = createMemoryStore();
+  await store.saveRule(submissionRule({ to: { fixed: ['qa@example.com'], roles: ['manager'] } }));
+  const sent = [];
+  const transport = async (message) => {
+    sent.push(message);
+    return { provider: 'fake' };
+  };
+  const mail = {
+    store,
+    environmentCode: 'DEMO',
+    transport,
+    form: formOf(),
+    origin: 'https://demo.example.com',
+    profile: { email: 'auteur@example.com', environment_code: 'DEMO' },
+    mailEnv: { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' },
+    limit: 5
+  };
+  await withUserFetch(all, async () => {
+    store.listUsers = (env, userDeadline) => remoteUsers().listUsers(env, userDeadline);
+    await notifyAfterWrite(writeInput(store, { enqueueOnly: true, transport }));
+    const requestStart = Date.now() - (INVOCATION_BUDGET_MS - 2000);
+    const started = Date.now();
+    await processMailQueue(Object.assign({}, mail, { deadline: invocationDeadline(requestStart) }));
+    const elapsed = Date.now() - started;
+    assert.equal(elapsed < 4000, true, `file ${elapsed} ms`);
+    assert.equal(Date.now() - requestStart < 20000, true);
+    assert.equal(sent.length, 0);
+    assert.equal(store.outbox[0].status, 'pending');
+    assert.equal(Number(store.outbox[0].attempts || 0), 0);
+    assert.equal(store.outbox[0].quota_hour, undefined);
+  }, { pageDelayMs: 1400 });
+  await withUserFetch(all, async () => {
+    store.listUsers = (env, userDeadline) => remoteUsers().listUsers(env, userDeadline);
+    const sentOnce = await processMailQueue(Object.assign({}, mail, { deadline: invocationDeadline(Date.now()) }));
+    assert.equal(sentOnce.pending, false);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].to, ['qa@example.com'].concat(all.slice(0, 9).map(user => user.email)));
+    assert.equal(store.outbox[0].status, 'sent');
+    await processMailQueue(Object.assign({}, mail, { deadline: invocationDeadline(Date.now()) }));
+    assert.equal(sent.length, 1);
+  });
+});
+
+test('admin : une attente de plus d’une heure est visible', async () => {
+  const store = createMemoryStore();
+  const admin = {
+    role: 'environment_admin',
+    environment_code: 'DEMO',
+    active: true,
+    email: 'admin@example.com',
+    license_type: 'supervision'
+  };
+  store.outbox.push({
+    id: 'old-pending',
+    environment_code: 'DEMO',
+    status: 'pending',
+    attempts: 0,
+    last_error: null,
+    recipients: { to: [], cc: [], bcc: [] },
+    subject: 'Ancien',
+    created_at: new Date(Date.now() - STALE_PENDING_MS - 1000).toISOString(),
+    payload: {}
+  });
+  const listed = await handleMailAction({}, { action: 'mail_outbox_list' }, admin, { store });
+  assert.equal(listed.rows[0].status, 'pending');
+  assert.equal(listed.rows[0].stale, true);
+  assert.match(listed.rows[0].attention, /une heure/);
+});
+
+test('cron quotidien : secret requis, une ligne pending part une seule fois', async () => {
+  const previous = process.env.CRON_SECRET;
+  delete process.env.CRON_SECRET;
+  const res = { statusCode: 0, headers: {}, setHeader(name, value) { this.headers[name] = value; }, end() {} };
+  await records({ method: 'GET', headers: { authorization: 'Bearer secret' } }, res);
+  assert.equal(res.statusCode, 401);
+  process.env.CRON_SECRET = 'secret-test';
+  const wrong = { statusCode: 0, headers: {}, setHeader(name, value) { this.headers[name] = value; }, end() {} };
+  await records({ method: 'GET', headers: { authorization: 'Bearer autre' } }, wrong);
+  assert.equal(wrong.statusCode, 401);
+  const open = { statusCode: 0, headers: {}, setHeader(name, value) { this.headers[name] = value; }, end() {} };
+  await records({ method: 'GET', headers: {} }, open);
+  assert.equal(open.statusCode, 401);
+  if (previous == null) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = previous;
+
+  const store = createMemoryStore();
+  await store.saveRule(submissionRule());
+  const sent = [];
+  await notifyAfterWrite(writeInput(store, { enqueueOnly: true, transport: async (message) => { sent.push(message); return { provider: 'fake' }; } }));
+  const deadline = invocationDeadline(Date.now());
+  const first = await runDailyMailQueue({
+    clients: [{ id: 'demo', host: 'demo.picotrack.fr', store }],
+    deadline,
+    transport: async (message) => { sent.push(message); return { provider: 'fake' }; },
+    mailEnv: { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' }
+  });
+  assert.equal(first.pending, false);
+  assert.equal(sent.length, 1);
+  assert.equal(store.outbox[0].status, 'sent');
+  await runDailyMailQueue({
+    clients: [{ id: 'demo', host: 'demo.picotrack.fr', store }],
+    deadline: invocationDeadline(Date.now()),
+    transport: async (message) => { sent.push(message); return { provider: 'fake' }; },
+    mailEnv: { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' }
+  });
+  assert.equal(sent.length, 1);
+});
+
+test('cron multi-clients : deux bases envoient, un client en échec n’arrête pas l’autre', async () => {
+  const { listConfiguredClients } = require('./_server-supabase');
+  const envRe = /SUPABASE|SERVICE_ROLE|PICOTRACK_CONFIG|PICOTRACK_CLIENTS|PICOTRACK_SUPABASE_CONFIG|CRON_SECRET/;
+  const saved = {};
+  for (const key of Object.keys(process.env)) {
+    if (envRe.test(key)) saved[key] = process.env[key];
+  }
+  function blankClientEnv() {
+    for (const key of Object.keys(process.env)) {
+      if (envRe.test(key)) delete process.env[key];
+    }
+  }
+  const sent = [];
+  const transport = async (message) => {
+    sent.push(message.to.slice());
+    return { provider: 'fake' };
+  };
+  async function seed(email) {
+    const store = createMemoryStore();
+    await store.saveRule(submissionRule({ to: { fixed: [email] } }));
+    await notifyAfterWrite(writeInput(store, {
+      enqueueOnly: true,
+      transport
+    }));
+    return store;
+  }
+  try {
+    blankClientEnv();
+    process.env.SUPABASE_URL = 'https://shared.supabase.co';
+    process.env.AAA_SUPABASE_URL = 'https://aaa.supabase.co';
+    process.env.AAA_SUPABASE_SERVICE_ROLE_KEY = 'key-aaa';
+    process.env.MMM_SUPABASE_URL = 'https://mmm.supabase.co';
+    process.env.MMM_SUPABASE_SERVICE_ROLE_KEY = 'key-mmm';
+    process.env.ZZZ_SUPABASE_URL = 'https://zzz.supabase.co';
+    process.env.ZZZ_SUPABASE_SERVICE_ROLE_KEY = 'key-zzz';
+    process.env.PICOTRACK_CONFIG_JSON = JSON.stringify({
+      '*.picotrack.fr': { supabaseUrl: 'https://wild.supabase.co', supabaseServiceRoleKey: 'key-wild' },
+      'acme.picotrack.fr': { supabaseUrl: 'https://shared.supabase.co', supabaseServiceRoleKey: 'key-shared-again' }
+    });
+    const listed = listConfiguredClients();
+    assert.deepEqual(listed.map(client => client.id), ['AAA', 'ZZZ', 'MMM'].sort());
+    assert.deepEqual(listed.map(client => client.url).sort(), [
+      'https://aaa.supabase.co',
+      'https://mmm.supabase.co',
+      'https://zzz.supabase.co'
+    ]);
+    assert.equal(listed.some(client => client.url === 'https://shared.supabase.co'), false);
+    assert.equal(listed.some(client => client.url === 'https://wild.supabase.co'), false);
+    assert.equal(listed.find(client => client.id === 'AAA').serviceRole, 'key-aaa');
+    assert.equal(listed.find(client => client.id === 'ZZZ').serviceRole, 'key-zzz');
+    const calls = [];
+    const previousFetch = global.fetch;
+    global.fetch = async (url) => {
+      calls.push(String(url));
+      throw new Error('le cron ne doit pas lire une base ici');
+    };
+    try {
+      const alpha = await seed('alpha@example.com');
+      const down = await seed('down@example.com');
+      down.listRetryableAny = async () => {
+        throw new Error('base indisponible');
+      };
+      const beta = await seed('beta@example.com');
+      const byId = { AAA: alpha, MMM: down, ZZZ: beta };
+      const clients = listed.map(client => Object.assign({}, client, { store: byId[client.id] }));
+      const mailEnv = { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' };
+      const first = await runDailyMailQueue({
+        clients,
+        deadline: invocationDeadline(Date.now()),
+        transport,
+        mailEnv
+      });
+      assert.deepEqual(sent.sort(), [['alpha@example.com'], ['beta@example.com']]);
+      assert.equal(alpha.outbox[0].status, 'sent');
+      assert.equal(beta.outbox[0].status, 'sent');
+      assert.equal(down.outbox[0].status, 'pending');
+      assert.equal(Number(down.outbox[0].attempts || 0), 0);
+      const failed = first.clients.find(client => client.id === 'MMM');
+      assert.match(failed.error, /indisponible/);
+      assert.equal(first.clients.find(client => client.id === 'AAA').error, null);
+      assert.equal(first.clients.find(client => client.id === 'ZZZ').error, null);
+      assert.equal(calls.some(url => url.includes('/tenants')), false);
+      assert.equal(calls.some(url => url.includes('shared.supabase.co')), false);
+      await runDailyMailQueue({
+        clients,
+        deadline: invocationDeadline(Date.now()),
+        transport,
+        mailEnv
+      });
+      assert.equal(sent.length, 2);
+    } finally {
+      global.fetch = previousFetch;
+    }
+
+    blankClientEnv();
+    process.env.CRON_SECRET = 'secret-test';
+    const watched = [];
+    global.fetch = async (url) => {
+      watched.push(String(url));
+      throw new Error('aucune base');
+    };
+    const authed = { statusCode: 0, body: '', headers: {}, setHeader() {}, end(payload) { this.body = payload; } };
+    try {
+      await records({ method: 'GET', headers: { authorization: 'Bearer secret-test', host: 'picotrack.vercel.app' } }, authed);
+    } finally {
+      global.fetch = previousFetch;
+    }
+    assert.equal(authed.statusCode, 200);
+    assert.match(authed.body, /"ok":true/);
+    assert.match(authed.body, /"pending":false/);
+    assert.deepEqual(watched, []);
+  } finally {
+    blankClientEnv();
+    for (const [key, value] of Object.entries(saved)) process.env[key] = value;
+  }
 });
 
 test('enregistrement : 11 destinataires refusés, environnement vide jamais DEMO', async () => {
@@ -1625,7 +2302,7 @@ test('l’overlay n’envoie plus depuis le navigateur et le cache supervision e
   const app = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
   assert.equal((app.match(/mailStatus === 'queued' \|\| mailStatus === 'sent'/g) || []).length, 2);
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/core-supervision\.js\?v=20261008p/g) || []).length, 1);
+  assert.equal((html.match(/core-supervision\.js\?v=20261008q/g) || []).length, 1);
   assert.equal((html.match(/app\.secured\.js\?v=20261008p/g) || []).length, 2);
   assert.match(overlay, /Envoi incertain/);
   const recordsSrc = fs.readFileSync(path.join(__dirname, 'records.js'), 'utf8');

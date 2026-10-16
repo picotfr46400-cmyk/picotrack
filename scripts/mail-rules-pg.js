@@ -18,6 +18,10 @@ const TO = 'qa@example.com';
 const USER_ID = 'user-1';
 const SESSION = 'sess-token';
 let latencyMs = 0;
+let userListLatencyMs = 0;
+let stallNextMs = 0;
+const userListGets = [];
+let failUserListAt = 0;
 
 const JSON_COLS = new Set(['values', 'fields', 'triggers', 'config', 'recipients', 'payload', 'roles', 'resolved_permissions', 'permissions', 'detail']);
 const UUID_COLS = {
@@ -237,6 +241,8 @@ function ensureFixtures() {
 }
 
 function reset() {
+  userListGets.length = 0;
+  failUserListAt = 0;
   psql('truncate public.mail_outbox, public.mail_rules, public.mail_quota, public.submissions, public.forms, public.licenses, public.user_profiles, public.active_device_sessions restart identity cascade');
   const fields = JSON.stringify([
     { id: 'reponse', nom: 'Réponse', type: 'text' },
@@ -311,6 +317,11 @@ function rpcArgs(name, body) {
 function startAdapter() {
   const server = http.createServer(async (req, res) => {
     try {
+      if (stallNextMs) {
+        const wait = stallNextMs;
+        stallNextMs = 0;
+        await new Promise(resolve => setTimeout(resolve, wait));
+      }
       if (latencyMs) await new Promise(resolve => setTimeout(resolve, latencyMs));
       const url = new URL(req.url, 'http://127.0.0.1');
       const chunks = [];
@@ -339,6 +350,15 @@ function startAdapter() {
       const table = tableMatch[1];
       const method = req.method || 'GET';
       const prefer = req.headers.prefer || '';
+      if (method === 'GET' && table === 'user_profiles' && url.searchParams.get('order') === 'id.asc') {
+        if (userListLatencyMs) await new Promise(resolve => setTimeout(resolve, userListLatencyMs));
+        userListGets.push(`${url.pathname}${url.search}`);
+        if (failUserListAt > 0 && userListGets.length === failUserListAt) {
+          res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ message: 'lecture coupée' }));
+          return;
+        }
+      }
       let rows = [];
       if (method === 'GET') rows = selectRows(table, url.searchParams);
       else if (method === 'POST') rows = insertRows(table, body, url.searchParams, prefer);
@@ -534,9 +554,12 @@ async function main() {
     })));
     assert.equal(batch.status, 200, JSON.stringify(batch.payload));
     assert.equal(countOutbox(), 25);
-    const pending = outboxRows().filter(row => row.status === 'pending').length;
-    assert.ok(pending >= 1, 'au moins une ligne encore pending');
-    assert.ok(fast.messages() - beforeFast < 25);
+    const batchRows = outboxRows();
+    const sentBatch = batchRows.filter(row => row.status === 'sent');
+    const waitingBatch = batchRows.filter(row => row.status === 'pending' && Number(row.attempts || 0) === 0);
+    assert.equal(sentBatch.length + waitingBatch.length, 25, JSON.stringify(batchRows));
+    assert.equal(fast.messages() - beforeFast, sentBatch.length);
+    assert.equal(quotaReserved('hour'), sentBatch.length);
 
     reset();
     pointSmtp(fast.port);
@@ -648,9 +671,228 @@ async function main() {
     if (previousDaily == null) delete process.env.MAIL_DAILY_LIMIT;
     else process.env.MAIL_DAILY_LIMIT = previousDaily;
     latencyMs = 0;
+    reset();
+    pointSmtp(fast.port);
+    const previousHour = process.env.MAIL_HOURLY_LIMIT;
+    const previousDay = process.env.MAIL_DAILY_LIMIT;
+    process.env.MAIL_HOURLY_LIMIT = '60';
+    process.env.MAIL_DAILY_LIMIT = '300';
+    psql(`insert into public.user_profiles (id, email, role, roles, environment_code, active, license_type)
+      select 'u' || lpad(i::text, 4, '0'),
+             'u' || lpad(i::text, 4, '0') || '@example.com',
+             'manager', '[]'::jsonb, '${ENV}', true, 'supervision'
+      from generate_series(1, 501) as i`);
+    psql(`insert into public.user_profiles (id, email, role, roles, environment_code, active, license_type) values
+      ('u-off', 'off@example.com', 'manager', '[]'::jsonb, '${ENV}', false, 'supervision'),
+      ('u-other', 'other@example.com', 'manager', '[]'::jsonb, 'OTHER', true, 'supervision')`);
+    const roleConfig = {
+      to: { fixed: [], fields: [], author: false, roles: ['manager'] },
+      cc: { fixed: [], fields: [], author: false, roles: [] },
+      bcc: { fixed: [], fields: [], author: false, roles: [] },
+      subject: 'Saisie {{formulaire}}',
+      body: 'Réponse {{reponse}} {{client}}',
+      attachPdf: false,
+      conditions: [],
+      clientKey: 'manual:pg'
+    };
+    psql(`update public.mail_rules set config = ${sqlText(JSON.stringify(roleConfig))}::jsonb where client_key = 'manual:pg'`);
+    userListGets.length = 0;
+    const beforeRole = fast.messages();
+    const roleSend = await syncPad([{
+      id: 'act-role-501',
+      type: 'form_submission',
+      payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Roles' } }
+    }]);
+    assert.equal(roleSend.status, 200, JSON.stringify(roleSend.payload));
+    assert.equal(fast.messages() - beforeRole, 1);
+    assert.equal(userListGets.length, 3, userListGets.join('\n'));
+    assert.equal(userListGets[0].includes('order=id.asc'), true);
+    assert.equal(userListGets[0].includes('id=gt.'), false);
+    assert.equal(userListGets[1].includes('order=id.asc'), true);
+    assert.equal(userListGets[1].includes('id=gt.'), true);
+    assert.equal(userListGets[2].includes('id=gt.'), true);
+    const roleRows = rowsOf('select row_to_json(t) from (select status, last_error, warning, recipients from public.mail_outbox) t');
+    assert.equal(roleRows.length, 1, JSON.stringify(roleRows));
+    assert.equal(roleRows[0].status, 'sent', JSON.stringify(roleRows[0]));
+    assert.match(roleRows[0].warning || '', /10 premiers/);
+    const roleTo = (roleRows[0].recipients && roleRows[0].recipients.to) || [];
+    assert.deepEqual(roleTo, Array.from({ length: 10 }, (_, index) => `u${String(index + 1).padStart(4, '0')}@example.com`));
+    assert.equal(roleTo.includes('u0501@example.com'), false);
+    assert.equal(roleTo.includes('off@example.com'), false);
+    assert.equal(roleTo.includes('other@example.com'), false);
+
+    reset();
+    pointSmtp(fast.port);
+    process.env.MAIL_HOURLY_LIMIT = '60';
+    process.env.MAIL_DAILY_LIMIT = '300';
+    psql(`insert into public.user_profiles (id, email, role, roles, environment_code, active, license_type)
+      select 'u' || lpad(i::text, 4, '0'),
+             'u' || lpad(i::text, 4, '0') || '@example.com',
+             'manager', '[]'::jsonb, '${ENV}', true, 'supervision'
+      from generate_series(1, 501) as i`);
+    psql(`update public.mail_rules set config = ${sqlText(JSON.stringify(Object.assign({}, roleConfig, {
+      to: { fixed: [TO], fields: [], author: false, roles: ['manager'] }
+    })))}::jsonb where client_key = 'manual:pg'`);
+    failUserListAt = 2;
+    userListGets.length = 0;
+    const beforeFail = fast.messages();
+    const roleFail = await syncPad([{
+      id: 'act-role-fail',
+      type: 'form_submission',
+      payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Coupure' } }
+    }]);
+    assert.equal(roleFail.status, 200, JSON.stringify(roleFail.payload));
+    assert.equal(fast.messages() - beforeFail, 0);
+    assert.equal(userListGets.length, 2, userListGets.join('\n'));
+    const failedRead = rowsOf('select row_to_json(t) from (select status, attempts, last_error, recipients from public.mail_outbox) t');
+    assert.equal(failedRead.length, 1, JSON.stringify(failedRead));
+    assert.equal(failedRead[0].status, 'pending', JSON.stringify(failedRead[0]));
+    assert.equal(Number(failedRead[0].attempts || 0), 0);
+    assert.match(failedRead[0].last_error || '', /Lecture des destinataires impossible/);
+    assert.match(failedRead[0].last_error || '', /nouvel essai plus tard/);
+    const failedTo = (failedRead[0].recipients && failedRead[0].recipients.to) || [];
+    assert.deepEqual(failedTo, []);
+    assert.equal(JSON.stringify(failedRead[0].recipients || {}).includes(TO), false);
+    assert.equal(JSON.stringify(failedRead[0].recipients || {}).includes('u0001@example.com'), false);
+    assert.equal(quotaReserved('hour'), 0);
+    failUserListAt = 0;
+    userListGets.length = 0;
+    const beforeRetry = fast.messages();
+    const roleRetry = await syncPad([{
+      id: 'act-role-fail',
+      type: 'form_submission',
+      payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Coupure' } }
+    }]);
+    assert.equal(roleRetry.status, 200, JSON.stringify(roleRetry.payload));
+    assert.equal(fast.messages() - beforeRetry, 1);
+    assert.equal(userListGets.length, 3, userListGets.join('\n'));
+    assert.equal(userListGets[1].includes('id=gt.'), true);
+    assert.equal(userListGets[2].includes('id=gt.'), true);
+    const retried = rowsOf('select row_to_json(t) from (select status, recipients from public.mail_outbox) t');
+    assert.equal(retried.length, 1, JSON.stringify(retried));
+    assert.equal(retried[0].status, 'sent', JSON.stringify(retried[0]));
+    assert.deepEqual((retried[0].recipients && retried[0].recipients.to) || [], ['qa@example.com'].concat(
+      Array.from({ length: 9 }, (_, index) => `u${String(index + 1).padStart(4, '0')}@example.com`)
+    ));
+    if (previousHour == null) delete process.env.MAIL_HOURLY_LIMIT;
+    else process.env.MAIL_HOURLY_LIMIT = previousHour;
+    if (previousDay == null) delete process.env.MAIL_DAILY_LIMIT;
+    else process.env.MAIL_DAILY_LIMIT = previousDay;
+
+    reset();
+    pointSmtp(fast.port);
+    process.env.MAIL_HOURLY_LIMIT = '60';
+    process.env.MAIL_DAILY_LIMIT = '300';
+    psql(`insert into public.user_profiles (id, email, role, roles, environment_code, active, license_type)
+      select 'u' || lpad(i::text, 4, '0'),
+             'u' || lpad(i::text, 4, '0') || '@example.com',
+             'manager', '[]'::jsonb, '${ENV}', true, 'supervision'
+      from generate_series(1, 3500) as i`);
+    const slowRole = {
+      to: { fixed: [], fields: [], author: false, roles: ['manager'] },
+      cc: { fixed: [], fields: [], author: false, roles: [] },
+      bcc: { fixed: [], fields: [], author: false, roles: [] },
+      subject: 'Saisie {{formulaire}}',
+      body: 'Réponse {{reponse}}',
+      attachPdf: false,
+      conditions: [],
+      clientKey: 'manual:pg'
+    };
+    psql(`update public.mail_rules set config = ${sqlText(JSON.stringify(slowRole))}::jsonb where client_key = 'manual:pg'`);
+    userListGets.length = 0;
+    userListLatencyMs = 1400;
+    const beforeSlow = fast.messages();
+    const mark = { at: 0, lists: -1, quota: -1 };
+    const started = Date.now();
+    const observed = await new Promise((resolve, reject) => {
+      const res = {
+        statusCode: 200,
+        headers: {},
+        body: '',
+        setHeader(name, value) { this.headers[name] = value; },
+        end(payload) {
+          mark.at = Date.now();
+          mark.lists = userListGets.length;
+          mark.quota = quotaReserved('hour');
+          this.body = payload == null ? '' : String(payload);
+        }
+      };
+      Promise.resolve(padSync({
+        method: 'POST',
+        headers: { host: 'localhost', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          pad: { sessionToken: padToken() },
+          actions: [{ id: 'act-role-slow', type: 'form_submission', payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Lent' } } }]
+        })
+      }, res)).then(() => resolve({
+        status: res.statusCode,
+        payload: res.body ? JSON.parse(res.body) : {}
+      }), reject);
+    });
+    const responseMs = mark.at - started;
+    assert.equal(observed.status, 200, JSON.stringify(observed.payload));
+    assert.equal(responseMs < 10000, true, `réponse pad ${responseMs} ms`);
+    assert.equal(mark.lists, 0, userListGets.join('\n'));
+    assert.equal(mark.quota, 0);
+    assert.equal(fast.messages() - beforeSlow, 1);
+    const slowRows = rowsOf('select row_to_json(t) from (select status, recipients, warning from public.mail_outbox) t');
+    assert.equal(slowRows.length, 1, JSON.stringify(slowRows));
+    assert.equal(slowRows[0].status, 'sent', JSON.stringify(slowRows[0]));
+    assert.deepEqual((slowRows[0].recipients && slowRows[0].recipients.to) || [], Array.from({ length: 10 }, (_, index) => `u${String(index + 1).padStart(4, '0')}@example.com`));
+    assert.match(slowRows[0].warning || '', /10 premiers/);
+    assert.equal(userListGets.length > 1, true, String(userListGets.length));
+    const beforeReplay = fast.messages();
+    userListLatencyMs = 0;
+    const replaySlow = await syncPad([{ id: 'act-role-slow', type: 'form_submission', payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Lent' } } }]);
+    assert.equal(replaySlow.status, 200, JSON.stringify(replaySlow.payload));
+    assert.equal(fast.messages() - beforeReplay, 0);
+    assert.equal(rowsOf('select row_to_json(t) from (select status from public.mail_outbox) t').length, 1);
+    userListLatencyMs = 0;
+
+    reset();
+    pointSmtp(fast.port);
+    process.env.MAIL_HOURLY_LIMIT = '60';
+    process.env.MAIL_DAILY_LIMIT = '300';
+    psql(`insert into public.user_profiles (id, email, role, roles, environment_code, active, license_type)
+      select 'u' || lpad(i::text, 4, '0'),
+             'u' || lpad(i::text, 4, '0') || '@example.com',
+             'manager', '[]'::jsonb, '${ENV}', true, 'supervision'
+      from generate_series(1, 3500) as i`);
+    psql(`update public.mail_rules set config = ${sqlText(JSON.stringify(slowRole))}::jsonb where client_key = 'manual:pg'`);
+    userListGets.length = 0;
+    userListLatencyMs = 1400;
+    stallNextMs = 7500;
+    const beforeStall = fast.messages();
+    const stallStarted = Date.now();
+    const stalled = await syncPad([{ id: 'act-role-stall', type: 'form_submission', payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Lent' } } }]);
+    const stallTotal = Date.now() - stallStarted;
+    assert.equal(stalled.status, 200, JSON.stringify(stalled.payload));
+    assert.equal(stallTotal < 20000, true, `invocation ${stallTotal} ms`);
+    assert.equal(fast.messages() - beforeStall, 0);
+    const stalledRows = rowsOf('select row_to_json(t) from (select status, attempts from public.mail_outbox) t');
+    assert.equal(stalledRows.length, 1, JSON.stringify(stalledRows));
+    assert.equal(stalledRows[0].status, 'pending', JSON.stringify(stalledRows[0]));
+    assert.equal(Number(stalledRows[0].attempts || 0), 0);
+    assert.equal(quotaReserved('hour'), 0);
+    userListLatencyMs = 0;
+    stallNextMs = 0;
+    const stalledNext = await syncPad([{ id: 'act-role-stall', type: 'form_submission', payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Lent' } } }]);
+    assert.equal(stalledNext.status, 200, JSON.stringify(stalledNext.payload));
+    assert.equal(fast.messages() - beforeStall, 1);
+    const stalledSent = rowsOf('select row_to_json(t) from (select status, recipients, warning from public.mail_outbox) t');
+    assert.equal(stalledSent.length, 1, JSON.stringify(stalledSent));
+    assert.equal(stalledSent[0].status, 'sent', JSON.stringify(stalledSent[0]));
+    assert.deepEqual((stalledSent[0].recipients && stalledSent[0].recipients.to) || [], Array.from({ length: 10 }, (_, index) => `u${String(index + 1).padStart(4, '0')}@example.com`));
+    const beforeSecond = fast.messages();
+    const duplicate = await syncPad([{ id: 'act-role-stall', type: 'form_submission', payload: { formId: 'form-1', values: { client: 'Nord', reponse: 'Lent' } } }]);
+    assert.equal(duplicate.status, 200, JSON.stringify(duplicate.payload));
+    assert.equal(fast.messages() - beforeSecond, 0);
+    assert.equal(rowsOf('select row_to_json(t) from (select status from public.mail_outbox) t').length, 1);
     console.log('mail-rules-pg ok');
   } finally {
     latencyMs = 0;
+    userListLatencyMs = 0;
+    stallNextMs = 0;
     await fast.close();
     await slow.close();
     await reject.close();
