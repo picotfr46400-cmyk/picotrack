@@ -590,7 +590,8 @@ test('destinataires : le rôle suit normalize_role_name', async () => {
     { email: 'a@example.com', role: '  Manager', environment_code: 'DEMO', active: true },
     { email: 'b@example.com', roles: ['Chef de poste'], environment_code: 'DEMO', active: true },
     { email: 'c@example.com', role: 'chef de poste', environment_code: 'DEMO', active: true },
-    { email: 'chaine@example.com', role: 'pad_user', roles: 'Chef', environment_code: 'DEMO', active: true }
+    { email: 'chaine@example.com', role: 'pad_user', roles: 'Chef', environment_code: 'DEMO', active: true },
+    { email: 'csv@example.com', role: 'pad_user', roles: 'pad_user, Chef', environment_code: 'DEMO', active: true }
   ];
   corpus.forEach(([raw], index) => {
     users.push({ email: `forme${index}@example.com`, role: raw, environment_code: 'DEMO', active: true });
@@ -609,6 +610,7 @@ test('destinataires : le rôle suit normalize_role_name', async () => {
   }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
   assert.deepEqual(chef.to, [
     'chaine@example.com',
+    'csv@example.com',
     'forme0@example.com',
     'forme1@example.com',
     'forme2@example.com',
@@ -2335,8 +2337,8 @@ test('l’overlay n’envoie plus depuis le navigateur et le cache supervision e
   const app = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
   assert.equal((app.match(/mailStatus === 'queued' \|\| mailStatus === 'sent'/g) || []).length, 2);
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/core-supervision\.js\?v=20261008i/g) || []).length, 1);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008o/g) || []).length, 2);
+  assert.equal((html.match(/core-supervision\.js\?v=20261008r/g) || []).length, 1);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008r/g) || []).length, 2);
   assert.match(overlay, /Envoi incertain/);
   const recordsSrc = fs.readFileSync(path.join(__dirname, 'records.js'), 'utf8');
   const pad = fs.readFileSync(path.join(__dirname, 'pad-sync.js'), 'utf8');

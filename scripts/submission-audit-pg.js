@@ -178,6 +178,14 @@ async function runPadHandler() {
     insert into public.licenses (id, environment_code, license_key, license_type, label, email, role, device_name, active)
     values (${licenseId}, 'EFC', 'pad-e2e', 'pad', 'Tablette', 'pad@efc.picotrack.fr', 'pad_user', 'Tab', true);
   `);
+  execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-f', 'supabase/migrations/20261016120000_normalize_role_name.sql'], {
+    encoding: 'utf8',
+    env
+  });
+  execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-f', 'supabase/migrations/20261016133000_role_name_lookup.sql'], {
+    encoding: 'utf8',
+    env
+  });
   const pace = { delayMs: 0 };
   const server = await start(env, pace);
   process.env.SUPABASE_URL = server.url;

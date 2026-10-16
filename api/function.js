@@ -339,7 +339,7 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
   const seenLicenses = new Set();
 
   function isPlatform(row) {
-    const role = String(row?.role || '').toLowerCase();
+    const role = normalizeRoleToken(row?.role);
     const scope = String(row?.scope || '').toLowerCase();
     const env = String(row?.environment_code || '').toUpperCase();
     const perms = row?.resolved_permissions || {};
@@ -435,7 +435,7 @@ function isPlatformOperatorProfile(profile) {
 }
 
 function isClientAdminProfile(profile) {
-  const role = String(profile?.role || '').toLowerCase();
+  const role = normalizeRoleToken(profile?.role);
   const licenseType = String(profile?.license_type || '').toLowerCase();
   const perms = profile?.resolved_permissions || {};
   return profile?.active !== false && (
@@ -741,7 +741,7 @@ async function handleListUsers(req, url, serviceRole, payload) {
   }
 
   function isPlatform(row) {
-    const role = String(row?.role || '').toLowerCase();
+    const role = normalizeRoleToken(row?.role);
     const scope = String(row?.scope || '').toLowerCase();
     const env = String(row?.environment_code || '').toUpperCase();
     const perms = row?.resolved_permissions || {};

@@ -81,7 +81,7 @@ function parseRoleArray(value) {
 
 function isPlatform(profile) {
   if (!profile || profile.active === false) return false;
-  const role = token(profile.role);
+  const role = normalizeRoleName(profile.role);
   const scope = token(profile.scope);
   const env = String(profile.environment_code || '').replace(/[\t\r\n\f\v]/g, '').trim().toUpperCase();
   const type = token(profile.license_type);
@@ -104,7 +104,7 @@ function isReadOnlyLicense(profile) {
 
 function isPadLicense(profile) {
   if (!profile) return false;
-  const role = token(profile.role);
+  const role = normalizeRoleName(profile.role);
   const raw = token(profile.license_type);
   if (role === 'pad_user' || role === 'pad') return true;
   if (!raw) return false;
@@ -114,7 +114,7 @@ function isPadLicense(profile) {
 function isEnvironmentAdmin(profile) {
   if (!profile || profile.active === false) return false;
   if (isPlatform(profile)) return true;
-  return ENV_ADMIN_ROLES.has(token(profile.role));
+  return ENV_ADMIN_ROLES.has(normalizeRoleName(profile.role));
 }
 
 function rolePermissions(role) {
@@ -138,7 +138,7 @@ function canManageUsers(profile, catalog) {
   if (!profile || profile.active === false) return false;
   if (isPlatform(profile)) return true;
   if (isReadOnlyLicense(profile)) return false;
-  const role = token(profile.role);
+  const role = normalizeRoleName(profile.role);
   if (isPadLicense(profile) || role === 'operateur') return false;
   if (ENV_ADMIN_ROLES.has(role) || role === 'supervision_user') return true;
   if (USER_ADMIN_DENIED_ROLES.has(role)) return false;
@@ -148,7 +148,7 @@ function canManageUsers(profile, catalog) {
 function canManageIntegrations(profile) {
   if (!profile || profile.active === false) return false;
   if (isReadOnlyLicense(profile)) return false;
-  const role = token(profile.role);
+  const role = normalizeRoleName(profile.role);
   if (isPadLicense(profile) || role === 'operateur' || role === 'operator') return false;
   if (isPlatform(profile)) return true;
   return ENV_ADMIN_ROLES.has(role);

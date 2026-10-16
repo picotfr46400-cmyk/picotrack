@@ -37,35 +37,67 @@ function v2Revision() {
   return 'origin/v2';
 }
 
-test('cache-buster : app.secured.js différent de v2 a un ?v= différent', () => {
-  const rev = v2Revision();
-  const baseBundle = gitShow(rev, 'assets/app.secured.js');
-  const baseHtml = gitShow(rev, 'index.html');
-  const currentBundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
+function letterOf(token) {
+  const match = String(token || '').match(/([a-z])$/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function historicalBusters(rev, fileName) {
+  const log = execFileSync('git', ['log', rev, '-p', '--pretty=format:', '--', 'index.html'], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const re = new RegExp(fileName.replace(/\./g, '\\.') + '\\?v=([A-Za-z0-9]+)', 'g');
+  const found = new Set();
+  for (const match of log.matchAll(re)) found.add(match[1]);
+  for (const token of cacheBusters(gitShow(rev, 'index.html'), fileName)) found.add(token);
+  return found;
+}
+
+function assertFreshCache(rev, fileName, filePath) {
+  const baseFile = gitShow(rev, filePath);
+  const currentFile = fs.readFileSync(path.join(__dirname, '..', filePath), 'utf8');
   const currentHtml = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  const baseBusters = cacheBusters(baseHtml, 'app.secured.js');
-  const currentBusters = cacheBusters(currentHtml, 'app.secured.js');
-  assert.equal(baseBusters.length >= 1, true);
-  assert.equal(new Set(currentBusters).size, 1);
-  if (baseBundle !== currentBundle) assert.notEqual(currentBusters[0], baseBusters[0]);
-  const baseOverlay = gitShow(rev, 'assets/core-supervision.js');
-  const currentOverlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
-  const baseOverlayBusters = cacheBusters(baseHtml, 'core-supervision.js');
-  const currentOverlayBusters = cacheBusters(currentHtml, 'core-supervision.js');
-  if (baseOverlay === currentOverlay) {
-    assert.deepEqual(currentOverlayBusters, baseOverlayBusters);
-  } else {
-    assert.equal(currentOverlayBusters.length >= 1, true);
-    assert.notEqual(currentOverlayBusters[0], baseOverlayBusters[0]);
+  const baseHtml = gitShow(rev, 'index.html');
+  const current = cacheBusters(currentHtml, fileName);
+  const base = cacheBusters(baseHtml, fileName);
+  assert.equal(new Set(current).size, 1, fileName);
+  if (baseFile === currentFile) {
+    assert.deepEqual(current, base, fileName);
+    return;
   }
+  const token = current[0];
+  const history = historicalBusters(rev, fileName);
+  assert.equal(history.has(token), false, `${fileName} réutilise ${token}`);
+  const highest = [...history].map(letterOf).filter(Boolean).sort().at(-1);
+  assert.equal(letterOf(token) > highest, true, `${fileName} ${token} doit dépasser ${highest}`);
+}
+
+test('cache-buster : une lettre neuve, au-dessus de tout l’historique v2', () => {
+  const rev = v2Revision();
+  const count = Number(execFileSync('git', ['rev-list', '--count', rev], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe']
+  }));
+  if (count < 50) {
+    execFileSync('git', ['fetch', '--no-tags', '--depth=1000', 'origin', 'v2'], {
+      cwd: path.join(__dirname, '..'),
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+  }
+  assertFreshCache(rev, 'app.secured.js', 'assets/app.secured.js');
+  assertFreshCache(rev, 'core-supervision.js', 'assets/core-supervision.js');
 });
 
-test('index.html : Babel absent, React conservé, cache-buster 20261008o sur le bundle modifié', () => {
+test('index.html : Babel absent, React conservé, cache-buster 20261008r sur le bundle modifié', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008o/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008i/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008r/g) || []).length, 2);
+  assert.match(html, /core-supervision\.js\?v=20261008r/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);

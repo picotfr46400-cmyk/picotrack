@@ -2616,10 +2616,35 @@
     return String(value || '').replace(/[\t\r\n\f\v]/g, '').trim().toLowerCase();
   }
 
+  function ptRoleKey(value) {
+    return String(value || '')
+      .normalize('NFKC')
+      .replace(/[\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/g, ' ')
+      .replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufe00-\ufe0f\ufeff\ufff9-\ufffb]/g, '')
+      .trim()
+      .toLowerCase();
+  }
+
+  function ptRoleTokens(value) {
+    if (value == null || value === '') return [];
+    if (Array.isArray(value)) return value.reduce(function (out, item) { return out.concat(ptRoleTokens(item)); }, []);
+    if (typeof value === 'object') return [];
+    var text = String(value);
+    var trimmed = text.trim();
+    if (trimmed.charAt(0) === '[') {
+      try {
+        var parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return ptRoleTokens(parsed);
+      } catch (_) {}
+    }
+    if (text.indexOf(',') >= 0) return text.split(',').reduce(function (out, part) { return out.concat(ptRoleTokens(part)); }, []);
+    return [text];
+  }
+
   function ptPlatformUser(user) {
     user = user || ptUser();
     if (!user || user.active === false) return false;
-    var role = ptToken(user.role);
+    var role = ptRoleKey(user.role);
     var type = ptToken(user.license_type);
     var scope = ptToken(user.scope);
     var env = String(user.environment_code || '').trim().toUpperCase();
@@ -2638,7 +2663,7 @@
     user = user || ptUser();
     if (!user || user.active === false) return false;
     if (ptPlatformUser(user)) return true;
-    var role = ptToken(user.role);
+    var role = ptRoleKey(user.role);
     return role === 'admin' || role === 'client_admin' || role === 'environment_admin';
   }
 
@@ -2647,7 +2672,7 @@
     if (!user || user.active === false) return false;
     if (ptPlatformUser(user)) return true;
     if (ptReadOnlyUser(user)) return false;
-    var role = ptToken(user.role);
+    var role = ptRoleKey(user.role);
     if (role === 'pad_user' || role === 'pad' || role === 'operateur' || role === 'operator' || ptToken(user.license_type) === 'pad') return false;
     if (role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user') return true;
     return ptAssignedRoles(user).some(function (item) { return item.permissions && item.permissions.manage_users === true; });
@@ -2668,18 +2693,14 @@
   function ptAssignedRoles(user) {
     user = user || ptUser();
     var wanted = {};
-    var list = user && user.roles;
-    if (typeof list === 'string') {
-      try { list = JSON.parse(list); } catch (_) { list = String(list).split(','); }
-    }
-    (Array.isArray(list) ? list : []).forEach(function (value) {
-      var key = ptToken(value);
+    ptRoleTokens(user && user.roles).forEach(function (value) {
+      var key = ptRoleKey(value);
       if (key) wanted[key] = true;
     });
-    var primary = ptToken(user && user.role);
+    var primary = ptRoleKey(user && user.role);
     if (primary && !SEAT_ROLES[primary]) wanted[primary] = true;
     return ptData('roles').filter(function (role) {
-      return wanted[ptToken(ptRoleId(role))] || wanted[ptToken(ptRoleName(role))];
+      return wanted[ptRoleKey(ptRoleId(role))] || wanted[ptRoleKey(ptRoleName(role))];
     });
   }
 

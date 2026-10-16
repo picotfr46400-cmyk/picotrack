@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { interpretedLicenseType, normalizeLicenseType } = require('./_license-type');
+const { normalizeRoleName } = require('./_access');
 const {
   isSecretObjectKey,
   isSensitiveField,
@@ -124,7 +125,7 @@ function parseDeviceTime(value) {
 }
 
 function originForProfile(profile) {
-  const role = String(profile?.role || '').toLowerCase();
+  const role = normalizeRoleName(profile?.role);
   if (normalizeLicenseType(profile?.license_type) === 'pad') return 'pad';
   if (role === 'pad_user' || role === 'operator' || role === 'operateur') return 'pad';
   return 'supervision';

@@ -40,8 +40,9 @@ revoke all on function public.normalize_role_name(text) from anon;
 revoke all on function public.normalize_role_name(text) from authenticated;
 grant execute on function public.normalize_role_name(text) to service_role;
 
+-- Ne pas utiliser normalize_role_name dans un index : la fonction dépend d'ICU.
 comment on function public.normalize_role_name(text) is
-  'Nom de rôle canonique : NFKC, espaces Unicode, contrôles retirés, lower ICU. Exécution réservée à service_role.';
+  'Nom de rôle canonique : NFKC, espaces Unicode, contrôles retirés, lower ICU. Ne pas utiliser normalize_role_name dans un index : la fonction dépend d''ICU. Exécution réservée à service_role.';
 
 -- Jetons portés par roles, quel que soit le type jsonb : tableau, chaîne,
 -- texte JSON, CSV, ou null.

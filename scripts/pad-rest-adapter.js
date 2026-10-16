@@ -293,6 +293,15 @@ function insertSql(table, body, url, prefer) {
 async function handle(req, res, env) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const parts = url.pathname.split('/').filter(Boolean);
+  if (parts[0] === 'rest' && parts[1] === 'v1' && parts[2] === 'rpc' && parts[3] === 'app_roles_for_actor') {
+    const body = await readBody(req);
+    const keys = Array.isArray(body && body.p_role_keys) ? body.p_role_keys : [];
+    const list = keys.length ? `array[${keys.map(quote).join(',')}]::text[]` : 'array[]::text[]';
+    const sql = `select coalesce(json_agg(row_to_json(t)), '[]'::json)::text from (
+      select id, name, permissions from public.app_roles_for_actor(${quote(body && body.p_environment_code || '')}, ${list})
+    ) t`;
+    return send(res, 200, JSON.parse(psql(env, sql) || '[]'));
+  }
   const table = decodeURIComponent(parts[2] || '');
   if (parts[0] !== 'rest' || parts[1] !== 'v1' || !TABLES[table]) {
     return send(res, 404, { code: 'PGRST205', message: `Could not find the table 'public.${table}' in the schema cache` });

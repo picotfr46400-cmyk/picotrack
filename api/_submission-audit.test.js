@@ -563,7 +563,7 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
 test('la frise de traçabilité interroge le serveur et filtre sans réécrire l’historique', () => {
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /core-supervision\.js\?v=20261008i/);
+  assert.match(html, /core-supervision\.js\?v=20261008r/);
   assert.match(overlay, /action: 'submission_trace'/);
   assert.match(overlay, /Europe\/Paris/);
   assert.match(overlay, /data-pt-trace-filter/);
@@ -1508,7 +1508,7 @@ test('la licence puis le catalogue de l’acteur restent dans les 10 s', { timeo
     global.fetch = async (url, options = {}) => {
       const u = String(url);
       const method = options.method || 'GET';
-      if (method === 'GET' && (u.includes('/rest/v1/licenses?') || u.includes('/rest/v1/app_roles?') || u.includes('/rest/v1/services?'))) {
+      if ((method === 'GET' && (u.includes('/rest/v1/licenses?') || u.includes('/rest/v1/services?'))) || (String(method).toUpperCase() === 'POST' && u.includes('/rpc/app_roles_for_actor'))) {
         await new Promise((resolve) => setTimeout(resolve, 4000));
       }
       if (u.includes('/rest/v1/licenses?')) {

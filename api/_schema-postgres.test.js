@@ -33,6 +33,12 @@ test('postgres : quota, réactivation et rôles répondent 200 ou 403, jamais 50
     const migration = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261016120000_normalize_role_name.sql'), 'utf8');
     await client.query(migration);
     await client.query(migration);
+    const lookup = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261016133000_role_name_lookup.sql'), 'utf8');
+    assert.match(lookup, /Ne pas utiliser normalize_role_name dans un index : la fonction dépend d'ICU/);
+    assert.match(lookup, /for update/i);
+    assert.match(lookup, /share row exclusive mode/i);
+    await client.query(lookup);
+    await client.query(lookup);
 
     process.env.SUPABASE_URL = 'https://schema-test.supabase.co';
     process.env.SUPABASE_ANON_KEY = 'anon-test';
@@ -186,6 +192,24 @@ async function assertNormalizeParity(client) {
   );
   assert.equal(stringSql.rows[0].same, true);
   assert.equal(userHasRole(stringUser, 'chef'), stringSql.rows[0].same);
+  const csvUser = { email: 'csv@example.com', role: 'pad_user', roles: 'pad_user, Chef', active: true, environment_code: 'EFC' };
+  assert.equal(userHasRole(csvUser, 'chef'), true);
+  await client.query(
+    `insert into app_roles (id, environment_code, name, permissions, active)
+     values ('88888888-8888-4888-8888-888888888888', 'EFC', 'Chef', '{}'::jsonb, true),
+            ('99999999-9999-4999-8999-999999999999', 'EFC', 'Inspecteur', '{}'::jsonb, true)`
+  );
+  for (const key of ['chef', 'CHEF']) {
+    const hit = await client.query('select name from public.app_roles_for_actor($1, $2)', ['EFC', [key]]);
+    assert.equal(hit.rows.some(row => row.name === 'Chef'), true, key);
+  }
+  const seen = await client.query('select name from public.app_roles_for_actor($1, $2)', ['EFC', ['inspecteur']]);
+  assert.equal(seen.rows.some(row => row.name === 'Inspecteur'), true);
+  const removed = await client.query('select deleted, assigned from public.delete_app_role_if_unassigned($1)', ['99999999-9999-4999-8999-999999999999']);
+  assert.equal(removed.rows[0].deleted, true);
+  assert.equal(removed.rows[0].assigned, false);
+  const stillThere = await client.query('select id from app_roles where name = $1', ['Inspecteur']);
+  assert.equal(stillThere.rowCount, 0);
 }
 
 async function seed(client) {

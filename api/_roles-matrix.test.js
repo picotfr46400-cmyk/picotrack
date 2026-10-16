@@ -340,6 +340,34 @@ function installWorld(world) {
       }).sort((a, b) => String(a.id).localeCompare(String(b.id))).slice(0, 2);
       return jsonResponse(200, found);
     }
+    if (method === 'POST' && u.includes('/rpc/app_roles_for_actor')) {
+      if (world.failAppRoles) return jsonResponse(500, { message: 'roles down' });
+      const env = String(body?.p_environment_code || '').trim().toUpperCase();
+      const keys = (Array.isArray(body?.p_role_keys) ? body.p_role_keys : []).map(assignedRoleKey).filter(Boolean);
+      const rows = tableOf(world, 'app_roles').filter(row => {
+        if (String(row?.environment_code || '').trim().toUpperCase() !== env) return false;
+        if (row.active === false) return false;
+        const name = assignedRoleKey(row?.name || row?.nom);
+        const id = assignedRoleKey(row?.id);
+        return keys.includes(name) || keys.includes(id);
+      });
+      return jsonResponse(200, rows.map(row => ({ id: row.id, name: row.name, permissions: row.permissions })));
+    }
+    if (method === 'POST' && u.includes('/rpc/delete_app_role_if_unassigned')) {
+      if (world.failAssigneeReads) return jsonResponse(500, { message: 'assignee down' });
+      const id = String(body?.p_id || '');
+      const role = tableOf(world, 'app_roles').find(row => String(row.id) === id);
+      if (!role) return jsonResponse(200, [{ deleted: false, assigned: false }]);
+      const keys = [role.id, role.name || role.nom].map(assignedRoleKey).filter(Boolean);
+      const env = String(role.environment_code || '').trim().toUpperCase();
+      const holders = ['user_profiles', 'licenses'].flatMap(table => tableOf(world, table)).filter(row => {
+        return String(row?.environment_code || '').trim().toUpperCase() === env;
+      });
+      const assigned = holders.some(row => storedRoleTokens(row).some(value => keys.includes(assignedRoleKey(value))));
+      if (assigned) return jsonResponse(200, [{ deleted: false, assigned: true }]);
+      world.app_roles = tableOf(world, 'app_roles').filter(row => String(row.id) !== id);
+      return jsonResponse(200, [{ deleted: true, assigned: false }]);
+    }
     if (method === 'POST' && u.includes('/rpc/role_still_assigned')) {
       if (world.failAssigneeReads) return jsonResponse(500, { message: 'assignee down' });
       const env = String(body?.p_environment_code || '').replace(/^ +| +$/g, '').toUpperCase();
@@ -3212,9 +3240,9 @@ test('le 501e licenses.roles empêche la suppression du rôle', async () => {
     assert.match(deleted.payload.error || '', /encore assigné/);
     assert.equal(world.app_roles.some(role => role.id === ROLE_OPEN), true);
     assert.equal(hooked.writes.some(entry => entry.method === 'DELETE'), false);
-    const probe = hooked.writes.find(entry => entry.url.includes('/rpc/role_still_assigned'));
+    const probe = hooked.writes.find(entry => entry.url.includes('/rpc/delete_app_role_if_unassigned'));
     assert.ok(probe, 'rpc absente');
-    assert.equal(probe.body.p_role_keys.includes(ROLE_OPEN), true);
+    assert.equal(probe.body.p_id, ROLE_OPEN);
     assert.equal(hooked.calls.some(call => call.url.includes('/licenses?') && call.url.includes('limit=500')), false);
 
     world.licenses.find(row => row.id === 'l-0501').roles = [];
@@ -3607,11 +3635,14 @@ test('pad-sync : le catalogue lu est celui de l’acteur, la borne répond 503',
     });
     assert.equal(synced.status, 200, synced.payload.error || '');
     const urls = hooked.calls.map(call => decodeURIComponent(call.url));
-    const catalog = urls.filter(url => url.includes('/app_roles?'));
-    assert.equal(catalog.length > 0, true);
-    assert.equal(catalog.every(url => url.includes('or=') && url.includes(`id.in.("${actorRole}")`) && url.includes('name.in.') && url.includes('"pad_user"') && url.includes('environment_code=eq.EFC')), true);
-    assert.equal(catalog.some(url => /id\.in\.\([^)]*pad_user/.test(url)), false);
-    assert.equal(catalog.some(url => url.includes('order=id.asc')), false);
+    const catalog = hooked.writes.filter(entry => entry.url.includes('/rpc/app_roles_for_actor'));
+    assert.equal(catalog.length, 1);
+    assert.equal(catalog[0].body.p_environment_code, 'EFC');
+    assert.equal(catalog[0].body.p_role_keys.includes(actorRole), true);
+    assert.equal(catalog[0].body.p_role_keys.includes('pad_user'), true);
+    assert.equal(urls.some(url => url.includes('name.in.')), false);
+    assert.equal(urls.some(url => /id\.in\.\([^)]*pad_user/.test(url)), false);
+    assert.equal(urls.some(url => url.includes('/app_roles?') && url.includes('order=id.asc')), false);
     assert.equal(world.submissions.some(row => row.values && row.values.nom === 'cible'), true);
 
     const crowded = worldFor('supervision');
@@ -3637,7 +3668,7 @@ test('pad-sync : le catalogue lu est celui de l’acteur, la borne répond 503',
       actions: [{ id: 'a-borne', type: 'form_submission', payload: { formId: 'form-open', values: { nom: 'borne' } } }]
     });
     assert.equal(refused.status, 503, refused.payload.error || '');
-    assert.equal(manyHook.calls.some(call => call.url.includes('/app_roles?')), false);
+    assert.equal(manyHook.calls.some(call => call.url.includes('/app_roles') || call.url.includes('app_roles_for_actor')), false);
     assert.equal(crowded.submissions.some(row => row.values && row.values.nom === 'borne'), false);
 
     const failed = worldFor('supervision');
@@ -3663,6 +3694,82 @@ test('pad-sync : le catalogue lu est celui de l’acteur, la borne répond 503',
     });
     assert.equal(down.status, 503, down.payload.error || '');
     assert.equal(failed.submissions.some(row => row.values && row.values.nom === 'down'), false);
+  });
+});
+
+test('pad-sync : Chef en base, chef ou CHEF, la tablette garde les droits du web', async () => {
+  const lookup = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261016133000_role_name_lookup.sql'), 'utf8');
+  assert.match(lookup, /public\.normalize_role_name\(role\.name\) = public\.normalize_role_name\(key\)/);
+  assert.match(lookup, /Ne pas utiliser normalize_role_name dans un index : la fonction dépend d'ICU/);
+  const formId = 'form-chef-pad';
+  const chefRole = {
+    id: '12121212-1212-4121-8121-121212121212',
+    name: 'Chef',
+    environment_code: 'EFC',
+    active: true,
+    permissions: { access: { forms: { [formId]: 'write' } } }
+  };
+  const blocker = {
+    id: '13131313-1313-4131-8131-131313131313',
+    name: 'bloqueur',
+    environment_code: 'EFC',
+    active: true,
+    permissions: { access: { forms: { [formId]: 'hidden' } } }
+  };
+  const inspecteur = {
+    id: '14141414-1414-4141-8141-141414141414',
+    name: 'Inspecteur',
+    environment_code: 'EFC',
+    active: true,
+    permissions: { access: { forms: { [formId]: 'write' } } }
+  };
+  const hash = 'ef'.repeat(32);
+  async function padOutcome(role, roles) {
+    return withSupabase(async () => {
+      const world = worldFor('supervision');
+      world.app_roles = [chefRole, blocker, inspecteur];
+      world.forms = [{ id: formId, nom: 'Visite', environment_code: 'EFC', actif: true, fields: [], permissions: {} }];
+      world.licenses = [{
+        id: 'lic-chef',
+        email: 'chef@efc.picotrack.fr',
+        environment_code: 'EFC',
+        role,
+        roles,
+        license_type: 'pad',
+        active: true,
+        password_hash: hash,
+        label: 'Pad'
+      }];
+      installWorld(world);
+      const login = await callJson(padAuth, { environment_code: 'EFC', login: 'chef@efc.picotrack.fr', password_hash: hash });
+      assert.equal(login.status, 200, login.payload.error || '');
+      const synced = await callJson(padSync, {
+        padSessionToken: login.payload.padSessionToken,
+        actions: [{ id: 'a-chef', type: 'form_submission', payload: { formId, values: { nom: 'tenue' } } }]
+      });
+      assert.equal(synced.status, 200, synced.payload.error || '');
+      return synced.payload.results[0];
+    });
+  }
+  const kept = await padOutcome('chef', ['bloqueur']);
+  assert.equal(kept.status, 'applied', kept.error || '');
+  const upper = await padOutcome('CHEF', ['bloqueur']);
+  assert.equal(upper.status, 'applied', upper.error || '');
+  const inspect = await padOutcome('inspecteur', ['Inspecteur', 'bloqueur']);
+  assert.equal(inspect.status, 'applied', inspect.error || '');
+  const hidden = await padOutcome('pad_user', ['bloqueur']);
+  assert.equal(hidden.status, 404, hidden.error || '');
+
+  await withSupabase(async () => {
+    const world = worldFor('supervision');
+    world.user_profiles[0].roles = ['CHEF', 'bloqueur'];
+    world.app_roles = [chefRole, blocker, inspecteur];
+    world.forms = [{ id: formId, nom: 'Visite', environment_code: 'EFC', actif: true, fields: [], permissions: {} }];
+    installWorld(world);
+    const saved = await callJson(records, {
+      action: 'save', entity: 'forms', id: formId, record: { nom: 'Tenue web' }
+    });
+    assert.equal(saved.status, 200, saved.payload.error || '');
   });
 });
 

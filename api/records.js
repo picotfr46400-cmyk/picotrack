@@ -1656,6 +1656,7 @@ async function handleDelete(req, body) {
   access.assertWritableLicense(profile);
   const profileEnv = String(profile?.environment_code || '').trim().toUpperCase();
   const isPlatform = isPlatformLicenseManagerProfile(profile);
+  let appRoleDeleted = false;
 
   const entitiesWithEnvironmentCode = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
 
@@ -1709,7 +1710,24 @@ async function handleDelete(req, body) {
   if (entity === 'app_roles') {
     const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
     const existing = await readOneById(req, 'app_roles', id, isPlatform ? null : env);
-    if (existing) await assertRoleUnassigned(req, existing.environment_code || env, existing);
+    if (existing) {
+      let rows;
+      try {
+        rows = await serviceRest('rpc/delete_app_role_if_unassigned', {
+          method: 'POST',
+          prefer: '',
+          req,
+          body: { p_id: existing.id }
+        });
+      } catch (err) {
+        throw access.unavailable(err);
+      }
+      const probe = Array.isArray(rows) ? rows[0] : null;
+      if (!probe || typeof probe.deleted !== 'boolean' || typeof probe.assigned !== 'boolean') throw access.unavailable();
+      if (probe.assigned) throw Object.assign(new Error('Ce rôle est encore assigné.'), { status: 409 });
+      if (!probe.deleted) throw access.unavailable();
+      appRoleDeleted = true;
+    }
   }
   if (entity === 'databases') {
     const existing = await readOneById(req, 'databases', id, profileEnv || body.environment_code).catch(() => null);
@@ -1736,7 +1754,9 @@ async function handleDelete(req, body) {
     });
   }
 
-  const removed = await serviceRest(scopedPath(entity), { method: 'DELETE', prefer: 'return=minimal', req });
+  const removed = appRoleDeleted
+    ? []
+    : await serviceRest(scopedPath(entity), { method: 'DELETE', prefer: 'return=minimal', req });
   if (entity === 'submissions' || entity === 'service_instances') {
     await submissionAudit.recordDelete(req, {
       serviceRest, user, profile, entity, id, env: deleteEnv, existing: deleteTarget

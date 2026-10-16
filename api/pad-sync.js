@@ -131,25 +131,6 @@ async function loadRows(req, path) {
   }
 }
 
-function quoteInValue(value) {
-  return `"${String(value).replace(/"/g, '""')}"`;
-}
-
-const ROLE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-function catalogFilter(chunk) {
-  const ids = chunk.filter(key => ROLE_ID.test(key));
-  const parts = [];
-  if (ids.length) parts.push(`id.in.(${ids.map(quoteInValue).join(',')})`);
-  if (chunk.length) parts.push(`name.in.(${chunk.map(quoteInValue).join(',')})`);
-  if (parts.length === 1) {
-    const only = parts[0];
-    const dot = only.indexOf('.');
-    return `${only.slice(0, dot)}=${encodeURIComponent(only.slice(dot + 1))}`;
-  }
-  return `or=${encodeURIComponent(`(${parts.join(',')})`)}`;
-}
-
 async function loadActorCatalog(req, environmentCode, license) {
   const keys = [];
   const seen = new Set();
@@ -165,24 +146,22 @@ async function loadActorCatalog(req, environmentCode, license) {
   add(license && license.roles);
   if (keys.length > access.APP_ROLE_CATALOG_BOUND) throw access.unavailable();
   if (!keys.length) return [];
-  const rows = [];
-  const seenIds = new Set();
-  for (let index = 0; index < keys.length; index += 80) {
-    const chunk = keys.slice(index, index + 80);
-    const limit = Math.min(access.APP_ROLE_CATALOG_BOUND, chunk.length * 2);
-    const page = await loadRows(
-      req,
-      `app_roles?environment_code=eq.${encodeURIComponent(environmentCode)}&active=eq.true&${catalogFilter(chunk)}&select=id,name,permissions&limit=${limit + 1}`
-    );
-    if (page.length > limit) throw access.unavailable();
-    for (const row of page) {
-      const id = row && row.id != null ? String(row.id) : '';
-      if (!id || seenIds.has(id)) continue;
-      seenIds.add(id);
-      rows.push(row);
-    }
-    if (rows.length > access.APP_ROLE_CATALOG_BOUND) throw access.unavailable();
+  const timeoutMs = nextTimeout(req);
+  if (!timeoutMs) throw deadlineError();
+  let rows;
+  try {
+    rows = await sbRest(req, 'rpc/app_roles_for_actor', {
+      method: 'POST',
+      prefer: '',
+      timeoutMs,
+      body: { p_environment_code: environmentCode, p_role_keys: keys }
+    });
+  } catch (err) {
+    if (err && (err.code === 'DEADLINE' || err.status === 504)) throw err.code === 'DEADLINE' ? err : deadlineError();
+    throw access.unavailable(err);
   }
+  if (!Array.isArray(rows)) throw access.unavailable();
+  if (rows.length > access.APP_ROLE_CATALOG_BOUND) throw access.unavailable();
   return rows;
 }
 
