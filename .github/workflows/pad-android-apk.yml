@@ -11,10 +11,16 @@ on:
     branches: [v2]
     paths:
       - "mobile/**"
+      - "pad-device.js"
+      - ".well-known/**"
+      - "index.html"
   push:
     branches: [v2]
     paths:
       - "mobile/**"
+      - "pad-device.js"
+      - ".well-known/**"
+      - "index.html"
 
 permissions:
   contents: read
@@ -49,7 +55,7 @@ jobs:
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
 
       - name: Test tenant config and GPS bridge
-        run: node --test mobile/configure.test.mjs mobile/pad-device.test.mjs mobile/ci/check-dependency-downgrades.test.mjs
+        run: node --test mobile/configure.test.mjs mobile/pad-device.test.mjs mobile/ci/check-dependency-downgrades.test.mjs mobile/ci/check-apk.test.mjs
 
       - name: Mobile tree changed against base
         id: mobile
@@ -59,21 +65,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git -c "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf=https://github.com/" fetch --no-tags --depth=1 origin "$BASE_SHA"
           if git diff --name-only FETCH_HEAD HEAD -- mobile/ | grep -q .; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: versionCode strictly greater than base branch
+      - name: versionCode exactly one above the v2 base
         if: github.event_name == 'pull_request' && steps.mobile.outputs.changed == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          curl -fsSL "https://raw.githubusercontent.com/$REPO/$BASE_SHA/mobile/android/tenant.properties" -o "$RUNNER_TEMP/base-tenant.properties"
+          git -c "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf=https://github.com/" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git show FETCH_HEAD:mobile/android/tenant.properties > "$RUNNER_TEMP/base-tenant.properties"
           node mobile/ci/check-version-bump.mjs "$RUNNER_TEMP/base-tenant.properties" mobile/android/tenant.properties mobile/configure.mjs
 
       - name: Configure tenant and build debug APK
@@ -84,6 +91,13 @@ jobs:
           ANDROID_DEBUG_KEY_ALIAS: ${{ secrets.ANDROID_DEBUG_KEY_ALIAS }}
           ANDROID_DEBUG_KEY_PASSWORD: ${{ secrets.ANDROID_DEBUG_KEY_PASSWORD }}
         run: ./mobile/build-apk.sh
+
+      - name: aapt badge matches tenant
+        run: |
+          set -euo pipefail
+          apk=$(echo mobile/android/app/build/outputs/apk/debug/*.apk)
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" > "$RUNNER_TEMP/apk-badge.txt"
+          node mobile/ci/check-apk-badge.mjs "$RUNNER_TEMP/apk-badge.txt" mobile/android/tenant.properties
 
       - name: Upload debug APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

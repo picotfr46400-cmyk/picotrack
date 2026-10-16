@@ -312,14 +312,33 @@ function takeAttempt(key,limit=8,windowMs=10*60*1000,now=Date.now()){
   if(!row||now>row.reset){row={fails:0,reset:now+windowMs};rateBuckets.set(key,row);}
   return {allowed:row.fails<limit,fail(){row.fails+=1;},ok(){rateBuckets.delete(key);}};
 }
-const LOGIN_IP_LIMIT=30;
-function takeLoginAttempt(scope,req,loginKey){
+function touchCounter(key,windowMs,now){
+  let row=rateBuckets.get(key);
+  if(!row||now>row.reset){row={fails:0,reset:now+windowMs};rateBuckets.set(key,row);}
+  return row;
+}
+const LOGIN_ACCOUNT_LIMIT=8;
+const LOGIN_IP_DELAY_AFTER=60;
+const LOGIN_IP_DELAY_STEP_MS=200;
+const LOGIN_IP_DELAY_CAP_MS=5000;
+function loginIpDelayMs(fails){
+  const over=Number(fails)-LOGIN_IP_DELAY_AFTER;
+  if(!(over>=0))return 0;
+  return Math.min(LOGIN_IP_DELAY_CAP_MS,(over+1)*LOGIN_IP_DELAY_STEP_MS);
+}
+function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+function takeLoginAttempt(scope,req,loginKey,now=Date.now()){
   const ip=clientIp(req);
-  const byIp=takeAttempt(`login-ip:${ip}`,LOGIN_IP_LIMIT);
-  if(!byIp.allowed)return {allowed:false,fail(){},ok(){}};
-  const byName=takeAttempt(`${scope}:${ip}:${loginKey||'unknown'}`);
-  if(!byName.allowed)return {allowed:false,fail(){},ok(){}};
-  return {allowed:true,fail(){byIp.fail();byName.fail();},ok(){byIp.ok();byName.ok();}};
+  const account=takeAttempt(`${scope}:${ip}:${loginKey||'unknown'}`,LOGIN_ACCOUNT_LIMIT,10*60*1000,now);
+  const ipRow=touchCounter(`login-ip:${ip}`,10*60*1000,now);
+  const delayMs=account.allowed?loginIpDelayMs(ipRow.fails):0;
+  return {
+    allowed:account.allowed,
+    delayMs,
+    async wait(sleepFn=sleep){if(delayMs>0)await sleepFn(delayMs);},
+    fail(){account.fail();ipRow.fails+=1;},
+    ok(){account.ok();}
+  };
 }
 function resetRateLimits(){rateBuckets.clear();}
 function envPick(env,...names){
@@ -426,4 +445,4 @@ function listConfiguredClients(env){
   clients.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
   return clients;
 }
-module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,fetchUpstream,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,attachLicenseRoles,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost,allowsLegacySupabaseFallback,isEfcCanonicalHost,isExactLocalHost,redactRow,redactPayload,clientIp,takeAttempt,takeLoginAttempt,LOGIN_IP_LIMIT,resetRateLimits,listConfiguredClients,MISSING_TENANT_DB,KNOWN_EFC_PROJECT_REF};
+module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,fetchUpstream,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,attachLicenseRoles,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost,allowsLegacySupabaseFallback,isEfcCanonicalHost,isExactLocalHost,redactRow,redactPayload,clientIp,takeAttempt,takeLoginAttempt,LOGIN_ACCOUNT_LIMIT,LOGIN_IP_DELAY_AFTER,loginIpDelayMs,resetRateLimits,listConfiguredClients,MISSING_TENANT_DB,KNOWN_EFC_PROJECT_REF};

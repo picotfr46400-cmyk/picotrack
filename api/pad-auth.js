@@ -27,6 +27,7 @@ module.exports = async function handler(req, res) {
     const loginKey = normalizeEmail(login);
     const attempt = takeLoginAttempt('pad', req, loginKey);
     if (!attempt.allowed) return sendJson(res, 429, { ok:false, error:'Trop de tentatives. Réessayez plus tard.' });
+    await attempt.wait();
     if (!isValidEmail(login) || !/^[a-f0-9]{64}$/i.test(passwordHash)) {
       attempt.fail();
       return sendJson(res, 401, { ok:false, error: GENERIC_PAD_LOGIN_ERROR });
