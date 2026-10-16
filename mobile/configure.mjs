@@ -60,8 +60,8 @@ export function resolveTenant(raw) {
     applicationId,
     appName: 'PicoTrack PAD',
     launcherName: launcherNameForHost(host),
-    versionCode: '2',
-    versionName: '1.0.1'
+    versionCode: '3',
+    versionName: '1.0.2'
   };
 }
 
