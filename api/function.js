@@ -1,7 +1,8 @@
-const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, bearer, requireAuth, requireAdmin, getAuthUser, readJsonBody, applySecurityHeaders, attachLicenseRoles } = require('./_server-supabase');
 const { normalizeLicenseType, seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
 const { normalizeEmail, isValidEmail, assertWritableEmail } = require('./_email');
 const { shortLoginKey, conflictingShortLogin, shortLoginRpcBody, SHORT_LOGIN_RPC } = require('./_short-login');
+const { canManageUsers, unavailable, privilegeDrift, isOwnAccount, assertGrantWithinCeiling, isPlatform, readPaged, APP_ROLE_CATALOG_BOUND, normalizeRoleToken, canonicalRoleName, roleTokens } = require('./_access');
 
 const INTERNAL_FUNCTIONS = new Set([
   'list-users',
@@ -72,8 +73,27 @@ async function supabaseFetch(url, serviceRole, path, options = {}) {
 async function loadActiveAppRoles(url, serviceRole, environmentCode) {
   const env = normalizeEnvironmentCode(environmentCode || '');
   if (!env) return [];
-  const rows = await supabaseFetch(url, serviceRole, `/rest/v1/app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,name&limit=200`, { method: 'GET' }).catch(() => []);
-  return Array.isArray(rows) ? rows : [];
+  try {
+    return await readPaged(200, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return supabaseFetch(url, serviceRole, `/rest/v1/app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=id,name,permissions&order=id.asc&limit=200${cursor}`, { method: 'GET' });
+    }, APP_ROLE_CATALOG_BOUND);
+  } catch (err) {
+    throw unavailable(err);
+  }
+}
+
+async function loadServiceLinks(url, serviceRole, environmentCode) {
+  const env = normalizeEnvironmentCode(environmentCode || '');
+  if (!env) return [];
+  try {
+    return await readPaged(500, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return supabaseFetch(url, serviceRole, `/rest/v1/services?environment_code=eq.${encodeURIComponent(env)}&select=id,form_id&order=id.asc&limit=500${cursor}`, { method: 'GET' });
+    }, 5000);
+  } catch (err) {
+    throw unavailable(err);
+  }
 }
 
 function unwrapAuthUser(payload) {
@@ -293,9 +313,20 @@ async function quotaRead(url, serviceRole, path) {
   }
 }
 
+async function pageServiceRows(url, serviceRole, path, fail) {
+  try {
+    return await readPaged(500, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return supabaseFetch(url, serviceRole, `${path}&order=id.asc&limit=500${cursor}`, { method: 'GET' });
+    }, 20000);
+  } catch (err) {
+    throw fail(err);
+  }
+}
+
 async function getLicenseLimitsForEnvironment(url, serviceRole, environmentCode) {
   for (const env of envCandidates(environmentCode)) {
-    const rows = await quotaRead(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,tenant_id&limit=1`);
+    const rows = await quotaRead(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,lecture_limit,tenant_id&limit=1`);
     if (rows[0]) return rows[0];
   }
   return null;
@@ -308,7 +339,7 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
   const seenLicenses = new Set();
 
   function isPlatform(row) {
-    const role = String(row?.role || '').toLowerCase();
+    const role = normalizeRoleToken(row?.role);
     const scope = String(row?.scope || '').toLowerCase();
     const env = String(row?.environment_code || '').toUpperCase();
     const perms = row?.resolved_permissions || {};
@@ -330,7 +361,7 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
   const profileSelect = 'id,email,role,license_type,roles,scope,resolved_permissions,active,environment_code';
 
   for (const env of envCandidates(environmentCode)) {
-    const profiles = await quotaRead(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=${profileSelect}`);
+    const profiles = await pageServiceRows(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=${profileSelect}`, quotaReadError);
     for (const row of profiles) {
       if (!row) continue;
       const email = emailKey(row);
@@ -343,7 +374,7 @@ async function countActiveUsersForType(url, serviceRole, environmentCode, licens
       if (rowType(row) === licenseType) total += 1;
     }
 
-    const licenses = await quotaRead(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${licenseSelect}`);
+    const licenses = await pageServiceRows(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${licenseSelect}`, quotaReadError);
     for (const row of licenses) {
       if (!row || isPlatform(row) || row.active === false) continue;
       const email = emailKey(row);
@@ -371,10 +402,15 @@ async function assertQuotaAvailable(url, serviceRole, payload, excludeId = null)
   const licenseType = seatLicenseType(payload);
   const limits = await getLicenseLimitsForEnvironment(url, serviceRole, environmentCode);
   if (!limits) throw Object.assign(new Error(`Aucun quota configuré pour l’environnement ${environmentCode}.`), { status: 400 });
-  const max = licenseType === 'pad' ? Number(limits.pad_limit || 0) : Number(limits.supervision_limit || 0);
-  if (!max || max < 1) throw Object.assign(new Error(`Aucune licence ${licenseType === 'pad' ? 'PAD Terrain' : 'Supervision PC'} disponible pour cet environnement.`), { status: 403 });
+  const poolLabel = licenseType === 'pad' ? 'PAD Terrain' : licenseType === 'readonly' ? 'Lecture' : 'Supervision PC';
+  const max = licenseType === 'pad'
+    ? Number(limits.pad_limit || 0)
+    : licenseType === 'readonly'
+      ? Number(limits.lecture_limit || 0)
+      : Number(limits.supervision_limit || 0);
+  if (!max || max < 1) throw Object.assign(new Error(`Aucune licence ${poolLabel} disponible pour cet environnement.`), { status: 403 });
   const used = await countActiveUsersForType(url, serviceRole, environmentCode, licenseType, excludeId);
-  if (used >= max) throw Object.assign(new Error(`Quota ${licenseType === 'pad' ? 'PAD Terrain' : 'Supervision PC'} atteint (${used}/${max}).`), { status: 403 });
+  if (used >= max) throw Object.assign(new Error(`Quota ${poolLabel} atteint (${used}/${max}).`), { status: 403 });
   return { licenseType, environmentCode, used, max };
 }
 
@@ -399,7 +435,7 @@ function isPlatformOperatorProfile(profile) {
 }
 
 function isClientAdminProfile(profile) {
-  const role = String(profile?.role || '').toLowerCase();
+  const role = normalizeRoleToken(profile?.role);
   const licenseType = String(profile?.license_type || '').toLowerCase();
   const perms = profile?.resolved_permissions || {};
   return profile?.active !== false && (
@@ -417,7 +453,7 @@ function canManageLicenseLimits(profile) {
 }
 
 function canCreateEnvironmentUser(profile) {
-  return isPlatformOperatorProfile(profile) || isClientAdminProfile(profile);
+  return canManageUsers(profile);
 }
 
 function verifiedActor(user) {
@@ -451,21 +487,21 @@ function parseSubmittedRoles(value) {
 }
 
 function canonicalAssignableRole(value, catalog) {
-  const token = normalizePrivilegeToken(value);
+  const token = normalizeRoleToken(value);
   if (!token || BLOCKED_ROLE_NAMES.has(token) || BLOCKED_ROLE_IDS.has(token)) return '';
   if (ASSIGNABLE_CLIENT_ROLES.has(token)) return token;
   for (const row of Array.isArray(catalog) ? catalog : []) {
-    const id = normalizePrivilegeToken(row?.id);
-    const name = normalizePrivilegeToken(row?.name || row?.nom);
+    const id = normalizeRoleToken(row?.id);
+    const name = normalizeRoleToken(row?.name || row?.nom);
     if (!id || BLOCKED_ROLE_IDS.has(id) || BLOCKED_ROLE_NAMES.has(name)) continue;
-    if (token === id) return String(row.id).replace(/[\t\r\n\f\v]/g, '').trim();
+    if (token === id) return id;
     if (name && token === name) return name;
   }
   return '';
 }
 
 function isProtectedStoredRole(value) {
-  const token = normalizePrivilegeToken(value);
+  const token = normalizeRoleToken(value);
   if (!token) return false;
   return BLOCKED_ROLE_IDS.has(token) || BLOCKED_ROLE_NAMES.has(token);
 }
@@ -476,15 +512,16 @@ function mergeAssignedRoles(existingValue, submittedValue, catalog) {
   for (const token of parseSubmittedRoles(existingValue)) {
     const cleaned = String(token ?? '').replace(/[\t\r\n\f\v]/g, '').trim();
     if (!cleaned || !isProtectedStoredRole(cleaned)) continue;
-    const key = cleaned.toLowerCase();
-    if (seen.has(key)) continue;
+    const key = normalizeRoleToken(cleaned);
+    if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(cleaned);
   }
   for (const token of parseSubmittedRoles(submittedValue)) {
-    const allowed = canonicalAssignableRole(token, catalog);
+    const cleaned = canonicalRoleName(token);
+    const allowed = canonicalAssignableRole(cleaned, catalog);
     if (!allowed || isProtectedStoredRole(allowed)) continue;
-    const key = allowed.toLowerCase();
+    const key = normalizeRoleToken(allowed);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(allowed);
@@ -501,8 +538,8 @@ function preservedRoleList(existingValue) {
   for (const token of source) {
     const cleaned = String(token ?? '').replace(/[\t\r\n\f\v]/g, '').trim();
     if (!cleaned) continue;
-    const key = cleaned.toLowerCase();
-    if (seen.has(key)) continue;
+    const key = normalizeRoleToken(cleaned);
+    if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(cleaned);
   }
@@ -518,6 +555,20 @@ function clampAssignedPrivileges(payload, requester, context = {}) {
     else delete next.roles;
   }
   if (isPlatformOperatorProfile(requester)) {
+    if (Object.prototype.hasOwnProperty.call(next, 'role')) {
+      next.role = canonicalRoleName(next.role);
+    }
+    if (Object.prototype.hasOwnProperty.call(next, 'roles') && !rolesUnchanged) {
+      const out = [];
+      const seen = new Set();
+      for (const raw of roleTokens(next.roles)) {
+        const key = canonicalRoleName(raw);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(key);
+      }
+      next.roles = out;
+    }
     if (Object.prototype.hasOwnProperty.call(next, 'license_type')) {
       if (!normalizePrivilegeToken(next.license_type)) delete next.license_type;
       else next.license_type = canonicalizeStoredLicenseType(next.license_type, { keepPlatformTypes: true });
@@ -525,7 +576,7 @@ function clampAssignedPrivileges(payload, requester, context = {}) {
     return next;
   }
   if (Object.prototype.hasOwnProperty.call(next, 'role')) {
-    const role = normalizePrivilegeToken(next.role);
+    const role = canonicalRoleName(next.role);
     next.role = ASSIGNABLE_CLIENT_ROLES.has(role) ? role : 'supervision_user';
   }
   if (Object.prototype.hasOwnProperty.call(next, 'roles') && !rolesUnchanged) {
@@ -548,7 +599,10 @@ async function getRequestUserProfile(req, url, serviceRole) {
   const actor = verifiedActor(await getAuthUser(req).catch(() => null));
   if (!actor) return null;
   const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?id=eq.${encodeURIComponent(actor.id)}&select=*`, { method: 'GET' }).catch(() => []);
-  return Array.isArray(rows) && rows.length ? rows[0] : null;
+  const profile = Array.isArray(rows) && rows.length ? rows[0] : null;
+  if (!profile) return null;
+  await attachLicenseRoles(profile, req);
+  return profile;
 }
 
 
@@ -590,7 +644,13 @@ async function requireLicenseLimitManager(req, url, serviceRole) {
 
 async function requireUserCreator(req, url, serviceRole) {
   const profile = await getRequestUserProfile(req, url, serviceRole);
-  if (!profile || !canCreateEnvironmentUser(profile)) {
+  if (!profile || profile.active === false) {
+    throw Object.assign(new Error('Droit de création utilisateur insuffisant.'), { status: 403 });
+  }
+  if (canManageUsers(profile)) return profile;
+  const env = profileEnvironmentCode(profile);
+  const catalog = env ? await loadActiveAppRoles(url, serviceRole, env) : [];
+  if (!canManageUsers(profile, catalog)) {
     throw Object.assign(new Error('Droit de création utilisateur insuffisant.'), { status: 403 });
   }
   return profile;
@@ -611,7 +671,7 @@ async function handleGetLicenseLimits(req, url, serviceRole, payload) {
 
   const supervisionLimit = Number(row?.supervision_limit ?? row?.max_supervision ?? 0);
   const padLimit = Number(row?.pad_limit ?? row?.max_pad ?? 0);
-  const readonlyLimit = Number(row?.readonly_limit ?? row?.lecture_limit ?? 0);
+  const readonlyLimit = Number(row?.lecture_limit || 0);
 
   return {
     ok: true,
@@ -681,7 +741,7 @@ async function handleListUsers(req, url, serviceRole, payload) {
   }
 
   function isPlatform(row) {
-    const role = String(row?.role || '').toLowerCase();
+    const role = normalizeRoleToken(row?.role);
     const scope = String(row?.scope || '').toLowerCase();
     const env = String(row?.environment_code || '').toUpperCase();
     const perms = row?.resolved_permissions || {};
@@ -740,18 +800,19 @@ async function handleListUsers(req, url, serviceRole, payload) {
     rows.push(normalizeUserRow(row, 'licenses'));
   }
 
+  const failList = () => unavailable();
   for (const env of envCandidates(environmentCode)) {
     if (licenseStatus !== 'inactive') {
-      const profiles = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, { method: 'GET' }).catch(() => []);
-      for (const row of Array.isArray(profiles) ? profiles : []) pushDeduped(row, 'user_profiles');
-      const licenses = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, { method: 'GET' }).catch(() => []);
-      for (const row of Array.isArray(licenses) ? licenses : []) pushDeduped(row, 'licenses');
+      const profiles = await pageServiceRows(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, failList);
+      for (const row of profiles) pushDeduped(row, 'user_profiles');
+      const licenses = await pageServiceRows(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=*`, failList);
+      for (const row of licenses) pushDeduped(row, 'licenses');
     }
     if (licenseStatus !== 'active') {
-      const profiles = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.false&select=*`, { method: 'GET' }).catch(() => []);
-      for (const row of Array.isArray(profiles) ? profiles : []) pushDeduped(row, 'user_profiles');
-      const licenses = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.false&select=*`, { method: 'GET' }).catch(() => []);
-      for (const row of Array.isArray(licenses) ? licenses : []) pushLicense(row);
+      const profiles = await pageServiceRows(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.false&select=*`, failList);
+      for (const row of profiles) pushDeduped(row, 'user_profiles');
+      const licenses = await pageServiceRows(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.false&select=*`, failList);
+      for (const row of licenses) pushLicense(row);
     }
   }
 
@@ -766,15 +827,19 @@ async function resolveCreateTenantId(url, serviceRole, environmentCode, requeste
   if (requesterEnv && requesterEnv === env) return ownTenant;
   if (!isPlatformOperatorProfile(requester)) return ownTenant;
   try {
-    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=tenant_id&limit=50`, { method: 'GET' });
+    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&tenant_id=not.is.null&select=tenant_id&limit=1`, { method: 'GET' });
     const found = (Array.isArray(rows) ? rows : []).map(row => cleanString(row?.tenant_id || '', 80)).find(Boolean);
     if (found) return found;
-  } catch (_) {}
+  } catch (err) {
+    throw unavailable(err);
+  }
   try {
     const rows = await supabaseFetch(url, serviceRole, `/rest/v1/environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=tenant_id&limit=1`, { method: 'GET' });
     const found = cleanString((Array.isArray(rows) ? rows[0] : null)?.tenant_id || '', 80);
     if (found) return found;
-  } catch (_) {}
+  } catch (err) {
+    throw unavailable(err);
+  }
   return null;
 }
 
@@ -815,7 +880,9 @@ async function handleCreateUser(req, url, serviceRole, payload) {
   if (!serviceRole) throw new Error('SUPABASE_SERVICE_ROLE_KEY manquante côté Vercel.');
   const profile = await requireUserCreator(req, url, serviceRole);
   const catalog = isPlatformOperatorProfile(profile) ? [] : await loadActiveAppRoles(url, serviceRole, profileEnvironmentCode(profile));
+  const services = isPlatformOperatorProfile(profile) ? [] : await loadServiceLinks(url, serviceRole, profileEnvironmentCode(profile));
   const safePayload = clampAssignedPrivileges(payload, profile, { catalog, existingRoles: [] });
+  if (!isPlatform(profile) && safePayload.roles) assertGrantWithinCeiling(profile, catalog, safePayload.roles, services);
   const environmentCode = assertSameEnvironmentOrPlatform(profile, safePayload.environment_code || safePayload.active_env || profileEnvironmentCode(profile));
   const email = assertWritableEmail(safePayload.email || payload.email || '');
   safePayload.email = email;
@@ -924,15 +991,34 @@ async function findProfileByNormalizedEmail(url, serviceRole, email, environment
   const wanted = normalizeEmail(email);
   if (!wanted) return null;
   const env = normalizeEnvironmentCode(environmentCode);
-  const path = env && env !== 'GLOBAL'
-    ? `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=*&limit=1000`
-    : `/rest/v1/user_profiles?select=*&limit=1000`;
-  const rows = await supabaseFetch(url, serviceRole, path, { method: 'GET' }).catch(() => []);
-  return (Array.isArray(rows) ? rows : []).find(row => {
-    if (normalizeEmail(row?.email) !== wanted) return false;
-    if (!env || env === 'GLOBAL') return true;
-    return normalizeEnvironmentCode(row.environment_code) === env;
-  }) || null;
+  const scoped = env && env !== 'GLOBAL';
+  const base = scoped
+    ? `/rest/v1/user_profiles?environment_code=eq.${encodeURIComponent(env)}&select=*`
+    : `/rest/v1/user_profiles?select=*`;
+  const seen = new Set();
+  let after = '';
+  for (;;) {
+    const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+    let rows;
+    try {
+      rows = await supabaseFetch(url, serviceRole, `${base}&order=id.asc&limit=500${cursor}`, { method: 'GET' });
+    } catch (err) {
+      throw unavailable(err);
+    }
+    if (!Array.isArray(rows)) throw unavailable();
+    const found = rows.find(row => {
+      if (normalizeEmail(row?.email) !== wanted) return false;
+      if (!scoped) return true;
+      return normalizeEnvironmentCode(row.environment_code) === env;
+    });
+    if (found) return found;
+    if (rows.length < 500) return null;
+    const last = rows[rows.length - 1] && rows[rows.length - 1].id;
+    const key = last == null ? '' : String(last);
+    if (!key || seen.has(key) || seen.size >= 40) throw unavailable();
+    seen.add(key);
+    after = key;
+  }
 }
 
 async function extinguishMatchingLicenses(url, serviceRole, email, environmentCode) {
@@ -952,13 +1038,15 @@ async function extinguishMatchingLicenses(url, serviceRole, email, environmentCo
 }
 
 async function listEnvironmentLicenses(url, serviceRole, environmentCode) {
+  const fail = () => Object.assign(new Error('Lecture de la licence impossible.'), { status: 503 });
   try {
-    const rows = await supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&limit=1000`, { method: 'GET' });
-    if (!Array.isArray(rows)) throw Object.assign(new Error('Lecture de la licence impossible.'), { status: 503 });
-    return rows;
+    return await readPaged(500, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return supabaseFetch(url, serviceRole, `/rest/v1/licenses?environment_code=eq.${encodeURIComponent(environmentCode)}&select=*&order=id.asc&limit=500${cursor}`, { method: 'GET' });
+    }, 20000);
   } catch (err) {
     if (err && err.message === 'Lecture de la licence impossible.') throw err;
-    throw Object.assign(new Error('Lecture de la licence impossible.'), { status: 503 });
+    throw fail();
   }
 }
 
@@ -1102,7 +1190,13 @@ async function handleUpdateUser(req, url, serviceRole, payload) {
     throw Object.assign(new Error('Modification d’un compte plateforme refusée.'), { status: 403 });
   }
   const catalog = isPlatformOperatorProfile(profileRequester) ? [] : await loadActiveAppRoles(url, serviceRole, profileEnvironmentCode(profileRequester));
+  const services = isPlatformOperatorProfile(profileRequester) ? [] : await loadServiceLinks(url, serviceRole, profileEnvironmentCode(profileRequester));
   const safePayload = clampAssignedPrivileges(payload, profileRequester, { catalog, existingRoles: current.roles });
+  if (isOwnAccount(profileRequester, current)) {
+    if (privilegeDrift(safePayload, current)) throw Object.assign(new Error('Vous ne pouvez pas modifier vos propres rôles ou permissions.'), { status: 403 });
+  } else if (!isPlatform(profileRequester) && safePayload.roles) {
+    assertGrantWithinCeiling(profileRequester, catalog, safePayload.roles, services);
+  }
   const merged = {
     ...current,
     ...safePayload,

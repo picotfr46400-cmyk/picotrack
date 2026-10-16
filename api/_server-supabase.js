@@ -211,7 +211,7 @@ async function fetchUpstream(url,options={},timeoutMs=15000){
 async function getAuthUser(req){const {url,anonKey}=getSupabaseConfig(req);if(!url||!anonKey)throw missingTenantDbError();const token=bearer(req);if(!token)return null;const r=await fetchUpstream(`${url}/auth/v1/user`,{headers:{apikey:anonKey,Authorization:`Bearer ${token}`}},8000);if(!r.ok)return null;return await r.json().catch(()=>null)}
 function normalizeEnvironmentCode(value){return String(value||'DEMO').trim().toUpperCase()||'DEMO'}
 function isPlatformProfile(profile){
-  const role=String(profile?.role||'').toLowerCase();
+  const role=require('./_access').normalizeRoleName(profile?.role);
   const env=String(profile?.environment_code||'').toUpperCase();
   const type=String(profile?.license_type||'').toLowerCase();
   return role==='super_admin'||role==='platform_admin'||env==='GLOBAL'||type==='super_admin';
@@ -251,8 +251,40 @@ async function serviceRest(path,{method='GET',body,prefer='return=representation
   const serviceRole=String(cfg&&cfg.serviceRole||'').trim();
   if(!url||!serviceRole)throw missingTenantDbError();
   const r=await fetchUpstream(`${url}/rest/v1/${path}`,{method,headers:{apikey:serviceRole,Authorization:`Bearer ${serviceRole}`,'Content-Type':'application/json',Prefer:prefer},body:body===undefined?undefined:JSON.stringify(body)},timeoutMs);const text=await r.text();let payload=null;try{payload=text?JSON.parse(text):null}catch{payload={message:text}};if(!r.ok){const err=new Error(payload?.message||payload?.error||text||`Supabase ${r.status}`);err.status=r.status;err.payload=payload;throw err;}return payload||[]}
-async function getUserProfile(userId,req){const rows=await serviceRest(`user_profiles?id=eq.${encodeURIComponent(userId)}&select=id,email,role,roles,environment_code,active,license_type,tenant_id,resolved_permissions&limit=1`,{method:'GET',prefer:'',req});return Array.isArray(rows)?rows[0]:null}
-function isAdminProfile(profile){const role=String(profile?.role||'').toLowerCase();const roles=Array.isArray(profile?.roles)?profile.roles.map(r=>String(r).toLowerCase()):[];const perms=profile?.resolved_permissions||{};return profile?.active!==false&&(role==='super_admin'||role==='admin'||role==='client_admin'||role==='environment_admin'||role==='platform_admin'||roles.includes('super_admin')||roles.includes('admin')||roles.includes('client_admin')||roles.includes('environment_admin')||perms.manage_users===true||perms.manage_global_licenses===true||perms.platform_admin===true)}
+async function attachLicenseRoles(profile, req) {
+  if (!profile || typeof profile !== 'object') return profile;
+  profile.license_roles = [];
+  const email = require('./_email').normalizeEmail(profile.email || '');
+  const env = String(profile.environment_code || '').trim().toUpperCase();
+  if (!email || !env || env === 'GLOBAL' || env === '*') return profile;
+  const access = require('./_access');
+  let rows;
+  try {
+    rows = await access.readPaged(100, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return serviceRest(
+        `licenses?environment_code=eq.${encodeURIComponent(env)}&email=eq.${encodeURIComponent(email)}&active=eq.true&select=id,roles&order=id.asc&limit=100${cursor}`,
+        { method: 'GET', prefer: '', req }
+      );
+    }, 500);
+  } catch (_) {
+    throw Object.assign(new Error('Service indisponible.'), { status: 503 });
+  }
+  const values = [];
+  for (const row of rows) {
+    for (const role of access.roleTokens(row?.roles)) values.push(role);
+  }
+  profile.license_roles = values;
+  return profile;
+}
+async function getUserProfile(userId, req) {
+  const rows = await serviceRest(`user_profiles?id=eq.${encodeURIComponent(userId)}&select=id,email,role,roles,environment_code,active,license_type,tenant_id,resolved_permissions&limit=1`, { method: 'GET', prefer: '', req });
+  const profile = Array.isArray(rows) ? rows[0] : null;
+  if (!profile) return null;
+  await attachLicenseRoles(profile, req);
+  return profile;
+}
+function isAdminProfile(profile){const access=require('./_access');const names=access.roleTokens(profile?.role).concat(access.roleTokens(profile?.roles)).map(access.normalizeRoleName);const perms=profile?.resolved_permissions||{};const allowed=new Set(['admin','client_admin','environment_admin','super_admin','platform_admin']);return profile?.active!==false&&(names.some(name=>allowed.has(name))||perms.manage_users===true||perms.manage_global_licenses===true||perms.platform_admin===true)}
 async function requireAdmin(req){const user=await requireAuth(req);const profile=await getUserProfile(user.id,req);if(!isAdminProfile(profile)){const err=new Error('Droits administrateur requis');err.status=403;throw err;}return {user,profile}}
 const SENSITIVE_ROW_KEYS=['password_hash','supa_key','supa_url'];
 function redactRow(row, extraKeys = []){
@@ -385,4 +417,4 @@ function listConfiguredClients(env){
   clients.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
   return clients;
 }
-module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,fetchUpstream,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost,allowsLegacySupabaseFallback,isEfcCanonicalHost,isExactLocalHost,redactRow,redactPayload,clientIp,takeAttempt,resetRateLimits,listConfiguredClients,MISSING_TENANT_DB,KNOWN_EFC_PROJECT_REF};
+module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,fetchUpstream,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,attachLicenseRoles,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost,allowsLegacySupabaseFallback,isEfcCanonicalHost,isExactLocalHost,redactRow,redactPayload,clientIp,takeAttempt,resetRateLimits,listConfiguredClients,MISSING_TENANT_DB,KNOWN_EFC_PROJECT_REF};

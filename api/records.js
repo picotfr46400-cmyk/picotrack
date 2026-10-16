@@ -3,10 +3,11 @@ const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, ser
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
 const { formatSubmissionDocument, buildSubmissionPdfWithinLimit, PDF_BYTE_LIMIT } = require('./_submission-pdf');
 const { notifyAfterWrite, syncFormMailRules, handleMailAction, processMailQueue, runDailyMailQueue, continueAfterResponse, INVOCATION_BUDGET_MS, OPPORTUNISTIC_LIMIT, requestOrigin } = require('./_mail-rules');
+const submissionAudit = require('./_submission-audit');
 const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseType, seatLicenseType } = require('./_license-type');
 const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota, assertShortLoginsAvailable } = require('./function');
-const submissionAudit = require('./_submission-audit');
 const { assertWritableEmail } = require('./_email');
+const access = require('./_access');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -336,14 +337,8 @@ function assertReadableSelect(select) {
   }
 }
 
-function canManageUsers(profile) {
-  if (!profile || profile.active === false) return false;
-  if (isPlatformLicenseManagerProfile(profile)) return true;
-  const role = String(profile.role || '').toLowerCase();
-  const rawType = String(profile.license_type || '').toLowerCase();
-  const type = interpretedLicenseType(profile.license_type) === 'pad' ? 'pad' : rawType;
-  const perms = profile.resolved_permissions || {};
-  return role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user' || type === 'supervision' || perms.manage_users === true;
+function canManageUsers(profile, catalog) {
+  return access.canManageUsers(profile, catalog);
 }
 
 function normalizePrivilegeToken(value) {
@@ -387,21 +382,21 @@ function assertListedColumns(profile, entity, select, filters, order) {
 }
 
 function canonicalAssignableRole(value, catalog) {
-  const token = normalizePrivilegeToken(value);
+  const token = access.normalizeRoleToken(value);
   if (!token || BLOCKED_ROLE_NAMES.has(token) || BLOCKED_ROLE_IDS.has(token)) return '';
   if (SYSTEM_ASSIGNABLE_ROLES.has(token)) return token;
   for (const row of Array.isArray(catalog) ? catalog : []) {
-    const id = normalizePrivilegeToken(row?.id);
-    const name = normalizePrivilegeToken(row?.name || row?.nom);
+    const id = access.normalizeRoleToken(row?.id);
+    const name = access.normalizeRoleToken(row?.name || row?.nom);
     if (!id || BLOCKED_ROLE_IDS.has(id) || BLOCKED_ROLE_NAMES.has(name)) continue;
-    if (token === id) return String(row.id).replace(/[\t\r\n\f\v]/g, '').trim();
+    if (token === id) return id;
     if (name && token === name) return name;
   }
   return '';
 }
 
 function isProtectedStoredRole(value) {
-  const token = normalizePrivilegeToken(value);
+  const token = access.normalizeRoleToken(value);
   if (!token) return false;
   return BLOCKED_ROLE_IDS.has(token) || BLOCKED_ROLE_NAMES.has(token);
 }
@@ -412,15 +407,16 @@ function mergeAssignedRoles(existingValue, submittedValue, catalog) {
   for (const token of parseRoleArray(existingValue)) {
     const cleaned = String(token ?? '').replace(/[\t\r\n\f\v]/g, '').trim();
     if (!cleaned || !isProtectedStoredRole(cleaned)) continue;
-    const key = cleaned.toLowerCase();
-    if (seen.has(key)) continue;
+    const key = access.normalizeRoleToken(cleaned);
+    if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(cleaned);
   }
-  for (const token of parseRoleArray(submittedValue)) {
-    const allowed = canonicalAssignableRole(token, catalog);
+  for (const token of access.roleTokens(submittedValue)) {
+    const cleaned = access.canonicalRoleName(token);
+    const allowed = canonicalAssignableRole(cleaned, catalog);
     if (!allowed || isProtectedStoredRole(allowed)) continue;
-    const key = allowed.toLowerCase();
+    const key = access.normalizeRoleToken(allowed);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(allowed);
@@ -452,7 +448,7 @@ function demotePrivilegedFields(record, options = {}) {
   if (!record || typeof record !== 'object') return record;
   const entity = options.entity || '';
   if (Object.prototype.hasOwnProperty.call(record, 'role')) {
-    const role = normalizePrivilegeToken(record.role);
+    const role = access.canonicalRoleName(record.role);
     record.role = SYSTEM_ASSIGNABLE_ROLES.has(role) ? role : 'supervision_user';
   }
   if (Object.prototype.hasOwnProperty.call(record, 'roles')) {
@@ -475,7 +471,9 @@ function demotePrivilegedFields(record, options = {}) {
   delete record.supa_url;
   delete record.tenant_id;
   if (record.permissions && typeof record.permissions === 'object' && !Array.isArray(record.permissions)) {
-    record.permissions = sanitizePermissionMap(record.permissions);
+    record.permissions = options.entity === 'app_roles'
+      ? access.sanitizeRolePermissions(record.permissions)
+      : sanitizePermissionMap(record.permissions);
   }
   return record;
 }
@@ -487,7 +485,13 @@ function assertEntityWrite(entity, profile) {
     }
     return;
   }
-  if ((entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles') && !canManageUsers(profile)) {
+  if (entity === 'app_roles') {
+    if (!access.isEnvironmentAdmin(profile)) {
+      throw Object.assign(new Error('Rôles réservés aux administrateurs de l’environnement.'), { status: 403 });
+    }
+    return;
+  }
+  if ((entity === 'user_profiles' || entity === 'licenses') && !canManageUsers(profile)) {
     throw Object.assign(new Error('Droit insuffisant pour modifier cette ressource.'), { status: 403 });
   }
 }
@@ -565,11 +569,11 @@ function parseRoleArray(value) {
 
 function profileRoleKeys(profile) {
   const keys = [];
-  const add = v => { const s = String(v || '').trim(); if (s) keys.push(s.toLowerCase()); };
+  const add = v => { const s = access.normalizeRoleToken(v); if (s) keys.push(s); };
   add(profile?.role);
   add(profile?.license_type);
   if (normalizeLicenseType(profile?.license_type) === 'pad') keys.push('pad');
-  for (const r of parseRoleArray(profile?.roles)) add(r);
+  for (const r of access.roleTokens(profile?.roles).concat(access.roleTokens(profile?.license_roles))) add(r);
   const uniq = [...new Set(keys)];
   if (uniq.includes('super_admin') || uniq.includes('platform_admin')) uniq.push('administrateur', 'admin');
   return [...new Set(uniq)];
@@ -596,7 +600,7 @@ function recordAllowedForProfile(entity, record, action, profile) {
   if (!required.length) return true;
   const userRoles = profileRoleKeys(profile);
   if (!userRoles.length) return false;
-  const normalized = required.map(r => String(r).trim().toLowerCase()).filter(Boolean);
+  const normalized = required.map(r => access.normalizeRoleToken(r)).filter(Boolean);
   return normalized.some(r => userRoles.includes(r));
 }
 
@@ -663,11 +667,368 @@ async function assertNotPlatformTarget(req, entity, id, profile) {
   }
 }
 
+async function readStrictRows(req, path) {
+  try {
+    const rows = await serviceRest(path, { method: 'GET', prefer: '', req });
+    if (!Array.isArray(rows)) throw access.unavailable();
+    return rows;
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+}
+
 async function loadActiveAppRoles(req, env) {
   const code = normalizeEnvRecordValue(env, '');
   if (!code) return [];
-  const rows = await serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(code)}&active=eq.true&select=id,name&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []);
-  return Array.isArray(rows) ? rows : [];
+  return access.readPaged(200, (after) => {
+    const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+    return readStrictRows(req, `app_roles?environment_code=eq.${encodeURIComponent(code)}&active=eq.true&select=id,name,permissions&order=id.asc&limit=200${cursor}`);
+  }, access.APP_ROLE_CATALOG_BOUND);
+}
+
+async function loadServicesIndex(req, profile, env) {
+  if (access.isPlatform(profile)) return [];
+  const code = normalizeEnvRecordValue(env, '');
+  if (!code || code === 'GLOBAL') return [];
+  return access.readPaged(500, (after) => {
+    const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+    return readStrictRows(req, `services?environment_code=eq.${encodeURIComponent(code)}&select=id,form_id,permissions&order=id.asc&limit=500${cursor}`);
+  }, 5000);
+}
+
+async function mustRead(req, entity, id, env) {
+  if (!id) return null;
+  try {
+    return await readOneById(req, entity, id, env, { strict: true }) || null;
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+}
+
+async function catalogFor(req, profile) {
+  if (!profile || access.isPlatform(profile)) return [];
+  return loadActiveAppRoles(req, effectiveEnvironmentCode(profile, profile.environment_code));
+}
+
+function requestedRowId(body) {
+  const filters = Array.isArray(body?.filters) ? body.filters : [];
+  for (const filter of filters) {
+    const column = String(filter?.column || '').trim();
+    const op = String(filter?.op || 'eq').trim();
+    if (column === 'id' && op === 'eq') return String(filter.value || '').trim();
+  }
+  return '';
+}
+
+function applySearch(rows, body) {
+  const query = String(body?.search != null ? body.search : body?.q || '').trim().toLowerCase();
+  if (!query || !Array.isArray(rows)) return rows;
+  return rows.filter(row => JSON.stringify(row).toLowerCase().includes(query));
+}
+
+function roleRowMatches(row, filter) {
+  const current = row?.[filter.column];
+  const expected = String(filter.value ?? '');
+  const op = filter.op;
+  if (op === 'eq') {
+    if (typeof current === 'boolean') return String(current) === expected;
+    return String(current ?? '') === expected;
+  }
+  if (op === 'neq') return String(current ?? '') !== expected;
+  if (op === 'is') {
+    if (expected === 'null') return current == null;
+    if (expected === 'true') return current === true;
+    if (expected === 'false') return current === false;
+    return String(current ?? '') === expected;
+  }
+  if (op === 'in') {
+    const parts = expected.replace(/^\(|\)$/g, '').split(',').map(part => part.trim());
+    return parts.includes(String(current ?? ''));
+  }
+  if (op === 'like' || op === 'ilike') {
+    const source = op === 'ilike' ? String(current ?? '').toLowerCase() : String(current ?? '');
+    const pattern = op === 'ilike' ? expected.toLowerCase() : expected;
+    const rx = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/\*/g, '.*') + '$');
+    return rx.test(source);
+  }
+  if (op === 'gt' || op === 'gte' || op === 'lt' || op === 'lte') {
+    if (current == null) return false;
+    if (op === 'gt') return String(current) > expected;
+    if (op === 'gte') return String(current) >= expected;
+    if (op === 'lt') return String(current) < expected;
+    return String(current) <= expected;
+  }
+  return false;
+}
+
+function applyRoleOrder(rows, order) {
+  const safe = cleanOrder(order, 'app_roles');
+  if (!safe || !Array.isArray(rows)) return rows;
+  const [col, dir] = safe.split('.');
+  const sign = dir === 'desc' ? -1 : 1;
+  return rows.slice().sort((left, right) => {
+    const a = left?.[col];
+    const b = right?.[col];
+    if (a === b) return 0;
+    if (a == null) return -sign;
+    if (b == null) return sign;
+    return String(a) < String(b) ? -sign : sign;
+  });
+}
+
+function applyRoleSelect(rows, select) {
+  const raw = String(select || '*').trim();
+  if (!raw || raw === '*' || !Array.isArray(rows)) return rows;
+  const allowed = new Set(READ_COLUMNS.app_roles);
+  const cols = raw.split(',').map(part => mapColumn('app_roles', part.trim())).filter(col => allowed.has(col));
+  return rows.map(row => {
+    const out = {};
+    for (const col of cols) {
+      if (row && Object.prototype.hasOwnProperty.call(row, col)) out[col] = row[col];
+    }
+    return out;
+  });
+}
+
+async function readAppRoleCatalog(req, filters) {
+  try {
+    return await access.readPaged(1000, async (after) => {
+      const pageFilters = after ? (Array.isArray(filters) ? filters : []).concat([{ column: 'id', op: 'gt', value: after }]) : filters;
+      const rows = await serviceRead(req, buildReadPath('app_roles', { select: '*', filters: pageFilters, order: 'id.asc', limit: 1000 }));
+      if (!Array.isArray(rows)) throw access.unavailable();
+      return rows;
+    }, access.APP_ROLE_CATALOG_BOUND);
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+}
+
+async function listProjectedAppRoles(req, profile, body, filters) {
+  const scope = (Array.isArray(filters) ? filters : []).filter(filter => filter.column === 'environment_code');
+  const detail = (Array.isArray(filters) ? filters : [])
+    .filter(filter => filter.column !== 'environment_code')
+    .map(filter => ({ ...filter, column: mapColumn('app_roles', filter.column) }));
+  const catalog = await readAppRoleCatalog(req, scope);
+  const roleEnv = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
+  const roleServices = access.isPlatform(profile) ? [] : await loadServicesIndex(req, profile, roleEnv);
+  const projected = access.projectAppRoles(profile, catalog, roleServices);
+  const identity = detail.filter(filter => (filter.column === 'id' || filter.column === 'name') && filter.op === 'eq' && String(filter.value || '').trim());
+  if (identity.length) {
+    const inCatalog = catalog.filter(row => identity.every(filter => roleRowMatches(row, filter)));
+    const inProjected = projected.filter(row => identity.every(filter => roleRowMatches(row, filter)));
+    if (inCatalog.length && !inProjected.length) throw Object.assign(new Error('Introuvable.'), { status: 404 });
+  }
+  let rows = projected.filter(row => detail.every(filter => roleRowMatches(row, filter)));
+  rows = applySearch(rows, body);
+  rows = applyRoleOrder(rows, body.order);
+  // Catalogue déjà relu page par page. La réponse ne s'arrête pas à 1000 lignes.
+  const offset = cleanOffset(body.offset);
+  return applyRoleSelect(rows.slice(offset), body.select);
+}
+
+async function projectSavedAppRoles(req, profile, saved, env) {
+  const rows = Array.isArray(saved) ? saved.filter(Boolean) : [];
+  if (!rows.length) return Array.isArray(saved) ? saved : [];
+  const code = normalizeEnvRecordValue(rows[0].environment_code || env, '');
+  const filters = code && code !== 'GLOBAL' ? [{ column: 'environment_code', op: 'eq', value: code }] : [];
+  const catalog = await readAppRoleCatalog(req, filters);
+  const byId = new Map(catalog.map(row => [String(row.id), row]));
+  for (const row of rows) {
+    if (row.id == null) continue;
+    byId.set(String(row.id), { ...(byId.get(String(row.id)) || {}), ...row });
+  }
+  const roleServices = access.isPlatform(profile) ? [] : await loadServicesIndex(req, profile, code || env);
+  const projected = access.projectAppRoles(profile, [...byId.values()], roleServices);
+  const wanted = new Set(rows.map(row => String(row.id)));
+  return projected.filter(row => wanted.has(String(row.id)));
+}
+
+function presentService(row, profile, catalog) {
+  if (!row || typeof row !== 'object') return row;
+  const copy = { ...row };
+  if (Array.isArray(row.statuses)) copy.statuses = access.visibleStatuses(row.statuses, profile, catalog, row.id);
+  return copy;
+}
+
+function submissionHidden(row, profile, catalog, hiddenIds, services) {
+  if (access.formLevel(profile, catalog, row?.form_id, services) === 'hidden') return true;
+  const hidden = hiddenIds instanceof Set ? hiddenIds : new Set();
+  return hidden.has(String(row?.id || ''));
+}
+
+function accessHidesRow(entity, row, profile, catalog, hiddenIds, services) {
+  if (entity === 'forms') return access.formLevel(profile, catalog, row?.id, services) === 'hidden';
+  if (entity === 'services') return access.effectiveLevel(profile, catalog, 'service', row?.id) === 'hidden';
+  if (entity === 'submissions') return submissionHidden(row, profile, catalog, hiddenIds, services);
+  if (entity === 'service_instances') return access.instanceLevel(profile, catalog, row) === 'hidden';
+  if (entity === 'appointments') return access.formLevel(profile, catalog, row?.form_id, services) === 'hidden';
+  if (entity === 'database_rows') {
+    if (row?.form_id && access.formLevel(profile, catalog, row.form_id, services) === 'hidden') return true;
+    if (row?.service_id && access.effectiveLevel(profile, catalog, 'service', row.service_id) === 'hidden') return true;
+  }
+  return false;
+}
+
+function idChunks(ids, size = 80) {
+  const unique = [...new Set((ids || []).map(id => String(id)).filter(Boolean))];
+  const chunks = [];
+  for (let i = 0; i < unique.length; i += size) {
+    chunks.push(unique.slice(i, i + size).map(id => encodeURIComponent(id)).join(','));
+  }
+  return chunks;
+}
+
+// Dossiers liés à une instance masquée. Le filtre est dans la requête
+// (service hors des workflows ouverts, ou statut masqué sur un workflow ouvert).
+// submissionId restreint à la saisie visée (EXISTS, limit 1). Sans id, les pages
+// vont jusqu'au bout ; au-delà de la borne, 503, jamais un ensemble partiel.
+async function hiddenSubmissionIds(req, env, mask, submissionId) {
+  const ids = new Set();
+  if (!mask || !mask.constrained) return ids;
+  const code = normalizeEnvRecordValue(env, '');
+  if (!code || code === 'GLOBAL') return ids;
+  const scope = submissionId ? `&submission_id=eq.${encodeURIComponent(submissionId)}` : '';
+  const root = `service_instances?environment_code=eq.${encodeURIComponent(code)}${scope}`;
+  const absorb = async (extra) => {
+    if (submissionId && ids.size) return;
+    const prefix = extra ? `${root}&${extra}` : root;
+    if (submissionId) {
+      const rows = await readStrictRows(req, `${prefix}&select=id,submission_id&limit=1`);
+      for (const row of rows) {
+        if (row && row.submission_id != null && row.submission_id !== '') ids.add(String(row.submission_id));
+      }
+      return;
+    }
+    const rows = await access.readPaged(1000, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return readStrictRows(req, `${prefix}&select=id,submission_id&order=id.asc&limit=1000${cursor}`);
+    }, 5000);
+    for (const row of rows) {
+      if (row && row.submission_id != null && row.submission_id !== '') ids.add(String(row.submission_id));
+    }
+  };
+  const absorbIn = async (prefix, column, ids) => {
+    for (const chunk of idChunks(ids)) await absorb(`${prefix}${column}=in.(${chunk})`);
+  };
+  const absorbNotIn = async (prefix, column, ids) => {
+    const chunks = idChunks(ids);
+    if (!chunks.length) return;
+    if (chunks.length === 1) {
+      await absorb(`${prefix}${column}=not.in.(${chunks[0]})`);
+      return;
+    }
+    const parts = chunks.map(chunk => `${column}.not.in.(${chunk})`).join(',');
+    await absorb(`${prefix}and=(${parts})`);
+  };
+  const exceptionServices = [...new Set((mask.exceptions || []).map(pair => pair.serviceId))];
+  const excluded = [...new Set([...(mask.openServices || []), ...exceptionServices])];
+  if (!excluded.length) await absorb('');
+  else await absorbNotIn('', 'service_id', excluded);
+  const hiddenByService = new Map();
+  for (const pair of mask.hiddenStatuses || []) {
+    if (!hiddenByService.has(pair.serviceId)) hiddenByService.set(pair.serviceId, []);
+    hiddenByService.get(pair.serviceId).push(pair.statusId);
+  }
+  for (const [serviceId, statusIds] of hiddenByService) {
+    const service = `service_id=eq.${encodeURIComponent(serviceId)}&`;
+    await absorbIn(service, 'current_status_id', statusIds);
+    await absorbIn(service, 'status_id', statusIds);
+  }
+  const openByService = new Map();
+  for (const pair of mask.exceptions || []) {
+    if (!openByService.has(pair.serviceId)) openByService.set(pair.serviceId, []);
+    openByService.get(pair.serviceId).push(pair.statusId);
+  }
+  for (const [serviceId, statusIds] of openByService) {
+    const service = `service_id=eq.${encodeURIComponent(serviceId)}&`;
+    await absorbNotIn(service, 'current_status_id', statusIds);
+    await absorbNotIn(`${service}current_status_id=is.null&`, 'status_id', statusIds);
+    await absorb(`${service}current_status_id=is.null&status_id=is.null`);
+  }
+  return ids;
+}
+
+function carriesRole(row, id, name) {
+  const wanted = new Set();
+  const add = value => {
+    const key = access.normalizeRoleToken(value);
+    if (key) wanted.add(key);
+  };
+  add(id);
+  add(name);
+  if (!wanted.size) return false;
+  return [row?.role, ...access.roleTokens(row?.roles)].some(value => wanted.has(access.normalizeRoleToken(value)));
+}
+
+function canonicalizeRoleFields(record) {
+  if (!record || typeof record !== 'object') return record;
+  if (Object.prototype.hasOwnProperty.call(record, 'role')) {
+    record.role = access.canonicalRoleName(record.role);
+  }
+  if (Object.prototype.hasOwnProperty.call(record, 'roles') && Array.isArray(record.roles)) {
+    const out = [];
+    const seen = new Set();
+    for (const raw of record.roles) {
+      const key = access.canonicalRoleName(raw);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+    }
+    record.roles = out;
+  }
+  return record;
+}
+
+async function canonicalUniqueRoleName(req, env, name, selfId) {
+  const canon = access.canonicalRoleName(name);
+  const code = normalizeEnvRecordValue(env, '');
+  let rows;
+  try {
+    rows = await access.readPaged(200, async (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      const page = await serviceRest(
+        `app_roles?environment_code=eq.${encodeURIComponent(code)}&select=id,name&order=id.asc&limit=200${cursor}`,
+        { method: 'GET', prefer: '', req }
+      );
+      if (!Array.isArray(page)) throw access.unavailable();
+      return page;
+    }, access.APP_ROLE_CATALOG_BOUND);
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+  const taken = rows.some(row => String(row?.id || '') !== String(selfId || '') && access.normalizeRoleToken(row?.name || row?.nom) === canon);
+  if (taken) throw Object.assign(new Error('Ce nom de rôle existe déjà.'), { status: 409 });
+  return canon;
+}
+
+async function assertRoleUnassigned(req, env, role) {
+  const code = normalizeEnvRecordValue(env, '');
+  if (!code) return;
+  const keys = [];
+  const add = value => {
+    if (value == null) return;
+    const key = String(value);
+    if (!key || keys.includes(key)) return;
+    keys.push(key);
+  };
+  add(role?.id);
+  add(role?.name || role?.nom);
+  if (!keys.length) return;
+  let rows;
+  try {
+    rows = await serviceRest('rpc/role_still_assigned', {
+      method: 'POST',
+      prefer: '',
+      req,
+      body: { p_environment_code: code, p_role_keys: keys }
+    });
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+  const probe = Array.isArray(rows) ? rows[0] : null;
+  const assigned = probe && probe.assigned;
+  if (typeof assigned !== 'boolean') throw access.unavailable();
+  if (assigned) throw Object.assign(new Error('Ce rôle est encore assigné.'), { status: 409 });
 }
 
 async function readOneById(req, entity, id, env, options = {}) {
@@ -683,16 +1044,47 @@ async function readFormForSubmission(req, formId, env) {
   if (!formId) return null;
   let path = `forms?id=eq.${encodeURIComponent(formId)}&select=*&limit=1`;
   if (env && env !== 'GLOBAL' && env !== '*') path += `&environment_code=eq.${encodeURIComponent(env)}`;
-  const rows = await serviceRest(path, { method: 'GET', prefer: '', req }).catch(() => []);
-  return Array.isArray(rows) ? rows[0] : null;
+  const rows = await readStrictRows(req, path);
+  return rows[0] || null;
 }
 
 async function readServiceForInstance(req, serviceId, env) {
   if (!serviceId) return null;
   let path = `services?id=eq.${encodeURIComponent(serviceId)}&select=*&limit=1`;
   if (env && env !== 'GLOBAL' && env !== '*') path += `&environment_code=eq.${encodeURIComponent(env)}`;
-  const rows = await serviceRest(path, { method: 'GET', prefer: '', req }).catch(() => []);
-  return Array.isArray(rows) ? rows[0] : null;
+  const rows = await readStrictRows(req, path);
+  return rows[0] || null;
+}
+
+async function instancesForSubmission(req, env, submissionId) {
+  if (!submissionId) return [];
+  const scope = env && env !== 'GLOBAL' && env !== '*' ? `&environment_code=eq.${encodeURIComponent(env)}` : '';
+  return access.readPaged(200, (after) => {
+    const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+    return readStrictRows(req, `service_instances?submission_id=eq.${encodeURIComponent(submissionId)}${scope}&select=id,service_id,current_status_id,status_id,submission_id&order=id.asc&limit=200${cursor}`);
+  }, 2000);
+}
+
+function refuseOwnPrivileges() {
+  throw Object.assign(new Error('Vous ne pouvez pas modifier vos propres rôles ou permissions.'), { status: 403 });
+}
+
+async function assertFormWritable(req, profile, catalog, services, formId, env) {
+  const level = access.formLevel(profile, catalog, formId, services);
+  access.assertLevel(level, 'write');
+  if (level === 'normal') {
+    const form = await readFormForSubmission(req, formId, env);
+    if (form) assertRecordAllowed('forms', form, 'submit', profile, 'Saisie du formulaire refusée par les rôles.');
+  }
+  return level;
+}
+
+async function assertSubmissionWritable(req, profile, catalog, services, submission, env) {
+  await assertFormWritable(req, profile, catalog, services, submission?.form_id, env);
+  const linked = await instancesForSubmission(req, env, submission?.id);
+  for (const inst of linked) {
+    access.assertLevel(access.instanceLevel(profile, catalog, inst), 'write');
+  }
 }
 
 async function saveEnvironmentLicenseLimits(req, record, profile) {
@@ -797,15 +1189,50 @@ async function handleList(req, body) {
     if (env && !already) filters.push({ column: 'environment_code', op: 'eq', value: env });
   }
 
+  if (entity === 'app_roles') return listProjectedAppRoles(req, profile, body, filters);
+
   const path = buildReadPath(entity, { ...body, select, filters });
   const rows = await serviceRead(req, path);
-  if (Array.isArray(rows) && (entity === 'forms' || entity === 'services')) {
-    return rows.filter(row => recordAllowedForProfile(entity, row, 'view', profile));
+  if (!Array.isArray(rows)) return rows;
+  if (entity === 'databases') {
+    return applySearch(rows.filter(row => String(row?.nom || '') !== INTEGRATIONS_NAME), body);
   }
-  if (Array.isArray(rows) && entity === 'databases') {
-    return rows.filter(row => String(row?.nom || '') !== INTEGRATIONS_NAME);
+  const guarded = new Set(['forms', 'services', 'submissions', 'service_instances', 'appointments', 'mail_logs', 'database_rows']);
+  if (!guarded.has(entity)) return applySearch(rows, body);
+
+  const catalog = await catalogFor(req, profile);
+  const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
+  const services = await loadServicesIndex(req, profile, env);
+  const wanted = requestedRowId(body);
+  const hiddenIds = entity === 'submissions'
+    ? await hiddenSubmissionIds(req, env, access.instanceMask(profile, catalog), wanted)
+    : new Set();
+  let filtered = rows;
+  if (entity === 'mail_logs') {
+    filtered = access.filterTraceRows(rows, access.hiddenSubjectIds(profile, catalog, services));
+  } else if (entity === 'forms' || entity === 'services') {
+    filtered = rows.filter(row => {
+      if (accessHidesRow(entity, row, profile, catalog, hiddenIds, services)) return false;
+      const level = entity === 'forms'
+        ? access.formLevel(profile, catalog, row?.id, services)
+        : access.effectiveLevel(profile, catalog, 'service', row?.id);
+      if (level === 'normal') return recordAllowedForProfile(entity, row, 'view', profile);
+      return true;
+    });
+    if (entity === 'services') filtered = filtered.map(row => presentService(row, profile, catalog));
+  } else {
+    filtered = rows.filter(row => !accessHidesRow(entity, row, profile, catalog, hiddenIds, services));
   }
-  return rows;
+  filtered = applySearch(filtered, body);
+  if (wanted && rows.some(row => String(row?.id) === wanted) && !filtered.some(row => String(row?.id) === wanted)) {
+    const hidden = rows.some(row => String(row?.id) === wanted && (
+      entity === 'mail_logs'
+        ? access.filterTraceRows([row], access.hiddenSubjectIds(profile, catalog, services)).length === 0
+        : accessHidesRow(entity, row, profile, catalog, hiddenIds, services)
+    ));
+    if (hidden) throw Object.assign(new Error('Introuvable.'), { status: 404 });
+  }
+  return filtered;
 }
 
 function applyServerTenant(record, entity, profile) {
@@ -890,6 +1317,7 @@ async function handleSave(req, body) {
   const profile = await getUserProfile(user.id, req);
   req.picoReaderProfile = profile;
   assertEntityWrite(entity, profile);
+  access.assertWritableLicense(profile);
   const source = body.record || body.body;
   const requestedLicenseId = String((source && source.license_id) || body.license_id || '').trim().slice(0, 80);
   const record = normalizeRecord(source, entity);
@@ -942,27 +1370,91 @@ async function handleSave(req, body) {
     }
   }
 
-  if (entity === 'forms' && id) {
-    const existing = await readOneById(req, 'forms', id, env);
-    if (existing) assertRecordAllowed('forms', existing, 'edit', profile, 'Modification du formulaire refusée par les rôles.');
-  }
-  if (entity === 'services' && id) {
-    const existing = await readOneById(req, 'services', id, env);
-    if (existing) assertRecordAllowed('services', existing, 'edit', profile, 'Modification du service refusée par les rôles.');
-  }
+  const catalog = await catalogFor(req, profile);
+  const services = await loadServicesIndex(req, profile, env);
   let auditForm = null;
   let auditService = null;
+  if (entity === 'forms' && !id) {
+    assertRecordAllowed('forms', record, 'edit', profile, 'Création du formulaire refusée par les rôles.');
+  }
+  if (entity === 'forms' && id) {
+    const existing = await mustRead(req, 'forms', id, env);
+    if (existing) {
+      const level = access.formLevel(profile, catalog, existing.id, services);
+      access.assertLevel(level, 'write');
+      if (level === 'normal') assertRecordAllowed('forms', existing, 'edit', profile, 'Modification du formulaire refusée par les rôles.');
+    }
+  }
+  if (entity === 'services' && id) {
+    const existing = await mustRead(req, 'services', id, env);
+    if (existing) {
+      const level = access.effectiveLevel(profile, catalog, 'service', existing.id);
+      access.assertLevel(level, 'write');
+      if (level === 'normal') assertRecordAllowed('services', existing, 'edit', profile, 'Modification du service refusée par les rôles.');
+    }
+  }
   if (entity === 'submissions') {
+    if (id) {
+      const existing = await mustRead(req, 'submissions', id, env);
+      if (!existing) throw Object.assign(new Error('Introuvable.'), { status: 404 });
+      await assertSubmissionWritable(req, profile, catalog, services, existing, env);
+      const nextForm = record.form_id || source?.formId;
+      if (nextForm && String(nextForm) !== String(existing.form_id || '')) {
+        await assertFormWritable(req, profile, catalog, services, nextForm, env);
+      }
+    } else {
+      await assertFormWritable(req, profile, catalog, services, record.form_id || source?.formId, env);
+    }
     auditForm = await readFormForSubmission(req, record.form_id || source?.formId, env);
-    if (auditForm) assertRecordAllowed('forms', auditForm, 'submit', profile, 'Saisie du formulaire refusée par les rôles.');
   }
   if (entity === 'appointments') {
-    const form = await readFormForSubmission(req, record.form_id || source?.formId, env);
-    if (form) assertRecordAllowed('forms', form, 'submit', profile, 'Réservation refusée par les rôles du formulaire.');
+    let formId = record.form_id || source?.formId;
+    if (id) {
+      const existing = await mustRead(req, 'appointments', id, env);
+      if (existing) {
+        await assertFormWritable(req, profile, catalog, services, existing.form_id, env);
+        if (formId && String(formId) !== String(existing.form_id || '')) {
+          await assertFormWritable(req, profile, catalog, services, formId, env);
+        }
+        formId = '';
+      }
+    }
+    if (formId) await assertFormWritable(req, profile, catalog, services, formId, env);
   }
   if (entity === 'service_instances') {
-    auditService = await readServiceForInstance(req, record.service_id || source?.serviceId, env);
-    if (auditService) assertRecordAllowed('services', auditService, 'create', profile, 'Création de demande refusée par les rôles du service.');
+    const requestedStatus = record.current_status_id || record.status_id || source?.currentStatusId || source?.statusId;
+    if (!id) {
+      const serviceId = String(record.service_id || source?.serviceId || '').trim();
+      if (!serviceId) throw Object.assign(new Error('Service manquant.'), { status: 400 });
+      const service = await mustRead(req, 'services', serviceId, env);
+      if (!service) throw Object.assign(new Error('Introuvable.'), { status: 404 });
+      record.service_id = service.id;
+      auditService = service;
+      let level = access.effectiveLevel(profile, catalog, 'service', service.id);
+      access.assertLevel(level, 'write');
+      if (requestedStatus) {
+        const target = access.effectiveLevel(profile, catalog, 'status', requestedStatus, service.id);
+        access.assertLevel(target, 'write');
+        if (target !== 'normal') level = target;
+      }
+      if (level === 'normal') assertRecordAllowed('services', service, 'create', profile, 'Création de demande refusée par les rôles du service.');
+    } else {
+      const existing = await mustRead(req, 'service_instances', id, env);
+      if (!existing) throw Object.assign(new Error('Introuvable.'), { status: 404 });
+      delete record.service_id;
+      const serviceId = existing.service_id;
+      let level = access.instanceLevel(profile, catalog, existing);
+      access.assertLevel(level, 'write');
+      if (requestedStatus) {
+        const target = access.effectiveLevel(profile, catalog, 'status', requestedStatus, serviceId);
+        access.assertLevel(target, 'write');
+        if (target !== 'normal') level = target;
+      }
+      auditService = await readServiceForInstance(req, serviceId, env);
+      if (level === 'normal') {
+        if (auditService) assertRecordAllowed('services', auditService, 'create', profile, 'Création de demande refusée par les rôles du service.');
+      }
+    }
   }
 
   let previousInstance = null;
@@ -971,6 +1463,10 @@ async function handleSave(req, body) {
   }
 
   if (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles') {
+    if (entity === 'user_profiles' || entity === 'licenses') canonicalizeRoleFields(record);
+    if (entity === 'app_roles' && Object.prototype.hasOwnProperty.call(record, 'name')) {
+      record.name = await canonicalUniqueRoleName(req, record.environment_code || env, record.name, id);
+    }
     let existingRow = null;
     if (id && entity !== 'app_roles') {
       try {
@@ -985,11 +1481,34 @@ async function handleSave(req, body) {
       if (kept) record.environment_code = kept;
     }
     if (!isPlatformLicenseManagerProfile(profile)) {
-      const catalog = await loadActiveAppRoles(req, effectiveEnvironmentCode(profile, profile?.environment_code));
-      demotePrivilegedFields(record, { catalog, existingRoles: existingRow?.roles, entity });
+      const roleCatalog = await loadActiveAppRoles(req, effectiveEnvironmentCode(profile, profile?.environment_code));
+      demotePrivilegedFields(record, { catalog: roleCatalog, existingRoles: existingRow?.roles, entity });
+      if (existingRow && access.isOwnAccount(profile, existingRow) && access.privilegeDrift(record, existingRow)) refuseOwnPrivileges();
+      if (!existingRow && access.isOwnAccount(profile, record) && access.privilegeDrift(record, profile)) refuseOwnPrivileges();
+      if (entity !== 'app_roles' && Object.prototype.hasOwnProperty.call(record, 'roles') && !(existingRow && access.isOwnAccount(profile, existingRow))) {
+        access.assertGrantWithinCeiling(profile, roleCatalog, record.roles, services);
+      }
+      if (entity === 'app_roles') {
+        const existingRole = id ? await mustRead(req, 'app_roles', id, record.environment_code || env) : null;
+        if (existingRole && record.active === false) {
+          await assertRoleUnassigned(req, existingRole.environment_code || env, existingRole);
+        }
+        if (existingRole && carriesRole(profile, existingRole.id, existingRole.name || existingRole.nom)) refuseOwnPrivileges();
+        if (record.permissions) access.assertAccessWritable(profile, roleCatalog, record.permissions, services);
+      }
     } else if (entity !== 'app_roles' && Object.prototype.hasOwnProperty.call(record, 'license_type')) {
       if (!normalizePrivilegeToken(record.license_type)) delete record.license_type;
       else record.license_type = canonicalizeStoredLicenseType(record.license_type, { keepPlatformTypes: true });
+    }
+    if (isPlatformLicenseManagerProfile(profile)) {
+      if (existingRow && access.isOwnAccount(profile, existingRow) && access.privilegeDrift(record, existingRow)) refuseOwnPrivileges();
+      if (entity === 'app_roles' && id) {
+        const existingRole = await mustRead(req, 'app_roles', id, null);
+        if (existingRole && record.active === false) {
+          await assertRoleUnassigned(req, existingRole.environment_code || env, existingRole);
+        }
+        if (existingRole && carriesRole(profile, existingRole.id, existingRole.name || existingRole.nom)) refuseOwnPrivileges();
+      }
     }
     if (entity === 'user_profiles' || entity === 'licenses') {
       const creating = !id;
@@ -1119,6 +1638,7 @@ async function handleSave(req, body) {
       form: Object.assign({}, record, savedRow || {}, { id: savedRow?.id || record.id || id })
     });
   }
+  if (entity === 'app_roles') return projectSavedAppRoles(req, profile, saved, env);
   return saved;
 }
 
@@ -1133,8 +1653,10 @@ async function handleDelete(req, body) {
   const user = await requireAuth(req);
   const profile = await getUserProfile(user.id, req);
   assertEntityWrite(entity, profile);
+  access.assertWritableLicense(profile);
   const profileEnv = String(profile?.environment_code || '').trim().toUpperCase();
   const isPlatform = isPlatformLicenseManagerProfile(profile);
+  let appRoleDeleted = false;
 
   const entitiesWithEnvironmentCode = new Set(['forms','submissions','services','service_instances','databases','database_rows','licenses','user_profiles','app_roles','environment_license_limits','appointments','mail_logs']);
 
@@ -1156,8 +1678,56 @@ async function handleDelete(req, body) {
   await assertNotPlatformTarget(req, entity, id, profile);
 
   if (entity === 'forms' || entity === 'services') {
-    const existing = await readOneById(req, entity, id, profileEnv || body.environment_code);
-    if (existing) assertRecordAllowed(entity, existing, 'delete', profile, `Suppression ${entity === 'forms' ? 'du formulaire' : 'du service'} refusée par les rôles.`);
+    const existing = await mustRead(req, entity, id, profileEnv || body.environment_code);
+    if (existing) {
+      const catalog = await catalogFor(req, profile);
+      const services = await loadServicesIndex(req, profile, profileEnv || body.environment_code);
+      const level = entity === 'forms'
+        ? access.formLevel(profile, catalog, existing.id, services)
+        : access.effectiveLevel(profile, catalog, 'service', existing.id);
+      access.assertLevel(level, 'write');
+      if (level === 'normal') assertRecordAllowed(entity, existing, 'delete', profile, `Suppression ${entity === 'forms' ? 'du formulaire' : 'du service'} refusée par les rôles.`);
+    }
+  }
+  const deleteEnv = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
+  let deleteTarget = null;
+  if (entity === 'submissions' || entity === 'service_instances' || entity === 'appointments' || entity === 'database_rows') {
+    const env = deleteEnv;
+    const existing = await mustRead(req, entity, id, isPlatform ? null : env);
+    if (entity === 'submissions' || entity === 'service_instances') deleteTarget = existing;
+    if (existing) {
+      const catalog = await catalogFor(req, profile);
+      const services = await loadServicesIndex(req, profile, env);
+      if (entity === 'submissions') await assertSubmissionWritable(req, profile, catalog, services, existing, env);
+      if (entity === 'service_instances') access.assertLevel(access.instanceLevel(profile, catalog, existing), 'write');
+      if (entity === 'appointments') await assertFormWritable(req, profile, catalog, services, existing.form_id, env);
+      if (entity === 'database_rows') {
+        if (existing.form_id) await assertFormWritable(req, profile, catalog, services, existing.form_id, env);
+        if (existing.service_id) access.assertLevel(access.effectiveLevel(profile, catalog, 'service', existing.service_id), 'write');
+      }
+    }
+  }
+  if (entity === 'app_roles') {
+    const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
+    const existing = await readOneById(req, 'app_roles', id, isPlatform ? null : env);
+    if (existing) {
+      let rows;
+      try {
+        rows = await serviceRest('rpc/delete_app_role_if_unassigned', {
+          method: 'POST',
+          prefer: '',
+          req,
+          body: { p_id: existing.id }
+        });
+      } catch (err) {
+        throw access.unavailable(err);
+      }
+      const probe = Array.isArray(rows) ? rows[0] : null;
+      if (!probe || typeof probe.deleted !== 'boolean' || typeof probe.assigned !== 'boolean') throw access.unavailable();
+      if (probe.assigned) throw Object.assign(new Error('Ce rôle est encore assigné.'), { status: 409 });
+      if (!probe.deleted) throw access.unavailable();
+      appRoleDeleted = true;
+    }
   }
   if (entity === 'databases') {
     const existing = await readOneById(req, 'databases', id, profileEnv || body.environment_code).catch(() => null);
@@ -1166,19 +1736,15 @@ async function handleDelete(req, body) {
     }
   }
 
-  const deleteEnv = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profileEnv || body.environment_code), 'DEMO');
-  let deleteTarget = null;
-  if (entity === 'submissions' || entity === 'service_instances') {
-    deleteTarget = await readOneById(req, entity, id, isPlatform ? null : deleteEnv).catch(() => null);
-  }
-
   // Suppression métier d'un formulaire : on nettoie d'abord les soumissions liées
   // pour éviter les blocages de contrainte et les données orphelines.
-  let removedSubmissions = [];
   if (entity === 'forms') {
-    let subPath = `submissions?form_id=eq.${encodeURIComponent(id)}&select=id,environment_code,device&limit=100`;
-    if (!isPlatform && deleteEnv && deleteEnv !== 'GLOBAL') subPath += `&environment_code=eq.${encodeURIComponent(deleteEnv)}`;
-    removedSubmissions = await serviceRest(subPath, { method: 'GET', prefer: '', req }).catch(() => []);
+    const envFilter = !isPlatform && deleteEnv && deleteEnv !== 'GLOBAL'
+      ? `&environment_code=eq.${encodeURIComponent(deleteEnv)}` : '';
+    const removedSubmissions = await access.readPaged(200, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return readStrictRows(req, `submissions?form_id=eq.${encodeURIComponent(id)}${envFilter}&select=id,environment_code,device&order=id.asc&limit=200${cursor}`);
+    }, 5000);
     let deletePath = `submissions?form_id=eq.${encodeURIComponent(id)}`;
     if (!isPlatform && deleteEnv && deleteEnv !== 'GLOBAL') deletePath += `&environment_code=eq.${encodeURIComponent(deleteEnv)}`;
     await serviceRest(deletePath, { method: 'DELETE', prefer: 'return=minimal', req });
@@ -1188,7 +1754,9 @@ async function handleDelete(req, body) {
     });
   }
 
-  const removed = await serviceRest(scopedPath(entity), { method: 'DELETE', prefer: 'return=minimal', req });
+  const removed = appRoleDeleted
+    ? []
+    : await serviceRest(scopedPath(entity), { method: 'DELETE', prefer: 'return=minimal', req });
   if (entity === 'submissions' || entity === 'service_instances') {
     await submissionAudit.recordDelete(req, {
       serviceRest, user, profile, entity, id, env: deleteEnv, existing: deleteTarget
@@ -1208,6 +1776,12 @@ async function handleInitialLoad(req, body) {
   const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, body.environment_code || body.env), 'DEMO');
   const envFilter = [{ column: 'environment_code', op: 'eq', value: env }];
   const scope = String(body.scope || body.mode || 'forms').trim().toLowerCase();
+  const catalog = await catalogFor(req, profile);
+  const services = await loadServicesIndex(req, profile, env);
+  const hiddenIds = await hiddenSubmissionIds(req, env, access.instanceMask(profile, catalog), '');
+  const keepForm = row => access.formLevel(profile, catalog, row?.id, services) !== 'hidden';
+  const keepService = row => access.effectiveLevel(profile, catalog, 'service', row?.id) !== 'hidden';
+  const keepInstance = row => access.instanceLevel(profile, catalog, row) !== 'hidden';
 
   // V42 performance : le démarrage ne charge plus tout PicoTrack.
   // Par défaut, on charge les formulaires + un comptage léger des soumissions.
@@ -1217,12 +1791,14 @@ async function handleInitialLoad(req, body) {
       serviceRead(req, buildReadPath('forms', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.limit, 300) })),
       serviceRead(req, buildReadPath('submissions', { filters: envFilter, select: 'id,form_id', order: 'created_at.desc', limit: cleanLimit(body.submissions_limit, 1000) })).catch(() => [])
     ]);
+    const visibleForms = (Array.isArray(forms) ? forms : []).filter(keepForm);
     const submissionCounts = {};
     for (const row of Array.isArray(submissionRefs) ? submissionRefs : []) {
+      if (submissionHidden(row, profile, catalog, hiddenIds, services)) continue;
       const key = String(row?.form_id || '');
       if (key) submissionCounts[key] = (submissionCounts[key] || 0) + 1;
     }
-    return { environment_code: env, scope: 'forms', forms, submissionCounts, services: [], submissions: [], serviceInstances: [], databases: [] };
+    return { environment_code: env, scope: 'forms', forms: visibleForms, submissionCounts, services: [], submissions: [], serviceInstances: [], databases: [] };
   }
 
   if (scope === 'services') {
@@ -1230,7 +1806,12 @@ async function handleInitialLoad(req, body) {
       serviceRead(req, buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.limit, 500) })),
       serviceRead(req, buildReadPath('service_instances', { filters: envFilter, select: '*', order: 'created_at.desc', limit: cleanLimit(body.instances_limit, 500) }))
     ]);
-    return { environment_code: env, scope: 'services', services, serviceInstances };
+    return {
+      environment_code: env,
+      scope: 'services',
+      services: (Array.isArray(services) ? services : []).filter(keepService).map(row => presentService(row, profile, catalog)),
+      serviceInstances: (Array.isArray(serviceInstances) ? serviceInstances : []).filter(keepInstance)
+    };
   }
 
   if (scope === 'databases') {
@@ -1239,7 +1820,7 @@ async function handleInitialLoad(req, body) {
   }
 
   // Mode complet conservé pour compatibilité ou diagnostic.
-  const [forms, services, submissions, serviceInstances, databases] = await Promise.all([
+  const [forms, serviceRows, submissions, serviceInstances, databases] = await Promise.all([
     serviceRead(req, buildReadPath('forms', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.forms_limit, 500) })),
     serviceRead(req, buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.services_limit, 500) })),
     serviceRead(req, buildReadPath('submissions', { filters: envFilter, select: '*', order: 'created_at.desc', limit: cleanLimit(body.submissions_limit, 500) })),
@@ -1247,7 +1828,15 @@ async function handleInitialLoad(req, body) {
     serviceRead(req, buildReadPath('databases', { filters: envFilter, select: '*', limit: cleanLimit(body.databases_limit, 300) }))
   ]);
 
-  return { environment_code: env, scope: 'full', forms, services, submissions, serviceInstances, databases: stripInternalDatabases(databases) };
+  return {
+    environment_code: env,
+    scope: 'full',
+    forms: (Array.isArray(forms) ? forms : []).filter(keepForm),
+    services: (Array.isArray(serviceRows) ? serviceRows : []).filter(keepService).map(row => presentService(row, profile, catalog)),
+    submissions: (Array.isArray(submissions) ? submissions : []).filter(row => !submissionHidden(row, profile, catalog, hiddenIds, services)),
+    serviceInstances: (Array.isArray(serviceInstances) ? serviceInstances : []).filter(keepInstance),
+    databases: stripInternalDatabases(databases)
+  };
 }
 
 function stripInternalDatabases(rows) {
@@ -1368,6 +1957,14 @@ async function handleExportSubmissionPdf(req, body) {
   if (normalizeEnvCode(submission.environment_code) !== env) {
     throw Object.assign(new Error('Environnement refusé.'), { status: 403 });
   }
+
+  const catalog = await catalogFor(req, profile);
+  const services = await loadServicesIndex(req, profile, env);
+  if (access.formLevel(profile, catalog, submission.form_id, services) === 'hidden') {
+    throw Object.assign(new Error('Introuvable.'), { status: 404 });
+  }
+  const hiddenIds = await hiddenSubmissionIds(req, env, access.instanceMask(profile, catalog), id);
+  if (hiddenIds.has(String(id))) throw Object.assign(new Error('Introuvable.'), { status: 404 });
 
   const formId = cleanSubmissionId(submission.form_id) ? String(submission.form_id).trim() : '';
   const [form, workflow, environmentName] = await Promise.all([

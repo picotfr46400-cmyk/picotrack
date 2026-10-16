@@ -31,6 +31,7 @@ const UUID_COLS = {
 const BOOL_COLS = {
   licenses: new Set(['active']),
   user_profiles: new Set(['active']),
+  app_roles: new Set(['active']),
   mail_rules: new Set(['active'])
 };
 const INT_COLS = {
@@ -209,7 +210,9 @@ function ensureFixtures() {
       environment_code text,
       active boolean,
       last_seen timestamptz,
-      license_type text
+      license_type text,
+      email text,
+      roles jsonb
     );
     create table if not exists public.user_profiles (
       id text primary key,
@@ -230,7 +233,22 @@ function ensureFixtures() {
       license_type text,
       revoked_at timestamptz
     );
+    create table if not exists public.app_roles (
+      id text primary key,
+      environment_code text,
+      name text,
+      permissions jsonb,
+      active boolean default true
+    );
+    create table if not exists public.services (
+      id text primary key,
+      environment_code text,
+      form_id text,
+      permissions jsonb
+    );
     alter table public.forms add column if not exists permissions jsonb;
+    alter table public.licenses add column if not exists email text;
+    alter table public.licenses add column if not exists roles jsonb;
     alter table public.submissions add column if not exists idempotency_key text;
     alter table public.submissions alter column id set default gen_random_uuid()::text;
   `);
@@ -243,7 +261,7 @@ function ensureFixtures() {
 function reset() {
   userListGets.length = 0;
   failUserListAt = 0;
-  psql('truncate public.mail_outbox, public.mail_rules, public.mail_quota, public.submissions, public.forms, public.licenses, public.user_profiles, public.active_device_sessions restart identity cascade');
+  psql('truncate public.mail_outbox, public.mail_rules, public.mail_quota, public.submissions, public.forms, public.licenses, public.user_profiles, public.active_device_sessions, public.app_roles, public.services restart identity cascade');
   const fields = JSON.stringify([
     { id: 'reponse', nom: 'Réponse', type: 'text' },
     { id: 'client', nom: 'Client', type: 'text' },

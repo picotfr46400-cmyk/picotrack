@@ -446,11 +446,7 @@ test('handler : les rôles espacés et la chaîne postgres ne deviennent pas adm
       entity: 'app_roles',
       record: { name: 'Agent', permissions: { manage_users: true, platform_admin: true, manage_global_licenses: true, view: ['pad_user'] } }
     }, authHeaders());
-    assert.equal(appRole.status, 200, appRole.payload.error || '');
-    assert.equal(saved.permissions.manage_users, undefined);
-    assert.equal(saved.permissions.platform_admin, undefined);
-    assert.equal(saved.permissions.manage_global_licenses, undefined);
-    assert.deepEqual(saved.permissions.view, ['pad_user']);
+    assert.equal(appRole.status, 403, appRole.payload.error || '');
   });
 });
 
@@ -712,6 +708,21 @@ test('handler : Admin, SUPER_ADMIN, tabulation et client_admin sont rabaissés',
           firstname: 'Nora'
         }
       }, authHeaders());
+      if (role.includes('\t')) {
+        assert.equal(created.status, 400, created.payload.error || role);
+        assert.match(created.payload.error || '', /Nom de rôle invalide/);
+        assert.equal(saved.length, 0, role);
+        const byRecords = await callJson(records, {
+          action: 'save',
+          entity: 'licenses',
+          id: 'target-1',
+          record: { role, roles: [role], license_type: ' SUPER_ADMIN ' }
+        }, authHeaders());
+        assert.equal(byRecords.status, 400, byRecords.payload.error || role);
+        assert.match(byRecords.payload.error || '', /Nom de rôle invalide/);
+        assert.equal(saved.length, 0, role);
+        continue;
+      }
       assert.equal(created.status, 200, created.payload.error || role);
       const profile = saved.find(row => row.email === 'pad2@efc.picotrack.fr' && row.firstname);
       assert.ok(profile, role);
@@ -968,6 +979,7 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
     assert.equal(storedUser.license_type, 'supervision');
     assert.deepEqual(storedUser.roles, [MANAGER_LEGACY, MANAGER_ROLE]);
 
+    actor = { ...supervisionUser, role: 'environment_admin' };
     const role = await callJson(records, {
       action: 'save',
       entity: 'app_roles',
@@ -975,10 +987,11 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
       record: { name: 'Chef équipe', description: 'Planning', permissions: { view: ['pad_user'], manage_users: true }, active: true, environment_code: 'ACME' }
     }, authHeaders());
     assert.equal(role.status, 200, role.payload.error || '');
-    assert.equal(writes.at(-1).body.name, 'Chef équipe');
+    assert.equal(writes.at(-1).body.name, 'chef équipe');
     assert.equal(writes.at(-1).body.environment_code, 'EFC');
     assert.deepEqual(writes.at(-1).body.permissions.view, ['pad_user']);
-    assert.equal(writes.at(-1).body.permissions.manage_users, undefined);
+    assert.equal(writes.at(-1).body.permissions.manage_users, true);
+    assert.deepEqual(writes.at(-1).body.permissions.access, { forms: {}, services: {}, statuses: {} });
 
     actor = pad;
     await listed('forms', { select: '*', order: 'created_at.asc', limit: 500 });
@@ -1232,13 +1245,14 @@ test('handler : la liste envoyée retire un rôle ordinaire et conserve seulemen
 });
 
 test('handler : tenant_id est posé seulement sur les tables qui ont la colonne, et les nouvelles colonnes passent', async () => {
-  const actor = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'supervision_user', license_type: 'supervision', environment_code: 'EFC', active: true, tenant_id: 'ten-1' };
+  const actor = { id: 'sup-1', email: 'sup@efc.picotrack.fr', role: 'environment_admin', license_type: 'supervision', environment_code: 'EFC', active: true, tenant_id: 'ten-1' };
   await withSupabase(async () => {
     const writes = [];
     installActor(actor, {
       onFetch(u, method, options) {
         if (method !== 'GET' && options.body) writes.push(JSON.parse(options.body));
         if (u.includes('forms?id=')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', permissions: {} }]);
+        if (u.includes('services?id=')) return jsonResponse(200, [{ id: 'svc-1', nom: 'Visite', environment_code: 'EFC', permissions: {} }]);
         if (method !== 'GET') return jsonResponse(200, [{ id: 'saved-1' }]);
         return null;
       }
@@ -1274,7 +1288,9 @@ test('handler : tenant_id est posé seulement sur les tables qui ont la colonne,
           ? { title: 'Visite', form_id: 'form-1', capacity_limit: 3 }
           : entity === 'app_roles'
             ? { name: 'Agent', permissions: { view: true }, active: true }
-            : { nom: 'Visite' };
+            : entity === 'service_instances'
+              ? { nom: 'Visite', service_id: 'svc-1' }
+              : { nom: 'Visite' };
       const out = await callJson(records, { action: 'save', entity, record }, authHeaders());
       assert.equal(out.status, 200, `${entity} ${out.payload.error || ''}`);
       const business = [...writes].reverse().find((row) => row && row.tenant_id === 'ten-1' && !row.event_type && !row.p_environment_code && !row.p_id);
@@ -1499,7 +1515,9 @@ test('handler : le quota compte les profils et les licences sans profil, une foi
     assert.equal(blocked.status, 403, blocked.payload.error || '');
     assert.match(blocked.payload.error || '', /\(4\/4\)/);
     assert.ok(licenseGets.length >= 1);
-    for (const url of licenseGets) {
+    const quotaLicenseGets = licenseGets.filter(url => !url.includes('select=id,roles'));
+    assert.ok(quotaLicenseGets.length >= 1);
+    for (const url of quotaLicenseGets) {
       assert.equal(/login_user|username|password_hash|tenant_id/.test(url), false, url);
       assert.equal(url.includes('email'), true, url);
       assert.equal(url.includes('license_key'), true, url);
@@ -1805,7 +1823,7 @@ test('handler : au-dessus du quota, seule une place active en plus est bloquée'
     let saved = null;
     installActor(requester, {
       onFetch(u, method, options) {
-        const quotaList = method === 'GET' && (
+        const quotaList = method === 'GET' && !u.includes('select=id,roles') && (
           u.includes('environment_license_limits')
           || (u.includes('/rest/v1/licenses?') && u.includes('environment_code='))
           || (u.includes('/rest/v1/user_profiles?') && u.includes('environment_code=') && !u.includes('id=eq.'))
@@ -1888,6 +1906,7 @@ test('handler : une lecture de quota en échec refuse la création', async () =>
             if (failing === 'profiles') return jsonResponse(500, { message: 'db down' });
             return jsonResponse(200, [requester]);
           }
+          if (method === 'GET' && u.includes('/rest/v1/licenses?') && u.includes('select=id,roles')) return jsonResponse(200, []);
           if (method === 'GET' && u.includes('/rest/v1/licenses?') && u.includes('environment_code=')) {
             if (failing === 'licenses') return jsonResponse(500, { message: 'db down' });
             return jsonResponse(200, []);

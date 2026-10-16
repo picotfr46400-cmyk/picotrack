@@ -573,12 +573,29 @@ test('page courte : max-rows inférieur à 500 ne perd personne', async () => {
   }, { maxRows: 100 });
 });
 
-test('rôle : comparaison v2, trim et minuscules, sans second normaliseur', async () => {
+test('destinataires : le rôle suit normalize_role_name', async () => {
+  const { normalizeRoleName } = require('./_access');
+  const corpus = [
+    ['\tchef', 'chef'],
+    ['chef\u00a0', 'chef'],
+    ['Ｃｈｅｆ', 'chef'],
+    ['ﬁ', 'fi'],
+    ['che\u200bf', 'chef'],
+    ['Équipe', 'équipe'],
+    ['İ', normalizeRoleName('İ')],
+    ['ı', 'ı'],
+    ['ß', 'ß']
+  ];
   const users = [
     { email: 'a@example.com', role: '  Manager', environment_code: 'DEMO', active: true },
     { email: 'b@example.com', roles: ['Chef de poste'], environment_code: 'DEMO', active: true },
-    { email: 'c@example.com', role: 'chef de poste', environment_code: 'DEMO', active: true }
+    { email: 'c@example.com', role: 'chef de poste', environment_code: 'DEMO', active: true },
+    { email: 'chaine@example.com', role: 'pad_user', roles: 'Chef', environment_code: 'DEMO', active: true },
+    { email: 'csv@example.com', role: 'pad_user', roles: 'pad_user, Chef', environment_code: 'DEMO', active: true }
   ];
+  corpus.forEach(([raw], index) => {
+    users.push({ email: `forme${index}@example.com`, role: raw, environment_code: 'DEMO', active: true });
+  });
   const list = async () => users;
   const managers = await resolveRecipients({
     config: { to: { roles: ['manager'] }, cc: {}, bcc: {} }
@@ -588,6 +605,24 @@ test('rôle : comparaison v2, trim et minuscules, sans second normaliseur', asyn
     config: { to: { roles: ['chef de poste'] }, cc: {}, bcc: {} }
   }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
   assert.deepEqual(spaced.to, ['b@example.com', 'c@example.com']);
+  const chef = await resolveRecipients({
+    config: { to: { roles: ['chef'] }, cc: {}, bcc: {} }
+  }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
+  assert.deepEqual(chef.to, [
+    'chaine@example.com',
+    'csv@example.com',
+    'forme0@example.com',
+    'forme1@example.com',
+    'forme2@example.com',
+    'forme4@example.com'
+  ]);
+  for (const [raw, canon] of corpus) {
+    const out = await resolveRecipients({
+      config: { to: { roles: [canon] }, cc: {}, bcc: {} }
+    }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
+    const index = corpus.findIndex(item => item[0] === raw);
+    assert.equal(out.to.includes(`forme${index}@example.com`), true, canon);
+  }
   assert.equal(fs.existsSync(path.join(__dirname, '_role-token.js')), false);
 });
 
@@ -2292,7 +2327,7 @@ test('migration outbox : unicité complète, RLS forcée, service_role seulement
   assert.match(quota.slice(quota.indexOf('function public.claim_mail_quota'), quota.indexOf('function public.finish_mail_outbox')), /status in \('pending', 'failed'\)/);
 });
 
-test('l’overlay n’envoie plus depuis le navigateur et le cache supervision est p', () => {
+test('l’overlay n’envoie plus depuis le navigateur et le cache supervision est i', () => {
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   assert.match(overlay, /Envoi serveur uniquement/);
   assert.match(overlay, /mail_rules_save/);
@@ -2302,8 +2337,8 @@ test('l’overlay n’envoie plus depuis le navigateur et le cache supervision e
   const app = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
   assert.equal((app.match(/mailStatus === 'queued' \|\| mailStatus === 'sent'/g) || []).length, 2);
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/core-supervision\.js\?v=20261008q/g) || []).length, 1);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008p/g) || []).length, 2);
+  assert.equal((html.match(/core-supervision\.js\?v=20261008r/g) || []).length, 1);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008r/g) || []).length, 2);
   assert.match(overlay, /Envoi incertain/);
   const recordsSrc = fs.readFileSync(path.join(__dirname, 'records.js'), 'utf8');
   const pad = fs.readFileSync(path.join(__dirname, 'pad-sync.js'), 'utf8');

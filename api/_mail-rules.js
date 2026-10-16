@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { serviceRest, listConfiguredClients } = require('./_server-supabase');
 const { normalizeLicenseType } = require('./_license-type');
+const { normalizeRoleName, roleTokens } = require('./_access');
 const {
   EMAIL_RE,
   escapeHtml,
@@ -81,11 +82,10 @@ function canManageMailRules(profile) {
   if (!profile || profile.active === false) return false;
   const license = normalizeLicenseType(profile.license_type);
   if (license === 'pad' || license === 'readonly') return false;
-  const role = String(profile.role || '').toLowerCase();
-  const roles = Array.isArray(profile.roles) ? profile.roles.map(item => String(item).toLowerCase()) : [];
+  const names = roleNamesOf(profile.role).concat(roleNamesOf(profile.roles));
   const perms = profile.resolved_permissions || {};
   const allowed = ['admin', 'client_admin', 'environment_admin', 'super_admin', 'platform_admin'];
-  if (allowed.includes(role) || roles.some(item => allowed.includes(item))) return true;
+  if (names.some(item => allowed.includes(item))) return true;
   return perms.platform_admin === true || perms.manage_global_licenses === true;
 }
 
@@ -339,12 +339,15 @@ function userInEnvironment(user, environmentCode) {
   return String(user && user.environment_code || '').trim().toUpperCase() === String(environmentCode || '').trim().toUpperCase();
 }
 
+function roleNamesOf(value) {
+  return roleTokens(value).map(item => normalizeRoleName(item)).filter(Boolean);
+}
+
 function userHasRole(user, role) {
-  const want = String(role || '').trim().toLowerCase();
+  const want = normalizeRoleName(role);
   if (!want || !user || typeof user !== 'object') return false;
-  if (String(user.role || '').trim().toLowerCase() === want) return true;
-  const roles = Array.isArray(user.roles) ? user.roles : [];
-  return roles.some(item => String(item || '').trim().toLowerCase() === want);
+  // roleTokens découpe le CSV, puis normalizeRoleName, comme role_names_from_jsonb.
+  return roleNamesOf(user.role).concat(roleNamesOf(user.roles), roleNamesOf(user.license_roles)).includes(want);
 }
 
 function isRetryableOutbox(row) {
@@ -1181,8 +1184,8 @@ function createSqlStore(query) {
 function envOf(profile, requested) {
   const profileEnv = String(profile && profile.environment_code || '').trim().toUpperCase();
   const platform = canManageMailRules(profile) && (
-    String(profile.role || '').toLowerCase() === 'super_admin'
-    || String(profile.role || '').toLowerCase() === 'platform_admin'
+    normalizeRoleName(profile.role) === 'super_admin'
+    || normalizeRoleName(profile.role) === 'platform_admin'
     || profileEnv === 'GLOBAL'
     || profile?.resolved_permissions?.platform_admin === true
   );
@@ -2312,6 +2315,7 @@ module.exports = {
   CLAIM_LEASE_MS,
   UNCERTAIN_ERROR,
   canManageMailRules,
+  userHasRole,
   assertMailAdmin,
   isSensitiveField,
   isSensitiveName,
