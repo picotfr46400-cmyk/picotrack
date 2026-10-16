@@ -4,7 +4,8 @@
   L'origine ouverte est uniquement celle écrite dans res/values/generated_tenant.xml
   (généré par mobile/configure.mjs, défaut https://efc.picotrack.fr).
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -26,7 +27,8 @@
 
     <application
         android:name="Application"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        tools:replace="android:allowBackup"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/appName"
         android:manageSpaceActivity="com.google.androidbrowserhelper.trusted.ManageDataLauncherActivity"
@@ -126,7 +128,8 @@
         <activity android:name="com.google.androidbrowserhelper.trusted.FocusActivity" />
 
         <activity
-            android:name="com.google.androidbrowserhelper.trusted.WebViewFallbackActivity"
+            android:name=".WebViewFallbackActivity"
+            android:exported="false"
             android:configChanges="orientation|screenSize" />
 
         <provider

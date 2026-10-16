@@ -80,20 +80,30 @@ function deepen(rev) {
   }
 }
 
+function fileAt(rev, file) {
+  try { return gitShow(rev, file); }
+  catch (_) { return null; }
+}
+
 function assertFreshCache(revs, fileName, filePath) {
   const currentFile = fs.readFileSync(path.join(__dirname, '..', filePath), 'utf8');
   const currentHtml = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
   const current = cacheBusters(currentHtml, fileName);
   assert.equal(new Set(current).size, 1, fileName);
   for (const rev of revs) {
-    const baseFile = gitShow(rev, filePath);
+    const baseFile = fileAt(rev, filePath);
+    const token = current[0];
+    const history = historicalBusters(rev, fileName);
+    if (baseFile == null) {
+      assert.ok(token, fileName);
+      assert.equal(history.has(token), false, `${fileName} réutilise ${token} (${rev})`);
+      continue;
+    }
     const base = cacheBusters(gitShow(rev, 'index.html'), fileName);
     if (baseFile === currentFile) {
       assert.deepEqual(current, base, `${fileName} inchangé sur ${rev}`);
       continue;
     }
-    const token = current[0];
-    const history = historicalBusters(rev, fileName);
     assert.equal(history.has(token), false, `${fileName} réutilise ${token} (${rev})`);
     const highest = [...history].map(letterOf).filter(Boolean).sort().at(-1);
     assert.equal(letterOf(token) > highest, true, `${fileName} ${token} doit dépasser ${highest} (${rev})`);
@@ -107,6 +117,24 @@ test('cache-buster : une lettre neuve, au-dessus de l’historique de chaque bra
   for (const rev of revs) deepen(rev);
   assertFreshCache(revs, 'app.secured.js', 'assets/app.secured.js');
   assertFreshCache(revs, 'core-supervision.js', 'assets/core-supervision.js');
+  assertFreshCache(revs, 'offline-sync.js', 'assets/offline-sync.js');
+  assertFreshCache(revs, 'pad-device.js', 'pad-device.js');
+});
+
+test('previews Vercel : le shell n’est pas figé, les assets versionnés restent immuables', () => {
+  const config = JSON.parse(fs.readFileSync(path.join(__dirname, '../vercel.json'), 'utf8'));
+  const cacheOf = source => {
+    const block = (config.headers || []).find(item => item.source === source);
+    const row = block && (block.headers || []).find(item => item.key === 'Cache-Control');
+    return row ? row.value : '';
+  };
+  assert.equal(cacheOf('/index.html'), 'no-store, max-age=0');
+  assert.equal(cacheOf('/sw.js'), 'no-store, max-age=0');
+  assert.equal(cacheOf('/(.*)').includes('max-age'), false);
+  assert.match(cacheOf('/assets/(.*)'), /immutable/);
+  const shell = (config.headers || []).find(item => item.source === '/(.*)');
+  const csp = shell && (shell.headers || []).find(item => item.key === 'Content-Security-Policy');
+  assert.match(csp && csp.value || '', /https:\/\/\*\.vercel\.app/);
 });
 
 test('index.html : Babel absent, React conservé, cache-buster 20261008r sur le bundle modifié', () => {

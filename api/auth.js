@@ -105,6 +105,7 @@ module.exports = async function handler(req, res) {
       }
       const attempt = takeLoginAttempt('signin', req, loginEmail || 'unknown');
       if (!attempt.allowed) return json(res, 429, { error: 'Trop de tentatives. Réessayez plus tard.' });
+      await attempt.wait();
       // Un e-mail invalide attend GoTrue, comme un mot de passe refusé, pour
       // répondre au même moment. Le compteur porte sur la clé déjà normalisée.
       const upstream = await fetchUpstream(`${url}/auth/v1/token?grant_type=password`, {

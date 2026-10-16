@@ -28,7 +28,7 @@ const appointmentsApi = require('./appointments');
 const authApi = require('./auth');
 const sendMail = require('./send-mail');
 const { seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
-const { resetRateLimits, LOGIN_IP_LIMIT } = require('./_server-supabase');
+const { resetRateLimits, LOGIN_ACCOUNT_LIMIT, LOGIN_IP_DELAY_AFTER, loginIpDelayMs, takeLoginAttempt } = require('./_server-supabase');
 const { normalizeEmail } = require('./_email');
 
 const SUPA = 'https://roles-matrix.supabase.co';
@@ -1857,7 +1857,7 @@ test('limiteur : majuscules, espace de bord et NFKC partagent le compteur', asyn
   resetRateLimits();
 });
 
-test('limiteur : plafond par IP, un NUL ne crée pas une autre clé', async () => {
+test('limiteur : un NUL ne crée pas une autre clé, l’IP ne bloque pas', async () => {
   resetRateLimits();
   assert.equal(normalizeEmail('A\0@B.COM'), 'a@b.com');
   const hash = '33'.repeat(32);
@@ -1865,33 +1865,80 @@ test('limiteur : plafond par IP, un NUL ne crée pas une autre clé', async () =
   await withSupabase(async () => {
     const world = worldFor('supervision', { licenses: [] });
     installWorld(world);
-    for (let i = 0; i < LOGIN_IP_LIMIT; i += 1) {
+    for (let i = 0; i < LOGIN_ACCOUNT_LIMIT; i += 1) {
       const failed = await callJson(padAuth, {
         environment_code: 'EFC',
-        login: `u${i}@efc.picotrack.fr`,
+        login: 'u0@efc.picotrack.fr',
         password_hash: hash
       }, headers);
       assert.equal(failed.status, 401, `${i} ${failed.payload.error || ''}`);
     }
-    const blocked = await callJson(padAuth, {
-      environment_code: 'EFC',
-      login: 'autre@efc.picotrack.fr',
-      password_hash: hash
-    }, headers);
-    assert.equal(blocked.status, 429, blocked.payload.error || '');
     const nul = await callJson(padAuth, {
       environment_code: 'EFC',
       login: 'u0\0@efc.picotrack.fr',
       password_hash: hash
     }, headers);
     assert.equal(nul.status, 429, nul.payload.error || '');
-    const other = await callJson(padAuth, {
+    const otherAccount = await callJson(padAuth, {
       environment_code: 'EFC',
-      login: 'neuf@efc.picotrack.fr',
+      login: 'autre@efc.picotrack.fr',
+      password_hash: hash
+    }, headers);
+    assert.equal(otherAccount.status, 401, otherAccount.payload.error || '');
+    const otherIp = await callJson(padAuth, {
+      environment_code: 'EFC',
+      login: 'u0@efc.picotrack.fr',
       password_hash: hash
     }, Object.assign({}, headers, { 'x-forwarded-for': '203.0.113.9' }));
-    assert.equal(other.status, 401, other.payload.error || '');
+    assert.equal(otherIp.status, 401, otherIp.payload.error || '');
   });
+  resetRateLimits();
+});
+
+test('limiteur : une IP qui alterne succès et échecs sur d’autres comptes est ralentie', async () => {
+  resetRateLimits();
+  const authSrc = fs.readFileSync(path.join(__dirname, 'auth.js'), 'utf8');
+  const padSrc = fs.readFileSync(path.join(__dirname, 'pad-auth.js'), 'utf8');
+  assert.match(authSrc, /await attempt\.wait\(\)/);
+  assert.match(padSrc, /await attempt\.wait\(\)/);
+  const req = { headers: { 'x-forwarded-for': '203.0.113.20' } };
+  const slept = [];
+  for (let i = 0; i < LOGIN_IP_DELAY_AFTER; i += 1) {
+    const failed = takeLoginAttempt('pad', req, `bad${i}@ex.fr`);
+    assert.equal(failed.allowed, true, String(i));
+    assert.equal(failed.delayMs, 0, String(i));
+    failed.fail();
+    if (i % 2 === 0) {
+      const succeeded = takeLoginAttempt('pad', req, `good${i}@ex.fr`);
+      assert.equal(succeeded.allowed, true);
+      assert.equal(succeeded.delayMs, 0);
+      succeeded.ok();
+    }
+  }
+  const slowed = takeLoginAttempt('pad', req, 'encore@ex.fr');
+  assert.equal(slowed.allowed, true);
+  assert.equal(slowed.delayMs, loginIpDelayMs(LOGIN_IP_DELAY_AFTER));
+  assert.equal(slowed.delayMs > 0, true);
+  await slowed.wait(ms => { slept.push(ms); });
+  assert.deepEqual(slept, [slowed.delayMs]);
+  slowed.fail();
+  const succeeded = takeLoginAttempt('pad', req, 'good0@ex.fr');
+  succeeded.ok();
+  const still = takeLoginAttempt('pad', req, 'neuf@ex.fr');
+  assert.equal(still.allowed, true);
+  assert.equal(still.delayMs, loginIpDelayMs(LOGIN_IP_DELAY_AFTER + 1));
+  assert.equal(still.delayMs > slowed.delayMs, true);
+  for (let i = 0; i < LOGIN_ACCOUNT_LIMIT; i += 1) {
+    const row = takeLoginAttempt('pad', req, 'good0@ex.fr');
+    assert.equal(row.allowed, true, String(i));
+    row.fail();
+  }
+  const blocked = takeLoginAttempt('pad', req, 'good0@ex.fr');
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.delayMs, 0);
+  const other = takeLoginAttempt('pad', { headers: { 'x-forwarded-for': '203.0.113.21' } }, 'neuf@ex.fr');
+  assert.equal(other.allowed, true);
+  assert.equal(other.delayMs, 0);
   resetRateLimits();
 });
 

@@ -258,61 +258,59 @@ async function assertEmailParity(client) {
 }
 
 async function assertStepConcurrency(databaseUrl) {
-  const { Client } = require('pg');
-  const setup = new Client({ connectionString: databaseUrl });
-  await setup.connect();
-  const inserted = await setup.query(`
+  const { Pool, types } = require('pg');
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    max: 4,
+    types: {
+      getTypeParser(oid, format) {
+        if (oid === 1184 || oid === 1114) return value => value;
+        return types.getTypeParser(oid, format);
+      }
+    }
+  });
+  const idempotency = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261008234500_business_idempotency_key.sql'), 'utf8');
+  await pool.query(idempotency);
+  const inserted = await pool.query(`
     insert into service_instances (environment_code, service_id, events, current_status_id, status_id)
-    values ('EFC', 1, '[]'::jsonb, 'ouvert', 'ouvert')
+    values ('EFC', 201, '[]'::jsonb, 'ouvert', 'ouvert')
     returning id
   `);
-  const id = inserted.rows[0].id;
-  await setup.end();
+  const id = String(inserted.rows[0].id);
+  const records = require('./records');
+  const actor = { id: '11111111-1111-4111-8111-111111111111', email: 'sup@efc.picotrack.fr' };
+  const previousFetch = global.fetch;
+  global.fetch = (url, options = {}) => translate(pool, () => actor, url, options, () => 1);
   async function appendStep(key, statusId) {
-    const worker = new Client({ connectionString: databaseUrl });
-    await worker.connect();
-    try {
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        const read = await worker.query('select updated_at::text as updated_at, events from service_instances where id = $1', [id]);
-        const row = read.rows[0];
-        const events = Array.isArray(row.events) ? row.events : [];
-        if (events.some(event => event && event.idempotency_key === key)) return 'duplicate';
-        const previous = row.updated_at;
-        const next = new Date(Date.parse(previous) + 1 + attempt).toISOString();
-        const eventsNext = events.concat([{ idempotency_key: key, payload: { toStatus: statusId } }]);
-        const updated = await worker.query(
-          `update service_instances
-              set events = $1::jsonb, updated_at = $2::timestamptz, current_status_id = $3, status_id = $3
-            where id = $4 and updated_at = $5::timestamptz
-            returning id`,
-          [JSON.stringify(eventsNext), next, statusId, id, previous]
-        );
-        if (updated.rowCount === 1) return 'applied';
-      }
-      throw new Error('conflit d’étape');
-    } finally {
-      await worker.end();
-    }
+    const saved = await call(records, actor, {
+      action: 'save',
+      entity: 'service_instances',
+      id,
+      idempotency_key: key,
+      record: { environment_code: 'EFC', current_status_id: statusId, status_id: statusId }
+    });
+    assert.equal(saved.status, 200, saved.payload.error || JSON.stringify(saved.payload));
+    return saved;
   }
-  const parallel = await Promise.all([
-    appendStep('11111111-1111-4111-8111-111111111111', 's0'),
-    appendStep('22222222-2222-4222-8222-222222222222', 's1')
-  ]);
-  assert.deepEqual(parallel.slice().sort(), ['applied', 'applied']);
-  const same = '55555555-5555-4555-8555-555555555555';
-  const pair = await Promise.all([appendStep(same, 'meme'), appendStep(same, 'meme')]);
-  assert.equal(pair.filter(item => item === 'applied').length, 1, JSON.stringify(pair));
-  assert.equal(pair.filter(item => item === 'duplicate').length, 1, JSON.stringify(pair));
-  const check = new Client({ connectionString: databaseUrl });
-  await check.connect();
   try {
-    const final = await check.query('select events from service_instances where id = $1', [id]);
+    const parallel = await Promise.all([
+      appendStep('11111111-1111-4111-8111-111111111111', 's0'),
+      appendStep('22222222-2222-4222-8222-222222222222', 's1')
+    ]);
+    assert.equal(parallel.length, 2);
+    const same = '55555555-5555-4555-8555-555555555555';
+    const pair = await Promise.all([appendStep(same, 'meme'), appendStep(same, 'meme')]);
+    assert.equal(pair.length, 2);
+    const final = await pool.query('select events from service_instances where id = $1', [id]);
     const events = final.rows[0].events;
     assert.equal(events.length, 3);
     assert.equal(events.filter(event => event.idempotency_key === same).length, 1);
     assert.equal(new Set(events.map(event => event.idempotency_key)).size, 3);
+    const statuses = new Set(events.map(event => event.payload && event.payload.toStatus));
+    assert.equal(statuses.has('s0') && statuses.has('s1') && statuses.has('meme'), true);
   } finally {
-    await check.end();
+    global.fetch = previousFetch;
+    await pool.end();
   }
 }
 
