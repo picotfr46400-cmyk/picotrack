@@ -1354,8 +1354,9 @@ function createSupabaseStore(req, config) {
           { method: 'GET', prefer: '' }
         );
         return (Array.isArray(rows) ? rows : []).filter(isRetryableOutbox).slice(0, limit);
-      } catch (_) {
-        return [];
+      } catch (err) {
+        if (err && (err.status === 404 || err.status === 400)) return [];
+        throw err;
       }
     },
     async listRetryableAny(limit = 40) {
@@ -1366,8 +1367,9 @@ function createSupabaseStore(req, config) {
           { method: 'GET', prefer: '' }
         );
         return (Array.isArray(rows) ? rows : []).filter(isRetryableOutbox).slice(0, limit);
-      } catch (_) {
-        return [];
+      } catch (err) {
+        if (err && (err.status === 404 || err.status === 400)) return [];
+        throw err;
       }
     },
     async listRecent(env, limit = 40) {
@@ -1878,7 +1880,12 @@ async function dispatchWithinBudget(input) {
   for (const occurrence of occurrences) {
     if (Date.now() >= deadline) break;
     if (!rulesByEnv.has(occurrence.environmentCode)) {
-      const listed = await store.listRules(occurrence.environmentCode).catch(() => []);
+      let listed;
+      try {
+        listed = await store.listRules(occurrence.environmentCode);
+      } catch (_) {
+        return { ok: false, pending: true, error: 'Erreur inconnue', queued: 0 };
+      }
       rulesByEnv.set(occurrence.environmentCode, Array.isArray(listed) ? listed : []);
     }
     const formState = await loadFormState(store, occurrence, input, formCache);
@@ -1903,7 +1910,12 @@ async function dispatchWithinBudget(input) {
     if (isRetryableOutbox(row)) queue.push(row);
   }
   if (Date.now() < deadline && occurrences[0]) {
-    const retries = await store.listRetryable(occurrences[0].environmentCode, 40).catch(() => []);
+    let retries;
+    try {
+      retries = await store.listRetryable(occurrences[0].environmentCode, 40);
+    } catch (_) {
+      return { ok: false, pending: true, error: 'Erreur inconnue', queued: inserted.length };
+    }
     for (const row of retries) {
       if (row && row.id && !seen.has(row.id)) {
         seen.add(row.id);
@@ -1954,9 +1966,15 @@ async function processMailQueue(input) {
   const store = input.store || createSupabaseStore(input.req);
   const env = input.environmentCode;
   if (!env) return { ok: true, pending: false };
-  const rules = await store.listRules(env).catch(() => []);
   const limit = input.limit == null ? OPPORTUNISTIC_LIMIT : Number(input.limit);
-  const listed = await store.listRetryable(env, Math.max(1, limit > 0 ? limit : 1)).catch(() => []);
+  let rules;
+  let listed;
+  try {
+    rules = await store.listRules(env);
+    listed = await store.listRetryable(env, Math.max(1, limit > 0 ? limit : 1));
+  } catch (_) {
+    return { ok: false, pending: true, error: 'Erreur inconnue' };
+  }
   const seen = new Set();
   const rows = [];
   for (const row of (Array.isArray(input.rows) ? input.rows : [])) {
@@ -2038,6 +2056,10 @@ async function drainClientQueue(store, input, deadline, origin) {
       profile: input.profile,
       limit: 40
     });
+    if (result && result.ok === false) {
+      const err = new Error(result.error || 'Erreur inconnue');
+      throw err;
+    }
     if (result && result.pending) pending = true;
   }
   return { pending };

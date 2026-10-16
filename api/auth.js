@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile, fetchUpstream, clientIp, takeAttempt, requestHost, resolveTenantFromHost } = require('./_server-supabase');
+const { getSupabaseConfig, json, setCors, readJsonBody, requireAuth, getUserProfile, serviceRest, normalizeEnvironmentCode, isPlatformProfile, fetchUpstream, takeLoginAttempt, requestHost, resolveTenantFromHost } = require('./_server-supabase');
 const { normalizeEmail, isEmailLike, isValidEmail } = require('./_email');
 const { findShortLoginMatches, shortLoginKey, shortLoginRpcBody, SHORT_LOGIN_RPC } = require('./_short-login');
 
@@ -103,7 +103,7 @@ module.exports = async function handler(req, res) {
         const matches = findShortLoginMatches(rows, rawLogin).filter(row => normalizeEnvironmentCode(row.environment_code) === env);
         if (matches.length === 1 && matches[0]?.email) loginEmail = normalizeEmail(matches[0].email);
       }
-      const attempt = takeAttempt(`signin:${clientIp(req)}:${loginEmail || 'unknown'}`);
+      const attempt = takeLoginAttempt('signin', req, loginEmail || 'unknown');
       if (!attempt.allowed) return json(res, 429, { error: 'Trop de tentatives. Réessayez plus tard.' });
       // Un e-mail invalide attend GoTrue, comme un mot de passe refusé, pour
       // répondre au même moment. Le compteur porte sur la clé déjà normalisée.

@@ -809,6 +809,29 @@ test('seize PNG lourds restent un export 200 sans être décodés', async () => 
   assert.ok(elapsed < 3_000, `trop lent: ${elapsed} ms`);
 });
 
+test('un PNG décodé puis écarté augmente le compteur d’octets décodés', () => {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  const raw = Buffer.from([9, 255, 0, 0]);
+  const png = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0))
+  ]);
+  const doc = pdf.formatSubmissionDocument({
+    fields: [{ id: 'bad', nom: 'Filtre', type: 'photo' }],
+    values: { bad: `data:image/png;base64,${png.toString('base64')}` },
+    environmentName: 'EFC'
+  });
+  assert.equal(doc.imageStats.kept, 0);
+  assert.equal(doc.imageStats.attempts, 1);
+  assert.equal(doc.imageStats.decodedBytes, raw.length);
+});
+
 test('une image suivante reste décodée après un PNG refusé sur l’en-tête', () => {
   const heavy = heavyZeroPng();
   const small = redPixelPng();

@@ -1,5 +1,5 @@
 const { sendJson, setCors, safeCode, safeLogin, safeHash, signPayload, sbRest } = require('./_pad-security');
-const { clientIp, takeAttempt } = require('./_server-supabase');
+const { takeLoginAttempt } = require('./_server-supabase');
 const { seatLicenseType } = require('./_license-type');
 const { normalizeEmail, isValidEmail } = require('./_email');
 
@@ -25,7 +25,7 @@ module.exports = async function handler(req, res) {
     }
 
     const loginKey = normalizeEmail(login);
-    const attempt = takeAttempt(`pad:${clientIp(req)}:${loginKey}`);
+    const attempt = takeLoginAttempt('pad', req, loginKey);
     if (!attempt.allowed) return sendJson(res, 429, { ok:false, error:'Trop de tentatives. Réessayez plus tard.' });
     if (!isValidEmail(login) || !/^[a-f0-9]{64}$/i.test(passwordHash)) {
       attempt.fail();

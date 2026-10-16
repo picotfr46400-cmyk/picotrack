@@ -39,6 +39,9 @@ test('postgres : quota, réactivation et rôles répondent 200 ou 403, jamais 50
     assert.match(lookup, /share row exclusive mode/i);
     await client.query(lookup);
     await client.query(lookup);
+    const capMigration = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261016150000_role_key_cap_email.sql'), 'utf8');
+    await client.query(capMigration);
+    await client.query(capMigration);
 
     process.env.SUPABASE_URL = 'https://schema-test.supabase.co';
     process.env.SUPABASE_ANON_KEY = 'anon-test';
@@ -105,6 +108,9 @@ test('postgres : quota, réactivation et rôles répondent 200 ou 403, jamais 50
     const stored = await client.query('SELECT count(*)::int AS n FROM submissions WHERE form_id = 101');
     assert.equal(stored.rows[0].n, 0);
     await assertNormalizeParity(client);
+    await assertRoleKeyCap(client);
+    await assertEmailParity(client);
+    await assertStepConcurrency(databaseUrl);
   } finally {
     global.fetch = previousFetch;
     for (const [key, value] of Object.entries(previousEnv)) {
@@ -210,6 +216,104 @@ async function assertNormalizeParity(client) {
   assert.equal(removed.rows[0].assigned, false);
   const stillThere = await client.query('select id from app_roles where name = $1', ['Inspecteur']);
   assert.equal(stillThere.rowCount, 0);
+}
+
+async function assertRoleKeyCap(client) {
+  const many = Array.from({ length: 51 }, (_, index) => `k${index}`);
+  await assert.rejects(
+    () => client.query('select name from public.app_roles_for_actor($1, $2)', ['EFC', many]),
+    (err) => /role_keys_cap/.test(err.message)
+  );
+  await assert.rejects(
+    () => client.query('select assigned from public.role_still_assigned($1, $2)', ['EFC', many]),
+    (err) => /role_keys_cap/.test(err.message)
+  );
+  const before = await client.query(`select pg_get_functiondef('public.role_still_assigned(text,text[])'::regprocedure) as def`);
+  assert.match(before.rows[0].def, /role_keys_cap/);
+  assert.match(before.rows[0].def, /normalize_role_name/);
+  const old = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261015180000_role_still_assigned.sql'), 'utf8');
+  await client.query(old);
+  const after = await client.query(`select pg_get_functiondef('public.role_still_assigned(text,text[])'::regprocedure) as def`);
+  assert.equal(after.rows[0].def, before.rows[0].def);
+}
+
+async function assertEmailParity(client) {
+  const { normalizeEmail } = require('./_email');
+  const samples = [
+    '  A@B.C  ',
+    '\uFF21\uFF20\uFF22.\uFF23',
+    'a@b.c',
+    '  İ@X.Y  ',
+    `${'a'.repeat(321)}@b.c`,
+    'foo  bar@example.com',
+    '\u00a0a@b.c\u00a0',
+    'A\0@B.COM'
+  ];
+  for (const value of samples) {
+    const sqlValue = value.includes('\0') ? value.replace(/\0/g, '') : value;
+    const row = await client.query('select public.normalize_email($1) as email', [sqlValue]);
+    assert.equal(row.rows[0].email, normalizeEmail(value), JSON.stringify(value));
+  }
+  assert.equal(normalizeEmail('A\0@B.COM'), 'a@b.com');
+}
+
+async function assertStepConcurrency(databaseUrl) {
+  const { Client } = require('pg');
+  const setup = new Client({ connectionString: databaseUrl });
+  await setup.connect();
+  const inserted = await setup.query(`
+    insert into service_instances (environment_code, service_id, events, current_status_id, status_id)
+    values ('EFC', 1, '[]'::jsonb, 'ouvert', 'ouvert')
+    returning id
+  `);
+  const id = inserted.rows[0].id;
+  await setup.end();
+  async function appendStep(key, statusId) {
+    const worker = new Client({ connectionString: databaseUrl });
+    await worker.connect();
+    try {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const read = await worker.query('select updated_at::text as updated_at, events from service_instances where id = $1', [id]);
+        const row = read.rows[0];
+        const events = Array.isArray(row.events) ? row.events : [];
+        if (events.some(event => event && event.idempotency_key === key)) return 'duplicate';
+        const previous = row.updated_at;
+        const next = new Date(Date.parse(previous) + 1 + attempt).toISOString();
+        const eventsNext = events.concat([{ idempotency_key: key, payload: { toStatus: statusId } }]);
+        const updated = await worker.query(
+          `update service_instances
+              set events = $1::jsonb, updated_at = $2::timestamptz, current_status_id = $3, status_id = $3
+            where id = $4 and updated_at = $5::timestamptz
+            returning id`,
+          [JSON.stringify(eventsNext), next, statusId, id, previous]
+        );
+        if (updated.rowCount === 1) return 'applied';
+      }
+      throw new Error('conflit d’étape');
+    } finally {
+      await worker.end();
+    }
+  }
+  const parallel = await Promise.all([
+    appendStep('11111111-1111-4111-8111-111111111111', 's0'),
+    appendStep('22222222-2222-4222-8222-222222222222', 's1')
+  ]);
+  assert.deepEqual(parallel.slice().sort(), ['applied', 'applied']);
+  const same = '55555555-5555-4555-8555-555555555555';
+  const pair = await Promise.all([appendStep(same, 'meme'), appendStep(same, 'meme')]);
+  assert.equal(pair.filter(item => item === 'applied').length, 1, JSON.stringify(pair));
+  assert.equal(pair.filter(item => item === 'duplicate').length, 1, JSON.stringify(pair));
+  const check = new Client({ connectionString: databaseUrl });
+  await check.connect();
+  try {
+    const final = await check.query('select events from service_instances where id = $1', [id]);
+    const events = final.rows[0].events;
+    assert.equal(events.length, 3);
+    assert.equal(events.filter(event => event.idempotency_key === same).length, 1);
+    assert.equal(new Set(events.map(event => event.idempotency_key)).size, 3);
+  } finally {
+    await check.end();
+  }
 }
 
 async function seed(client) {

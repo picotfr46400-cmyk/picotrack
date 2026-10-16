@@ -1023,6 +1023,7 @@ async function assertRoleUnassigned(req, env, role) {
       body: { p_environment_code: code, p_role_keys: keys }
     });
   } catch (err) {
+    if (access.roleKeysCapError(err)) throw access.roleKeysCapRefusal();
     throw access.unavailable(err);
   }
   const probe = Array.isArray(rows) ? rows[0] : null;

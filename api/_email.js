@@ -3,7 +3,8 @@
 // Un seul normaliseur : bords, NFKC, minuscules. Un espace interne reste et
 // rend l'adresse invalide. login_user n'est pas concerné.
 function normalizeEmail(value) {
-  return String(value ?? '').trim().normalize('NFKC').toLowerCase().slice(0, 320);
+  // Un texte Postgres ne peut pas contenir NUL : on le retire avant la forme canonique.
+  return String(value ?? '').replace(/\0/g, '').trim().normalize('NFKC').toLowerCase().slice(0, 320);
 }
 
 function isEmailLike(value) {

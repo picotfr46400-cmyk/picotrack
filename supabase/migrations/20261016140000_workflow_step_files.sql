@@ -1,7 +1,7 @@
 set lock_timeout = '5s';
 
 -- Fichiers d'une étape de workflow, écrits avant l'événement qui les référence.
--- À appliquer à la main, d'abord sur la démo, jamais sur EFC.
+-- À appliquer à la main, d'abord sur la démo. Cette migration n'interdit pas une promotion ultérieure.
 -- Postérieur à 20261016133000_role_name_lookup.sql.
 -- Idempotent : la table peut déjà exister, aucune ligne n'est réécrite.
 

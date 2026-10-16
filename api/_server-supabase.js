@@ -312,6 +312,15 @@ function takeAttempt(key,limit=8,windowMs=10*60*1000,now=Date.now()){
   if(!row||now>row.reset){row={fails:0,reset:now+windowMs};rateBuckets.set(key,row);}
   return {allowed:row.fails<limit,fail(){row.fails+=1;},ok(){rateBuckets.delete(key);}};
 }
+const LOGIN_IP_LIMIT=30;
+function takeLoginAttempt(scope,req,loginKey){
+  const ip=clientIp(req);
+  const byIp=takeAttempt(`login-ip:${ip}`,LOGIN_IP_LIMIT);
+  if(!byIp.allowed)return {allowed:false,fail(){},ok(){}};
+  const byName=takeAttempt(`${scope}:${ip}:${loginKey||'unknown'}`);
+  if(!byName.allowed)return {allowed:false,fail(){},ok(){}};
+  return {allowed:true,fail(){byIp.fail();byName.fail();},ok(){byIp.ok();byName.ok();}};
+}
 function resetRateLimits(){rateBuckets.clear();}
 function envPick(env,...names){
   const source=env||process.env;
@@ -417,4 +426,4 @@ function listConfiguredClients(env){
   clients.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
   return clients;
 }
-module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,fetchUpstream,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,attachLicenseRoles,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost,allowsLegacySupabaseFallback,isEfcCanonicalHost,isExactLocalHost,redactRow,redactPayload,clientIp,takeAttempt,resetRateLimits,listConfiguredClients,MISSING_TENANT_DB,KNOWN_EFC_PROJECT_REF};
+module.exports={getSupabaseConfig,publicRuntimeConfig,json,decodeQ,setCors,bearer,readJsonBody,fetchUpstream,getAuthUser,requireAuth,requireAdmin,serviceRest,getUserProfile,attachLicenseRoles,isAdminProfile,applySecurityHeaders,requestHost,normalizeEnvironmentCode,isPlatformProfile,validateActiveDeviceSession,prefixForHost,resolveTenantFromHost,allowsLegacySupabaseFallback,isEfcCanonicalHost,isExactLocalHost,redactRow,redactPayload,clientIp,takeAttempt,takeLoginAttempt,LOGIN_IP_LIMIT,resetRateLimits,listConfiguredClients,MISSING_TENANT_DB,KNOWN_EFC_PROJECT_REF};

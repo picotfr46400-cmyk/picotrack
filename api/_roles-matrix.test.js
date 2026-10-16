@@ -28,7 +28,8 @@ const appointmentsApi = require('./appointments');
 const authApi = require('./auth');
 const sendMail = require('./send-mail');
 const { seatLicenseType, canonicalizeStoredLicenseType } = require('./_license-type');
-const { resetRateLimits } = require('./_server-supabase');
+const { resetRateLimits, LOGIN_IP_LIMIT } = require('./_server-supabase');
+const { normalizeEmail } = require('./_email');
 
 const SUPA = 'https://roles-matrix.supabase.co';
 const MANAGER_ROLE = '67baf9e4-8fe3-40f4-bebd-d2c8814a43b7';
@@ -342,8 +343,10 @@ function installWorld(world) {
     }
     if (method === 'POST' && u.includes('/rpc/app_roles_for_actor')) {
       if (world.failAppRoles) return jsonResponse(500, { message: 'roles down' });
+      const rawKeys = Array.isArray(body?.p_role_keys) ? body.p_role_keys : [];
+      if (rawKeys.length > 50) return jsonResponse(400, { message: 'role_keys_cap' });
       const env = String(body?.p_environment_code || '').trim().toUpperCase();
-      const keys = (Array.isArray(body?.p_role_keys) ? body.p_role_keys : []).map(assignedRoleKey).filter(Boolean);
+      const keys = rawKeys.map(assignedRoleKey).filter(Boolean);
       const rows = tableOf(world, 'app_roles').filter(row => {
         if (String(row?.environment_code || '').trim().toUpperCase() !== env) return false;
         if (row.active === false) return false;
@@ -370,8 +373,10 @@ function installWorld(world) {
     }
     if (method === 'POST' && u.includes('/rpc/role_still_assigned')) {
       if (world.failAssigneeReads) return jsonResponse(500, { message: 'assignee down' });
+      const rawKeys = Array.isArray(body?.p_role_keys) ? body.p_role_keys : [];
+      if (rawKeys.length > 50) return jsonResponse(400, { message: 'role_keys_cap' });
       const env = String(body?.p_environment_code || '').replace(/^ +| +$/g, '').toUpperCase();
-      const keys = (Array.isArray(body?.p_role_keys) ? body.p_role_keys : []).map(assignedRoleKey).filter(Boolean);
+      const keys = rawKeys.map(assignedRoleKey).filter(Boolean);
       const rows = ['user_profiles', 'licenses'].flatMap(table => tableOf(world, table)).filter(row => {
         return String(row?.environment_code || '').replace(/^ +| +$/g, '').toUpperCase() === env;
       });
@@ -1852,6 +1857,44 @@ test('limiteur : majuscules, espace de bord et NFKC partagent le compteur', asyn
   resetRateLimits();
 });
 
+test('limiteur : plafond par IP, un NUL ne crée pas une autre clé', async () => {
+  resetRateLimits();
+  assert.equal(normalizeEmail('A\0@B.COM'), 'a@b.com');
+  const hash = '33'.repeat(32);
+  const headers = Object.assign({}, authHeaders(), { 'x-forwarded-for': '203.0.113.8' });
+  await withSupabase(async () => {
+    const world = worldFor('supervision', { licenses: [] });
+    installWorld(world);
+    for (let i = 0; i < LOGIN_IP_LIMIT; i += 1) {
+      const failed = await callJson(padAuth, {
+        environment_code: 'EFC',
+        login: `u${i}@efc.picotrack.fr`,
+        password_hash: hash
+      }, headers);
+      assert.equal(failed.status, 401, `${i} ${failed.payload.error || ''}`);
+    }
+    const blocked = await callJson(padAuth, {
+      environment_code: 'EFC',
+      login: 'autre@efc.picotrack.fr',
+      password_hash: hash
+    }, headers);
+    assert.equal(blocked.status, 429, blocked.payload.error || '');
+    const nul = await callJson(padAuth, {
+      environment_code: 'EFC',
+      login: 'u0\0@efc.picotrack.fr',
+      password_hash: hash
+    }, headers);
+    assert.equal(nul.status, 429, nul.payload.error || '');
+    const other = await callJson(padAuth, {
+      environment_code: 'EFC',
+      login: 'neuf@efc.picotrack.fr',
+      password_hash: hash
+    }, Object.assign({}, headers, { 'x-forwarded-for': '203.0.113.9' }));
+    assert.equal(other.status, 401, other.payload.error || '');
+  });
+  resetRateLimits();
+});
+
 test('bureau et tablette : pleine chasse acceptée, espace interne identique au mauvais mot de passe, login_user inchangé', async () => {
   const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
   const start = bundle.indexOf('function _ptDeskLogin');
@@ -3289,6 +3332,10 @@ test('casse et espaces : le rôle porté reste assigné', async () => {
   assert.match(sql, /grant execute on function public\.role_still_assigned\(text, text\[\]\) to service_role/i);
   assert.match(sql, /revoke all on function public\.normalize_role_token\(text\) from public/i);
   assert.match(sql, /grant execute on function public\.normalize_role_token\(text\) to service_role/i);
+  assert.match(sql, /role_still_assigned deja plus recente, conservation/);
+  const files = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261016140000_workflow_step_files.sql'), 'utf8');
+  assert.equal(/jamais sur EFC/i.test(files), false);
+  assert.match(files, /d'abord sur la démo/);
 });
 
 test('nom de rôle : Chef, espaces, puis licenses.roles', async () => {
@@ -3694,6 +3741,33 @@ test('pad-sync : le catalogue lu est celui de l’acteur, la borne répond 503',
     });
     assert.equal(down.status, 503, down.payload.error || '');
     assert.equal(failed.submissions.some(row => row.values && row.values.nom === 'down'), false);
+
+    const capped = worldFor('supervision');
+    const fifty = [];
+    for (let i = 1; i <= 50; i += 1) fifty.push(`role-cap-${i}`);
+    capped.licenses = [{
+      id: 'lic-cap',
+      email: 'cap@efc.picotrack.fr',
+      environment_code: 'EFC',
+      role: 'pad_user',
+      roles: fifty,
+      license_type: 'pad',
+      active: true,
+      password_hash: hash,
+      label: 'Pad'
+    }];
+    const capHook = installWorld(capped);
+    const capLogin = await callJson(padAuth, { environment_code: 'EFC', login: 'cap@efc.picotrack.fr', password_hash: hash });
+    assert.equal(capLogin.status, 200, capLogin.payload.error || '');
+    capHook.calls.length = 0;
+    const tooMany = await callJson(padSync, {
+      padSessionToken: capLogin.payload.padSessionToken,
+      actions: [{ id: 'a-cap', type: 'form_submission', payload: { formId: 'form-open', values: { nom: 'cap' } } }]
+    });
+    assert.equal(tooMany.status, 400, tooMany.payload.error || '');
+    assert.match(tooMany.payload.error || '', /Trop de rôles/);
+    assert.equal(capHook.calls.some(call => call.url.includes('app_roles_for_actor')), true);
+    assert.equal(capped.submissions.some(row => row.values && row.values.nom === 'cap'), false);
   });
 });
 

@@ -334,6 +334,16 @@ function unavailable(err) {
   return Object.assign(new Error('Service indisponible.'), { status: 503 });
 }
 
+function roleKeysCapError(err) {
+  const payload = err && err.payload;
+  const text = [err && err.message, payload && payload.message, payload && payload.details].filter(Boolean).join(' ');
+  return /role_keys_cap/.test(text);
+}
+
+function roleKeysCapRefusal() {
+  return Object.assign(new Error('Trop de rôles pour cette requête.'), { status: 400 });
+}
+
 function sameRoleList(left, right) {
   const norm = value => roleTokens(value).map(item => normalizeRoleToken(item)).filter(Boolean).sort();
   const a = norm(left);
@@ -759,6 +769,8 @@ module.exports = {
   APP_ROLE_CATALOG_BOUND,
   readPaged,
   unavailable,
+  roleKeysCapError,
+  roleKeysCapRefusal,
   privilegeDrift,
   isOwnAccount,
   assertGrantWithinCeiling,
