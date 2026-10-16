@@ -32,7 +32,7 @@
         android:manageSpaceActivity="com.google.androidbrowserhelper.trusted.ManageDataLauncherActivity"
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
-        android:theme="@android:style/Theme.Translucent.NoTitleBar">
+        android:theme="@style/Theme.PicoTrackPad">
 
         <meta-data
             android:name="asset_statements"
@@ -60,6 +60,7 @@
 
         <activity
             android:name="LauncherActivity"
+            android:screenOrientation="fullUser"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleTask"
             android:label="@string/launcherName"

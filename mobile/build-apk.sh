@@ -77,5 +77,11 @@ printf 'sdk.dir=%s\n' "$ANDROID_HOME" > mobile/android/local.properties
 cd mobile/android
 chmod +x ./gradlew
 ./gradlew assembleDebug --no-daemon
+
+mkdir -p build
+# Fail on any transitive downgrade or pinned version in the runtime tree.
+./gradlew -q :app:dependencies --configuration debugRuntimeClasspath --no-daemon > build/deps-debugRuntimeClasspath.txt
+./gradlew -q :app:dependencies --configuration releaseRuntimeClasspath --no-daemon > build/deps-releaseRuntimeClasspath.txt
+node "${ROOT}/mobile/ci/check-dependency-downgrades.mjs" build/deps-debugRuntimeClasspath.txt build/deps-releaseRuntimeClasspath.txt
 APK="app/build/outputs/apk/debug/app-debug.apk"
 echo "APK debug : ${ROOT}/mobile/android/${APK}"
