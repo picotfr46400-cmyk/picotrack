@@ -296,22 +296,6 @@ function normalizeSyncError(err) {
   return refusalError(503, GENERIC_SYNC_ERROR);
 }
 
-async function assertWorkflowWrite(req, environmentCode, instance, actor) {
-  const serviceId = instance && instance.service_id;
-  if (!serviceId) throw refusalError(404);
-  const timeoutMs = nextTimeout(req);
-  if (!timeoutMs) throw deadlineError();
-  const rows = await sbRest(req, `services?id=eq.${encodeURIComponent(serviceId)}&environment_code=eq.${encodeURIComponent(environmentCode)}&select=id,permissions&limit=1`, { method: 'GET', prefer: '', timeoutMs });
-  const service = firstRow(rows);
-  if (!service) throw refusalError(404);
-  const perms = service.permissions && typeof service.permissions === 'object' && !Array.isArray(service.permissions) ? service.permissions : {};
-  const edit = Array.isArray(perms.edit) ? perms.edit.map((role) => String(role || '').trim().toLowerCase()).filter(Boolean) : [];
-  if (!edit.length) return;
-  const roles = [actor && actor.role, actor && actor.license_type].map((role) => String(role || '').trim().toLowerCase()).filter(Boolean);
-  if (String(actor && actor.license_type || '').toLowerCase() === 'pad') roles.push('pad');
-  if (!edit.some((role) => roles.includes(role))) throw refusalError(403);
-}
-
 function nextVersion(previous) {
   const now = new Date().toISOString();
   if (now !== String(previous || '')) return now;
@@ -450,7 +434,6 @@ async function applyWorkflowStep(req, environmentCode, payload, key, actor) {
   if (!key) throw new Error('Clé d’idempotence manquante');
   const opened = await readInstance(req, environmentCode, instanceId);
   if (!opened) throw refusalError(404);
-  await assertWorkflowWrite(req, environmentCode, opened, actor);
   const content = stepContent(payload);
   const fields = plainFields(content.formData);
   const statusId = payload.statusId || payload.status_id || null;
@@ -759,6 +742,22 @@ async function handler(req, res) {
             already_applied: duplicate
           }));
         } else if (item.type === 'workflow_step') {
+          const instanceId = String(payload.instanceId || payload.instance_id || (inst && inst.id) || '').trim();
+          const current = instanceId
+            ? await loadById(req, 'service_instances', environmentCode, instanceId, 'id,service_id,current_status_id,status_id')
+            : null;
+          if (!current) throw refusalError(404);
+          const stepService = await loadById(req, 'services', environmentCode, current.service_id, 'id,form_id,permissions');
+          if (!stepService) throw refusalError(404);
+          const requestedStatus = String(payload.statusId || payload.status_id || '');
+          let level = access.instanceLevel(profile, catalog, current);
+          access.assertLevel(level, 'write');
+          if (requestedStatus) {
+            const target = access.effectiveLevel(profile, catalog, 'status', requestedStatus, current.service_id);
+            access.assertLevel(target, 'write');
+            if (target !== 'normal') level = target;
+          }
+          if (level === 'normal' && !access.legacyAllows(stepService, 'create', profile)) throw refusalError(403);
           const written = await applyWorkflowStep(req, environmentCode, payload, resolved.key, license);
           if (!written.duplicate) {
             mailWrites.push({
@@ -787,15 +786,14 @@ async function handler(req, res) {
         if (isPadAuthError(err)) throw err;
         const refused = Number(err && err.status) || 0;
         if (refused === 400 || refused === 403 || refused === 404 || refused === 409) {
-          const requestId = crypto.randomUUID();
-          console.error('[pad-sync]', requestId, err && (err.stack || err.message || err));
+          const raw = String(err && err.message || '');
+          const leak = /supabase|secret_sql|42703/i.test(raw);
           results.push({
             actionId: item.id,
             type: item.type,
-            status: 'rejected',
-            httpStatus: refused,
             ok: false,
-            error: publicRefusal(refused)
+            status: refused,
+            error: (!raw || leak) ? publicRefusal(refused) : raw
           });
           continue;
         }
@@ -835,13 +833,6 @@ async function handler(req, res) {
         result.already_applied = false;
         if (!retry.includes(result.actionId)) retry.push(result.actionId);
       }
-    }
-    if (!retry.length && results.length === 1 && results[0].status === 'rejected') {
-      return sendJson(res, results[0].httpStatus || 400, {
-        ok: false,
-        error: results[0].error,
-        results
-      });
     }
     if (retry.length) {
       const requestId = failure ? failure.requestId : crypto.randomUUID();

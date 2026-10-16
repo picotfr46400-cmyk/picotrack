@@ -278,14 +278,17 @@
   function outcomeFromPadResponse(status, body) {
     const http = Number(status) || 0;
     const one = body && Array.isArray(body.results) ? body.results[0] : null;
-    if (http !== 200 || !body || body.ok === false || !one || one.status !== 'applied') {
-      return {
-        ok: false,
-        status: http || (one && one.status) || 0,
-        error: (one && one.error) || (body && body.error) || 'Synchronisation momentanément indisponible.'
-      };
+    if (http === 200 && body && body.ok !== false && one && one.status === 'applied') {
+      return { ok: true, status: 200, duplicate: !!one.duplicate, confirmed: true, row: one.row || null };
     }
-    return { ok: true, status: 200, duplicate: !!one.duplicate, confirmed: true, row: one.row || null };
+    const itemStatus = Number(one && one.status) || 0;
+    const httpFault = http >= 400 ? http : 0;
+    const itemFault = itemStatus >= 400 ? itemStatus : 0;
+    return {
+      ok: false,
+      status: httpFault || itemFault || http || itemStatus || 0,
+      error: (one && one.error) || (body && body.error) || 'Synchronisation momentanément indisponible.'
+    };
   }
 
   function shouldQueueEntity(entity, context, id) {

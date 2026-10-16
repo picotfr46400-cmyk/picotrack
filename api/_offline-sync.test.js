@@ -436,8 +436,8 @@ self.addEventListener('fetch',event=>{
   assert.equal(sw.includes('public.html'), false);
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
   assert.match(html, /offline-sync\.js\?v=20261008s/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008p/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008p/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008r/g) || []).length, 2);
+  assert.match(html, /core-supervision\.js\?v=20261008r/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.match(fs.readFileSync(path.join(__dirname, '../build.js'), 'utf8'), /offline-sync\.js/);
   assert.equal(fs.readFileSync(path.join(__dirname, 'pad-sync.js'), 'utf8').includes('Type de file PAD inconnu'), true);
@@ -614,6 +614,9 @@ test('pad-sync : la file réutilise la clé et le POST unique déduplique', asyn
       if (href.includes('/submissions') && method === 'GET') {
         const key = decodeURIComponent((href.match(/idempotency_key=eq\.([^&]+)/) || [])[1] || '');
         return jsonResponse(200, submissions.has(key) ? [submissions.get(key)] : []);
+      }
+      if (href.includes('/rpc/app_roles_for_actor') || href.includes('/services') || href.includes('/forms')) {
+        return jsonResponse(200, []);
       }
       return jsonResponse(404, { message: 'unexpected ' + method + ' ' + href });
     };
@@ -803,7 +806,7 @@ test('étape refusée en 403 puis 3 saisies : les saisies arrivent, l’étape e
       id: 'inst-ro', service_id: 'svc-ro', environment_code: 'EFC', submission_id: 'sub-ro',
       current_status_id: 'ouvert', status_id: 'ouvert', events: [], device: 'pad'
     }]]);
-    const services = new Map([['svc-ro', { id: 'svc-ro', environment_code: 'EFC', permissions: { edit: ['superviseur'] } }]]);
+    const services = new Map([['svc-ro', { id: 'svc-ro', environment_code: 'EFC', permissions: { create: ['superviseur'] } }]]);
     global.fetch = padBackend({ instances, services, submissions, patches: [] });
     const { engine } = harness(async (action) => {
       const result = await callPad([action]);
@@ -997,7 +1000,8 @@ test('pad-sync : session invalide et hors 200 ne confirment pas la file', async 
       created_at: '2026-10-08T08:00:00.000Z',
       payload: { values: {} }
     }]);
-    assert.equal(retry.status, 400);
+    assert.equal(retry.status, 200, JSON.stringify(retry.payload));
+    assert.equal(retry.payload.results[0].status, 400);
     assert.equal(offline.outcomeFromPadResponse(retry.status, retry.payload).confirmed, undefined);
     assert.equal(offline.classifySyncResult(offline.outcomeFromPadResponse(retry.status, retry.payload)), 'rejected');
   });
@@ -1226,7 +1230,7 @@ test('B5 : deux étapes parallèles s’ajoutent, la même clé n’écrit qu’
     let release = null;
     const gate = () => new Promise((resolve) => { release = resolve; });
     let door = gate();
-    let mailReads = 0;
+    let outboxPosts = 0;
     global.fetch = async (url, options = {}) => {
       const href = String(url);
       const method = options.method || 'GET';
@@ -1234,7 +1238,20 @@ test('B5 : deux étapes parallèles s’ajoutent, la même clé n’écrit qu’
         return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad' }]);
       }
       if (href.includes('/licenses') && method === 'PATCH') return jsonResponse(200, [{ id: 'lic-1' }]);
-      if (href.includes('mail_rules')) { mailReads += 1; return jsonResponse(200, []); }
+      if (href.includes('mail_rules')) {
+        return jsonResponse(200, [{
+          id: 'rule-step',
+          environment_code: 'EFC',
+          active: true,
+          event: 'workflow.status',
+          service_id: 'svc-1',
+          config: { to: { fixed: ['qa@example.com'] }, subject: 'Etape', body: 'Une etape', clientKey: 'step-mail' }
+        }]);
+      }
+      if (href.includes('/mail_outbox') && method === 'POST') {
+        outboxPosts += 1;
+        return jsonResponse(201, [{ id: 'out-' + outboxPosts, status: 'pending' }]);
+      }
       if (href.includes('/services') && method === 'GET') {
         return jsonResponse(200, [{ id: 'svc-1', environment_code: 'EFC', permissions: {} }]);
       }
@@ -1280,7 +1297,7 @@ test('B5 : deux étapes parallèles s’ajoutent, la même clé n’écrit qu’
     let sameRelease = null;
     const sameDoor = new Promise((resolve) => { sameRelease = resolve; });
     const sameKey = '55555555-5555-4555-8555-555555555555';
-    const beforeMails = mailReads;
+    const beforeOutbox = outboxPosts;
     const previousFetch = global.fetch;
     global.fetch = async (url, options = {}) => {
       const href = String(url);
@@ -1302,7 +1319,7 @@ test('B5 : deux étapes parallèles s’ajoutent, la même clé n’écrit qu’
     const duplicates = pair.filter(item => item.payload.results && item.payload.results[0] && item.payload.results[0].duplicate);
     assert.equal(duplicates.length, 1, JSON.stringify(pair.map(item => item.payload)));
     assert.equal(state.events.filter(event => event.idempotency_key === sameKey).length, 1);
-    assert.equal(mailReads - beforeMails, 1);
+    assert.equal(outboxPosts - beforeOutbox, 1);
   });
 });
 
@@ -1364,8 +1381,9 @@ test('B7 : une instance PAD sans formulaire répond 400 et n’est pas renvoyée
       created_at: '2026-10-08T08:00:00.000Z',
       payload: { serviceId: 's1', values: { nom: 'sans formulaire' }, instance: { service_id: 's1' } }
     }]);
-    assert.equal(out.status, 400, JSON.stringify(out.payload));
-    assert.equal(out.payload.results[0].status, 'rejected');
+    assert.equal(out.status, 200, JSON.stringify(out.payload));
+    assert.equal(out.payload.results[0].status, 400);
+    assert.equal(out.payload.results[0].ok, false);
     assert.equal(JSON.stringify(out.payload).toLowerCase().includes('supabase'), false);
     let hits = 0;
     const { engine } = harness(async (action) => {
@@ -1710,8 +1728,9 @@ test('deux étapes différentes sont conservées, le même pas en conflit répon
         files: [{ kind: 'signature', name: 'signature', content: 'SIGN-B', idempotency_key: signatureKey }]
       }
     }]);
-    assert.equal(clash.status, 409, JSON.stringify(clash.payload));
-    assert.match(clash.payload.error, /conflit/i);
+    assert.equal(clash.status, 200, JSON.stringify(clash.payload));
+    assert.equal(clash.payload.results[0].status, 409);
+    assert.match(clash.payload.results[0].error, /conflit/i);
     assert.equal(/supabase|SIGN-B/i.test(JSON.stringify(clash.payload)), false);
     assert.equal(files.get(signatureKey).content, 'SIGN-A');
     assert.equal(instances.get('inst-par-cli').events.filter((event) => event.idempotency_key === key).length, 1);
