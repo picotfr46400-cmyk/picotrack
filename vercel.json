@@ -16,6 +16,12 @@
       "maxDuration": 20
     }
   },
+  "crons": [
+    {
+      "path": "/api/records",
+      "schedule": "0 4 * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/public.html",

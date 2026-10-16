@@ -14,6 +14,10 @@ test('vercel.json : main et v2 déploient, cursor/* non, au plus 12 fonctions', 
   assert.equal(enabled['*'], false);
   assert.equal(enabled['**'], false);
 
+  assert.ok(Array.isArray(config.crons) && config.crons.length === 1);
+  assert.equal(config.crons[0].path, '/api/records');
+  assert.match(config.crons[0].schedule, /^\d+ \d+ \* \* \*$/);
+
   const serverless = fs.readdirSync(__dirname).filter(name => name.endsWith('.js') && !name.startsWith('_') && !name.endsWith('.test.js'));
   assert.ok(serverless.length <= 12, 'trop de fonctions serverless: ' + serverless.join(','));
   assert.equal(serverless.includes('integrations.js'), false);

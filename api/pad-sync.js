@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { sendJson, setCors, verifyToken, sbRest } = require('./_pad-security');
 const submissionAudit = require('./_submission-audit');
-const { notifyAfterWrite, processMailQueue, requestOrigin } = require('./_mail-rules');
+const { notifyAfterWrite, processMailQueue, continueAfterResponse, invocationDeadline, OPPORTUNISTIC_LIMIT, requestOrigin } = require('./_mail-rules');
 
 const REQUEST_DEADLINE_MS = 10000;
 const MIN_CALL_MS = 50;
@@ -92,6 +92,7 @@ function armRequestClock(req) {
   const startedAt = clock(req);
   const deadlineAt = startedAt + requestBudgetMs(req);
   req.picoRemainingMs = () => deadlineAt - clock(req);
+  req.picoMailDeadline = invocationDeadline(startedAt);
 }
 
 function deadlineError() {
@@ -261,7 +262,7 @@ function padMailProfile(license, session) {
   };
 }
 
-async function drainPadMail(req, session, license, enqueued) {
+async function drainPadMail(req, session, license, enqueued, deadline) {
   if (!session || !session.environmentCode) return;
   try {
     await processMailQueue({
@@ -269,7 +270,9 @@ async function drainPadMail(req, session, license, enqueued) {
       environmentCode: session.environmentCode,
       profile: padMailProfile(license, session),
       origin: requestOrigin(req),
-      rows: enqueued && enqueued.rows
+      deadline,
+      rows: enqueued && enqueued.rows,
+      limit: OPPORTUNISTIC_LIMIT
     });
   } catch (_) {}
 }
@@ -438,7 +441,7 @@ async function handler(req, res) {
       }
       sendJson(res, 200, { ok: true, synced: results.length, results });
     }
-    await drainPadMail(req, session, license, enqueued);
+    await continueAfterResponse(drainPadMail(req, session, license, enqueued, req.picoMailDeadline));
     return;
   } catch (err) {
     const requestId = crypto.randomUUID();

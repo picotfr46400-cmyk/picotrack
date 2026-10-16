@@ -28,6 +28,10 @@ const {
   normalizeRuleRecord,
   notifyAfterWrite,
   processMailQueue,
+  runDailyMailQueue,
+  invocationDeadline,
+  INVOCATION_BUDGET_MS,
+  STALE_PENDING_MS,
   QUEUE_BUDGET_MS,
   occurrencesFromWrite,
   renderMailTemplate,
@@ -504,6 +508,20 @@ test('échec de lecture des destinataires : aucun envoi partiel, nouvel essai pl
     assert.equal(store.outbox.length, 1);
     assert.equal(store.outbox[0].status, 'failed');
     assert.equal(Number(store.outbox[0].attempts || 0), 0);
+    const listed = await handleMailAction({}, { action: 'mail_outbox_list' }, admin, { store });
+    assert.equal(listed.rows[0].status, 'failed');
+    assert.equal(listed.rows[0].last_error, RECIPIENT_BOUND_ERROR);
+    assert.equal(listed.rows[0].attention, RECIPIENT_BOUND_ERROR);
+    assert.equal(listed.rows[0].stale, false);
+    const again = await processMailQueue({
+      store,
+      environmentCode: 'DEMO',
+      deadline: Date.now() + 1000,
+      transport: async () => ({ provider: 'fake' })
+    });
+    assert.equal(again.pending, false);
+    assert.equal(sent.length, 0);
+    assert.equal(store.outbox[0].status, 'failed');
   });
 
   await withUserFetch(roleUsers(USER_PAGE_SIZE), async () => {
@@ -555,17 +573,24 @@ test('page courte : max-rows inférieur à 500 ne perd personne', async () => {
   }, { maxRows: 100 });
 });
 
-test('rôle : même jeton que _access.js, espaces internes conservés', async () => {
+test('rôle : module partagé, tabulation, JSON, NFC, espaces internes', async () => {
+  const { roleTokens } = require('./_role-token');
+  assert.deepEqual(roleTokens('  Mana\u200bger\n'), ['manager']);
+  assert.deepEqual(roleTokens('chef\tManager'), ['chef', 'manager']);
+  assert.deepEqual(roleTokens('["x"]'), ['x']);
+  assert.deepEqual(roleTokens('e\u0301'), ['é']);
+  assert.deepEqual(roleTokens('chef  de poste'), ['chef  de poste']);
   const users = [
-    { email: 'a@example.com', role: '  "Manager"\n', environment_code: 'DEMO', active: true },
-    { email: 'b@example.com', roles: ['chef  de poste'], environment_code: 'DEMO', active: true },
-    { email: 'c@example.com', role: 'chef de poste', environment_code: 'DEMO', active: true }
+    { email: 'a@example.com', role: '  Manager\n', environment_code: 'DEMO', active: true },
+    { email: 'b@example.com', roles: '["chef  de poste"]', environment_code: 'DEMO', active: true },
+    { email: 'c@example.com', role: 'chef de poste', environment_code: 'DEMO', active: true },
+    { email: 'd@example.com', role: 'pad\tmanager', environment_code: 'DEMO', active: true }
   ];
   const list = async () => users;
   const managers = await resolveRecipients({
     config: { to: { roles: ['manager'] }, cc: {}, bcc: {} }
   }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
-  assert.deepEqual(managers.to, ['a@example.com']);
+  assert.deepEqual(managers.to, ['a@example.com', 'd@example.com']);
   const spaced = await resolveRecipients({
     config: { to: { roles: ['chef de poste'] }, cc: {}, bcc: {} }
   }, { fields: [], values: {}, environmentCode: 'DEMO' }, list);
@@ -717,6 +742,116 @@ test('file : 1 400 ms par page, enfilage sans lecture, puis un seul envoi', asyn
     assert.equal(store.outbox[0].quota_hour, undefined);
     assert.deepEqual(store.outbox[0].recipients, { to: [], cc: [], bcc: [] });
   }, { pageDelayMs: 1400 });
+});
+
+test('échéance unique : requête lente puis un seul envoi au passage suivant', async () => {
+  const all = roleUsers(501);
+  const store = createMemoryStore();
+  await store.saveRule(submissionRule({ to: { fixed: ['qa@example.com'], roles: ['manager'] } }));
+  const sent = [];
+  const transport = async (message) => {
+    sent.push(message);
+    return { provider: 'fake' };
+  };
+  const mail = {
+    store,
+    environmentCode: 'DEMO',
+    transport,
+    form: formOf(),
+    origin: 'https://demo.example.com',
+    profile: { email: 'auteur@example.com', environment_code: 'DEMO' },
+    mailEnv: { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' },
+    limit: 5
+  };
+  await withUserFetch(all, async () => {
+    store.listUsers = (env, userDeadline) => remoteUsers().listUsers(env, userDeadline);
+    await notifyAfterWrite(writeInput(store, { enqueueOnly: true, transport }));
+    const requestStart = Date.now() - (INVOCATION_BUDGET_MS - 2000);
+    const started = Date.now();
+    await processMailQueue(Object.assign({}, mail, { deadline: invocationDeadline(requestStart) }));
+    const elapsed = Date.now() - started;
+    assert.equal(elapsed < 4000, true, `file ${elapsed} ms`);
+    assert.equal(Date.now() - requestStart < 20000, true);
+    assert.equal(sent.length, 0);
+    assert.equal(store.outbox[0].status, 'pending');
+    assert.equal(Number(store.outbox[0].attempts || 0), 0);
+    assert.equal(store.outbox[0].quota_hour, undefined);
+  }, { pageDelayMs: 1400 });
+  await withUserFetch(all, async () => {
+    store.listUsers = (env, userDeadline) => remoteUsers().listUsers(env, userDeadline);
+    const sentOnce = await processMailQueue(Object.assign({}, mail, { deadline: invocationDeadline(Date.now()) }));
+    assert.equal(sentOnce.pending, false);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].to, ['qa@example.com'].concat(all.slice(0, 9).map(user => user.email)));
+    assert.equal(store.outbox[0].status, 'sent');
+    await processMailQueue(Object.assign({}, mail, { deadline: invocationDeadline(Date.now()) }));
+    assert.equal(sent.length, 1);
+  });
+});
+
+test('admin : une attente de plus d’une heure est visible', async () => {
+  const store = createMemoryStore();
+  const admin = {
+    role: 'environment_admin',
+    environment_code: 'DEMO',
+    active: true,
+    email: 'admin@example.com',
+    license_type: 'supervision'
+  };
+  store.outbox.push({
+    id: 'old-pending',
+    environment_code: 'DEMO',
+    status: 'pending',
+    attempts: 0,
+    last_error: null,
+    recipients: { to: [], cc: [], bcc: [] },
+    subject: 'Ancien',
+    created_at: new Date(Date.now() - STALE_PENDING_MS - 1000).toISOString(),
+    payload: {}
+  });
+  const listed = await handleMailAction({}, { action: 'mail_outbox_list' }, admin, { store });
+  assert.equal(listed.rows[0].status, 'pending');
+  assert.equal(listed.rows[0].stale, true);
+  assert.match(listed.rows[0].attention, /une heure/);
+});
+
+test('cron quotidien : secret requis, une ligne pending part une seule fois', async () => {
+  const previous = process.env.CRON_SECRET;
+  delete process.env.CRON_SECRET;
+  const res = { statusCode: 0, headers: {}, setHeader(name, value) { this.headers[name] = value; }, end() {} };
+  await records({ method: 'GET', headers: { authorization: 'Bearer secret' } }, res);
+  assert.equal(res.statusCode, 401);
+  process.env.CRON_SECRET = 'secret-test';
+  const wrong = { statusCode: 0, headers: {}, setHeader(name, value) { this.headers[name] = value; }, end() {} };
+  await records({ method: 'GET', headers: { authorization: 'Bearer autre' } }, wrong);
+  assert.equal(wrong.statusCode, 401);
+  const open = { statusCode: 0, headers: {}, setHeader(name, value) { this.headers[name] = value; }, end() {} };
+  await records({ method: 'GET', headers: {} }, open);
+  assert.equal(open.statusCode, 405);
+  if (previous == null) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = previous;
+
+  const store = createMemoryStore();
+  await store.saveRule(submissionRule());
+  const sent = [];
+  await notifyAfterWrite(writeInput(store, { enqueueOnly: true, transport: async (message) => { sent.push(message); return { provider: 'fake' }; } }));
+  const deadline = invocationDeadline(Date.now());
+  const first = await runDailyMailQueue({
+    store,
+    deadline,
+    transport: async (message) => { sent.push(message); return { provider: 'fake' }; },
+    mailEnv: { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' }
+  });
+  assert.equal(first.pending, false);
+  assert.equal(sent.length, 1);
+  assert.equal(store.outbox[0].status, 'sent');
+  await runDailyMailQueue({
+    store,
+    deadline: invocationDeadline(Date.now()),
+    transport: async (message) => { sent.push(message); return { provider: 'fake' }; },
+    mailEnv: { MAIL_DAILY_LIMIT: '300', MAIL_HOURLY_LIMIT: '60' }
+  });
+  assert.equal(sent.length, 1);
 });
 
 test('enregistrement : 11 destinataires refusés, environnement vide jamais DEMO', async () => {

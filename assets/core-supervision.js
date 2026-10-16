@@ -2534,9 +2534,11 @@
       rows.forEach(function (row) {
         var line = el('div', { style: 'display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bd)' });
         var label = row.status === 'sent' ? 'Envoyé' : (row.status === 'uncertain' ? 'Envoi incertain' : (row.status === 'failed' ? 'Échec' : (row.status === 'skipped' ? 'Ignoré' : (row.status === 'sending' ? 'Envoi en cours' : 'En attente'))));
+        if (row.stale) label = 'En attente depuis plus d’une heure';
+        else if (row.attention && row.status === 'failed') label = 'Échec — liste de destinataires trop longue';
         var text = el('div');
         text.appendChild(el('b', null, label + ' — ' + (row.subject || 'Sans sujet')));
-        var reason = row.status === 'failed' || row.status === 'skipped' ? (row.last_error || 'erreur') : (row.last_error || '');
+        var reason = row.attention || (row.status === 'failed' || row.status === 'skipped' ? (row.last_error || 'erreur') : (row.last_error || ''));
         if (row.warning) reason = row.warning + (reason ? ' — ' + reason : '');
         if (reason) text.appendChild(el('div', { class: 'f-hint' }, reason));
         line.appendChild(text);

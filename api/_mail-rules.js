@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { serviceRest } = require('./_server-supabase');
 const { normalizeLicenseType } = require('./_license-type');
+const { roleTokens } = require('./_role-token');
 const {
   EMAIL_RE,
   escapeHtml,
@@ -41,7 +42,10 @@ const RECIPIENT_BOUND_ERROR = `Trop d'utilisateurs actifs (plus de ${MAX_ROLE_US
 const MAX_ATTEMPTS = 3;
 const VERCEL_MAX_DURATION_MS = 20000;
 const QUEUE_DEADLINE_MARGIN_MS = 2000;
-const QUEUE_BUDGET_MS = VERCEL_MAX_DURATION_MS - QUEUE_DEADLINE_MARGIN_MS;
+const INVOCATION_BUDGET_MS = VERCEL_MAX_DURATION_MS - QUEUE_DEADLINE_MARGIN_MS;
+const QUEUE_BUDGET_MS = INVOCATION_BUDGET_MS;
+const OPPORTUNISTIC_LIMIT = 3;
+const STALE_PENDING_MS = 60 * 60 * 1000;
 const DEFAULT_BUDGET_MS = 3000;
 const DEFAULT_PER_CALL_MS = 2000;
 const DEFAULT_DAILY_LIMIT = 300;
@@ -336,20 +340,11 @@ function userInEnvironment(user, environmentCode) {
   return String(user && user.environment_code || '').trim().toUpperCase() === String(environmentCode || '').trim().toUpperCase();
 }
 
-// Même jeton que api/_access.js (token). Tabulations et retours sont retirés,
-// la casse est ignorée, guillemets et accolades de bord aussi. Les espaces
-// internes ne sont pas compactés : _access.js ne le fait pas, donc
-// « chef  de poste » ne correspond pas à « chef de poste ».
-function roleToken(value) {
-  return String(value ?? '').replace(/[\t\r\n\f\v]/g, '').trim().toLowerCase().replace(/^[\s"'{}]+|[\s"'{}]+$/g, '').trim();
-}
-
 function userHasRole(user, role) {
-  const want = roleToken(role);
-  if (!want) return false;
-  if (roleToken(user && user.role) === want) return true;
-  const roles = Array.isArray(user && user.roles) ? user.roles : [];
-  return roles.some(item => roleToken(item) === want);
+  const wanted = roleTokens(role);
+  if (!wanted.length) return false;
+  const have = roleTokens(user && user.role).concat(roleTokens(user && user.roles));
+  return wanted.some(token => have.includes(token));
 }
 
 function isRetryableOutbox(row) {
@@ -958,6 +953,11 @@ function createMemoryStore() {
         return isRetryableOutbox(item);
       }).slice(0, limit);
     },
+    async listRetryableAny(limit = 40) {
+      const envs = new Set(outbox.map(item => item.environment_code).filter(Boolean));
+      for (const env of envs) await this.expireUncertain(env);
+      return outbox.filter(isRetryableOutbox).slice(0, limit);
+    },
     async listRecent(env, limit = 40) {
       return outbox
         .filter(item => String(item.environment_code).toUpperCase() === String(env).toUpperCase())
@@ -1120,6 +1120,19 @@ function createSqlStore(query) {
             )
           order by created_at asc
           limit ${Number(limit) || 5}
+        ) t`);
+      return rows.map(item => item.row || item).filter(isRetryableOutbox);
+    },
+    async listRetryableAny(limit = 40) {
+      const rows = await one(`
+        select row_to_json(t) as row from (
+          select * from public.mail_outbox
+          where (
+            (status = 'pending' and attempts < ${MAX_ATTEMPTS})
+            or (status = 'failed' and attempts >= 1 and attempts < ${MAX_ATTEMPTS})
+          )
+          order by created_at asc
+          limit ${Number(limit) || 40}
         ) t`);
       return rows.map(item => item.row || item).filter(isRetryableOutbox);
     },
@@ -1342,6 +1355,18 @@ function createSupabaseStore(req) {
         return [];
       }
     },
+    async listRetryableAny(limit = 40) {
+      try {
+        const retry = `or=(and(status.eq.pending,attempts.lt.${MAX_ATTEMPTS}),and(status.eq.failed,attempts.gte.1,attempts.lt.${MAX_ATTEMPTS}))`;
+        const rows = await rest(
+          `mail_outbox?${retry}&select=*&order=created_at.asc&limit=${limit}`,
+          { method: 'GET', prefer: '' }
+        );
+        return (Array.isArray(rows) ? rows : []).filter(isRetryableOutbox).slice(0, limit);
+      } catch (_) {
+        return [];
+      }
+    },
     async listRecent(env, limit = 40) {
       const rows = await rest(
         `mail_outbox?environment_code=eq.${encodeURIComponent(env)}&select=id,environment_code,rule_id,event,target_id,recipients,subject,status,attempts,last_error,warning,created_at,updated_at&order=created_at.desc&limit=${limit}`,
@@ -1535,6 +1560,9 @@ async function mailPdf(ctx, deps, remainingMs) {
 function publicOutbox(row) {
   if (!row) return null;
   const recipients = row.recipients && typeof row.recipients === 'object' ? row.recipients : {};
+  const created = row.created_at ? new Date(row.created_at).getTime() : NaN;
+  const stale = row.status === 'pending' && Number.isFinite(created) && (Date.now() - created) >= STALE_PENDING_MS;
+  const bound = row.status === 'failed' && String(row.last_error || '') === RECIPIENT_BOUND_ERROR;
   return {
     id: row.id,
     environment_code: row.environment_code,
@@ -1547,7 +1575,11 @@ function publicOutbox(row) {
     attempts: row.attempts,
     last_error: row.last_error,
     warning: row.warning,
-    created_at: row.created_at
+    created_at: row.created_at,
+    stale,
+    attention: stale
+      ? 'En attente depuis plus d’une heure.'
+      : (bound ? RECIPIENT_BOUND_ERROR : null)
   };
 }
 
@@ -1900,14 +1932,28 @@ async function dispatchWithinBudget(input) {
   return { ok: true, pending, queued: inserted.length };
 }
 
+function invocationDeadline(start) {
+  return Number(start) + INVOCATION_BUDGET_MS;
+}
+
+function continueAfterResponse(promise) {
+  const pending = Promise.resolve(promise);
+  try {
+    const { waitUntil } = require('@vercel/functions');
+    if (typeof waitUntil === 'function') waitUntil(pending);
+  } catch (_) {}
+  return pending;
+}
+
 async function processMailQueue(input) {
-  const deadline = Number(input && input.deadline) || (Date.now() + QUEUE_BUDGET_MS);
-  if (!input || Date.now() >= deadline) return { ok: true, pending: true };
+  const deadline = Number(input && input.deadline);
+  if (!input || !(deadline > Date.now())) return { ok: true, pending: true };
   const store = input.store || createSupabaseStore(input.req);
   const env = input.environmentCode;
   if (!env) return { ok: true, pending: false };
   const rules = await store.listRules(env).catch(() => []);
-  const listed = await store.listRetryable(env, 40).catch(() => []);
+  const limit = input.limit == null ? OPPORTUNISTIC_LIMIT : Number(input.limit);
+  const listed = await store.listRetryable(env, Math.max(1, limit > 0 ? limit : 1)).catch(() => []);
   const seen = new Set();
   const rows = [];
   for (const row of (Array.isArray(input.rows) ? input.rows : [])) {
@@ -1915,10 +1961,15 @@ async function processMailQueue(input) {
     seen.add(row.id);
     rows.push(row);
   }
-  for (const row of listed) {
-    if (!row || !row.id || seen.has(row.id)) continue;
-    seen.add(row.id);
-    rows.push(row);
+  if (limit > 0) {
+    let extra = 0;
+    for (const row of listed) {
+      if (extra >= limit) break;
+      if (!row || !row.id || seen.has(row.id) || !isRetryableOutbox(row)) continue;
+      seen.add(row.id);
+      rows.push(row);
+      extra += 1;
+    }
   }
   const deps = {
     store,
@@ -1940,6 +1991,42 @@ async function processMailQueue(input) {
     const result = await sendOutboxRow(row, deps, deadline);
     if (result === 'pending' || result === 'capped') pending = true;
     if (result === 'capped') break;
+  }
+  return { ok: true, pending };
+}
+
+async function runDailyMailQueue(input) {
+  const deadline = Number(input && input.deadline);
+  if (!input || !(deadline > Date.now())) return { ok: true, pending: true };
+  const store = input.store || createSupabaseStore(input.req);
+  const peek = typeof store.listRetryableAny === 'function'
+    ? await store.listRetryableAny(40).catch(() => [])
+    : [];
+  const envs = [];
+  for (const row of peek) {
+    const env = row && row.environment_code;
+    if (env && !envs.includes(env)) envs.push(env);
+  }
+  let pending = false;
+  for (const env of envs) {
+    if (Date.now() >= deadline) {
+      pending = true;
+      break;
+    }
+    const result = await processMailQueue({
+      store,
+      req: input.req,
+      environmentCode: env,
+      deadline,
+      profile: input.profile,
+      origin: input.origin,
+      transport: input.transport,
+      renderPdf: input.renderPdf,
+      mailEnv: input.mailEnv,
+      now: input.now,
+      limit: 40
+    });
+    if (result && result.pending) pending = true;
   }
   return { ok: true, pending };
 }
@@ -2197,7 +2284,13 @@ module.exports = {
   normalizeRuleRecord,
   notifyAfterWrite,
   processMailQueue,
+  runDailyMailQueue,
+  continueAfterResponse,
+  invocationDeadline,
   QUEUE_BUDGET_MS,
+  INVOCATION_BUDGET_MS,
+  OPPORTUNISTIC_LIMIT,
+  STALE_PENDING_MS,
   syncFormMailRules,
   handleMailAction,
   createMemoryStore,
