@@ -597,7 +597,7 @@
       });
     }
     if (extra.sla === 'below' && typeof _svcServiceStats === 'function') {
-      out = out.filter(function (svc) { return _svcServiceStats(svc).sla < 90; });
+      out = out.filter(function (svc) { var v = _svcServiceStats(svc).sla; return v != null && v < 90; });
     }
     return out;
   }
@@ -1046,6 +1046,78 @@
     });
   }
 
+  function ptTs(value) {
+    if (!value) return NaN;
+    var str = String(value);
+    var fr = str.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+    if (fr) return new Date(+fr[3], +fr[2] - 1, +fr[1], +(fr[4] || 0), +(fr[5] || 0), +(fr[6] || 0)).getTime();
+    return new Date(str).getTime();
+  }
+  window.ptTs = ptTs;
+
+  window.ptLatestActivityLabel = function (instances, submissions, now) {
+    var best = null;
+    (instances || []).forEach(function (it) {
+      var t = ptTs(it && (it.updatedAt || it.createdAt));
+      if (isFinite(t) && (!best || t > best.t)) best = { t: t, text: 'Dossier ' + (it.ref || it.reference || it.id) + ' mis à jour' };
+    });
+    (submissions || []).forEach(function (sub) {
+      var t = ptTs(sub && (sub.created_at || sub.createdAt || sub.date));
+      if (isFinite(t) && (!best || t > best.t)) best = { t: t, text: 'Nouvelle saisie' + (sub.formNom || sub.form_name ? ' : ' + (sub.formNom || sub.form_name) : '') };
+    });
+    if (!best) return 'Aucune activité enregistrée.';
+    return best.text + ' · ' + window.ptAgoLabel(best.t, now) + '.';
+  };
+
+  window.ptAgoLabel = function (t, now) {
+    var diff = Math.max(0, (now || Date.now()) - t);
+    var min = Math.round(diff / 60000);
+    if (min < 1) return "à l'instant";
+    if (min < 60) return 'il y a ' + min + ' min';
+    var h = Math.round(min / 60);
+    if (h < 24) return 'il y a ' + h + ' h';
+    return 'il y a ' + Math.round(h / 24) + ' j';
+  };
+
+  // Indicateurs du Centre d'exécution calculés sur les vraies données, « — » si impossible.
+  window.ptExecKpis = function (services, instances, allServices, now) {
+    var DASH = '\u2014';
+    now = now || Date.now();
+    var day = new Date(now); day.setHours(0, 0, 0, 0);
+    var month = new Date(now); month.setDate(1); month.setHours(0, 0, 0, 0);
+    var terminal = {};
+    (allServices || services || []).forEach(function (svc) {
+      (svc && svc.statuses || []).forEach(function (st) { if (st && st.type === 'terminal') terminal[String(svc.id) + '|' + String(st.id)] = true; });
+    });
+    var list = instances || [];
+    var svcDates = (services || []).map(function (svc) { return ptTs(svc && (svc.created_at || svc.createdAt)); }).filter(isFinite);
+    var servicesSub = svcDates.length ? '+' + svcDates.filter(function (t) { return t >= month.getTime(); }).length + ' ce mois' : DASH;
+    var instDates = list.map(function (it) { return ptTs(it && (it.createdAt || it.created_at)); }).filter(isFinite);
+    var activeSub = list.length && instDates.length ? '+' + instDates.filter(function (t) { return t >= day.getTime(); }).length + ' aujourd\u2019hui' : DASH;
+    var durations = [];
+    list.forEach(function (it) {
+      if (!it || !terminal[String(it.serviceId) + '|' + String(it.currentStatusId || it.statusId)]) return;
+      var a = ptTs(it.createdAt || it.created_at);
+      var b = ptTs(it.closedAt || it.closed_at || it.updatedAt || it.updated_at);
+      if (isFinite(a) && isFinite(b) && b >= a) durations.push(b - a);
+    });
+    var avgValue = DASH;
+    var avgSub = 'Aucun dossier clôturé';
+    if (durations.length) {
+      var mean = durations.reduce(function (x, y) { return x + y; }, 0) / durations.length;
+      var hours = mean / 3600000;
+      avgValue = hours < 1 ? Math.max(1, Math.round(hours * 60)) + ' min' : hours < 48 ? Math.round(hours) + 'h' : Math.round(hours / 24) + ' j';
+      avgSub = 'sur ' + durations.length + (durations.length > 1 ? ' dossiers clôturés' : ' dossier clôturé');
+    }
+    return { servicesSub: servicesSub, activeSub: activeSub, avgValue: avgValue, avgSub: avgSub };
+  };
+
+  window.ptRoleLabel = function (role) {
+    var r = String(role || '').toLowerCase();
+    var map = { super_admin: 'Super administrateur', platform_admin: 'Administrateur plateforme', admin: 'Administrateur', client_admin: 'Administrateur client', environment_admin: 'Administrateur', supervision_user: 'Superviseur', manager: 'Manager', operator: 'Opérateur', operateur: 'Opérateur' };
+    return map[r] || String(role || '');
+  };
+
   window.ptFillLiveKpis = async function () {
     var wrap = document.getElementById('dashboard-wrap');
     if (!wrap) return;
@@ -1066,14 +1138,13 @@
         } catch (_) {}
       }
       try {
-        if (!services.length && typeof ptEnsureServicesLoaded === 'function' && !window.__ptCoreServicesLoaded) {
+        // Toujours attendre les services s'ils manquent : le cache de navigation déduplique l'appel.
+        if (!services.length && typeof ptEnsureServicesLoaded === 'function') {
           await ptEnsureServicesLoaded(false);
-          window.__ptCoreServicesLoaded = true;
           services = typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : services;
           instances = typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : instances;
-        } else {
-          window.__ptCoreServicesLoaded = true;
         }
+        window.__ptCoreServicesLoaded = true;
       } catch (_) {}
       if (!forms.length) {
         try {
@@ -1084,13 +1155,20 @@
       var formCount = forms.length;
       var formActive = forms.filter(function (f) { return f.actif !== false; }).length;
       var padCount = Number(users.pad || 0);
-      var serviceActive = instances.length || services.length;
+      if (!services.length) {
+        var alt = (window.PT_CACHE && window.PT_CACHE.v55Services) || window.SERVICES_DATA || window.services || [];
+        if (Array.isArray(alt) && alt.length) services = alt;
+      }
+      if (!instances.length && Array.isArray(window.SERVICE_INSTANCES_DATA)) instances = window.SERVICE_INSTANCES_DATA;
+      var serviceCount = services.filter(function (x) { return x && x.actif !== false; }).length;
       var userCount = Number(users.total || 0);
       setKpiValue(wrap, /formulaire/i, formCount, formActive + ' actifs');
       setKpiValue(wrap, /pad|terrain/i, padCount, 'licences PAD');
-      setKpiValue(wrap, /service|workflow/i, serviceActive, services.length + ' processus');
+      setKpiValue(wrap, /service|workflow/i, serviceCount, instances.length + (instances.length > 1 ? ' dossiers' : ' dossier'));
       setKpiValue(wrap, /utilisateur|licence/i, userCount, (users.supervision || 0) + ' supervision');
       setKpiValue(wrap, /base/i, (typeof DATABASES_DATA !== 'undefined' ? DATABASES_DATA.filter(notInternalDb).length : 0), 'tables métier');
+      var act = wrap.querySelector('.v4-activity p');
+      if (act) act.textContent = window.ptLatestActivityLabel(instances, typeof SUBMISSIONS_DATA !== 'undefined' ? SUBMISSIONS_DATA : []);
     } catch (err) {
       console.warn('[PicoTrack] KPIs', err);
     }
@@ -1356,7 +1434,7 @@
         var st = statuses.find(function (s) { return s.id === inst.currentStatusId; });
         return String((st && st.nom) || '').toLowerCase().indexOf('attente') >= 0;
       }).length;
-      var sla = t.length ? Math.max(40, Math.min(99, Math.round((t.length - urgent) / t.length * 100))) : 100;
+      var sla = t.length ? Math.round((t.length - urgent) / t.length * 100) : null; // réel, sans bornage
       var last = t.slice().sort(function (a, b) { return parseMs(b.createdAt) - parseMs(a.createdAt); })[0];
       return { all: t, active: active, closed: t.length - active.length, urgent: urgent, waiting: waiting, sla: sla, last: last };
     };
@@ -1415,7 +1493,8 @@
     var a = i.length;
     var r = i.filter(function (g) { return g.count >= g.max; }).length;
     var s = i.reduce(function (acc, g) { return acc + g.max; }, 0);
-    var l = { totalRdv: o, totalSlots: a, saturated: r, load: s ? Math.round(o / s * 100) : 0 };
+    var known = typeof ptPlanningCapacityKnown === 'function' && ptPlanningCapacityKnown(i);
+    var l = { totalRdv: o, totalSlots: a, saturated: r, load: s && known ? Math.round(o / s * 100) : null };
     var view = '';
     try { view = String(typeof ptPlanningView !== 'undefined' ? ptPlanningView : ''); } catch (_) {}
     var d;
@@ -3153,4 +3232,230 @@
   window.addEventListener('load', boot);
   setTimeout(boot, 400);
   setTimeout(boot, 1200);
+})();
+
+/* PicoTrack — Vitesse de navigation (cache mémoire stale-while-revalidate).
+   Seules les lectures /api sont mises en cache, en mémoire, par jeton + environnement + requête exacte :
+   droits et filtres restent ceux du serveur. Toute écriture, la déconnexion et le changement
+   d'environnement vident le cache. */
+(function () {
+  'use strict';
+  var FRESH_MS = 4000;
+  var STALE_MS = 5 * 60 * 1000;
+  var MAX_ENTRIES = 200;
+  var READ_ACTIONS = {
+    '/api/records': ['list', 'view', 'initial_load', 'integrations_load'],
+    '/api/appointments': ['list', 'range', 'by_date', 'by_slot', 'availability', 'view'],
+    '/api/users': ['summary']
+  };
+  var NEUTRAL_ACTIONS = ['ping', 'health', 'currentProfile', 'current_profile'];
+  var ROUTES = {
+    '/dashboard': 'goDashboard', '/services': 'goProdServices', '/planning': 'goPlanning',
+    '/workflows': 'goWorkflows', '/donnees': 'goProDatabase', '/roles': 'goRoles', '/users': 'goUsers',
+    '/automations': 'goAutomations', '/integrations': 'goApiConfig', '/database': 'goStudioDatabase',
+    '/production': 'goProduction', '/studio': 'goStudio'
+  };
+  var cache = new Map();
+  var inflight = new Map();
+  var gen = 0;
+  var lastEnv = '';
+  var navAt = 0;
+  var navPath = '';
+  var lastInteract = 0;
+  var rerenderTimer = null;
+  var prefetchedFor = '';
+  var stats = { hits: 0, stale: 0, misses: 0, dedup: 0, clears: 0 };
+
+  function cleanPath(path) { return String(path || '').split('?')[0].replace(/\/+$/, ''); }
+  function actionOf(body) { return String((body && body.action) || ''); }
+  function isNeutral(path, body) {
+    var p = cleanPath(path);
+    var a = actionOf(body);
+    return NEUTRAL_ACTIONS.indexOf(a) >= 0 && (p === '/api/records' || p === '/api/auth');
+  }
+  function isRead(path, body) {
+    var list = READ_ACTIONS[cleanPath(path)];
+    return !!list && list.indexOf(actionOf(body)) >= 0;
+  }
+  function hash(str) {
+    var h = 5381;
+    for (var i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+    return (h >>> 0).toString(36) + ':' + str.length;
+  }
+  function authFp() {
+    var token = '';
+    var pico = '';
+    try { if (typeof _readStoredSession === 'function') token = String((_readStoredSession() || {}).access_token || ''); } catch (_) {}
+    try { pico = String(localStorage.getItem('pt_active_session_token') || ''); } catch (_) {}
+    return hash(token + '|' + pico);
+  }
+  function currentEnv() {
+    try { if (typeof _getEnvironmentCode === 'function') return String(_getEnvironmentCode() || ''); } catch (_) {}
+    try { return String(sessionStorage.getItem('pt_active_env') || ''); } catch (_) {}
+    return '';
+  }
+  function clearAll() {
+    gen++;
+    cache.clear();
+    inflight.clear();
+    stats.clears++;
+  }
+  function checkEnv() {
+    var env = currentEnv();
+    if (env !== lastEnv) { if (lastEnv) clearAll(); lastEnv = env; }
+    return env;
+  }
+  function keyFor(path, body) {
+    var env = checkEnv();
+    var b = '';
+    try { b = JSON.stringify(body || {}); } catch (_) { return ''; }
+    return cleanPath(path) + '|' + env + '|' + authFp() + '|' + b;
+  }
+  function parse(s) { return s === undefined ? undefined : JSON.parse(s); }
+  function store(key, s, g) {
+    if (g !== gen) return;
+    cache.delete(key);
+    cache.set(key, { at: Date.now(), s: s });
+    while (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value);
+  }
+
+  function install() {
+    var orig = window._apiPost;
+    if (typeof orig !== 'function' || orig.__ptSwr || window.__ptSwrInstalled) return false;
+    window.__ptSwrInstalled = true;
+    function fetchStore(key, self, args) {
+      var g = gen;
+      var p = Promise.resolve(orig.apply(self, args)).then(function (res) {
+        var s = JSON.stringify(res === undefined ? null : res);
+        store(key, s, g);
+        return s;
+      });
+      inflight.set(key, p);
+      var drop = function () { if (inflight.get(key) === p) inflight.delete(key); };
+      p.then(drop, drop);
+      return p;
+    }
+    var wrapped = function (path, body) {
+      var self = this;
+      var args = arguments;
+      if (isNeutral(path, body)) return orig.apply(self, args);
+      if (!isRead(path, body)) {
+        clearAll();
+        var ret = orig.apply(self, args);
+        Promise.resolve(ret).then(clearAll).catch(clearAll); // le résultat rendu à l’appelant reste celui d’origine
+        return ret;
+      }
+      var key = keyFor(path, body);
+      if (!key) return orig.apply(self, args);
+      var pending = inflight.get(key);
+      var entry = cache.get(key);
+      var age = entry ? Date.now() - entry.at : Infinity;
+      if (entry && age < FRESH_MS) { stats.hits++; return Promise.resolve(parse(entry.s)); }
+      if (entry && age < STALE_MS) {
+        stats.stale++;
+        if (!pending) {
+          var before = entry.s;
+          fetchStore(key, self, args).then(function (s) { if (s !== before) scheduleRerender(); }, function () {});
+        }
+        return Promise.resolve(parse(entry.s));
+      }
+      if (pending) { stats.dedup++; return pending.then(parse); }
+      stats.misses++;
+      return fetchStore(key, self, args).then(parse);
+    };
+    wrapped.__ptSwr = true;
+    window._apiPost = wrapped;
+    return true;
+  }
+
+  function modalOpen() {
+    return !!document.querySelector('#db-create-modal, .modal.open, .modal-bg.open, [role="dialog"]:not([hidden])');
+  }
+  function scheduleRerender() {
+    if (rerenderTimer) return;
+    rerenderTimer = setTimeout(function () {
+      rerenderTimer = null;
+      if (lastInteract > navAt + 50 || modalOpen()) return;
+      var name = ROUTES[navPath];
+      var fn = name && window[name];
+      if (typeof fn !== 'function') return;
+      if (cleanPath(location.pathname) !== navPath) return;
+      try { if (typeof window.ptNavMarkDirty === 'function') window.ptNavMarkDirty('all'); } catch (_) {}
+      try { fn(); } catch (err) { try { console.warn('[PicoTrack] rafraîchissement', err); } catch (_) {} }
+    }, 60);
+  }
+
+  function prefetch() {
+    var env = currentEnv();
+    var fp = authFp() + '|' + env;
+    if (!env || prefetchedFor === fp) return;
+    var hasSession = false;
+    try { hasSession = typeof _readStoredSession === 'function' && !!(_readStoredSession() || {}).access_token; } catch (_) {}
+    if (!hasSession) return;
+    prefetchedFor = fp;
+    var run = function () {
+      var jobs = [];
+      try { jobs.push(window._apiPost('/api/users', { action: 'summary', environment_code: env })); } catch (_) {}
+      try { if (typeof loadStandaloneDatabasesFromSupabase === 'function') jobs.push(loadStandaloneDatabasesFromSupabase()); } catch (_) {}
+      try { if (typeof window.ptEnsureServicesLoaded === 'function') jobs.push(window.ptEnsureServicesLoaded()); } catch (_) {}
+      try { if (typeof window.loadFromSupabase === 'function') jobs.push(window.loadFromSupabase({ scope: 'services' })); } catch (_) {}
+      try {
+        if (window.DB && typeof window.DB.getAppointments === 'function') {
+          jobs.push(window.DB.getAppointments('2000-01-01', '2100-01-01'));
+          if (typeof ptPlanningRange === 'function' && typeof ptDateISO === 'function') {
+            var r = ptPlanningRange();
+            jobs.push(window.DB.getAppointments(ptDateISO(r.from), ptDateISO(r.to)));
+          }
+        }
+        if (window.DB && typeof window.DB.list === 'function') jobs.push(window.DB.list('submissions', { select: '*', limit: 500 }));
+      } catch (_) {}
+      Promise.all(jobs.map(function (j) { return Promise.resolve(j).catch(function () {}); })).then(function () {
+        if (navPath === '/dashboard' && typeof window.ptFillLiveKpis === 'function') return window.ptFillLiveKpis();
+      }).catch(function () {});
+    };
+    if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 2500 });
+    else setTimeout(run, 800);
+  }
+
+  function wrapNav() {
+    var orig = window.ptSyncUrl;
+    if (typeof orig === 'function' && !orig.__ptSwr) {
+      window.ptSyncUrl = function (path) {
+        navAt = Date.now();
+        navPath = cleanPath(path);
+        checkEnv();
+        setTimeout(prefetch, 0);
+        return orig.apply(this, arguments);
+      };
+      window.ptSyncUrl.__ptSwr = true;
+    }
+    var out = window.ptSignOut;
+    if (typeof out === 'function' && !out.__ptSwr) {
+      window.ptSignOut = function () { clearAll(); prefetchedFor = ''; return out.apply(this, arguments); };
+      window.ptSignOut.__ptSwr = true;
+    }
+  }
+
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    ['pointerdown', 'keydown'].forEach(function (ev) {
+      document.addEventListener(ev, function (e) {
+        if (e && e.target && e.target.closest && e.target.closest('#sb')) return;
+        lastInteract = Date.now();
+      }, true);
+    });
+  }
+  install();
+  wrapNav();
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('load', function () { install(); wrapNav(); setTimeout(prefetch, 1200); });
+  }
+  window.ptNavCache = {
+    clear: clearAll,
+    isRead: isRead,
+    isNeutral: isNeutral,
+    keyFor: keyFor,
+    size: function () { return cache.size; },
+    stats: function () { return Object.assign({}, stats); },
+    install: install
+  };
 })();
