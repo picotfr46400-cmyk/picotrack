@@ -1,5 +1,0 @@
-Contact: mailto:security@picotrack.fr
-Preferred-Languages: fr, en
-Canonical: https://picotrack.fr/.well-known/security.txt
-Policy: https://picotrack.fr/security
-Expires: 2027-06-16T23:59:59.000Z
