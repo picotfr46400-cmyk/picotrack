@@ -1173,7 +1173,7 @@ test('export PDF refuse un compte pad_user', async () => {
 
 test('le détail supervision expose Exporter en PDF via /api/records', async () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /core-supervision\.js\?v=20261008w/);
+  assert.match(html, /core-supervision\.js\?v=20261008y/);
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   assert.match(overlay, /Exporter en PDF/);
   assert.match(overlay, /export_submission_pdf/);
