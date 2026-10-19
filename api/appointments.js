@@ -370,12 +370,62 @@ function normalizeAppointmentRecord(record, env) {
   };
 }
 
+function fieldsOf(form) {
+  let fields = form && form.fields;
+  if (typeof fields === 'string') { try { fields = JSON.parse(fields); } catch (_) { fields = []; } }
+  return Array.isArray(fields) ? fields : [];
+}
+
+// Même règle que l'écran de saisie (ptAppointmentCapacity) : la capacité vient du formulaire, pas du client.
+function slotCapacity(field) {
+  const raw = field ? (field.parallelSlots ?? field.parallel_slots ?? field.capacity ?? field.capacite ?? field.places ?? 2) : 2;
+  const n = parseInt(raw, 10);
+  return Math.max(1, Number.isNaN(n) ? 2 : n);
+}
+
+function slotFullError(startTime, used, capacity) {
+  return Object.assign(new Error(`Créneau complet : ${String(startTime).slice(0, 5)} (${used}/${capacity} places prises). Choisissez un autre créneau.`), { status: 409, code: 'slot_full', used, capacity });
+}
+
+async function countSlot(req, env, record) {
+  const rows = await readRows(req, buildAppointmentsPath(env, {
+    form_id: record.form_id, field_id: record.field_id, date: record.date, start_time: record.start_time,
+    select: 'id,status', raw_limit: 1000
+  }));
+  return rows.filter(row => !isCanceled(row)).length;
+}
+
 async function handleCreate(req, env, body, profile) {
   const record = normalizeAppointmentRecord(body.record || body, env);
+  if (record.response_id != null && record.response_id !== '' && !/^\d+$/.test(String(record.response_id))) {
+    throw Object.assign(new Error('Saisie pas encore enregistrée : le rendez-vous ne peut pas être réservé. Réessayez dans un instant.'), { status: 400, code: 'response_not_saved' });
+  }
+  if (record.response_id === '') record.response_id = null;
   await assertAppointmentAccess(req, env, record.form_id, profile, 'write');
-  const saved = await serviceRest('appointments?select=*', { method: 'POST', body: record, prefer: 'return=representation', req });
+  const form = await readForm(req, env, record.form_id);
+  if (!form) throw Object.assign(new Error('Formulaire introuvable pour ce rendez-vous.'), { status: 404 });
+  const field = fieldsOf(form).find(f => f && String(f.id) === String(record.field_id));
+  // Champ décrit dans le formulaire : sa capacité fait foi. Sinon (formulaire ancien), capacité demandée bornée.
+  const capacity = field
+    ? slotCapacity(field)
+    : Math.min(50, slotCapacity({ parallelSlots: record.parallel_slots != null ? record.parallel_slots : 2 }));
+  // Le compteur des places et le garde-fou SQL portent sur le même groupe : formulaire + champ.
+  record.parallel_slots = capacity;
+  record.capacity_group = String(record.field_id);
+  const used = await countSlot(req, env, record);
+  if (used >= capacity) throw slotFullError(record.start_time, used, capacity);
+  let saved;
+  try {
+    saved = await serviceRest('appointments?select=*', { method: 'POST', body: record, prefer: 'return=representation', req });
+  } catch (err) {
+    const msg = String(err && err.message || '');
+    if (/complet/i.test(msg)) throw slotFullError(record.start_time, capacity, capacity);
+    if (err && err.status >= 400 && err.status < 500) throw Object.assign(new Error('Rendez-vous refusé : données de réservation invalides.'), { status: 400 });
+    throw access.unavailable(err);
+  }
   const row = Array.isArray(saved) ? saved[0] : saved;
-  return { ok: true, success: true, environment_code: env, row, rows: row ? [row] : [] };
+  if (!row || row.id == null) throw Object.assign(new Error('Rendez-vous non confirmé par la base : réessayez.'), { status: 503 });
+  return { ok: true, success: true, environment_code: env, row, rows: [row], used: used + 1, capacity, remaining: Math.max(0, capacity - used - 1) };
 }
 
 module.exports = async function handler(req, res) {
@@ -399,9 +449,10 @@ module.exports = async function handler(req, res) {
     return json(res, 400, { error: 'Action rendez-vous non autorisée' });
   } catch (err) {
     const payload = { error: err.message || 'Erreur API rendez-vous' };
-    if (err.code === 'range_too_large') payload.code = err.code;
+    if (['range_too_large', 'slot_full', 'response_not_saved'].includes(err.code)) payload.code = err.code;
+    if (err.code === 'slot_full') { payload.used = err.used; payload.capacity = err.capacity; }
     return json(res, err.status && err.status >= 400 ? err.status : 500, payload);
   }
 };
 
-module.exports._internals = { handleList, handleMonthCounts, buildAppointmentsPath, MAX_RANGE_DAYS };
+module.exports._internals = { handleList, handleMonthCounts, handleCreate, handleAvailability, buildAppointmentsPath, slotCapacity, MAX_RANGE_DAYS };
