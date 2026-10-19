@@ -11,6 +11,9 @@
     }
   },
   "buildCommand": "npm run build",
+  "regions": [
+    "dub1"
+  ],
   "functions": {
     "api/**/*.js": {
       "maxDuration": 20
