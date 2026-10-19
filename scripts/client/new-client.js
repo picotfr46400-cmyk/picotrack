@@ -106,10 +106,11 @@ async function assertServerIdentity(client, cfg) {
   const r = (await client.query("select current_database() db, host(inet_server_addr()) addr, current_user usr")).rows[0];
   if (r.db !== cfg.database) guard(`base inattendue côté serveur (${r.db}).`);
   if (!r.addr) guard("adresse du serveur inconnue : arrêt.");
+  // Boucle locale (tests) : derrière Docker, l'adresse vue par le serveur est celle du conteneur ; la base nommée suffit.
+  if (cfg.local) return r;
   const dns = require('dns').promises;
   const want = new Set();
-  if (cfg.local) want.add('127.0.0.1');
-  else {
+  {
     for (const fam of [4, 6]) { try { (await dns.lookup(cfg.identityHost, { all: true, family: fam })).forEach(x => want.add(x.address)); } catch (_) {} }
   }
   if (!want.size) guard(`résolution de ${cfg.identityHost} impossible : arrêt.`);
