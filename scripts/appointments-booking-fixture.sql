@@ -9,12 +9,16 @@ create table if not exists public.appointments (
   capacity_limit integer, parallel_slots integer default 1, tenant_id uuid,
   environment_code text not null default 'DEMO'
 );
+-- La base CI peut déjà contenir une table forms (autres jobs) : colonnes ajoutées au besoin, lignes remplacées.
 create table if not exists public.forms (id bigint primary key, nom text, fields jsonb, environment_code text);
+alter table public.forms add column if not exists nom text;
+alter table public.forms add column if not exists fields jsonb;
+alter table public.forms add column if not exists environment_code text;
+delete from public.forms where id::text in ('4', '5', '4000');
 insert into public.forms (id, nom, environment_code, fields) values
   (4, 'Nouveau formulaire', 'DEMO', '[{"id":1792401253084,"type":"appointment","parallelSlots":2}]'::jsonb),
   (5, 'Autre formulaire', 'DEMO', '[{"id":1792401253084,"type":"appointment","parallelSlots":2}]'::jsonb),
-  (4000, 'EFC', 'EFC', '[{"id":1792401253084,"type":"appointment","parallelSlots":1}]'::jsonb)
-on conflict (id) do nothing;
+  (4000, 'EFC', 'EFC', '[{"id":1792401253084,"type":"appointment","parallelSlots":1}]'::jsonb);
 create or replace function public.prevent_appointment_overbooking()
 returns trigger language plpgsql security definer set search_path to 'public' as $$
 declare existing_count int;
