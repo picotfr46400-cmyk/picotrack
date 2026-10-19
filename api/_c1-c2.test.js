@@ -896,7 +896,10 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
       const out = await callJson(records, { action: 'list', entity, ...extra }, authHeaders());
       global.fetch = previous;
       assert.equal(out.status, 200, `${entity} ${JSON.stringify(extra)} ${out.payload.error || ''}`);
-      const hit = calls.map(url => decodeURIComponent(url)).find(url => url.includes(`/rest/v1/${entity}?`) && url.includes('environment_code=eq.EFC'));
+      // La lecture des droits (index des services) part désormais en parallèle : on retient la lecture des lignes demandées.
+      const hits = calls.map(url => decodeURIComponent(url)).filter(url => url.includes(`/rest/v1/${entity}?`) && url.includes('environment_code=eq.EFC'));
+      const wanted = String(extra.select ?? '*').trim() || '*';
+      const hit = hits.find(url => ((url.match(/[?&]select=([^&]+)/) || [])[1] || '') === wanted) || hits[0];
       assert.ok(hit, `${entity} sans filtre EFC`);
       assert.equal(hit.includes('password_hash'), false, hit);
       const requested = String(extra.select ?? '*').trim() || '*';

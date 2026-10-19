@@ -1193,17 +1193,21 @@ async function handleList(req, body) {
   if (entity === 'app_roles') return listProjectedAppRoles(req, profile, body, filters);
 
   const path = buildReadPath(entity, { ...body, select, filters });
+  const guarded = new Set(['forms', 'services', 'submissions', 'service_instances', 'appointments', 'mail_logs', 'database_rows']);
+  const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
+  // Vitesse : les droits se lisent en même temps que les lignes ; le filtrage reste identique.
+  const rights = guarded.has(entity)
+    ? Promise.all([catalogFor(req, profile), loadServicesIndex(req, profile, env)])
+    : null;
+  if (rights) rights.catch(() => {});
   const rows = await serviceRead(req, path);
   if (!Array.isArray(rows)) return rows;
   if (entity === 'databases') {
     return applySearch(rows.filter(row => String(row?.nom || '') !== INTEGRATIONS_NAME), body);
   }
-  const guarded = new Set(['forms', 'services', 'submissions', 'service_instances', 'appointments', 'mail_logs', 'database_rows']);
   if (!guarded.has(entity)) return applySearch(rows, body);
 
-  const catalog = await catalogFor(req, profile);
-  const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
-  const services = await loadServicesIndex(req, profile, env);
+  const [catalog, services] = await rights;
   const wanted = requestedRowId(body);
   const hiddenIds = entity === 'submissions'
     ? await hiddenSubmissionIds(req, env, access.instanceMask(profile, catalog), wanted)
@@ -1842,9 +1846,19 @@ async function handleInitialLoad(req, body) {
   const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, body.environment_code || body.env), 'DEMO');
   const envFilter = [{ column: 'environment_code', op: 'eq', value: env }];
   const scope = String(body.scope || body.mode || 'forms').trim().toLowerCase();
-  const catalog = await catalogFor(req, profile);
-  const services = await loadServicesIndex(req, profile, env);
-  const hiddenIds = await hiddenSubmissionIds(req, env, access.instanceMask(profile, catalog), '');
+  // Vitesse : catalogue des rôles, index des services et données du scope partent en parallèle
+  // (chaque aller-retour vers la base coûte 150 à 400 ms).
+  const servicesData = scope === 'services'
+    ? Promise.all([
+      serviceRead(req, buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.limit, 500) })),
+      serviceRead(req, buildReadPath('service_instances', { filters: envFilter, select: '*', order: 'created_at.desc', limit: cleanLimit(body.instances_limit, 500) }))
+    ])
+    : null;
+  if (servicesData) servicesData.catch(() => {});
+  const [catalog, services] = await Promise.all([catalogFor(req, profile), loadServicesIndex(req, profile, env)]);
+  const hiddenIds = scope === 'services' || scope === 'databases'
+    ? new Set()
+    : await hiddenSubmissionIds(req, env, access.instanceMask(profile, catalog), '');
   const keepForm = row => access.formLevel(profile, catalog, row?.id, services) !== 'hidden';
   const keepService = row => access.effectiveLevel(profile, catalog, 'service', row?.id) !== 'hidden';
   const keepInstance = row => access.instanceLevel(profile, catalog, row) !== 'hidden';
@@ -1868,10 +1882,7 @@ async function handleInitialLoad(req, body) {
   }
 
   if (scope === 'services') {
-    const [services, serviceInstances] = await Promise.all([
-      serviceRead(req, buildReadPath('services', { filters: envFilter, select: '*', order: 'created_at.asc', limit: cleanLimit(body.limit, 500) })),
-      serviceRead(req, buildReadPath('service_instances', { filters: envFilter, select: '*', order: 'created_at.desc', limit: cleanLimit(body.instances_limit, 500) }))
-    ]);
+    const [services, serviceInstances] = await servicesData;
     return {
       environment_code: env,
       scope: 'services',
