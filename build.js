@@ -24,4 +24,9 @@ const offlineAsset = 'offline-sync.js';
 const offlinePath = path.join('assets', offlineAsset);
 if (!fs.existsSync(offlinePath)) throw new Error(`${offlineAsset} manquant`);
 fs.copyFileSync(offlinePath, path.join(out, 'assets', offlineAsset));
+for (const extra of ['qrcode.js', 'labels-core.js', 'labels.js']) {
+  const extraPath = path.join('assets', extra);
+  if (!fs.existsSync(extraPath)) throw new Error(`${extra} manquant`);
+  fs.copyFileSync(extraPath, path.join(out, 'assets', extra));
+}
 console.log('PicoTrack build : asset courant + overlay core-supervision + portail public publiés.');

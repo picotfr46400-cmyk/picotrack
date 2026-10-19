@@ -8,6 +8,7 @@ const { normalizeLicenseType, interpretedLicenseType, canonicalizeStoredLicenseT
 const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChange, commitCompanionLicenseChange, snapshotUserProfile, resolveReactivationLicense, assertExplicitLicenseQuota, assertShortLoginsAvailable } = require('./function');
 const { assertWritableEmail } = require('./_email');
 const access = require('./_access');
+const { handleLabels } = require('./_labels');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -2185,6 +2186,17 @@ async function handler(req, res) {
         const profile = await getUserProfile(user.id, req);
         req.picoReaderProfile = profile;
         result = await handleIntegrations(req, body, profile);
+        break;
+      }
+      case 'labels_load':
+      case 'labels_save_template':
+      case 'labels_delete_template':
+      case 'labels_save_printer':
+      case 'labels_delete_printer': {
+        const user = await requireAuth(req);
+        const profile = await getUserProfile(user.id, req);
+        req.picoReaderProfile = profile;
+        result = await handleLabels(req, body, profile);
         break;
       }
       case 'mail_rules_list':

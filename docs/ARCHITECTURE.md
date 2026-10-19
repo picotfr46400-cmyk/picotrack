@@ -128,3 +128,13 @@ Le relevé des colonnes publiques est dans `supabase/schema/public-columns.sql`.
 `p_role_keys` est plafonné à 50. Au-delà, SQL lève `role_keys_cap` et l’API répond 400. `20261015180000_role_still_assigned.sql` ne réécrit pas une fonction qui contient déjà `normalize_role_name` ou `role_keys_cap`. Une base de courriel injoignable répond `Erreur inconnue` avec `pending: true`, jamais `pending: false`. Le normaliseur d’e-mail est `normalize_email` (bords Unicode, NFKC, lower ICU, 320 caractères) ; le miroir JS retire NUL, qu’un texte Postgres ne peut pas porter. Le limiteur de connexion a une limite stricte de 8 échecs par compte et par IP. Un succès remet à zéro seulement ce compteur. Le compteur d’IP, plus haut, n’est jamais remis à zéro par un succès et ne bloque pas : au-delà de 60 échecs il ajoute un délai progressif. `20261016150000_role_key_cap_email.sql` est idempotente et postérieure à `20261016140000`. Elle s’applique d’abord sur la démo.
 
 Aucune migration n’est nécessaire : `permissions` est déjà un JSON. Les écrans (Administration → Rôles & Permissions, studio formulaire, éditeur de workflow et onglet Statuts) sont réservés aux administrateurs d’environnement. L’aperçu « Voir comme ce rôle » est local au navigateur et n’envoie rien au serveur.
+
+## Étiquettes et imprimantes
+
+Tables `label_templates` et `printer_profiles` (migration `20261019220000_label_templates_printers.sql`, à appliquer à la main par base client). RLS active sans policy, aucun droit `anon`/`authenticated` : l’accès passe par `/api/records` (actions `labels_*`, module `api/_labels.js`), toujours filtré par `environment_code`. Pas de nouvelle fonction Vercel.
+
+Droits : lecture et impression pour tout compte actif de l’environnement (les valeurs imprimées viennent de saisies que l’utilisateur voit déjà via `list`). Création, modification et suppression : administrateurs d’environnement et comptes supervision, jamais PAD, lecture seule ni opérateur.
+
+Impression : un document HTML au format exact (`@page size: L mm H mm; margin: 0`, une étiquette par page) est imprimé par la fenêtre du système, donc par n’importe quelle imprimante installée (Zebra, Brother, Dymo, A4, Android via le plugin du fabricant). Le type « Zebra ZPL » produit un fichier `.zpl` téléchargé. L’imprimante « de ce poste » est gardée dans `localStorage` (`pt_label_printer_poste`).
+
+Backlog : envoi ZPL direct sur le réseau (port 9100 ou `/pstprnt`) impossible depuis une page https sans relais local ; à étudier avec Zebra Browser Print ou un petit relais si un client le demande.
