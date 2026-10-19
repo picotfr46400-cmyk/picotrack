@@ -597,7 +597,7 @@
       });
     }
     if (extra.sla === 'below' && typeof _svcServiceStats === 'function') {
-      out = out.filter(function (svc) { return _svcServiceStats(svc).sla < 90; });
+      out = out.filter(function (svc) { var v = _svcServiceStats(svc).sla; return v != null && v < 90; });
     }
     return out;
   }
@@ -1046,6 +1046,78 @@
     });
   }
 
+  function ptTs(value) {
+    if (!value) return NaN;
+    var str = String(value);
+    var fr = str.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+    if (fr) return new Date(+fr[3], +fr[2] - 1, +fr[1], +(fr[4] || 0), +(fr[5] || 0), +(fr[6] || 0)).getTime();
+    return new Date(str).getTime();
+  }
+  window.ptTs = ptTs;
+
+  window.ptLatestActivityLabel = function (instances, submissions, now) {
+    var best = null;
+    (instances || []).forEach(function (it) {
+      var t = ptTs(it && (it.updatedAt || it.createdAt));
+      if (isFinite(t) && (!best || t > best.t)) best = { t: t, text: 'Dossier ' + (it.ref || it.reference || it.id) + ' mis à jour' };
+    });
+    (submissions || []).forEach(function (sub) {
+      var t = ptTs(sub && (sub.created_at || sub.createdAt || sub.date));
+      if (isFinite(t) && (!best || t > best.t)) best = { t: t, text: 'Nouvelle saisie' + (sub.formNom || sub.form_name ? ' : ' + (sub.formNom || sub.form_name) : '') };
+    });
+    if (!best) return 'Aucune activité enregistrée.';
+    return best.text + ' · ' + window.ptAgoLabel(best.t, now) + '.';
+  };
+
+  window.ptAgoLabel = function (t, now) {
+    var diff = Math.max(0, (now || Date.now()) - t);
+    var min = Math.round(diff / 60000);
+    if (min < 1) return "à l'instant";
+    if (min < 60) return 'il y a ' + min + ' min';
+    var h = Math.round(min / 60);
+    if (h < 24) return 'il y a ' + h + ' h';
+    return 'il y a ' + Math.round(h / 24) + ' j';
+  };
+
+  // Indicateurs du Centre d'exécution calculés sur les vraies données, « — » si impossible.
+  window.ptExecKpis = function (services, instances, allServices, now) {
+    var DASH = '\u2014';
+    now = now || Date.now();
+    var day = new Date(now); day.setHours(0, 0, 0, 0);
+    var month = new Date(now); month.setDate(1); month.setHours(0, 0, 0, 0);
+    var terminal = {};
+    (allServices || services || []).forEach(function (svc) {
+      (svc && svc.statuses || []).forEach(function (st) { if (st && st.type === 'terminal') terminal[String(svc.id) + '|' + String(st.id)] = true; });
+    });
+    var list = instances || [];
+    var svcDates = (services || []).map(function (svc) { return ptTs(svc && (svc.created_at || svc.createdAt)); }).filter(isFinite);
+    var servicesSub = svcDates.length ? '+' + svcDates.filter(function (t) { return t >= month.getTime(); }).length + ' ce mois' : DASH;
+    var instDates = list.map(function (it) { return ptTs(it && (it.createdAt || it.created_at)); }).filter(isFinite);
+    var activeSub = list.length && instDates.length ? '+' + instDates.filter(function (t) { return t >= day.getTime(); }).length + ' aujourd\u2019hui' : DASH;
+    var durations = [];
+    list.forEach(function (it) {
+      if (!it || !terminal[String(it.serviceId) + '|' + String(it.currentStatusId || it.statusId)]) return;
+      var a = ptTs(it.createdAt || it.created_at);
+      var b = ptTs(it.closedAt || it.closed_at); // vraie date de clôture uniquement, jamais updatedAt
+      if (isFinite(a) && isFinite(b) && b >= a) durations.push(b - a);
+    });
+    var avgValue = DASH;
+    var avgSub = 'Aucun dossier clôturé';
+    if (durations.length) {
+      var mean = durations.reduce(function (x, y) { return x + y; }, 0) / durations.length;
+      var hours = mean / 3600000;
+      avgValue = hours < 1 ? Math.max(1, Math.round(hours * 60)) + ' min' : hours < 48 ? Math.round(hours) + 'h' : Math.round(hours / 24) + ' j';
+      avgSub = 'sur ' + durations.length + (durations.length > 1 ? ' dossiers clôturés' : ' dossier clôturé');
+    }
+    return { servicesSub: servicesSub, activeSub: activeSub, avgValue: avgValue, avgSub: avgSub };
+  };
+
+  window.ptRoleLabel = function (role) {
+    var r = String(role || '').toLowerCase();
+    var map = { super_admin: 'Super administrateur', platform_admin: 'Administrateur plateforme', admin: 'Administrateur', client_admin: 'Administrateur client', environment_admin: 'Administrateur', supervision_user: 'Superviseur', manager: 'Manager', operator: 'Opérateur', operateur: 'Opérateur' };
+    return map[r] || String(role || '');
+  };
+
   window.ptFillLiveKpis = async function () {
     var wrap = document.getElementById('dashboard-wrap');
     if (!wrap) return;
@@ -1066,14 +1138,13 @@
         } catch (_) {}
       }
       try {
-        if (!services.length && typeof ptEnsureServicesLoaded === 'function' && !window.__ptCoreServicesLoaded) {
+        // Toujours attendre les services s'ils manquent : le cache de navigation déduplique l'appel.
+        if (!services.length && typeof ptEnsureServicesLoaded === 'function') {
           await ptEnsureServicesLoaded(false);
-          window.__ptCoreServicesLoaded = true;
           services = typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : services;
           instances = typeof SERVICE_INSTANCES_DATA !== 'undefined' ? SERVICE_INSTANCES_DATA : instances;
-        } else {
-          window.__ptCoreServicesLoaded = true;
         }
+        window.__ptCoreServicesLoaded = true;
       } catch (_) {}
       if (!forms.length) {
         try {
@@ -1084,13 +1155,20 @@
       var formCount = forms.length;
       var formActive = forms.filter(function (f) { return f.actif !== false; }).length;
       var padCount = Number(users.pad || 0);
-      var serviceActive = instances.length || services.length;
+      if (!services.length) {
+        var alt = (window.PT_CACHE && window.PT_CACHE.v55Services) || window.SERVICES_DATA || window.services || [];
+        if (Array.isArray(alt) && alt.length) services = alt;
+      }
+      if (!instances.length && Array.isArray(window.SERVICE_INSTANCES_DATA)) instances = window.SERVICE_INSTANCES_DATA;
+      var serviceCount = services.filter(function (x) { return x && x.actif !== false; }).length;
       var userCount = Number(users.total || 0);
       setKpiValue(wrap, /formulaire/i, formCount, formActive + ' actifs');
       setKpiValue(wrap, /pad|terrain/i, padCount, 'licences PAD');
-      setKpiValue(wrap, /service|workflow/i, serviceActive, services.length + ' processus');
+      setKpiValue(wrap, /service|workflow/i, serviceCount, instances.length + (instances.length > 1 ? ' dossiers' : ' dossier'));
       setKpiValue(wrap, /utilisateur|licence/i, userCount, (users.supervision || 0) + ' supervision');
       setKpiValue(wrap, /base/i, (typeof DATABASES_DATA !== 'undefined' ? DATABASES_DATA.filter(notInternalDb).length : 0), 'tables métier');
+      var act = wrap.querySelector('.v4-activity p');
+      if (act) act.textContent = window.ptLatestActivityLabel(instances, typeof SUBMISSIONS_DATA !== 'undefined' ? SUBMISSIONS_DATA : []);
     } catch (err) {
       console.warn('[PicoTrack] KPIs', err);
     }
@@ -1356,7 +1434,7 @@
         var st = statuses.find(function (s) { return s.id === inst.currentStatusId; });
         return String((st && st.nom) || '').toLowerCase().indexOf('attente') >= 0;
       }).length;
-      var sla = t.length ? Math.max(40, Math.min(99, Math.round((t.length - urgent) / t.length * 100))) : 100;
+      var sla = t.length ? Math.round((t.length - urgent) / t.length * 100) : null; // réel, sans bornage
       var last = t.slice().sort(function (a, b) { return parseMs(b.createdAt) - parseMs(a.createdAt); })[0];
       return { all: t, active: active, closed: t.length - active.length, urgent: urgent, waiting: waiting, sla: sla, last: last };
     };
@@ -1415,7 +1493,8 @@
     var a = i.length;
     var r = i.filter(function (g) { return g.count >= g.max; }).length;
     var s = i.reduce(function (acc, g) { return acc + g.max; }, 0);
-    var l = { totalRdv: o, totalSlots: a, saturated: r, load: s ? Math.round(o / s * 100) : 0 };
+    var known = typeof ptPlanningCapacityKnown === 'function' && ptPlanningCapacityKnown(i);
+    var l = { totalRdv: o, totalSlots: a, saturated: r, load: s && known ? Math.round(o / s * 100) : null };
     var view = '';
     try { view = String(typeof ptPlanningView !== 'undefined' ? ptPlanningView : ''); } catch (_) {}
     var d;
@@ -2016,6 +2095,9 @@
     var notice = payload && payload.notice
       ? '<p style="font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px;margin:0 0 10px">' + html(payload.notice) + '</p>'
       : '';
+    if (payload && payload.truncated) {
+      notice += '<p data-pt-trace-truncated style="font-size:11px;color:#9a3412;background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:8px;margin:0 0 10px">Historique tronqué : seuls les 500 événements les plus récents sont affichés.</p>';
+    }
     el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px">' +
       '<div style="font-size:10.5px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">Traçabilité</div>' +
       notice +
@@ -2033,46 +2115,280 @@
     }
   }
 
-  function mountTrace(elementId, submissionId, recordView) {
+  function localTraceEvents(inst) {
+    var svc = null;
+    try { svc = (typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : []).filter(function (x) { return String(x.id) === String(inst.serviceId); })[0] || null; } catch (_) {}
+    return (inst.events || []).map(function (ev, i) {
+      var L = window.ptEventLabel ? window.ptEventLabel(ev, svc) : { label: ev.type, detail: '', actor: ev.actor, when: ev.at, ms: 0 };
+      return { id: 'local-' + i, event_type: ev.type, label: L.label, occurred_at_paris: L.when, actor_name: L.actor, origin_label: 'Historique local', detail: L.detail ? { summary: L.detail } : {}, _ms: L.ms };
+    }).sort(function (a, b) { return b._ms - a._ms; });
+  }
+
+  function mountTrace(elementId, submissionId, recordView, instanceId, opts) {
     var el = document.getElementById(elementId);
     var sid = String(submissionId == null ? '' : submissionId).trim();
-    if (!el || !sid) return;
-    el.style.width = 'min(340px, 100%)';
+    var iid = String(instanceId == null ? '' : instanceId).trim();
+    if (!el || (!sid && !iid)) return;
+    var key = sid ? sid : 'i:' + iid;
+    el.style.width = el.getAttribute('data-pt-trace-wide') ? '100%' : 'min(340px, 100%)';
     el.setAttribute('data-pt-trace-root', '1');
-    el.setAttribute('data-pt-submission', sid);
-    var record = recordView !== false && !traceViewed[sid];
+    el.setAttribute('data-pt-submission', key);
+    if (iid && !sid) el.setAttribute('data-pt-instance', iid); else if (el.removeAttribute) el.removeAttribute('data-pt-instance');
+    var record = !!sid && recordView !== false && !traceViewed[sid];
     if (record) traceViewed[sid] = true;
     el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:var(--tl)">Chargement de la traçabilité…</div>';
+    var payload = sid
+      ? { action: 'submission_trace', id: sid, record_view: !!record, environment_code: envCode() }
+      : { action: 'submission_trace', instance_id: iid, environment_code: envCode() };
+    var hint = opts && opts.submissionHint != null ? String(opts.submissionHint).trim() : '';
+    if (!sid && hint) payload.submission_id = hint;
+    el._ptTraceLocal = opts && opts.instance ? opts.instance : null;
+    el._ptTraceOpts = opts || null;
     var req;
     try {
-      req = apiPost('/api/records', {
-        action: 'submission_trace',
-        id: sid,
-        record_view: !!record,
-        environment_code: envCode()
-      });
+      req = apiPost('/api/records', payload);
     } catch (err) {
       if (record) delete traceViewed[sid];
       el.innerHTML = '<div style="font-size:12px;color:#b91c1c">Traçabilité indisponible.</div>';
       return;
     }
     Promise.resolve(req).then(function (res) {
-      if (el.getAttribute('data-pt-submission') !== sid) return;
+      if (el.getAttribute('data-pt-submission') !== key) return;
       if (!res || res.error || !Array.isArray(res.events)) throw new Error((res && res.error) || 'Traçabilité indisponible');
       paintTrace(el, res);
     }).catch(function (err) {
       if (record) delete traceViewed[sid];
-      if (el.getAttribute('data-pt-submission') !== sid) return;
+      if (el.getAttribute('data-pt-submission') !== key) return;
       try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
-      el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:#b91c1c">Traçabilité indisponible.</div>';
+      var denied = err && (err.status === 403 || err.status === 404);
+      var reason = denied ? 'Traçabilité serveur non accessible avec vos droits.' : 'Traçabilité serveur indisponible' + (err && err.status ? ' (' + err.status + ')' : '') + '.';
+      var local = el._ptTraceLocal;
+      if (local && !denied && Array.isArray(local.events) && local.events.length) {
+        // Repli : historique local du dossier, clairement signalé comme tel.
+        paintTrace(el, { notice: reason + ' Historique local du dossier affiché.', events: localTraceEvents(local) });
+        return;
+      }
+      el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:#b91c1c">' + html(reason) + '</div>';
     });
   }
+  window.ptMountTrace = mountTrace;
 
   function refreshVisibleTrace() {
     if (!document.querySelectorAll) return;
     document.querySelectorAll('[data-pt-trace-root]').forEach(function (el) {
-      var sid = el.getAttribute('data-pt-submission');
-      if (sid && el.id) mountTrace(el.id, sid, false);
+      var key = el.getAttribute('data-pt-submission') || '';
+      var iid = el.getAttribute('data-pt-instance') || '';
+      if (!el.id) return;
+      if (iid) mountTrace(el.id, '', false, iid, el._ptTraceOpts || null);
+      else if (key) mountTrace(el.id, key, false);
+    });
+  }
+
+  // Libellés lisibles des événements locaux d'un dossier (au lieu des codes bruts).
+  function eventMs(ev) {
+    var at = ev && ev.at;
+    var m = typeof at === 'string' && at.match(/^(\d{2})\/(\d{2})\/(\d{4})[ T,]+(\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (m) return new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +(m[6] || 0)).getTime();
+    if (at) { var t = Date.parse(at); if (!isNaN(t)) return t; }
+    var idm = String(ev && ev.id || '').match(/(\d{13})/);
+    return idm ? +idm[1] : 0;
+  }
+  function eventLabel(ev, service) {
+    ev = ev || {};
+    var p = ev.payload || {};
+    var svc = service || {};
+    function statusName(id) {
+      var st = (svc.statuses || []).filter(function (x) { return String(x.id) === String(id); })[0];
+      return st ? st.nom : String(id == null ? '' : id);
+    }
+    var label = TRACE_LABELS[ev.type] || '';
+    var detail = '';
+    if (ev.type === 'status_changed') {
+      label = 'Changement d’étape';
+      if (p.fromStatus != null || p.toStatus != null) detail = statusName(p.fromStatus) + ' → ' + statusName(p.toStatus);
+    } else if (ev.type === 'declared_action') {
+      var act = (svc.actions || []).filter(function (a) { return String(a.id) === String(p.actionId); })[0];
+      label = 'Action déclarée';
+      detail = act ? act.nom : '';
+    } else if (ev.type === 'created') {
+      label = 'Création du dossier';
+    } else if (ev.type === 'assigned' && p.toUser) {
+      detail = '→ ' + p.toUser;
+    }
+    if (p.comment) detail = (detail ? detail + ' · ' : '') + '« ' + p.comment + ' »';
+    if (!label) label = String(ev.type || 'Événement').replace(/_/g, ' ');
+    var ms = eventMs(ev);
+    var when = ev.at || (ms ? formatParis(new Date(ms).toISOString()) : '');
+    return { label: label, detail: detail, actor: ev.actor || '', when: when, ms: ms };
+  }
+  window.ptEventLabel = eventLabel;
+  window.ptEventMs = eventMs;
+
+  function currentInstanceFor(panel) {
+    var id = null;
+    try { id = (typeof curInstanceId !== 'undefined') ? curInstanceId : null; } catch (_) { id = null; }
+    var ref = panel && panel.querySelector && panel.querySelector('.pt-drawer-head span');
+    var list = typeof SERVICE_INSTANCES_DATA !== 'undefined' && Array.isArray(SERVICE_INSTANCES_DATA) ? SERVICE_INSTANCES_DATA : [];
+    var inst = list.filter(function (x) { return id != null && String(x.id) === String(id); })[0];
+    if (!inst && ref) inst = list.filter(function (x) { return x.reference === ref.textContent; })[0];
+    return inst || null;
+  }
+
+  function serviceOf(inst) {
+    var list = typeof SERVICES_DATA !== 'undefined' && Array.isArray(SERVICES_DATA) ? SERVICES_DATA : [];
+    return list.filter(function (x) { return inst && String(x.id) === String(inst.serviceId); })[0] || null;
+  }
+
+  // Onglets du panneau dossier (kanban) : Détails / Historique / Commentaires / Pièces jointes.
+  function drawerTab(tabsEl, index) {
+    var panel = tabsEl.parentNode;
+    if (!panel) return;
+    var tabs = [].slice.call(tabsEl.children);
+    tabs.forEach(function (tab, i) {
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', i === index ? 'true' : 'false');
+      tab.style.fontWeight = i === index ? '900' : '';
+      tab.style.borderBottom = i === index ? '2px solid currentColor' : '';
+    });
+    var sections = [].slice.call(panel.children).filter(function (el) {
+      return el.classList && (el.classList.contains('pt-info') || el.classList.contains('pt-quick') || el.classList.contains('pt-mini-history'));
+    });
+    var host = panel.querySelector('[data-pt-drawer-tab]');
+    if (!host) {
+      host = document.createElement('div');
+      host.setAttribute('data-pt-drawer-tab', '1');
+      host.id = 'pt-drawer-tab-panel';
+      tabsEl.parentNode.insertBefore(host, tabsEl.nextSibling);
+    }
+    sections.forEach(function (el) { el.style.display = index === 0 ? '' : 'none'; });
+    host.style.display = index === 0 ? 'none' : '';
+    if (index === 0) return;
+    var inst = currentInstanceFor(panel);
+    var svc = serviceOf(inst);
+    var events = (inst && Array.isArray(inst.events) ? inst.events : []).map(function (ev) { return eventLabel(ev, svc); });
+    events.sort(function (a, b) { return b.ms - a.ms; });
+    if (index === 1) {
+      host.innerHTML = '<div id="pt-drawer-trace" data-pt-trace-wide="1"></div>';
+      if (inst) mountTrace('pt-drawer-trace', '', true, inst.id, { submissionHint: inst.submissionId || inst.submission_id, instance: inst });
+      else host.innerHTML = '<p>Dossier introuvable.</p>';
+      return;
+    }
+    if (index === 2) {
+      var comments = (inst && inst.events || []).filter(function (ev) { return ev && ev.payload && ev.payload.comment; }).map(function (ev) { return eventLabel(ev, svc); });
+      host.innerHTML = '<div class="pt-info"><h3>Commentaires</h3>' + (comments.length ? comments.map(function (c) {
+        return '<div style="padding:8px 0;border-bottom:1px solid var(--bg)"><div>' + html(c.detail) + '</div><small style="color:var(--tl)">' + html(c.actor) + ' · ' + html(c.when) + '</small></div>';
+      }).join('') : '<p>Aucun commentaire sur ce dossier.</p>') + '</div>';
+      return;
+    }
+    var files = [];
+    try {
+      var vals = (inst && inst.formData) || {};
+      Object.keys(vals).forEach(function (k) {
+        var v = vals[k];
+        (Array.isArray(v) ? v : [v]).forEach(function (f) { if (f && typeof f === 'object' && (f.name || f.fileName)) files.push(f.name || f.fileName); });
+      });
+    } catch (_) {}
+    host.innerHTML = '<div class="pt-info"><h3>Pièces jointes</h3>' + (files.length ? '<ul>' + files.map(function (f) { return '<li>' + html(f) + '</li>'; }).join('') + '</ul>' : '<p>Aucune pièce jointe sur ce dossier.</p>') +
+      (inst ? '<button class="btn btn-sm" type="button" onclick="openInstanceDetail(' + html(JSON.stringify(inst.id)) + ')">Ouvrir la fiche complète</button>' : '') + '</div>';
+  }
+  window.ptDrawerTab = drawerTab;
+
+
+  // Planning : un clic sur un rendez-vous ouvre la demande ou le dossier lié,
+  // toujours relu côté serveur (droits appliqués par l'API, jamais par le cache).
+  function linkedInstanceFor(responseId) {
+    var list = typeof SERVICE_INSTANCES_DATA !== 'undefined' && Array.isArray(SERVICE_INSTANCES_DATA) ? SERVICE_INSTANCES_DATA : [];
+    var rid = String(responseId == null ? '' : responseId);
+    if (!rid) return null;
+    return list.filter(function (x) { return String(x.submissionId || x.submission_id || '') === rid; })[0] || null;
+  }
+  function planningNotice(message) {
+    try { if (typeof showToast === 'function') { showToast(message); return; } } catch (_) {}
+    try { alert(message); } catch (_) {}
+  }
+  function openAppointmentRecord(row) {
+    var appt = row || {};
+    var rid = appt.response_id || appt.submission_id || appt.responseId || '';
+    try { if (typeof ptClosePlanningDetail === 'function') ptClosePlanningDetail(); } catch (_) {}
+    var inst = linkedInstanceFor(rid) || (appt.service_instance_id ? { id: appt.service_instance_id } : null);
+    if (inst && typeof openInstanceDetail === 'function' && serviceOf(inst)) {
+      openInstanceDetail(inst.id);
+      return Promise.resolve('instance');
+    }
+    if (!rid) { planningNotice('Aucune demande liée à ce rendez-vous.'); return Promise.resolve('none'); }
+    var ensure = typeof window.ptEnsureSubmissionDetail === 'function' ? window.ptEnsureSubmissionDetail(rid) : Promise.resolve(null);
+    return Promise.resolve(ensure).then(function (sub) {
+      if (sub && typeof openSubmission === 'function') { openSubmission(sub.id); return 'submission'; }
+      planningNotice('Demande introuvable ou non accessible avec vos droits.');
+      return 'none';
+    }).catch(function (err) {
+      var st = err && err.status;
+      planningNotice(st === 403 || st === 404 ? 'Vous n’avez pas accès à cette demande.' : 'Ouverture de la demande impossible.');
+      return 'error';
+    });
+  }
+  window.ptOpenAppointmentRecord = openAppointmentRecord;
+
+  function installPlanningOpen() {
+    var orig = window.ptOpenAppointmentGroup;
+    if (typeof orig !== 'function' || orig.__ptOpen) return;
+    var wrapped = function (key) {
+      var groups = [];
+      try { groups = typeof ptPlanningGroupsCache !== 'undefined' && Array.isArray(ptPlanningGroupsCache) ? ptPlanningGroupsCache : []; } catch (_) { groups = []; }
+      var k = decodeURIComponent(key || '');
+      var group = groups.filter(function (g) { return String(g.groupKey) === String(k); })[0];
+      var rows = group && Array.isArray(group.rows) ? group.rows : [];
+      if (rows.length === 1) return openAppointmentRecord(rows[0]);
+      var ret = orig.apply(this, arguments);
+      var overlay = document.getElementById('pt-planning-detail-overlay');
+      if (overlay && rows.length) {
+        var cards = [].slice.call(overlay.querySelectorAll('[style*="border-radius:16px"]'));
+        cards.forEach(function (card, i) {
+          if (!rows[i] || card.querySelector('[data-pt-open-record]')) return;
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-sm bp';
+          btn.style.marginTop = '12px';
+          btn.setAttribute('data-pt-open-record', String(i));
+          btn.textContent = linkedInstanceFor(rows[i].response_id) ? 'Ouvrir le dossier' : 'Ouvrir la demande';
+          btn.onclick = function () { openAppointmentRecord(rows[i]); };
+          card.appendChild(btn);
+        });
+      }
+      return ret;
+    };
+    wrapped.__ptOpen = true;
+    window.ptOpenAppointmentGroup = wrapped;
+  }
+  window.ptInstallPlanningOpen = installPlanningOpen;
+
+
+  // Badge « Utilisateurs » du menu : mis à jour dès la lecture des comptes, sans attendre l'écran Licences.
+  function wrapUsersBadge() {
+    if (typeof DB === 'undefined' || !DB || typeof DB.getUsersByTenant !== 'function' || DB.getUsersByTenant.__ptBadge) return;
+    var orig = DB.getUsersByTenant;
+    DB.getUsersByTenant = function () {
+      var ret = orig.apply(this, arguments);
+      Promise.resolve(ret).then(function (rows) {
+        var el = document.getElementById && document.getElementById('sb-users-cnt');
+        if (el && Array.isArray(rows)) el.textContent = String(rows.length);
+      }).catch(function () {});
+      return ret;
+    };
+    DB.getUsersByTenant.__ptBadge = true;
+  }
+  window.ptWrapUsersBadge = wrapUsersBadge;
+
+  function wireDrawerTabs() {
+    if (wireDrawerTabs.done || !document.addEventListener) return;
+    wireDrawerTabs.done = true;
+    document.addEventListener('click', function (e) {
+      var target = e.target;
+      var tabsEl = target && target.closest && target.closest('.pt-drawer-tabs');
+      if (!tabsEl) return;
+      var tab = target.closest('.pt-drawer-tabs > *');
+      if (!tab || tab.parentNode !== tabsEl) return;
+      drawerTab(tabsEl, [].slice.call(tabsEl.children).indexOf(tab));
     });
   }
 
@@ -2094,7 +2410,7 @@
       window.renderInstanceHistory = function (inst) {
         var ret = origHistory.apply(this, arguments);
         try {
-          mountTrace('sid-history', inst && (inst.submissionId || inst.submission_id || inst.id));
+          if (inst && inst.id != null) mountTrace('sid-history', '', true, inst.id, { submissionHint: inst.submissionId || inst.submission_id, instance: inst });
         } catch (err) {
           try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
         }
@@ -2103,6 +2419,8 @@
       window.renderInstanceHistory.__ptTrace = true;
     }
   }
+
+  window.ptWrapTraceForTest = function () { wrapTrace(); };
 
   function wrapDbAudit() {
     if (typeof DB === 'undefined' || !DB || typeof DB.save !== 'function' || DB.save.__ptAudit) return;
@@ -3137,6 +3455,9 @@
     wrapNavCache();
     wrapSubmissionPdf();
     wrapTrace();
+    wireDrawerTabs();
+    wrapUsersBadge();
+    installPlanningOpen();
     wrapDbAudit();
     installRoleAccess();
     wireImporterButton();
@@ -3145,7 +3466,18 @@
     ready = true;
     installClickFallback();
     stripDemoApiConfig();
-    loadIntegrations().catch(function () {});
+    if (clientMayLoadIntegrations()) loadIntegrations().catch(function () {});
+  }
+
+  // Ne pas provoquer de 403 au démarrage : seuls les administrateurs d'environnement lisent les intégrations.
+  function clientMayLoadIntegrations() {
+    var u = window.PT_CURRENT_USER;
+    if (!u || u.active === false) return false;
+    var lic = String(u.license_type || '').toLowerCase();
+    if (lic === 'pad' || lic === 'readonly' || lic === 'lecture') return false;
+    var names = [u.role].concat(Array.isArray(u.roles) ? u.roles : []).map(function (r) { return String(r || '').trim().toLowerCase(); });
+    var perms = u.resolved_permissions || {};
+    return names.some(function (r) { return ['admin', 'client_admin', 'environment_admin', 'super_admin', 'platform_admin'].indexOf(r) >= 0; }) || perms.platform_admin === true;
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
@@ -3153,4 +3485,351 @@
   window.addEventListener('load', boot);
   setTimeout(boot, 400);
   setTimeout(boot, 1200);
+})();
+
+/* PicoTrack — Vitesse de navigation (cache mémoire court des lectures /api).
+   Règles (décision manager du 19/10) :
+   - clé = utilisateur + environnement + version des droits (rôles, licences, permissions) + requête exacte ;
+   - une donnée n'est servie sans réseau que pendant FRESH_MS ; au-delà, on relit le serveur ;
+   - données périmées seulement sur erreur réseau ou 503, avec un bandeau « données possiblement périmées » ;
+   - toute réponse 401 ou 403 sur n'importe quel appel /api vide tout le cache de données de la session
+     (mémoire, sessionStorage, localStorage de données ; jamais la file hors ligne des écritures) ;
+     401 → retour à la connexion, 403 → écran « accès refusé » sans contenu en cache ;
+   - toute écriture, la déconnexion et un changement de compte, de droits ou d'environnement vident le cache. */
+(function () {
+  'use strict';
+  var FRESH_MS = 10000;
+  var STALE_MS = 5 * 60 * 1000;
+  var MAX_ENTRIES = 200;
+  var READ_ACTIONS = {
+    '/api/records': ['list', 'view', 'initial_load', 'integrations_load'],
+    '/api/appointments': ['list', 'range', 'by_date', 'by_slot', 'availability', 'view', 'month_counts'],
+    '/api/users': ['summary']
+  };
+  var NEUTRAL_ACTIONS = ['ping', 'health', 'currentProfile', 'current_profile'];
+  var SESSION_DATA_PREFIXES = ['pt_cache_'];
+  var LOCAL_DATA_KEYS = ['pt_mail_history', 'pt_pdf_history'];
+  var cache = new Map();
+  var inflight = new Map();
+  var gen = 0;
+  // Époque de session : change à chaque purge (401/403, changement de compte ou de droits).
+  var epoch = 0;
+  var lastScope = '';
+  var navPath = '';
+  var prefetchedFor = '';
+  var stats = { hits: 0, misses: 0, dedup: 0, stale: 0, clears: 0, purges: 0 };
+
+  function cleanPath(path) { return String(path || '').split('?')[0].replace(/\/+$/, ''); }
+  function actionOf(body) { return String((body && body.action) || ''); }
+  function isNeutral(path, body) {
+    var p = cleanPath(path);
+    return NEUTRAL_ACTIONS.indexOf(actionOf(body)) >= 0 && (p === '/api/records' || p === '/api/auth');
+  }
+  function isRead(path, body) {
+    var list = READ_ACTIONS[cleanPath(path)];
+    return !!list && list.indexOf(actionOf(body)) >= 0;
+  }
+  function currentEnv() {
+    try { if (typeof _getEnvironmentCode === 'function') return String(_getEnvironmentCode() || ''); } catch (_) {}
+    try { return String(sessionStorage.getItem('pt_active_env') || ''); } catch (_) {}
+    return '';
+  }
+  function sortedTokens(value) {
+    if (value == null || value === '') return [];
+    if (Array.isArray(value)) return value.map(function (v) { return typeof v === 'object' ? JSON.stringify(v) : String(v); }).sort();
+    return [typeof value === 'object' ? JSON.stringify(value) : String(value)];
+  }
+  function stable(value) {
+    if (value == null || typeof value !== 'object') return JSON.stringify(value === undefined ? null : value);
+    if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
+    return '{' + Object.keys(value).sort().map(function (k) { return JSON.stringify(k) + ':' + stable(value[k]); }).join(',') + '}';
+  }
+  // Version des droits du profil courant : tout changement de rôle, de licence ou de permission change la clé.
+  function rightsVersion(user) {
+    return stable({
+      role: String(user.role || ''),
+      roles: sortedTokens(user.roles),
+      license_type: String(user.license_type || ''),
+      license_roles: sortedTokens(user.license_roles),
+      environment_code: String(user.environment_code || ''),
+      permissions: user.resolved_permissions || null,
+      active: user.active !== false
+    });
+  }
+  function scope() {
+    var user = window.PT_CURRENT_USER;
+    if (!user || user.id == null || user.id === '') return '';
+    return String(user.id) + '|' + currentEnv() + '|' + rightsVersion(user);
+  }
+  function clearAll() {
+    gen++;
+    cache.clear();
+    inflight.clear();
+    stats.clears++;
+    // Le jeu planning large suit le même cycle de vie : écriture, 401/403, changement de compte.
+    try { window.__ptPlanningMonths = null; } catch (_) {}
+  }
+  function clearStoredData() {
+    try {
+      var keys = [];
+      for (var i = 0; i < sessionStorage.length; i++) keys.push(sessionStorage.key(i));
+      keys.forEach(function (k) {
+        if (k && SESSION_DATA_PREFIXES.some(function (p) { return k.indexOf(p) === 0; })) sessionStorage.removeItem(k);
+      });
+    } catch (_) {}
+    try { LOCAL_DATA_KEYS.forEach(function (k) { localStorage.removeItem(k); }); } catch (_) {}
+  }
+  // Vide les tableaux de données du bundle (liaisons lexicales globales) et leurs miroirs window.*.
+  function emptyDataLists() {
+    var lists = [];
+    try { if (typeof FORMS_DATA !== 'undefined') lists.push(FORMS_DATA); } catch (_) {}
+    try { if (typeof SUBMISSIONS_DATA !== 'undefined') lists.push(SUBMISSIONS_DATA); } catch (_) {}
+    try { if (typeof SERVICES_DATA !== 'undefined') lists.push(SERVICES_DATA); } catch (_) {}
+    try { if (typeof SERVICE_INSTANCES_DATA !== 'undefined') lists.push(SERVICE_INSTANCES_DATA); } catch (_) {}
+    try { if (typeof DATABASES_DATA !== 'undefined') lists.push(DATABASES_DATA); } catch (_) {}
+    try { if (typeof USERS_DATA !== 'undefined') lists.push(USERS_DATA); } catch (_) {}
+    try { if (typeof ROLES_DATA !== 'undefined') lists.push(ROLES_DATA); } catch (_) {}
+    try { if (typeof filtered !== 'undefined') lists.push(filtered); } catch (_) {}
+    ['FORMS_DATA', 'SUBMISSIONS_DATA', 'SERVICES_DATA', 'SERVICE_INSTANCES_DATA', 'DATABASES_DATA', 'USERS_DATA', 'ROLES_DATA', 'forms', 'services', 'submissions', 'serviceInstances', 'databases'].forEach(function (n) {
+      try { lists.push(window[n]); } catch (_) {}
+    });
+    lists.forEach(function (l) { if (Array.isArray(l)) l.length = 0; });
+  }
+  // Purge complète des données de la session ; la file hors ligne (IndexedDB) n'est jamais touchée.
+  function purgeSessionData() {
+    epoch++;
+    clearAll();
+    stats.purges++;
+    clearStoredData();
+    emptyDataLists();
+    try {
+      window._ptPlanningCache = null; window._ptPlanningLoadedAt = 0; window._ptUsersSummary = null;
+      if (window.PT_CACHE) { window.PT_CACHE.v55Services = null; window.PT_CACHE.v55ServicesLoaded = false; window.PT_CACHE.v55ServicesPromise = null; }
+      if (typeof window.ptNavMarkDirty === 'function') window.ptNavMarkDirty('all');
+    } catch (_) {}
+    prefetchedFor = '';
+  }
+  function checkScope() {
+    var sc = scope();
+    if (sc !== lastScope) {
+      if (lastScope) { epoch++; clearAll(); clearStoredData(); }
+      lastScope = sc;
+    }
+    return sc;
+  }
+  function keyFor(path, body) {
+    var sc = checkScope();
+    if (!sc) return '';
+    var b = '';
+    try { b = stable(body || {}); } catch (_) { return ''; }
+    return cleanPath(path) + '|' + sc + '|' + b;
+  }
+  function parse(s) { return s === undefined ? undefined : JSON.parse(s); }
+  function store(key, s, g) {
+    if (g !== gen) return;
+    cache.delete(key);
+    cache.set(key, { at: Date.now(), s: s });
+    while (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value);
+  }
+  function statusOf(err) { return err && Number(err.status || (err.response && err.response.status) || 0) || 0; }
+  function isAuthError(err) { var st = statusOf(err); return st === 401 || st === 403; }
+  function isStaleAllowed(err) {
+    var st = statusOf(err);
+    if (st === 503) return true;
+    return !st && !!err && (err.name === 'TypeError' || /network|failed to fetch|connexion/i.test(String(err.message || '')));
+  }
+
+  function hasStoredSession() {
+    try { return typeof _readStoredSession === 'function' && !!(_readStoredSession() || {}).access_token; } catch (_) { return false; }
+  }
+  function showDenied() {
+    var main = document.getElementById && document.getElementById('main');
+    if (!main) return;
+    if (main.classList) main.classList.add('pt-denied');
+    var panel = document.getElementById('pt-access-denied');
+    if (!panel && document.createElement) {
+      panel = document.createElement('div');
+      panel.id = 'pt-access-denied';
+      panel.setAttribute('role', 'alert');
+      panel.style.cssText = 'margin:40px auto;max-width:520px;background:#fff;border:1px solid #fecaca;border-radius:16px;padding:28px;text-align:center;color:#991b1b';
+      panel.innerHTML = '<div style="font-size:32px">⛔</div><h2 style="margin:8px 0">Accès refusé</h2><p style="color:#6b7280">Vos droits ne permettent pas d’afficher ce contenu. Choisissez une autre rubrique ou contactez votre administrateur.</p>';
+      if (main.insertBefore) main.insertBefore(panel, main.firstChild);
+    }
+    if (!document.getElementById('pt-denied-style') && document.createElement && document.head) {
+      var st = document.createElement('style');
+      st.id = 'pt-denied-style';
+      st.textContent = '#main.pt-denied .view{display:none!important}';
+      document.head.appendChild(st);
+    }
+  }
+  function hideDenied() {
+    var main = document.getElementById && document.getElementById('main');
+    if (main && main.classList) main.classList.remove('pt-denied');
+    var panel = document.getElementById && document.getElementById('pt-access-denied');
+    if (panel && panel.remove) panel.remove();
+  }
+  function showStaleBanner(on) {
+    var el = document.getElementById && document.getElementById('pt-stale-banner');
+    if (!on) { if (el && el.remove) el.remove(); return; }
+    if (el || !document.createElement || !document.body) return;
+    el = document.createElement('div');
+    el.id = 'pt-stale-banner';
+    el.setAttribute('role', 'status');
+    el.style.cssText = 'position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:10000;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:10px;padding:8px 14px;font-size:13px;font-weight:700';
+    el.textContent = 'Données possiblement périmées : le serveur ne répond pas.';
+    document.body.appendChild(el);
+  }
+  function sessionTag() {
+    try {
+      var sess = typeof _readStoredSession === 'function' ? _readStoredSession() : null;
+      return String(sess && sess.access_token || '') + '|' + String(localStorage.getItem('pt_active_session_token') || '');
+    } catch (_) { return ''; }
+  }
+  function onAuthFailure(err, tag) {
+    var st = statusOf(err);
+    if (st !== 401 && st !== 403) return;
+    // Erreur d'une requête partie sous une autre session (ex. juste avant une reconnexion) : ignorée,
+    // pour ne pas purger les données de la nouvelle session.
+    if (tag != null && tag !== sessionTag()) return;
+    purgeSessionData();
+    showStaleBanner(false);
+    if (st === 401) {
+      if (!hasStoredSession()) return; // écran de connexion déjà affiché : rien à rediriger
+      try { if (typeof _clearStoredSession === 'function') _clearStoredSession(); } catch (_) {}
+      try { sessionStorage.removeItem('pt_active_env'); localStorage.removeItem('pt_active_session_token'); } catch (_) {}
+      try { location.reload(); } catch (_) {}
+      return;
+    }
+    showDenied();
+  }
+  window.ptHandleAuthFailure = onAuthFailure;
+
+  function install() {
+    var orig = window._apiPost;
+    if (typeof orig !== 'function' || orig.__ptSwr || window.__ptSwrInstalled) return false;
+    window.__ptSwrInstalled = true;
+    function fetchStore(key, self, args) {
+      var g = gen;
+      var e = epoch;
+      var p = Promise.resolve(orig.apply(self, args)).then(function (res) {
+        // Réponse partie avant une purge : ni rendue, ni remise en cache.
+        if (e !== epoch) throw Object.assign(new Error('Réponse obsolète : session purgée pendant la lecture.'), { ptEpoch: true });
+        var s = JSON.stringify(res === undefined ? null : res);
+        store(key, s, g);
+        showStaleBanner(false);
+        return s;
+      });
+      inflight.set(key, p);
+      var drop = function () { if (inflight.get(key) === p) inflight.delete(key); };
+      p.then(drop, drop);
+      return p;
+    }
+    var wrapped = function (path, body) {
+      var self = this;
+      var args = arguments;
+      var tag = sessionTag();
+      var authFail = function (err) { onAuthFailure(err, tag); };
+      if (!isRead(path, body)) {
+        if (!isNeutral(path, body)) clearAll();
+        var ret = orig.apply(self, args);
+        // Le résultat rendu à l’appelant reste celui d’origine ; 401/403 purgent tout.
+        Promise.resolve(ret).then(function () { if (!isNeutral(path, body)) clearAll(); }).catch(function (err) {
+          if (!isNeutral(path, body)) clearAll();
+          authFail(err);
+        });
+        return ret;
+      }
+      var key = keyFor(path, body);
+      if (!key) {
+        var direct = orig.apply(self, args);
+        Promise.resolve(direct).then(function () {}).catch(authFail);
+        return direct;
+      }
+      var entry = cache.get(key);
+      if (entry && Date.now() - entry.at < FRESH_MS) { stats.hits++; return Promise.resolve(parse(entry.s)); }
+      var pending = inflight.get(key);
+      if (pending) { stats.dedup++; return pending.then(parse); }
+      stats.misses++;
+      return fetchStore(key, self, args).then(parse, function (err) {
+        if (err && err.ptEpoch) throw err;
+        if (isAuthError(err)) { authFail(err); throw err; }
+        var old = cache.get(key);
+        if (isStaleAllowed(err) && old && Date.now() - old.at < STALE_MS) {
+          stats.stale++;
+          showStaleBanner(true);
+          return parse(old.s);
+        }
+        cache.delete(key);
+        throw err;
+      });
+    };
+    wrapped.__ptSwr = true;
+    window._apiPost = wrapped;
+    return true;
+  }
+
+  function prefetch() {
+    var sc = scope();
+    if (!sc || prefetchedFor === sc || !hasStoredSession()) return;
+    var env = currentEnv();
+    prefetchedFor = sc;
+    var run = function () {
+      var jobs = [];
+      try {
+        if (window.DB && typeof window.DB.getUsersByTenant === 'function') jobs.push(window.DB.getUsersByTenant(env));
+        else jobs.push(window._apiPost('/api/users', { action: 'summary', environment_code: env }));
+      } catch (_) {}
+      try { if (typeof loadStandaloneDatabasesFromSupabase === 'function') jobs.push(loadStandaloneDatabasesFromSupabase()); } catch (_) {}
+      try { if (typeof window.ptEnsureServicesLoaded === 'function') jobs.push(window.ptEnsureServicesLoaded()); } catch (_) {}
+      try { if (typeof window.loadFromSupabase === 'function') jobs.push(window.loadFromSupabase({ scope: 'services' })); } catch (_) {}
+      try {
+        if (window.DB && typeof window.DB.getAppointments === 'function') {
+          // Planning : le mois affiché seulement (plage bornée côté serveur) ; les voisins se préchargent ensuite.
+          if (typeof window.ptPlanningMonthRows === 'function') jobs.push(window.ptPlanningMonthRows(new Date()));
+        }
+        if (window.DB && typeof window.DB.list === 'function') jobs.push(window.DB.list('submissions', { select: '*', limit: 500 }));
+      } catch (_) {}
+      Promise.all(jobs.map(function (j) { return Promise.resolve(j).catch(function () {}); })).then(function () {
+        if (navPath === '/dashboard' && typeof window.ptFillLiveKpis === 'function') return window.ptFillLiveKpis();
+      }).catch(function () {});
+    };
+    if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 2500 });
+    else setTimeout(run, 800);
+  }
+
+  function wrapNav() {
+    var orig = window.ptSyncUrl;
+    if (typeof orig === 'function' && !orig.__ptSwr) {
+      window.ptSyncUrl = function (path) {
+        navPath = cleanPath(path);
+        hideDenied();
+        checkScope();
+        setTimeout(prefetch, 0);
+        return orig.apply(this, arguments);
+      };
+      window.ptSyncUrl.__ptSwr = true;
+    }
+    var out = window.ptSignOut;
+    if (typeof out === 'function' && !out.__ptSwr) {
+      window.ptSignOut = function () { purgeSessionData(); lastScope = ''; return out.apply(this, arguments); };
+      window.ptSignOut.__ptSwr = true;
+    }
+  }
+
+  install();
+  wrapNav();
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('load', function () { install(); wrapNav(); setTimeout(prefetch, 1200); });
+  }
+  window.ptNavCache = {
+    clear: clearAll,
+    purge: purgeSessionData,
+    isRead: isRead,
+    isNeutral: isNeutral,
+    keyFor: keyFor,
+    size: function () { return cache.size; },
+    stats: function () { return Object.assign({}, stats); },
+    epoch: function () { return epoch; },
+    install: install
+  };
 })();

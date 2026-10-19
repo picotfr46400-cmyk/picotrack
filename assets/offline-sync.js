@@ -1256,6 +1256,13 @@
     }
     let body = {};
     try { body = await response.json(); } catch (_) { body = {}; }
+    // Une écriture rejouée change les données : le cache de navigation est vidé ; 401/403 purgent tout.
+    try {
+      if (win && win.ptNavCache && typeof win.ptNavCache.clear === 'function') win.ptNavCache.clear();
+      if ((response.status === 401 || response.status === 403) && win && typeof win.ptHandleAuthFailure === 'function') {
+        win.ptHandleAuthFailure({ status: response.status });
+      }
+    } catch (_) {}
     if (web) {
       if (response.status >= 200 && response.status < 300 && body && (Array.isArray(body) ? body[0] && body[0].id : body.id)) {
         return { ok: true, status: 200, confirmed: true, duplicate: false, row: Array.isArray(body) ? body[0] : body };

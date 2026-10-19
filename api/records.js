@@ -2135,7 +2135,11 @@ async function handler(req, res) {
           normalizeEnvCode,
           cleanSubmissionId,
           readFormForSubmission,
-          assertRecordAllowed
+          assertRecordAllowed,
+          assertInstanceVisible: async (request, profile, row) => {
+            const catalog = await catalogFor(request, profile);
+            access.assertLevel(access.instanceLevel(profile, catalog, row), 'read');
+          }
         });
         break;
       case 'save':
