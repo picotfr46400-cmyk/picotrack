@@ -10,21 +10,28 @@ Règle : un client = un projet Supabase dédié. Jamais un nouvel `environment_c
 
 ## 2. Appliquer le schéma (script reproductible)
 ```bash
-npm install --no-save pg@8.13.1
+npm ci                                   # pg est une devDependency
 export PICOTRACK_DB_URL='...'            # ne pas l'afficher, ne pas le committer
-node scripts/client/new-client.js --env ACME                # essai : tout est appliqué puis annulé
-node scripts/client/new-client.js --env ACME --apply        # application réelle
+R=<ref du projet>                        # 20 lettres, visible dans l'URL du tableau de bord
+node scripts/client/new-client.js --project-ref $R --confirm-project-ref $R --env ACME          # essai (par défaut)
+node scripts/client/new-client.js --project-ref $R --confirm-project-ref $R --env ACME --apply  # application réelle
 ```
-Le script refuse : une base dont `public` n'est pas vide, les URL d'EFC et de DEMO, les codes réservés (EFC, DEMO, GLOBAL…), toute table sans RLS. Il applique `scripts/client/baseline.sql` (toutes les migrations jusqu'à `20261019220000`), puis les migrations plus récentes de `supabase/migrations/`, note les versions dans `supabase_migrations.schema_migrations` et crée les plafonds de licences (`--supervision 3 --pad 10 --lecture 0` par défaut).
+Gardes, toutes avant écriture :
+- `--project-ref` et `--confirm-project-ref` obligatoires et identiques ; EFC (`jcanufkmcslxwmheqccp`) et DEMO (`ukucbfxyvyvtlglujoht`) refusés en dur avant toute connexion.
+- La ref doit être celle de l'URL réelle : hôte `db.<ref>.supabase.co` ou utilisateur `postgres.<ref>` (pooler), sinon arrêt.
+- Base vierge en échec fermé : aucune table, vue, séquence, fonction ni type dans `public`, historique des migrations vide, zéro `auth.users`, aucun bucket ni fichier Storage. Une erreur de lecture arrête aussi.
+- Codes réservés (EFC, DEMO, GLOBAL…) refusés ; toute table sans RLS annule tout. Il applique `scripts/client/baseline.sql` (toutes les migrations jusqu'à `20261019220000`), puis les migrations plus récentes de `supabase/migrations/`, note les versions dans `supabase_migrations.schema_migrations` et crée les plafonds de licences (`--supervision 3 --pad 10 --lecture 0` par défaut).
 
 ## 3. Premier administrateur (sans aucun mail)
 ```bash
 export SUPABASE_URL='https://<ref>.supabase.co' SUPABASE_SERVICE_ROLE_KEY='...' PICOTRACK_FIRST_ADMIN_PASSWORD='...'
-node scripts/client/new-client.js --env ACME --apply --admin-email admin@client.fr   # sur projet vierge uniquement
+node scripts/client/new-client.js --project-ref $R --confirm-project-ref $R --env ACME --apply --admin-email admin@client.fr
+# relance du seul admin, idempotente :
+node scripts/client/new-client.js --project-ref $R --confirm-project-ref $R --env ACME --apply --admin-only --admin-email admin@client.fr
 ```
-Le compte Auth est créé confirmé, puis `user_profiles` (rôle `admin`, licence supervision). Le mot de passe est transmis au client par un canal séparé et changé à la première connexion. Ce chemin n'est pas encore testé contre un vrai projet Supabase (à faire au premier client, sur un projet gratuit).
+L'admin est créé **après** le commit du schéma. Clé : l'e-mail normalisé. Un compte Auth existant pour cet e-mail est réutilisé, et le profil est inséré `ON CONFLICT` dans une transaction : deux exécutions donnent 1 admin et 0 doublon. `SUPABASE_URL` doit être `https://<ref>.supabase.co`. Mot de passe : 12 caractères minimum, avec minuscule, majuscule, chiffre et caractère spécial. Le mot de passe est transmis au client par un canal séparé et changé à la première connexion. Ce chemin n'est pas encore testé contre un vrai projet Supabase (à faire au premier client, sur un projet gratuit).
 
-## 4. Domaine et clés côté Vercel (personne ayant l'accès Vercel)
+## 4. Domaine et clés côté Vercel (variables d'hôte, jamais dans la table `tenants`) (personne ayant l'accès Vercel)
 - Domaine `acme.picotrack.fr` ajouté au projet Vercel, enregistrement CNAME chez le registrar.
 - Variables (Production) avec le préfixe tiré du sous-domaine : `ACME_SUPABASE_URL`, `ACME_SUPABASE_ANON_KEY`, `ACME_SUPABASE_SERVICE_ROLE_KEY`, et `ACME_ENVIRONMENT_CODE=ACME` si utilisé.
 - Redéployer, puis vérifier : `acme.picotrack.fr` ne montre que les données ACME, `efc.picotrack.fr` est inchangé.

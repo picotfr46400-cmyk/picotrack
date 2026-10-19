@@ -2,8 +2,10 @@
 -- Relevé en lecture seule le 19/10/2026 sur DEMO (ukucbfxyvyvtlglujoht), état = toutes les migrations
 -- de supabase/migrations/ jusqu'à 20261019220000 incluse. Tables, contraintes, index, fonctions,
 -- triggers, RLS, policies et droits anon/authenticated.
--- Ne jamais lancer sur une base existante (EFC, DEMO) : scripts/client/new-client.mjs refuse si public n'est pas vide.
+-- Ne jamais lancer sur une base existante (EFC, DEMO) : scripts/client/new-client.js refuse toute base non vierge.
 -- Régénérer après chaque nouvelle migration (voir docs/NOUVEAU-CLIENT.md).
+create schema if not exists extensions;
+create extension if not exists pgcrypto with schema extensions;
 create sequence if not exists public.database_rows_id_seq;
 create sequence if not exists public.environment_license_limits_id_seq;
 create sequence if not exists public.forms_id_seq;

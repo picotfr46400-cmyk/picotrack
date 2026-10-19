@@ -6,5 +6,8 @@
   "dependencies": {
     "@vercel/functions": "3.10.1",
     "nodemailer": "10.0.16"
+  },
+  "devDependencies": {
+    "pg": "8.13.1"
   }
 }
