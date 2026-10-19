@@ -939,21 +939,24 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
     assert.equal(submissionWrite.body.environment_code, 'EFC');
     assert.equal(submissionWrite.body.tenant_id, undefined);
 
+    // Réservation et capacité : /api/appointments seulement (décision du 19/10, #34).
     const createdSlot = await callJson(records, {
       action: 'save',
       entity: 'appointments',
       record: {
         form_id: 'form-1', field_id: 'rdv', response_id: 'sub-1', title: 'Visite - Rendez-vous',
         customer_name: 'Client EFC', date: '2026-10-03', start_time: '09:00:00', end_time: '09:30:00',
-        status: 'confirmed', assigned_team: '', capacity_group: 'rdv', parallel_slots: 2,
-        environment_code: 'ACME'
+        status: 'confirmed', assigned_team: '', environment_code: 'ACME'
       }
     }, authHeaders());
-    assert.equal(createdSlot.status, 200, createdSlot.payload.error || '');
+    assert.equal(createdSlot.status, 403);
+    const editedSlot = await callJson(records, {
+      action: 'save', entity: 'appointments', id: 'rdv-1',
+      record: { title: 'Visite - Rendez-vous', customer_name: 'Client EFC', environment_code: 'ACME' }
+    }, authHeaders());
+    assert.equal(editedSlot.status, 200, editedSlot.payload.error || '');
     assert.equal(writes.at(-1).body.title, 'Visite - Rendez-vous');
     assert.equal(writes.at(-1).body.customer_name, 'Client EFC');
-    assert.equal(writes.at(-1).body.environment_code, 'EFC');
-    assert.equal(writes.at(-1).body.date, '2026-10-03');
 
     const updatedSlot = await callJson(records, {
       action: 'save',
@@ -1288,7 +1291,7 @@ test('handler : tenant_id est posé seulement sur les tables qui ont la colonne,
       const record = entity === 'user_profiles'
         ? { email: 'nora@efc.picotrack.fr', role: 'pad_user' }
         : entity === 'appointments'
-          ? { title: 'Visite', form_id: 'form-1', capacity_limit: 3 }
+          ? { id: 'rdv-1', title: 'Visite', status: 'confirmed' }
           : entity === 'app_roles'
             ? { name: 'Agent', permissions: { view: true }, active: true }
             : entity === 'service_instances'

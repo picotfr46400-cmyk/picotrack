@@ -50,7 +50,7 @@ const WRITE_COLUMNS = {
   services: ['nom','description','couleur','actif','statuses','actions','form_id','id_pattern','flux','card_config','kanban_groups','permissions'],
   service_instances: ['service_id','ref','form_data','status_id','priority','events','device','assigned_to','created_by','current_status_id','reference','submission_id'],
   submissions: ['form_id','values','device'],
-  appointments: ['form_id','field_id','response_id','title','customer_name','date','start_time','end_time','status','assigned_team','capacity_group','capacity_limit','parallel_slots'],
+  appointments: ['title','customer_name','date','start_time','end_time','status','assigned_team'],
   app_roles: ['name','description','permissions','active'],
   user_profiles: ['email','role','roles','active','label','firstname','lastname','first_name','last_name','username','login_user','license_type'],
   licenses: ['email','role','roles','active','label','license_type','device_name','last_seen'],
@@ -1325,6 +1325,17 @@ async function handleSave(req, body) {
   access.assertWritableLicense(profile);
   const source = body.record || body.body;
   const requestedLicenseId = String((source && source.license_id) || body.license_id || '').trim().slice(0, 80);
+  if (entity === 'appointments' && source && typeof source === 'object') {
+    // Capacité et champs de réservation : serveur seul (RPC de réservation). Tentative d'écriture = 403.
+    // Date et heure restent modifiables (replanification) : le trigger revérifie la capacité serveur.
+    const locked = ['form_id', 'formId', 'field_id', 'fieldId', 'response_id', 'responseId', 'parallel_slots', 'parallelSlots', 'capacity_limit', 'capacityLimit', 'capacity_group', 'capacityGroup', 'idempotency_key', 'idempotencyKey', 'created_by', 'createdBy'];
+    if (locked.some(key => Object.prototype.hasOwnProperty.call(source, key))) {
+      throw Object.assign(new Error('Capacité et champs de réservation non modifiables.'), { status: 403 });
+    }
+    if (!body.id && !source.id) {
+      throw Object.assign(new Error('Réservation de créneau : passer par /api/appointments.'), { status: 403 });
+    }
+  }
   const record = normalizeRecord(source, entity);
   if (!isPlatformLicenseManagerProfile(profile)) applyWriteWhitelist(record, entity);
 

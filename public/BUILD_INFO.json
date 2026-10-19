@@ -1,0 +1,6 @@
+{
+  "version": "secured-v30-client-license-menu-hidden",
+  "created_at": "2026-06-17T20:09:20Z",
+  "fix": "hide licenses module entirely for client accounts; platform/GLOBAL only",
+  "verified": true
+}

@@ -20,17 +20,26 @@ function filterRows(rows, q) {
 }
 const active = r => !['cancelled', 'canceled', 'annule', 'annulé', 'deleted', 'void'].includes(String(r.status || '').toLowerCase());
 // Émule public.picotrack_book_appointment (verrou + comptage + insertion atomiques ; le vrai test est sur Postgres).
-function fakeBook({ p_record: rec, p_capacity: cap, p_idempotency_key: key }) {
-  state.rpc.push({ rec, cap, key });
+function serverCapacity(rec) {
+  const form = state.forms.find(f => String(f.id) === String(rec.form_id) && f.environment_code === String(rec.environment_code).toUpperCase());
+  const field = form && (form.fields || []).find(f => String(f.id) === String(rec.field_id));
+  return field && Number(field.parallelSlots) > 0 ? Number(field.parallelSlots) : 2;
+}
+function fakeBook({ p_record: rec, p_created_by: who, p_idempotency_key: key }) {
+  state.rpc.push({ rec, who, key });
   if (state.rpcError) return Promise.reject(state.rpcError);
   const envc = String(rec.environment_code).toUpperCase();
+  const cap = serverCapacity(rec);
   if (key) {
     const dup = state.appointments.find(r => r.environment_code === envc && r.idempotency_key === key);
-    if (dup) return Promise.resolve({ ok: true, duplicate: true, row: dup, capacity: cap });
+    if (dup) {
+      if (String(dup.form_id) === String(rec.form_id) && dup.created_by === who) return Promise.resolve({ ok: true, duplicate: true, row: { id: dup.id, status: dup.status } });
+      return Promise.resolve({ ok: false, code: 'idempotency_conflict' });
+    }
   }
   const used = state.appointments.filter(r => r.environment_code === envc && String(r.form_id) === String(rec.form_id) && r.field_id === rec.field_id && r.date === rec.date && r.start_time === rec.start_time && active(r)).length;
   if (used >= cap) return Promise.resolve({ ok: false, code: 'slot_full', used, capacity: cap });
-  const row = Object.assign({ id: 'a-' + (state.appointments.length + 1) }, rec, { environment_code: envc, parallel_slots: cap, idempotency_key: key || null });
+  const row = Object.assign({ id: 'a-' + (state.appointments.length + 1) }, rec, { environment_code: envc, parallel_slots: cap, idempotency_key: key || null, created_by: who });
   state.appointments.push(row);
   return Promise.resolve({ ok: true, duplicate: false, row, used: used + 1, capacity: cap });
 }
@@ -89,7 +98,8 @@ test('la capacité vient du formulaire, pas du client (parallel_slots forcé ign
   await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 99 }), admin);
   await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 99, response_id: '26' }), admin);
   await assert.rejects(appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 99, response_id: '27' }), admin), /Créneau complet/);
-  assert.ok(state.rpc.every(c => c.cap === 2 && c.rec.capacity_group === FIELD), 'capacité du formulaire transmise à la RPC');
+  assert.ok(state.rpc.every(c => !('p_capacity' in c) && c.rec.parallel_slots === undefined && c.rec.capacity_group === FIELD), 'aucune capacité du client transmise à la RPC');
+  assert.equal(state.appointments.length, 2);
 });
 
 test('garde-fou SQL « Créneau complet » (PT409) : 409 lisible, jamais un message SQL', async () => {
@@ -127,16 +137,41 @@ test('id local de saisie (UUID de la file) : 400 explicite, aucune écriture env
   assert.equal(state.rpc.length, 0);
 });
 
-test('formulaire ancien sans description du champ : capacité demandée, bornée à 50', async () => {
+test('formulaire ancien sans description du champ : défaut serveur (2), valeur du client ignorée', async () => {
   world();
   state.forms[0].fields = [];
   await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 1 }), admin);
-  await assert.rejects(appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 1, response_id: '26' }), admin), err => err.status === 409);
-  assert.ok(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261019180000_appointment_atomic_booking.sql'), 'utf8').includes('pg_advisory_xact_lock'));
+  await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 1, response_id: '26' }), admin);
+  await assert.rejects(appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 5000, response_id: '27' }), admin), err => err.status === 409);
+  const sql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261019190000_appointment_booking_scope.sql'), 'utf8');
+  assert.ok(sql.includes('picotrack_appointment_capacity(new.environment_code'));
+});
+
+test('clé rejouée depuis un autre formulaire ET un autre compte : 409 générique, aucune donnée', async () => {
   world();
-  state.forms[0].fields = [];
-  const r = await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 5000 }), admin);
-  assert.equal(r.capacity, 50);
+  state.forms.push({ id: 9, environment_code: 'GIT', nom: 'Autre', fields: state.forms[0].fields });
+  const other = Object.assign({}, admin, { id: 'u-autre' });
+  const first = await appts.handleCreate(req(), 'GIT', booking({ idempotency_key: 'k-1', title: 'SECRET-RDV', customer_name: 'SECRET-CLIENT' }), admin);
+  const replay = await appts.handleCreate(req(), 'GIT', booking({ idempotency_key: 'k-1' }), admin);
+  assert.deepEqual(replay.row, { id: first.row.id, status: 'confirmed' });
+  for (const [form, user, resp] of [['9', admin, '40'], ['4', other, '26'], ['9', other, '40']]) {
+    await assert.rejects(appts.handleCreate(req(), 'GIT', booking({ idempotency_key: 'k-1', form_id: form, response_id: resp }), user), err => {
+      assert.equal(err.status, 409);
+      assert.equal(err.code, 'idempotency_conflict');
+      assert.doesNotMatch(JSON.stringify({ m: err.message, ...err }), /SECRET|a-1/);
+      return true;
+    });
+  }
+  assert.equal(state.appointments.length, 1);
+});
+
+test('capacité forgée puis 3 réservations sur capacité 2 : exactement 2 acceptées', async () => {
+  world();
+  const res = [];
+  for (const id of ['25', '26', '27']) {
+    res.push(await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 99, capacity_limit: 99, response_id: id }), admin).then(() => 'ok', e => e.status));
+  }
+  assert.deepEqual(res, ['ok', 'ok', 409]);
 });
 
 // ---- Client : la saisie web en ligne rend l'id serveur, jamais l'id local de la file ----

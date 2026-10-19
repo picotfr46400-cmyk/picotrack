@@ -404,10 +404,11 @@ async function assertResponseBelongs(req, env, record) {
   }
 }
 
+// Clé d'idempotence : fournie, sinon dérivée de (saisie, champ). Rattachée côté base à
+// (environnement, formulaire, créateur) : une clé connue ailleurs répond 409 sans aucune donnée.
 function bookingKey(body, record) {
   const supplied = cleanString(body.idempotency_key || (body.record && body.record.idempotency_key) || '', 160);
   if (supplied) return supplied;
-  // Une saisie réserve au plus un créneau par champ : le rejeu de la même saisie rend le même RDV.
   return record.response_id != null ? `resp:${record.response_id}:${record.field_id}` : null;
 }
 
@@ -422,18 +423,16 @@ async function handleCreate(req, env, body, profile) {
   if (!form) throw Object.assign(new Error('Formulaire introuvable pour ce rendez-vous.'), { status: 404 });
   await assertResponseBelongs(req, env, record);
   const field = fieldsOf(form).find(f => f && String(f.id) === String(record.field_id));
-  // Champ décrit dans le formulaire : sa capacité fait foi. Sinon (formulaire ancien), capacité demandée bornée.
-  const capacity = field
-    ? slotCapacity(field)
-    : Math.min(50, slotCapacity({ parallelSlots: record.parallel_slots != null ? record.parallel_slots : 2 }));
-  record.parallel_slots = capacity;
+  // Capacité : celle du formulaire (la base la relit aussi). Toute valeur du client est ignorée.
+  const capacity = slotCapacity(field);
+  delete record.parallel_slots;
+  delete record.capacity_limit;
   record.capacity_group = String(record.field_id);
-  // Verrou du créneau, comptage hors annulés et insertion dans une seule transaction (RPC, service_role seul).
   let out;
   try {
     out = await serviceRest('rpc/picotrack_book_appointment', {
       method: 'POST',
-      body: { p_record: record, p_capacity: capacity, p_idempotency_key: bookingKey(body, record) },
+      body: { p_record: record, p_created_by: String(profile.id), p_idempotency_key: bookingKey(body, record) },
       prefer: '',
       req
     });
@@ -443,11 +442,18 @@ async function handleCreate(req, env, body, profile) {
     if (err && err.status >= 400 && err.status < 500 && err.status !== 404) throw Object.assign(new Error('Rendez-vous refusé : données de réservation invalides.'), { status: 400 });
     throw access.unavailable(err);
   }
+  if (out && out.ok === false && out.code === 'idempotency_conflict') {
+    throw Object.assign(new Error('Conflit : cette clé de réservation est déjà utilisée.'), { status: 409, code: 'idempotency_conflict' });
+  }
   if (out && out.ok === false && out.code === 'slot_full') throw slotFullError(record.start_time, out.used, out.capacity || capacity);
   const row = out && out.row;
   if (!out || out.ok !== true || !row || row.id == null) throw Object.assign(new Error('Rendez-vous non confirmé par la base : réessayez.'), { status: 503 });
+  if (out.duplicate) {
+    // Rejeu légitime (droits déjà contrôlés plus haut) : id et statut seulement.
+    return { ok: true, success: true, environment_code: env, row: { id: row.id, status: row.status }, rows: [{ id: row.id, status: row.status }], duplicate: true };
+  }
   const used = out.used != null ? Number(out.used) : null;
-  return { ok: true, success: true, environment_code: env, row, rows: [row], duplicate: !!out.duplicate, used, capacity, remaining: used == null ? null : Math.max(0, capacity - used) };
+  return { ok: true, success: true, environment_code: env, row, rows: [row], duplicate: false, used, capacity: out.capacity || capacity, remaining: used == null ? null : Math.max(0, (out.capacity || capacity) - used) };
 }
 
 module.exports = async function handler(req, res) {
@@ -471,7 +477,7 @@ module.exports = async function handler(req, res) {
     return json(res, 400, { error: 'Action rendez-vous non autorisée' });
   } catch (err) {
     const payload = { error: err.message || 'Erreur API rendez-vous' };
-    if (['range_too_large', 'slot_full', 'response_not_saved', 'response_not_found', 'response_form_mismatch'].includes(err.code)) payload.code = err.code;
+    if (['range_too_large', 'slot_full', 'response_not_saved', 'response_not_found', 'response_form_mismatch', 'idempotency_conflict'].includes(err.code)) payload.code = err.code;
     if (err.code === 'slot_full') { payload.used = err.used; payload.capacity = err.capacity; }
     return json(res, err.status && err.status >= 400 ? err.status : 500, payload);
   }
