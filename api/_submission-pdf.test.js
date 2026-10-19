@@ -1110,7 +1110,8 @@ for (const alias of ['pad_terrain', 'terrain', 'mobile', 'operator', 'operateur'
           const id = match ? decodeURIComponent(match[1]) : '';
           return jsonResponse(200, forms.filter((form) => form.id === id));
         }
-        if (u.includes('/rest/v1/appointments') && method === 'POST') return jsonResponse(200, [{ id: 'rdv-1' }]);
+        if (u.includes('/rest/v1/rpc/picotrack_book_appointment') && method === 'POST') return jsonResponse(200, { ok: true, row: { id: 'rdv-1' }, used: 1, capacity: 2 });
+        if (u.includes('/rest/v1/appointments') && method === 'POST') return jsonResponse(500, { error: 'insertion directe : passer par la RPC' });
         if (u.includes('/rest/v1/appointments')) return jsonResponse(200, [{ id: 'rdv-1' }]);
         return jsonResponse(200, []);
       };

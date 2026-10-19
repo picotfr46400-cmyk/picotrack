@@ -418,6 +418,12 @@ function installWorld(world) {
     }
 
     const parsed = new URL(u);
+    // RPC de réservation atomique (#34) : écrit la ligne dans la table appointments du monde simulé.
+    if (parsed.pathname.endsWith('/rpc/picotrack_book_appointment') && method === 'POST') {
+      const stored = { id: `rdv-${tableOf(world, 'appointments').length + 1}`, ...(body && body.p_record) };
+      tableOf(world, 'appointments').push(stored);
+      return jsonResponse(200, { ok: true, duplicate: false, row: stored, used: 1, capacity: body && body.p_capacity });
+    }
     const table = parsed.pathname.split('/').filter(Boolean).pop();
     const filters = [];
     const ors = [];

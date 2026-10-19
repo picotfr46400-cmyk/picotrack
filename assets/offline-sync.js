@@ -645,8 +645,16 @@
         const action = memory.get(id);
         if (!action) return { missing: true };
         if (action.status === 'rejected') return { rejected: true, status: 400, error: action.lastError || 'Cette action a été refusée.' };
-        if (online() === false || Date.now() >= limit) return { pending: true };
-        const run = await flush().catch(() => ({ failed: true }));
+        const left = limit - Date.now();
+        if (online() === false || left <= 0) return { pending: true };
+        // Un envoi qui ne répond pas ne bloque jamais l'écran au-delà du délai.
+        let timer = null;
+        const run = await Promise.race([
+          flush().catch(() => ({ failed: true })),
+          new Promise(resolve => { timer = setTimeout(() => resolve({ timeout: true }), left); })
+        ]);
+        if (timer) clearTimeout(timer);
+        if (run && run.timeout && !results.has(id)) return { pending: true };
         if (results.has(id)) continue;
         const after = memory.get(id);
         if (after && after.status === 'pending' && after.lastError && !(run && run.skipped === 'busy')) return { pending: true, error: after.lastError };
@@ -1116,13 +1124,14 @@
         const placeholder = { id: id || action.id, pendingSync: true, queued: true };
         if (id || !online || typeof engine.awaitAction !== 'function') return placeholder;
         // Création en ligne : on attend l'envoi pour rendre l'id réel (jamais un id local à l'appelant).
-        return engine.awaitAction(action.id, 8000).then(function (out) {
+        return engine.awaitAction(action.id, Number(win.PT_OFFLINE_AWAIT_MS) > 0 ? Number(win.PT_OFFLINE_AWAIT_MS) : 8000).then(function (out) {
           if (afterChange) afterChange();
           if (out && out.row && out.row.id != null) return [out.row];
           if (out && out.rejected) {
             return Promise.reject(Object.assign(new Error(out.error || 'Action refusée.'), { refused: true, status: out.status || 400 }));
           }
-          return placeholder;
+          // Délai dépassé ou coupure : la saisie reste en file (envoi en cours), l'appelant ne doit rien annuler.
+          return Object.assign(placeholder, { sending: true });
         });
       });
     };

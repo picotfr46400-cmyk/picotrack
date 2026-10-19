@@ -5,7 +5,7 @@ const path = require('path');
 
 // Réservation de créneau (bug du 19/10 à 17:15) : places décomptées, créneau plein refusé, jamais d'id local.
 const ss = require('./_server-supabase');
-const state = { appointments: [], forms: [], posts: [], trigger: true };
+const state = { appointments: [], forms: [], submissions: [], rpc: [], rpcError: null };
 const FIELD = '1792401253084';
 function filterRows(rows, q) {
   for (const col of ['environment_code', 'form_id', 'field_id', 'date', 'start_time', 'id']) {
@@ -18,22 +18,28 @@ function filterRows(rows, q) {
   }
   return rows;
 }
+const active = r => !['cancelled', 'canceled', 'annule', 'annulé', 'deleted', 'void'].includes(String(r.status || '').toLowerCase());
+// Émule public.picotrack_book_appointment (verrou + comptage + insertion atomiques ; le vrai test est sur Postgres).
+function fakeBook({ p_record: rec, p_capacity: cap, p_idempotency_key: key }) {
+  state.rpc.push({ rec, cap, key });
+  if (state.rpcError) return Promise.reject(state.rpcError);
+  const envc = String(rec.environment_code).toUpperCase();
+  if (key) {
+    const dup = state.appointments.find(r => r.environment_code === envc && r.idempotency_key === key);
+    if (dup) return Promise.resolve({ ok: true, duplicate: true, row: dup, capacity: cap });
+  }
+  const used = state.appointments.filter(r => r.environment_code === envc && String(r.form_id) === String(rec.form_id) && r.field_id === rec.field_id && r.date === rec.date && r.start_time === rec.start_time && active(r)).length;
+  if (used >= cap) return Promise.resolve({ ok: false, code: 'slot_full', used, capacity: cap });
+  const row = Object.assign({ id: 'a-' + (state.appointments.length + 1) }, rec, { environment_code: envc, parallel_slots: cap, idempotency_key: key || null });
+  state.appointments.push(row);
+  return Promise.resolve({ ok: true, duplicate: false, row, used: used + 1, capacity: cap });
+}
 function fakeRest(p, opts = {}) {
   const [table, qs] = p.split('?');
   const q = new URLSearchParams(qs);
-  if (opts.method === 'POST' && table === 'appointments') {
-    const row = Object.assign({ id: 'a-' + (state.appointments.length + 1) }, opts.body);
-    state.posts.push(row);
-    if (row.response_id != null && !/^\d+$/.test(String(row.response_id))) {
-      return Promise.reject(Object.assign(new Error(`invalid input syntax for type bigint: "${row.response_id}"`), { status: 400 }));
-    }
-    // Garde-fou SQL trg_prevent_appointment_overbooking (DEMO) : même environnement, date, heure, groupe.
-    const same = state.appointments.filter(r => r.environment_code === row.environment_code && r.date === row.date && r.start_time === row.start_time && (r.capacity_group || '') === (row.capacity_group || ''));
-    if (state.trigger && same.length >= (row.parallel_slots ?? 1)) return Promise.reject(Object.assign(new Error('Créneau complet pour cette date et cette heure'), { status: 400 }));
-    state.appointments.push(row);
-    return Promise.resolve([row]);
-  }
-  let rows = table === 'forms' ? state.forms : table === 'appointments' ? state.appointments : [];
+  if (table === 'rpc/picotrack_book_appointment') return fakeBook(opts.body);
+  if (opts.method === 'POST' && table === 'appointments') return Promise.reject(new Error('insertion directe interdite : passer par la RPC'));
+  let rows = table === 'forms' ? state.forms : table === 'appointments' ? state.appointments : table === 'submissions' ? state.submissions : [];
   rows = filterRows(rows.slice(), q);
   return Promise.resolve(rows.slice(0, Math.min(Number(q.get('limit') || 1000), 1000)));
 }
@@ -46,8 +52,9 @@ const req = () => ({ headers: {} });
 function world() {
   state.forms = [{ id: 4, environment_code: 'GIT', nom: 'Nouveau formulaire', fields: [{ id: Number(FIELD), type: 'appointment', nom: 'Prise de rendez-vous', parallelSlots: 2, slotDuration: 30 }] }];
   state.appointments = [];
-  state.posts = [];
-  state.trigger = true;
+  state.submissions = [25, 26, 27, 28].map(id => ({ id, form_id: 4, environment_code: 'GIT' })).concat([{ id: 40, form_id: 9, environment_code: 'GIT' }, { id: 41, form_id: 4, environment_code: 'EFC' }]);
+  state.rpc = [];
+  state.rpcError = null;
 }
 function booking(extra) {
   // Corps exact envoyé par l'écran de saisie (ptCreateAppointmentsForSubmission).
@@ -82,14 +89,31 @@ test('la capacité vient du formulaire, pas du client (parallel_slots forcé ign
   await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 99 }), admin);
   await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 99, response_id: '26' }), admin);
   await assert.rejects(appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 99, response_id: '27' }), admin), /Créneau complet/);
-  assert.ok(state.posts.every(r => r.parallel_slots === 2 && r.capacity_group === FIELD));
+  assert.ok(state.rpc.every(c => c.cap === 2 && c.rec.capacity_group === FIELD), 'capacité du formulaire transmise à la RPC');
 });
 
-test('course entre deux postes : le garde-fou SQL « complet » devient un 409 lisible', async () => {
+test('garde-fou SQL « Créneau complet » (PT409) : 409 lisible, jamais un message SQL', async () => {
   world();
-  state.appointments.push({ id: 'x1', environment_code: 'GIT', form_id: 99, field_id: 'autre', date: '2026-10-20', start_time: '13:30:00', capacity_group: FIELD, status: 'confirmed' });
-  state.appointments.push({ id: 'x2', environment_code: 'GIT', form_id: 99, field_id: 'autre', date: '2026-10-20', start_time: '13:30:00', capacity_group: FIELD, status: 'confirmed' });
-  await assert.rejects(appts.handleCreate(req(), 'GIT', booking(), admin), err => err.status === 409 && /Créneau complet/.test(err.message));
+  state.rpcError = Object.assign(new Error('Créneau complet'), { status: 409 });
+  await assert.rejects(appts.handleCreate(req(), 'GIT', booking(), admin), err => err.status === 409 && /Créneau complet : 13:30/.test(err.message));
+});
+
+test('rejeu de la même saisie : même RDV, aucun doublon (clé d’idempotence par saisie et champ)', async () => {
+  world();
+  const a = await appts.handleCreate(req(), 'GIT', booking(), admin);
+  const b = await appts.handleCreate(req(), 'GIT', booking(), admin);
+  assert.equal(b.duplicate, true);
+  assert.equal(b.row.id, a.row.id);
+  assert.equal(state.appointments.length, 1);
+  assert.equal(state.rpc[0].key, 'resp:25:' + FIELD);
+});
+
+test('response_id : doit exister dans l’environnement et appartenir au formulaire', async () => {
+  world();
+  await assert.rejects(appts.handleCreate(req(), 'GIT', booking({ response_id: '40' }), admin), err => err.status === 400 && err.code === 'response_form_mismatch');
+  await assert.rejects(appts.handleCreate(req(), 'GIT', booking({ response_id: '41' }), admin), err => err.status === 400 && err.code === 'response_not_found');
+  await assert.rejects(appts.handleCreate(req(), 'GIT', booking({ response_id: '999' }), admin), err => err.code === 'response_not_found');
+  assert.equal(state.rpc.length, 0);
 });
 
 test('id local de saisie (UUID de la file) : 400 explicite, aucune écriture envoyée à la base', async () => {
@@ -100,7 +124,7 @@ test('id local de saisie (UUID de la file) : 400 explicite, aucune écriture env
     assert.doesNotMatch(err.message, /bigint|syntax/);
     return true;
   });
-  assert.equal(state.posts.length, 0);
+  assert.equal(state.rpc.length, 0);
 });
 
 test('formulaire ancien sans description du champ : capacité demandée, bornée à 50', async () => {
@@ -108,6 +132,7 @@ test('formulaire ancien sans description du champ : capacité demandée, bornée
   state.forms[0].fields = [];
   await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 1 }), admin);
   await assert.rejects(appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 1, response_id: '26' }), admin), err => err.status === 409);
+  assert.ok(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261019180000_appointment_atomic_booking.sql'), 'utf8').includes('pg_advisory_xact_lock'));
   world();
   state.forms[0].fields = [];
   const r = await appts.handleCreate(req(), 'GIT', booking({ parallel_slots: 5000 }), admin);
@@ -180,4 +205,28 @@ test('écran de saisie : réservation refusée = message affiché, annulation se
   assert.match(bundle, /toast\("e","Saisie annulée : "\+\(slotErr&&slotErr\.message/);
   // Demande de service : l'échec du rendez-vous n'est plus un simple console.warn.
   assert.match(bundle, /catch\(e\)\{"function"==typeof toast&&toast\("e","Rendez-vous non réservé : "/);
+});
+
+test('web en ligne, attente dépassée : « envoi en cours », saisie gardée en file, rien d’annulé', async () => {
+  const win = webWin(true);
+  let release;
+  const engine = webEngine(win, () => new Promise(r => { release = r; }));
+  offline.wrapDatabase(win, engine);
+  win.PT_OFFLINE_AWAIT_MS = 50; // délai court pour le test (8 s en vrai)
+  const p = win.DB.save('submissions', { form_id: 4, values: { a: 1 } });
+  const out = await Promise.race([p, new Promise(r => setTimeout(() => r('bloqué'), 1000))]);
+  assert.notEqual(out, 'bloqué', 'un envoi sans réponse ne bloque pas l’écran');
+  assert.equal(out.pendingSync, true);
+  assert.equal(out.sending, true);
+  assert.equal(engine.list().length, 1, 'la saisie reste en file');
+  release({ ok: true, status: 200, confirmed: true, row: { id: 26 } });
+});
+
+test('écran de saisie : saisie encore en file = « Envoi en cours », ni annulation ni réservation', () => {
+  const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
+  const i = bundle.indexOf('if(row&&row.pendingSync){toast("i","⏳ Envoi en cours');
+  assert.ok(i > 0);
+  const branch = bundle.slice(i, bundle.indexOf('}row&&row.id&&(r.id=row.id)', i));
+  assert.doesNotMatch(branch, /deleteSubmission|Saisie annulée|ptCreateAppointmentsForSubmission/);
+  assert.match(branch, /return$/);
 });
