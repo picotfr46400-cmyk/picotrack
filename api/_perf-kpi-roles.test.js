@@ -514,3 +514,91 @@ test('trace de dossier : saisie d’origine fusionnée seulement si elle apparti
   const alone = await audit.handleTrace({ headers: {} }, { instance_id: '6', submission_id: '24', environment_code: 'GIT' }, other.deps);
   assert.ok(!alone.events.some(e => e.id === 's1'), 'indication refusée : saisie d’un autre formulaire');
 });
+
+// ---- Fiche dossier instantanée (régression 19/10 après #32) ----
+test('fiche dossier : droits précisés en cours de chargement = lectures en vol conservées ; autre compte = jetées', async () => {
+  const releases = {};
+  const { ctx } = sandbox((p, b) => new Promise(r => { (releases[b.entity] = releases[b.entity] || []).push(r); }));
+  const release = (entity, v) => (releases[entity] || []).splice(0).forEach(r => r(v));
+  const forms = ctx._apiPost('/api/records', { action: 'list', entity: 'submissions' });
+  ctx.PT_CURRENT_USER = Object.assign({}, ctx.PT_CURRENT_USER, { resolved_permissions: { forms: { 4: 'read' } } });
+  const other = ctx._apiPost('/api/records', { action: 'list', entity: 'forms' });
+  release('submissions', [{ id: 24 }]);
+  release('forms', [{ id: 4 }]);
+  assert.deepEqual(await forms, [{ id: 24 }], 'la lecture des saisies aboutit malgré la mise à jour des droits');
+  assert.deepEqual(await other, [{ id: 4 }]);
+  const late = ctx._apiPost('/api/records', { action: 'list', entity: 'services' });
+  ctx.PT_CURRENT_USER = { id: 'user-B', role: 'admin', roles: [], license_type: 'supervision', environment_code: 'GIT', active: true };
+  ctx._apiPost('/api/records', { action: 'list', entity: 'forms' }).catch(() => {});
+  release('services', [{ id: 'secret' }]);
+  release('forms', []);
+  await assert.rejects(late, e => e.ptEpoch === true, 'changement de compte : réponse de l’ancien compte jetée');
+});
+
+function traceNode(id) {
+  const attrs = {};
+  return { id, style: {}, innerHTML: '', setAttribute(k, v) { attrs[k] = String(v); }, getAttribute(k) { return k in attrs ? attrs[k] : null; }, removeAttribute(k) { delete attrs[k]; } };
+}
+
+test('fiche dossier : la trace ne reste jamais sur « Chargement » (délai max, puis réponse tardive peinte)', async () => {
+  let release;
+  const { ctx, nodes } = sandbox((p, b) => (b.action === 'submission_trace' ? new Promise(r => { release = r; }) : []));
+  const timers = [];
+  ctx.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+  nodes['sid-history'] = traceNode('sid-history');
+  ctx.ptMountTrace('sid-history', '', true, 6, { submissionHint: 24, instance: { id: 6, events: [] } });
+  assert.match(nodes['sid-history'].innerHTML, /Chargement/);
+  const t = timers.find(x => x.ms >= 5000 && x.ms <= 10000);
+  assert.ok(t, 'délai maximal armé (5 à 10 s)');
+  t.fn();
+  assert.doesNotMatch(nodes['sid-history'].innerHTML, /Chargement/);
+  assert.match(nodes['sid-history'].innerHTML, /trop lente/);
+  release({ events: [{ id: 'x', event_type: 'created', label: 'Création', occurred_at: '2026-10-19T14:09:19Z' }] });
+  await tick(); await tick();
+  assert.match(nodes['sid-history'].innerHTML, /Création/, 'réponse tardive : l’historique remplace le message');
+});
+
+test('fiche dossier : écran redessiné pendant la lecture → la trace est peinte dans le nouvel élément', async () => {
+  let release;
+  const { ctx, nodes } = sandbox((p, b) => (b.action === 'submission_trace' ? new Promise(r => { release = r; }) : []));
+  nodes['sid-history'] = traceNode('sid-history');
+  ctx.ptMountTrace('sid-history', '', true, 6, {});
+  nodes['sid-history'] = traceNode('sid-history'); // re-rendu de la fiche
+  nodes['sid-history'].innerHTML = 'Chargement de la traçabilité…';
+  release({ events: [{ id: 'x', event_type: 'created', label: 'Création', occurred_at: '2026-10-19T14:09:19Z' }] });
+  await tick(); await tick();
+  assert.doesNotMatch(nodes['sid-history'].innerHTML, /Chargement/);
+  assert.match(nodes['sid-history'].innerHTML, /Création/);
+});
+
+test('fiche dossier : formulaire affiché tout de suite, détail relu si absent, sans attendre la trace', async () => {
+  const { ctx, nodes } = sandbox(() => new Promise(() => {})); // trace jamais répondue
+  ctx.SUBMISSIONS_DATA = [{ id: 7, values: { a: 'autre' } }];
+  ctx.FORMS_DATA.push({ id: 4, fields: [{ id: 'a', type: 'text' }] });
+  nodes['sid-main'] = { innerHTML: '' };
+  const seen = [];
+  ctx.renderInstanceDetail = function (inst) {
+    const sub = ctx.SUBMISSIONS_DATA.find(s => s.id === inst.submissionId);
+    seen.push(sub ? sub.values.a : null);
+    nodes['sid-main'].innerHTML = sub ? 'Données du formulaire ' + sub.values.a : 'Actions disponibles';
+  };
+  let asked = null;
+  ctx.ptEnsureSubmissionDetail = async id => { asked = id; return { id: 24, formId: 4, values: { a: 'Valeur saisie' } }; };
+  ctx.ptWrapInstanceDetailForTest();
+  const inst = { id: 6, serviceId: 2, submissionId: '24', events: [] };
+  ctx.renderInstanceDetail(inst, { id: 2, formId: 4 });
+  assert.equal(seen.length, 1, 'rendu immédiat, synchrone');
+  assert.equal(asked, '24');
+  await tick(); await tick();
+  assert.equal(seen.length, 2, 'fiche redessinée dès le détail du formulaire reçu');
+  assert.match(nodes['sid-main'].innerHTML, /Données du formulaire Valeur saisie/);
+  assert.equal(inst.submissionId, 24, 'id texte aligné sur l’id numérique de la saisie');
+  ctx.renderInstanceDetail(inst, { id: 2, formId: 4 });
+  assert.equal(seen.length, 3);
+  await tick();
+  assert.equal(seen.length, 3, 'pas de boucle de relecture');
+});
+
+test('création rapide de dossier : l’id de la saisie est lu même si le serveur renvoie un tableau', () => {
+  assert.match(bundle, /t0=await DB\.createSubmission\(e\.id,\{\.\.\.saisieValues\},r\),t=Array\.isArray\(t0\)\?t0\[0\]:t0;t&&t\.id&&\(d=t\.id\)/);
+});

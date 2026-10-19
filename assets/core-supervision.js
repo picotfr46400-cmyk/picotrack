@@ -2115,6 +2115,8 @@
     }
   }
 
+  var TRACE_TIMEOUT_MS = 8000;
+
   function localTraceEvents(inst) {
     var svc = null;
     try { svc = (typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : []).filter(function (x) { return String(x.id) === String(inst.serviceId); })[0] || null; } catch (_) {}
@@ -2152,16 +2154,52 @@
       el.innerHTML = '<div style="font-size:12px;color:#b91c1c">Traçabilité indisponible.</div>';
       return;
     }
+    var done = false;
+    var timedOut = false;
+    // L'écran a pu être redessiné pendant la lecture : on peint l'élément affiché, pas l'ancien.
+    var live = function () {
+      var cur = document.getElementById(elementId);
+      if (cur && cur !== el && cur.getAttribute && !cur.getAttribute('data-pt-submission')) {
+        cur.setAttribute('data-pt-trace-root', '1');
+        cur.setAttribute('data-pt-submission', key);
+        if (iid && !sid) cur.setAttribute('data-pt-instance', iid);
+        cur._ptTraceLocal = el._ptTraceLocal;
+        cur._ptTraceOpts = el._ptTraceOpts;
+      }
+      return cur && cur.getAttribute && cur.getAttribute('data-pt-submission') === key ? cur : null;
+    };
+    // Jamais bloqué sur « Chargement » : passé le délai, message clair (ou historique local).
+    var timer = setTimeout(function () {
+      if (done) return;
+      timedOut = true;
+      var cur = live();
+      if (cur) failTrace(cur, Object.assign(new Error('Délai dépassé'), { status: 504 }));
+    }, TRACE_TIMEOUT_MS);
     Promise.resolve(req).then(function (res) {
-      if (el.getAttribute('data-pt-submission') !== key) return;
-      if (!res || res.error || !Array.isArray(res.events)) throw new Error((res && res.error) || 'Traçabilité indisponible');
-      paintTrace(el, res);
+      done = true;
+      clearTimeout(timer);
+      var cur = live();
+      if (!cur) return;
+      if (!res || res.error || !Array.isArray(res.events)) throw Object.assign(new Error((res && res.error) || 'Traçabilité indisponible'), { ptLive: cur });
+      paintTrace(cur, res);
     }).catch(function (err) {
+      done = true;
+      clearTimeout(timer);
       if (record) delete traceViewed[sid];
-      if (el.getAttribute('data-pt-submission') !== key) return;
+      if (timedOut) return;
+      var cur = (err && err.ptLive) || live();
+      if (cur) failTrace(cur, err);
+    });
+  }
+
+  function failTrace(el, err) {
+    {
       try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
       var denied = err && (err.status === 403 || err.status === 404);
-      var reason = denied ? 'Traçabilité serveur non accessible avec vos droits.' : 'Traçabilité serveur indisponible' + (err && err.status ? ' (' + err.status + ')' : '') + '.';
+      var timedOut = err && err.status === 504;
+      var reason = denied ? 'Traçabilité serveur non accessible avec vos droits.'
+        : timedOut ? 'Traçabilité serveur trop lente (plus de ' + Math.round(TRACE_TIMEOUT_MS / 1000) + ' s).'
+        : 'Traçabilité serveur indisponible' + (err && err.status ? ' (' + err.status + ')' : '') + '.';
       var local = el._ptTraceLocal;
       if (local && !denied && Array.isArray(local.events) && local.events.length) {
         // Repli : historique local du dossier, clairement signalé comme tel.
@@ -2169,7 +2207,7 @@
         return;
       }
       el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:#b91c1c">' + html(reason) + '</div>';
-    });
+    }
   }
   window.ptMountTrace = mountTrace;
 
@@ -2419,6 +2457,60 @@
       window.renderInstanceHistory.__ptTrace = true;
     }
   }
+
+  // Fiche dossier : le formulaire s'affiche tout de suite, sans dépendre de la trace.
+  function submissionsList() {
+    try { return typeof SUBMISSIONS_DATA !== 'undefined' && Array.isArray(SUBMISSIONS_DATA) ? SUBMISSIONS_DATA : null; } catch (_) { return null; }
+  }
+  function hasValues(sub) { return !!(sub && !sub._summaryOnly && sub.values && typeof sub.values === 'object' && Object.keys(sub.values).length); }
+  function storeSubmission(full) {
+    var list = submissionsList();
+    if (!list || !full || full.id == null) return;
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i] && list[i].id) === String(full.id)) { list[i] = full; return; }
+    }
+    list.push(full);
+  }
+  function wrapInstanceDetail() {
+    var orig = window.renderInstanceDetail;
+    if (typeof orig !== 'function' || orig.__ptForm) return;
+    var wrapped = function (inst, svc) {
+      var rid = inst ? String(inst.submissionId != null ? inst.submissionId : (inst.submission_id != null ? inst.submission_id : '')).trim() : '';
+      var list = submissionsList() || [];
+      var sub = null;
+      for (var i = 0; rid && i < list.length; i++) if (String(list[i] && list[i].id) === rid) { sub = list[i]; break; }
+      // Identifiants texte / nombre : alignés pour que le bloc « Données du formulaire » soit trouvé.
+      if (sub && inst.submissionId !== sub.id) inst.submissionId = sub.id;
+      if (inst) window.__ptDetailInstanceId = String(inst.id);
+      var ret = orig.apply(this, arguments);
+      try {
+        var main = document.getElementById('sid-main');
+        if (inst && !rid && main && main.querySelector) {
+          var head = main.firstElementChild && main.firstElementChild.firstElementChild;
+          if (head && head.insertAdjacentHTML && !main.querySelector('[data-pt-form-missing]')) {
+            head.insertAdjacentHTML('afterend', '<div data-pt-form-missing="1" style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#fff7ed;border:1px solid #fed7aa;font-size:12px;color:#9a3412">Aucun formulaire d’origine n’est lié à ce dossier.</div>');
+          }
+        }
+        if (inst && rid && !hasValues(sub) && !inst.__ptFormLoading && typeof window.ptEnsureSubmissionDetail === 'function') {
+          inst.__ptFormLoading = true;
+          var self = this, args = arguments;
+          Promise.resolve(window.ptEnsureSubmissionDetail(rid)).then(function (full) {
+            if (!hasValues(full)) return;
+            storeSubmission(full);
+            if (window.__ptDetailInstanceId === String(inst.id) && document.getElementById('sid-main')) wrapped.apply(self, args);
+          }).catch(function (err) {
+            try { console.warn('[PicoTrack] détail du formulaire', err); } catch (_) {}
+          }).then(function () { inst.__ptFormLoading = false; });
+        }
+      } catch (err) {
+        try { console.warn('[PicoTrack] fiche dossier', err); } catch (_) {}
+      }
+      return ret;
+    };
+    wrapped.__ptForm = true;
+    window.renderInstanceDetail = wrapped;
+  }
+  window.ptWrapInstanceDetailForTest = function () { wrapInstanceDetail(); };
 
   window.ptWrapTraceForTest = function () { wrapTrace(); };
 
@@ -3455,6 +3547,7 @@
     wrapNavCache();
     wrapSubmissionPdf();
     wrapTrace();
+    wrapInstanceDetail();
     wireDrawerTabs();
     wrapUsersBadge();
     installPlanningOpen();
@@ -3609,10 +3702,17 @@
     } catch (_) {}
     prefetchedFor = '';
   }
+  function identityOf(sc) { var parts = String(sc || '').split('|'); return parts[0] + '|' + (parts[1] || ''); }
   function checkScope() {
     var sc = scope();
     if (sc !== lastScope) {
-      if (lastScope) { epoch++; clearAll(); clearStoredData(); }
+      // Changement de compte ou d'environnement : époque nouvelle (les réponses en vol sont jetées).
+      // Simple précision des droits du même compte : cache vidé, mais les lectures en cours aboutissent.
+      if (lastScope) {
+        if (identityOf(lastScope) !== identityOf(sc)) epoch++;
+        clearAll();
+        clearStoredData();
+      }
       lastScope = sc;
     }
     return sc;
