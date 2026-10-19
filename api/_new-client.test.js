@@ -31,24 +31,51 @@ test('baseline à jour et sans donnée', () => {
   assert.match(sql, /create extension if not exists pgcrypto/);
 });
 
+const NOPG = Object.fromEntries(Object.keys(process.env).filter(k => /^PG/.test(k)).map(k => [k, null]));
+const base = { ...NOPG, PICOTRACK_TEST_PG_ENDPOINT: null, PICOTRACK_DB_URL: null, PICOTRACK_DB_PASSWORD: 'x' };
+
 test('garde : ref EFC ou DEMO refusée avant toute connexion', async () => {
-  for (const r of [EFC, DEMO]) {
-    await assert.rejects(runCli(refArgs(r), { PICOTRACK_DB_URL: `postgresql://postgres.${r}:x@127.0.0.1:1/postgres` }), /interdit/);
-  }
-  // URL qui vise EFC même si la ref passée est autre
-  await assert.rejects(runCli(refArgs(), { PICOTRACK_DB_URL: `postgresql://postgres:x@db.${EFC}.supabase.co:5432/postgres` }), /interdit/);
+  for (const r of [EFC, DEMO]) await assert.rejects(runCli(refArgs(r), base), /interdit/);
 });
 
-test('garde : ref obligatoire, confirmée, et égale à celle de l’URL', async () => {
-  const url = `postgresql://postgres.${REF}:x@127.0.0.1:1/postgres`;
-  await assert.rejects(runCli(['--env', 'ACME'], { PICOTRACK_DB_URL: url }), /obligatoire/);
-  await assert.rejects(runCli(refArgs(REF, OTHER), { PICOTRACK_DB_URL: url }), /identique/);
-  await assert.rejects(runCli(refArgs(OTHER), { PICOTRACK_DB_URL: url }), /ne correspond pas/);
-  await assert.rejects(runCli(refArgs(), { PICOTRACK_DB_URL: 'postgresql://postgres:x@127.0.0.1:1/postgres' }), /introuvable/);
-  await assert.rejects(runCli(refArgs(), { PICOTRACK_DB_URL: `postgresql://postgres.${OTHER}:x@db.${REF}.supabase.co/postgres` }), /ambiguë/);
+test('garde : ref obligatoire et confirmée', async () => {
+  await assert.rejects(runCli(['--env', 'ACME'], base), /obligatoire/);
+  await assert.rejects(runCli(refArgs(REF, OTHER), base), /identique/);
   assert.throws(() => nc.checkEnvCode('EFC'), /réservé/);
   assert.throws(() => nc.checkPassword('motdepasse12'), /12 caractères/);
-  assert.equal(nc.refFromDbUrl(`postgresql://postgres:x@DB.${REF.toUpperCase()}.SUPABASE.CO:5432/postgres`).ref, REF);
+});
+
+test('garde : connexion dérivée de la ref uniquement', () => {
+  const c = nc.connectionFor(REF, {}, { PICOTRACK_DB_PASSWORD: 'p' });
+  assert.deepEqual([c.host, c.user, c.port, c.database], [`db.${REF}.supabase.co`, 'postgres', 5432, 'postgres']);
+  const p = nc.connectionFor(REF, { poolerRegion: 'eu-west-3' }, { PICOTRACK_DB_PASSWORD: 'p' });
+  assert.deepEqual([p.host, p.user], ['aws-0-eu-west-3.pooler.supabase.com', `postgres.${REF}`]);
+  assert.throws(() => nc.connectionFor(REF, {}, {}), /PICOTRACK_DB_PASSWORD/);
+  assert.throws(() => nc.connectionFor(REF, {}, { PICOTRACK_TEST_PG_ENDPOINT: `db.${EFC}.supabase.co:5432` }), /boucle locale/);
+});
+
+test('garde : URL fournie refusée si elle sort de la ref (?host=, ?user=, DSN clé=valeur, autre hôte)', () => {
+  const ok = `postgresql://postgres:pw@db.${REF}.supabase.co:5432/postgres`;
+  assert.equal(nc.connectionFor(REF, {}, { PICOTRACK_DB_URL: ok }).password, 'pw');
+  const bad = {
+    '?host=': `${ok}?host=db.${EFC}.supabase.co`,
+    '?hostaddr=': `${ok}?hostaddr=1.2.3.4`,
+    '?user=': `${ok}?user=other`,
+    '?port=': `${ok}?port=6543`,
+    '?service=': `${ok}?service=efc`,
+    '?options=': `${ok}?options=-csearch_path%3Dx`,
+    'DSN clé=valeur': `host=db.${EFC}.supabase.co user=postgres password=pw dbname=postgres`,
+    'DSN mixte': `${ok} host=db.${EFC}.supabase.co`,
+    'autre hôte': `postgresql://postgres:pw@db.${EFC}.supabase.co:5432/postgres`,
+    'autre ref': `postgresql://postgres:pw@db.${OTHER}.supabase.co:5432/postgres`,
+    'autre utilisateur': `postgresql://admin:pw@db.${REF}.supabase.co:5432/postgres`
+  };
+  for (const [label, url] of Object.entries(bad)) assert.throws(() => nc.connectionFor(REF, {}, { PICOTRACK_DB_URL: url }), /refusée/, label);
+});
+
+test('garde : une variable PG* (ex. PGHOST vers EFC) arrête tout', async () => {
+  await assert.rejects(runCli(refArgs(), { ...base, PGHOST: `db.${EFC}.supabase.co` }), /PGHOST/);
+  assert.throws(() => nc.checkNoPgEnv({ PGSERVICE: 'x' }), /PGSERVICE/);
 });
 
 function authMock() {
@@ -86,16 +113,18 @@ test('Postgres jetable : essai, base non vierge par critère, installation, prem
     const name = `client_${Date.now()}_${dbs.length}`;
     await admin.query(`create database ${name}`);
     dbs.push(name);
-    const u = new URL(databaseUrl); u.username = encodeURIComponent(role); u.password = 'pico-local'; u.pathname = '/' + name;
-    const c = new Client({ connectionString: u.toString() });
+    const u = new URL(databaseUrl);
+    const c = new Client({ host: '127.0.0.1', port: Number(u.port || 5432), user: role, password: 'pico-local', database: name });
     c.on('error', () => {});
     clients.push(c);
     await c.connect();
     await c.query(stub);
     if (extraSql) await c.query(extraSql);
-    return { url: u.toString(), c };
+    return { name, c };
   }
   const mock = await authMock();
+  const pgPort = Number(new URL(databaseUrl).port || 5432);
+  const envFor = (name) => ({ ...base, PICOTRACK_DB_PASSWORD: 'pico-local', PICOTRACK_TEST_PG_ENDPOINT: `127.0.0.1:${pgPort}/${name}` });
   try {
     // un cas par critère de base non vierge
     const dirty = {
@@ -110,13 +139,13 @@ test('Postgres jetable : essai, base non vierge par critère, installation, prem
       'fichier': "insert into storage.objects (bucket_id, name) values ('b', 'f')"
     };
     for (const [label, sql] of Object.entries(dirty)) {
-      const { url, c } = await freshDb(sql);
-      await assert.rejects(runCli([...refArgs(), '--apply'], { PICOTRACK_DB_URL: url }), /non vierge/, label);
+      const { name, c } = await freshDb(sql);
+      await assert.rejects(runCli([...refArgs(), '--apply'], envFor(name)), /non vierge/, label);
       assert.equal((await c.query("select count(*)::int n from pg_tables where schemaname='public' and tablename='forms'")).rows[0].n, 0, label);
     }
-    const { url, c } = await freshDb();
+    const { name, c } = await freshDb();
     mock.state.db = c;
-    const env = { PICOTRACK_DB_URL: url, PICOTRACK_TEST_AUTH_URL: mock.url, SUPABASE_SERVICE_ROLE_KEY: 'test-only', PICOTRACK_FIRST_ADMIN_PASSWORD: PASS };
+    const env = { ...envFor(name), PICOTRACK_TEST_AUTH_URL: mock.url, SUPABASE_SERVICE_ROLE_KEY: 'test-only', PICOTRACK_FIRST_ADMIN_PASSWORD: PASS };
     assert.match(await runCli(refArgs(), env), /Essai réussi/);
     assert.equal((await c.query("select count(*)::int n from pg_tables where schemaname='public'")).rows[0].n, 0);
     const out = await runCli([...refArgs(), '--apply', '--admin-email', ' Admin@Client.FR '], env);

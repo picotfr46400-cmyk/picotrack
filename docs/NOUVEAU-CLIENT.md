@@ -11,14 +11,17 @@ Règle : un client = un projet Supabase dédié. Jamais un nouvel `environment_c
 ## 2. Appliquer le schéma (script reproductible)
 ```bash
 npm ci                                   # pg est une devDependency
-export PICOTRACK_DB_URL='...'            # ne pas l'afficher, ne pas le committer
+export PICOTRACK_DB_PASSWORD='...'       # mot de passe de la base du projet ; ne pas l'afficher ni le committer
+unset $(env | grep -o '^PG[A-Z_]*')      # le script refuse toute variable PG*
 R=<ref du projet>                        # 20 lettres, visible dans l'URL du tableau de bord
 node scripts/client/new-client.js --project-ref $R --confirm-project-ref $R --env ACME          # essai (par défaut)
 node scripts/client/new-client.js --project-ref $R --confirm-project-ref $R --env ACME --apply  # application réelle
 ```
 Gardes, toutes avant écriture :
 - `--project-ref` et `--confirm-project-ref` obligatoires et identiques ; EFC (`jcanufkmcslxwmheqccp`) et DEMO (`ukucbfxyvyvtlglujoht`) refusés en dur avant toute connexion.
-- La ref doit être celle de l'URL réelle : hôte `db.<ref>.supabase.co` ou utilisateur `postgres.<ref>` (pooler), sinon arrêt.
+- Aucune URL libre : la connexion est construite depuis la ref (hôte `db.<ref>.supabase.co`, utilisateur `postgres` ; ou avec `--pooler-region eu-west-3`, hôte `aws-0-eu-west-3.pooler.supabase.com`, utilisateur `postgres.<ref>`). Seul le mot de passe vient de l'environnement. Une `PICOTRACK_DB_URL` fournie quand même doit décrire exactement cette connexion : paramètres `host`, `hostaddr`, `user`, `port`, `service`, `options` refusés, ainsi que les DSN clé=valeur ou mixtes.
+- Toute variable `PG*` dans l'environnement arrête le script.
+- Une fois connecté, avant toute écriture : `current_database()` et `inet_server_addr()` sont confrontés à la résolution DNS de `db.<ref>.supabase.co`. Sans correspondance, arrêt.
 - Base vierge en échec fermé : aucune table, vue, séquence, fonction ni type dans `public`, historique des migrations vide, zéro `auth.users`, aucun bucket ni fichier Storage. Une erreur de lecture arrête aussi.
 - Codes réservés (EFC, DEMO, GLOBAL…) refusés ; toute table sans RLS annule tout. Il applique `scripts/client/baseline.sql` (toutes les migrations jusqu'à `20261019220000`), puis les migrations plus récentes de `supabase/migrations/`, note les versions dans `supabase_migrations.schema_migrations` et crée les plafonds de licences (`--supervision 3 --pad 10 --lecture 0` par défaut).
 

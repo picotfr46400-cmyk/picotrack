@@ -4,10 +4,11 @@
  * Installation d'un nouveau client PicoTrack sur un projet Supabase VIERGE et dédié.
  * Voir docs/NOUVEAU-CLIENT.md. Aucune clé ni mot de passe n'est jamais affiché.
  *
- *   PICOTRACK_DB_URL=postgresql://...  node scripts/client/new-client.js \
+ *   PICOTRACK_DB_PASSWORD=...  node scripts/client/new-client.js \
  *       --project-ref <ref> --confirm-project-ref <ref> --env CODE [--apply]
  *     [--admin-email x@y.fr]   premier admin (PICOTRACK_FIRST_ADMIN_PASSWORD, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
  *     [--admin-only]           relance du seul premier admin sur une base déjà installée (idempotent)
+ *     [--pooler-region eu-west-3]  connexion par le pooler (utilisateur postgres.<ref>)
  *     [--supervision N --pad N --lecture N]
  *
  * Par défaut : ESSAI (tout est appliqué dans une transaction puis annulé). --apply pour écrire.
@@ -46,26 +47,80 @@ function checkRef(ref, confirm) {
   return r;
 }
 
-// La ref doit se lire dans l'URL réelle : hôte db.<ref>.supabase.co ou utilisateur postgres.<ref> (pooler).
-function refFromDbUrl(dbUrl) {
-  let u;
-  try { u = new URL(dbUrl); } catch (_) { guard('PICOTRACK_DB_URL illisible.'); }
-  if (!/^postgres(ql)?:$/.test(u.protocol)) guard('PICOTRACK_DB_URL doit commencer par postgresql://');
-  const host = u.hostname.toLowerCase();
-  const user = decodeURIComponent(u.username || '').toLowerCase();
-  const refs = new Set();
-  const h = host.match(/^db\.([a-z]{20})\.supabase\.co$/);
-  if (h) refs.add(h[1]);
-  const m = user.match(/^postgres\.([a-z]{20})$/);
-  if (m) refs.add(m[1]);
-  for (const r of refs) if (FORBIDDEN_REFS.has(r)) guard(`l'URL de connexion vise un projet interdit (EFC ou DEMO).`);
-  if (refs.size !== 1) guard("ref introuvable ou ambiguë dans l'URL de connexion (hôte db.<ref>.supabase.co ou utilisateur postgres.<ref>).");
-  return { ref: [...refs][0], local: host === 'localhost' || host === '127.0.0.1' };
+const FORBIDDEN_PARAMS = ['host', 'hostaddr', 'user', 'port', 'service', 'options', 'dbname', 'passfile'];
+
+// Aucune variable PG* : libpq et pg les liraient à notre place (PGHOST, PGUSER, PGSERVICE...).
+function checkNoPgEnv(env = process.env) {
+  const found = Object.keys(env).filter(k => /^PG[A-Z_]*$/.test(k));
+  if (found.length) guard(`variables ${found.join(', ')} définies : arrêt (aucune variable PG* autorisée).`);
+}
+
+// La connexion est construite uniquement depuis la ref autorisée ; seul le mot de passe vient de l'environnement.
+// Tests : PICOTRACK_TEST_PG_ENDPOINT=127.0.0.1:port[/base] remplace l'hôte, seulement en boucle locale.
+function connectionFor(ref, opts = {}, env = process.env) {
+  const region = opts.poolerRegion ? String(opts.poolerRegion).trim() : '';
+  if (region && !/^[a-z]{2}-[a-z]+-\d$/.test(region)) guard('--pooler-region invalide (ex. eu-west-3).');
+  const cfg = region
+    ? { host: `aws-0-${region}.pooler.supabase.com`, port: 5432, user: `postgres.${ref}`, database: 'postgres', identityHost: `db.${ref}.supabase.co`, local: false }
+    : { host: `db.${ref}.supabase.co`, port: 5432, user: 'postgres', database: 'postgres', identityHost: `db.${ref}.supabase.co`, local: false };
+  const test = String(env.PICOTRACK_TEST_PG_ENDPOINT || '');
+  if (test) {
+    const m = test.match(/^(127\.0\.0\.1|localhost):(\d{2,5})(?:\/([a-z0-9_]{1,63}))?$/);
+    if (!m) guard('PICOTRACK_TEST_PG_ENDPOINT : boucle locale uniquement.');
+    Object.assign(cfg, { host: '127.0.0.1', port: Number(m[2]), database: m[3] || 'postgres', user: `postgres.${ref}`, identityHost: '127.0.0.1', local: true });
+  }
+  cfg.password = passwordFromEnv(cfg, env);
+  return cfg;
+}
+
+function passwordFromEnv(cfg, env) {
+  const url = env.PICOTRACK_DB_URL;
+  if (url == null || url === '') {
+    const p = env.PICOTRACK_DB_PASSWORD || '';
+    if (!p) guard('PICOTRACK_DB_PASSWORD manquant (mot de passe de la base du projet).');
+    return p;
+  }
+  // URL tolérée seulement si elle décrit exactement la connexion dérivée de la ref.
+  const raw = String(url);
+  if (!/^postgres(ql)?:\/\/[^\s]+$/.test(raw)) guard('PICOTRACK_DB_URL refusée : seule une URL postgresql:// simple est acceptée (pas de DSN clé=valeur ni mixte).');
+  let u; try { u = new URL(raw); } catch (_) { guard('PICOTRACK_DB_URL illisible.'); }
+  const parsed = require('pg-connection-string').parse(raw);
+  for (const k of u.searchParams.keys()) {
+    if (FORBIDDEN_PARAMS.includes(k.toLowerCase())) guard(`PICOTRACK_DB_URL refusée : paramètre ${k} interdit.`);
+  }
+  for (const k of FORBIDDEN_PARAMS) if (k !== 'host' && k !== 'user' && k !== 'port' && parsed[k] != null && k !== 'dbname') guard(`PICOTRACK_DB_URL refusée : ${k} interdit.`);
+  const host = String(parsed.host || '').toLowerCase();
+  const user = String(parsed.user || '').toLowerCase();
+  const port = Number(parsed.port || 5432);
+  const db = String(parsed.database || 'postgres');
+  const wantHost = cfg.local ? '127.0.0.1' : cfg.host;
+  if (host !== wantHost && !(cfg.local && host === 'localhost')) guard("PICOTRACK_DB_URL refusée : l'hôte ne correspond pas à la ref.");
+  if (user !== cfg.user.toLowerCase()) guard("PICOTRACK_DB_URL refusée : l'utilisateur ne correspond pas à la ref.");
+  if (port !== cfg.port || db !== cfg.database) guard('PICOTRACK_DB_URL refusée : port ou base inattendus.');
+  if (!parsed.password) guard('PICOTRACK_DB_URL sans mot de passe.');
+  return parsed.password;
+}
+
+// Après connexion, avant toute écriture : le serveur doit être celui de la ref.
+async function assertServerIdentity(client, cfg) {
+  const r = (await client.query("select current_database() db, host(inet_server_addr()) addr, current_user usr")).rows[0];
+  if (r.db !== cfg.database) guard(`base inattendue côté serveur (${r.db}).`);
+  if (!r.addr) guard("adresse du serveur inconnue : arrêt.");
+  const dns = require('dns').promises;
+  const want = new Set();
+  if (cfg.local) want.add('127.0.0.1');
+  else {
+    for (const fam of [4, 6]) { try { (await dns.lookup(cfg.identityHost, { all: true, family: fam })).forEach(x => want.add(x.address)); } catch (_) {} }
+  }
+  if (!want.size) guard(`résolution de ${cfg.identityHost} impossible : arrêt.`);
+  const norm = a => a.replace(/^::ffff:/, '').toLowerCase();
+  if (![...want].some(w => norm(w) === norm(r.addr))) guard(`le serveur (${r.addr}) n'est pas ${cfg.identityHost} : arrêt sans écriture.`);
+  return r;
 }
 
 function authBase(ref, local) {
   // Seuls les tests sur un Postgres local peuvent viser une API Auth simulée.
-  if (local && process.env.PICOTRACK_TEST_AUTH_URL) return process.env.PICOTRACK_TEST_AUTH_URL.replace(/\/+$/, '');
+  if (local && process.env.PICOTRACK_TEST_AUTH_URL && /^http:\/\/127\.0\.0\.1:\d+$/.test(process.env.PICOTRACK_TEST_AUTH_URL)) return process.env.PICOTRACK_TEST_AUTH_URL.replace(/\/+$/, '');
   const raw = String(process.env.SUPABASE_URL || '');
   let u; try { u = new URL(raw); } catch (_) { guard('SUPABASE_URL requis pour --admin-email.'); }
   if (u.protocol !== 'https:' || u.hostname.toLowerCase() !== `${ref}.supabase.co`) guard('SUPABASE_URL ne correspond pas à --project-ref.');
@@ -163,10 +218,8 @@ async function run(argv, out = console.log) {
   // 1. Gardes sans connexion
   const ref = checkRef(a['project-ref'], a['confirm-project-ref']);
   const env = checkEnvCode(a.env);
-  const dbUrl = process.env.PICOTRACK_DB_URL || '';
-  if (!dbUrl) guard('PICOTRACK_DB_URL manquant.');
-  const target = refFromDbUrl(dbUrl);
-  if (target.ref !== ref) guard("--project-ref ne correspond pas à l'URL de connexion.");
+  checkNoPgEnv();
+  const target = connectionFor(ref, { poolerRegion: a['pooler-region'] });
   const email = a['admin-email'] ? normalizeEmail(a['admin-email']) : '';
   if (a['admin-email'] && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) guard('--admin-email invalide.');
   if (a.adminOnly && !email) guard('--admin-only exige --admin-email.');
@@ -179,9 +232,11 @@ async function run(argv, out = console.log) {
   });
 
   const { Client } = require('pg');
-  const client = new Client({ connectionString: dbUrl, ssl: target.local ? false : { rejectUnauthorized: true } });
+  const client = new Client({ host: target.host, port: target.port, user: target.user, password: target.password, database: target.database, ssl: target.local ? false : { rejectUnauthorized: false, servername: target.host } });
   await client.connect();
   try {
+    await assertServerIdentity(client, target);
+    out(`Serveur vérifié : ${target.identityHost}`);
     if (a.adminOnly) {
       const ok = await client.query('select 1 from public.environment_license_limits where environment_code = $1', [env]);
       if (!ok.rowCount) guard(`environnement ${env} absent de cette base : arrêt.`);
@@ -230,4 +285,4 @@ if (require.main === module) {
     process.exit(1);
   });
 }
-module.exports = { run, checkRef, refFromDbUrl, checkEnvCode, checkPassword, blankReport, migrationsAfterBaseline, BASELINE_UNTIL, GuardError };
+module.exports = { run, checkRef, connectionFor, checkNoPgEnv, assertServerIdentity, checkEnvCode, checkPassword, blankReport, migrationsAfterBaseline, BASELINE_UNTIL, GuardError };
