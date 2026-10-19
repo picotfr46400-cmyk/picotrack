@@ -2112,46 +2112,243 @@
     }
   }
 
-  function mountTrace(elementId, submissionId, recordView) {
+  function mountTrace(elementId, submissionId, recordView, instanceId) {
     var el = document.getElementById(elementId);
     var sid = String(submissionId == null ? '' : submissionId).trim();
-    if (!el || !sid) return;
-    el.style.width = 'min(340px, 100%)';
+    var iid = String(instanceId == null ? '' : instanceId).trim();
+    if (!el || (!sid && !iid)) return;
+    var key = sid ? sid : 'i:' + iid;
+    el.style.width = el.getAttribute('data-pt-trace-wide') ? '100%' : 'min(340px, 100%)';
     el.setAttribute('data-pt-trace-root', '1');
-    el.setAttribute('data-pt-submission', sid);
-    var record = recordView !== false && !traceViewed[sid];
+    el.setAttribute('data-pt-submission', key);
+    if (iid && !sid) el.setAttribute('data-pt-instance', iid); else if (el.removeAttribute) el.removeAttribute('data-pt-instance');
+    var record = !!sid && recordView !== false && !traceViewed[sid];
     if (record) traceViewed[sid] = true;
     el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:var(--tl)">Chargement de la traçabilité…</div>';
+    var payload = sid
+      ? { action: 'submission_trace', id: sid, record_view: !!record, environment_code: envCode() }
+      : { action: 'submission_trace', instance_id: iid, environment_code: envCode() };
     var req;
     try {
-      req = apiPost('/api/records', {
-        action: 'submission_trace',
-        id: sid,
-        record_view: !!record,
-        environment_code: envCode()
-      });
+      req = apiPost('/api/records', payload);
     } catch (err) {
       if (record) delete traceViewed[sid];
       el.innerHTML = '<div style="font-size:12px;color:#b91c1c">Traçabilité indisponible.</div>';
       return;
     }
     Promise.resolve(req).then(function (res) {
-      if (el.getAttribute('data-pt-submission') !== sid) return;
+      if (el.getAttribute('data-pt-submission') !== key) return;
       if (!res || res.error || !Array.isArray(res.events)) throw new Error((res && res.error) || 'Traçabilité indisponible');
       paintTrace(el, res);
     }).catch(function (err) {
       if (record) delete traceViewed[sid];
-      if (el.getAttribute('data-pt-submission') !== sid) return;
+      if (el.getAttribute('data-pt-submission') !== key) return;
       try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
-      el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:#b91c1c">Traçabilité indisponible.</div>';
+      var denied = err && (err.status === 403 || err.status === 404);
+      el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:#b91c1c">' + (denied ? 'Traçabilité non accessible avec vos droits.' : 'Traçabilité indisponible.') + '</div>';
     });
   }
+  window.ptMountTrace = mountTrace;
 
   function refreshVisibleTrace() {
     if (!document.querySelectorAll) return;
     document.querySelectorAll('[data-pt-trace-root]').forEach(function (el) {
-      var sid = el.getAttribute('data-pt-submission');
-      if (sid && el.id) mountTrace(el.id, sid, false);
+      var key = el.getAttribute('data-pt-submission') || '';
+      var iid = el.getAttribute('data-pt-instance') || '';
+      if (!el.id) return;
+      if (iid) mountTrace(el.id, '', false, iid);
+      else if (key) mountTrace(el.id, key, false);
+    });
+  }
+
+  // Libellés lisibles des événements locaux d'un dossier (au lieu des codes bruts).
+  function eventMs(ev) {
+    var at = ev && ev.at;
+    var m = typeof at === 'string' && at.match(/^(\d{2})\/(\d{2})\/(\d{4})[ T,]+(\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (m) return new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +(m[6] || 0)).getTime();
+    if (at) { var t = Date.parse(at); if (!isNaN(t)) return t; }
+    var idm = String(ev && ev.id || '').match(/(\d{13})/);
+    return idm ? +idm[1] : 0;
+  }
+  function eventLabel(ev, service) {
+    ev = ev || {};
+    var p = ev.payload || {};
+    var svc = service || {};
+    function statusName(id) {
+      var st = (svc.statuses || []).filter(function (x) { return String(x.id) === String(id); })[0];
+      return st ? st.nom : String(id == null ? '' : id);
+    }
+    var label = TRACE_LABELS[ev.type] || '';
+    var detail = '';
+    if (ev.type === 'status_changed') {
+      label = 'Changement d’étape';
+      if (p.fromStatus != null || p.toStatus != null) detail = statusName(p.fromStatus) + ' → ' + statusName(p.toStatus);
+    } else if (ev.type === 'declared_action') {
+      var act = (svc.actions || []).filter(function (a) { return String(a.id) === String(p.actionId); })[0];
+      label = 'Action déclarée';
+      detail = act ? act.nom : '';
+    } else if (ev.type === 'created') {
+      label = 'Création du dossier';
+    } else if (ev.type === 'assigned' && p.toUser) {
+      detail = '→ ' + p.toUser;
+    }
+    if (p.comment) detail = (detail ? detail + ' · ' : '') + '« ' + p.comment + ' »';
+    if (!label) label = String(ev.type || 'Événement').replace(/_/g, ' ');
+    var ms = eventMs(ev);
+    var when = ev.at || (ms ? formatParis(new Date(ms).toISOString()) : '');
+    return { label: label, detail: detail, actor: ev.actor || '', when: when, ms: ms };
+  }
+  window.ptEventLabel = eventLabel;
+  window.ptEventMs = eventMs;
+
+  function currentInstanceFor(panel) {
+    var id = null;
+    try { id = (typeof curInstanceId !== 'undefined') ? curInstanceId : null; } catch (_) { id = null; }
+    var ref = panel && panel.querySelector && panel.querySelector('.pt-drawer-head span');
+    var list = typeof SERVICE_INSTANCES_DATA !== 'undefined' && Array.isArray(SERVICE_INSTANCES_DATA) ? SERVICE_INSTANCES_DATA : [];
+    var inst = list.filter(function (x) { return id != null && String(x.id) === String(id); })[0];
+    if (!inst && ref) inst = list.filter(function (x) { return x.reference === ref.textContent; })[0];
+    return inst || null;
+  }
+
+  function serviceOf(inst) {
+    var list = typeof SERVICES_DATA !== 'undefined' && Array.isArray(SERVICES_DATA) ? SERVICES_DATA : [];
+    return list.filter(function (x) { return inst && String(x.id) === String(inst.serviceId); })[0] || null;
+  }
+
+  // Onglets du panneau dossier (kanban) : Détails / Historique / Commentaires / Pièces jointes.
+  function drawerTab(tabsEl, index) {
+    var panel = tabsEl.parentNode;
+    if (!panel) return;
+    var tabs = [].slice.call(tabsEl.children);
+    tabs.forEach(function (tab, i) {
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', i === index ? 'true' : 'false');
+      tab.style.fontWeight = i === index ? '900' : '';
+      tab.style.borderBottom = i === index ? '2px solid currentColor' : '';
+    });
+    var sections = [].slice.call(panel.children).filter(function (el) {
+      return el.classList && (el.classList.contains('pt-info') || el.classList.contains('pt-quick') || el.classList.contains('pt-mini-history'));
+    });
+    var host = panel.querySelector('[data-pt-drawer-tab]');
+    if (!host) {
+      host = document.createElement('div');
+      host.setAttribute('data-pt-drawer-tab', '1');
+      host.id = 'pt-drawer-tab-panel';
+      tabsEl.parentNode.insertBefore(host, tabsEl.nextSibling);
+    }
+    sections.forEach(function (el) { el.style.display = index === 0 ? '' : 'none'; });
+    host.style.display = index === 0 ? 'none' : '';
+    if (index === 0) return;
+    var inst = currentInstanceFor(panel);
+    var svc = serviceOf(inst);
+    var events = (inst && Array.isArray(inst.events) ? inst.events : []).map(function (ev) { return eventLabel(ev, svc); });
+    events.sort(function (a, b) { return b.ms - a.ms; });
+    if (index === 1) {
+      host.innerHTML = '<div id="pt-drawer-trace" data-pt-trace-wide="1"></div>';
+      if (inst) mountTrace('pt-drawer-trace', inst.submissionId || inst.submission_id || '', true, inst.id);
+      else host.innerHTML = '<p>Dossier introuvable.</p>';
+      return;
+    }
+    if (index === 2) {
+      var comments = (inst && inst.events || []).filter(function (ev) { return ev && ev.payload && ev.payload.comment; }).map(function (ev) { return eventLabel(ev, svc); });
+      host.innerHTML = '<div class="pt-info"><h3>Commentaires</h3>' + (comments.length ? comments.map(function (c) {
+        return '<div style="padding:8px 0;border-bottom:1px solid var(--bg)"><div>' + html(c.detail) + '</div><small style="color:var(--tl)">' + html(c.actor) + ' · ' + html(c.when) + '</small></div>';
+      }).join('') : '<p>Aucun commentaire sur ce dossier.</p>') + '</div>';
+      return;
+    }
+    var files = [];
+    try {
+      var vals = (inst && inst.formData) || {};
+      Object.keys(vals).forEach(function (k) {
+        var v = vals[k];
+        (Array.isArray(v) ? v : [v]).forEach(function (f) { if (f && typeof f === 'object' && (f.name || f.fileName)) files.push(f.name || f.fileName); });
+      });
+    } catch (_) {}
+    host.innerHTML = '<div class="pt-info"><h3>Pièces jointes</h3>' + (files.length ? '<ul>' + files.map(function (f) { return '<li>' + html(f) + '</li>'; }).join('') + '</ul>' : '<p>Aucune pièce jointe sur ce dossier.</p>') +
+      (inst ? '<button class="btn btn-sm" type="button" onclick="openInstanceDetail(' + html(JSON.stringify(inst.id)) + ')">Ouvrir la fiche complète</button>' : '') + '</div>';
+  }
+  window.ptDrawerTab = drawerTab;
+
+
+  // Planning : un clic sur un rendez-vous ouvre la demande ou le dossier lié,
+  // toujours relu côté serveur (droits appliqués par l'API, jamais par le cache).
+  function linkedInstanceFor(responseId) {
+    var list = typeof SERVICE_INSTANCES_DATA !== 'undefined' && Array.isArray(SERVICE_INSTANCES_DATA) ? SERVICE_INSTANCES_DATA : [];
+    var rid = String(responseId == null ? '' : responseId);
+    if (!rid) return null;
+    return list.filter(function (x) { return String(x.submissionId || x.submission_id || '') === rid; })[0] || null;
+  }
+  function planningNotice(message) {
+    try { if (typeof showToast === 'function') { showToast(message); return; } } catch (_) {}
+    try { alert(message); } catch (_) {}
+  }
+  function openAppointmentRecord(row) {
+    var appt = row || {};
+    var rid = appt.response_id || appt.submission_id || appt.responseId || '';
+    try { if (typeof ptClosePlanningDetail === 'function') ptClosePlanningDetail(); } catch (_) {}
+    var inst = linkedInstanceFor(rid) || (appt.service_instance_id ? { id: appt.service_instance_id } : null);
+    if (inst && typeof openInstanceDetail === 'function' && serviceOf(inst)) {
+      openInstanceDetail(inst.id);
+      return Promise.resolve('instance');
+    }
+    if (!rid) { planningNotice('Aucune demande liée à ce rendez-vous.'); return Promise.resolve('none'); }
+    var ensure = typeof window.ptEnsureSubmissionDetail === 'function' ? window.ptEnsureSubmissionDetail(rid) : Promise.resolve(null);
+    return Promise.resolve(ensure).then(function (sub) {
+      if (sub && typeof openSubmission === 'function') { openSubmission(sub.id); return 'submission'; }
+      planningNotice('Demande introuvable ou non accessible avec vos droits.');
+      return 'none';
+    }).catch(function (err) {
+      var st = err && err.status;
+      planningNotice(st === 403 || st === 404 ? 'Vous n’avez pas accès à cette demande.' : 'Ouverture de la demande impossible.');
+      return 'error';
+    });
+  }
+  window.ptOpenAppointmentRecord = openAppointmentRecord;
+
+  function installPlanningOpen() {
+    var orig = window.ptOpenAppointmentGroup;
+    if (typeof orig !== 'function' || orig.__ptOpen) return;
+    var wrapped = function (key) {
+      var groups = [];
+      try { groups = typeof ptPlanningGroupsCache !== 'undefined' && Array.isArray(ptPlanningGroupsCache) ? ptPlanningGroupsCache : []; } catch (_) { groups = []; }
+      var k = decodeURIComponent(key || '');
+      var group = groups.filter(function (g) { return String(g.groupKey) === String(k); })[0];
+      var rows = group && Array.isArray(group.rows) ? group.rows : [];
+      if (rows.length === 1) return openAppointmentRecord(rows[0]);
+      var ret = orig.apply(this, arguments);
+      var overlay = document.getElementById('pt-planning-detail-overlay');
+      if (overlay && rows.length) {
+        var cards = [].slice.call(overlay.querySelectorAll('[style*="border-radius:16px"]'));
+        cards.forEach(function (card, i) {
+          if (!rows[i] || card.querySelector('[data-pt-open-record]')) return;
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-sm bp';
+          btn.style.marginTop = '12px';
+          btn.setAttribute('data-pt-open-record', String(i));
+          btn.textContent = linkedInstanceFor(rows[i].response_id) ? 'Ouvrir le dossier' : 'Ouvrir la demande';
+          btn.onclick = function () { openAppointmentRecord(rows[i]); };
+          card.appendChild(btn);
+        });
+      }
+      return ret;
+    };
+    wrapped.__ptOpen = true;
+    window.ptOpenAppointmentGroup = wrapped;
+  }
+  window.ptInstallPlanningOpen = installPlanningOpen;
+
+  function wireDrawerTabs() {
+    if (wireDrawerTabs.done || !document.addEventListener) return;
+    wireDrawerTabs.done = true;
+    document.addEventListener('click', function (e) {
+      var target = e.target;
+      var tabsEl = target && target.closest && target.closest('.pt-drawer-tabs');
+      if (!tabsEl) return;
+      var tab = target.closest('.pt-drawer-tabs > *');
+      if (!tab || tab.parentNode !== tabsEl) return;
+      drawerTab(tabsEl, [].slice.call(tabsEl.children).indexOf(tab));
     });
   }
 
@@ -2173,7 +2370,7 @@
       window.renderInstanceHistory = function (inst) {
         var ret = origHistory.apply(this, arguments);
         try {
-          mountTrace('sid-history', inst && (inst.submissionId || inst.submission_id || inst.id));
+          mountTrace('sid-history', inst && (inst.submissionId || inst.submission_id), true, inst && inst.id);
         } catch (err) {
           try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
         }
@@ -3216,6 +3413,8 @@
     wrapNavCache();
     wrapSubmissionPdf();
     wrapTrace();
+    wireDrawerTabs();
+    installPlanningOpen();
     wrapDbAudit();
     installRoleAccess();
     wireImporterButton();
@@ -3322,6 +3521,8 @@
     cache.clear();
     inflight.clear();
     stats.clears++;
+    // Le jeu planning large suit le même cycle de vie : écriture, 401/403, changement de compte.
+    try { window.__ptPlanningWide = null; } catch (_) {}
   }
   function clearStoredData() {
     try {

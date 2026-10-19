@@ -995,6 +995,68 @@ function recentView(rows, actorId, now) {
   return Number.isFinite(at) && now - at < 120000;
 }
 
+// Un dossier de service sans saisie liée journalise avec submission_id = id du dossier
+// (colonne NOT NULL). La trace d'une saisie ne garde donc que les lignes de dossier
+// réellement liées à cette saisie, pour ne jamais mélanger deux enregistrements.
+async function ownSubmissionRows(serviceRest, req, env, submissionId, rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.some((row) => row && row.service_instance_id)) return list;
+  let linked = new Set();
+  try {
+    const found = await serviceRest(
+      `service_instances?submission_id=eq.${enc(submissionId)}&environment_code=eq.${enc(env)}&select=id&limit=200`,
+      { method: 'GET', prefer: '', req }
+    );
+    linked = new Set((Array.isArray(found) ? found : []).map((row) => String(row.id)));
+  } catch (_) {}
+  return list.filter((row) => !row || !row.service_instance_id || linked.has(String(row.service_instance_id)));
+}
+
+async function handleInstanceTrace(req, body, deps, ctx) {
+  const { profile, env } = ctx;
+  const instanceId = cleanId(body.instance_id);
+  if (!instanceId) {
+    const err = new Error('Identifiant de dossier invalide.');
+    err.status = 400;
+    throw err;
+  }
+  const rows = await deps.serviceRest(
+    `service_instances?id=eq.${enc(instanceId)}&environment_code=eq.${enc(env)}&select=id,service_id,submission_id,created_at,updated_at,environment_code,current_status_id,status_id,assigned_to,created_by&limit=1`,
+    { method: 'GET', prefer: '', req }
+  );
+  const instance = Array.isArray(rows) ? rows[0] : null;
+  if (!instance || deps.normalizeEnvCode(instance.environment_code) !== env) {
+    const err = new Error('Dossier introuvable.');
+    err.status = 404;
+    throw err;
+  }
+  if (typeof deps.assertInstanceVisible !== 'function') {
+    const err = new Error('Contrôle des droits indisponible.');
+    err.status = 403;
+    throw err;
+  }
+  await deps.assertInstanceVisible(req, profile, instance);
+  let stored = [];
+  try {
+    const found = await journalCall(deps.serviceRest, req,
+      `${TABLE}?environment_code=eq.${enc(env)}&service_instance_id=eq.${enc(instanceId)}&select=${SELECT_COLUMNS}&order=occurred_at.desc&limit=500`,
+      { method: 'GET', prefer: '' }
+    );
+    stored = Array.isArray(found) ? found.filter((row) => String(row?.environment_code || '') === env) : [];
+  } catch (err) {
+    console.error('[submission-audit] lecture journal impossible', err && (err.message || err));
+  }
+  const timeline = composeTimeline(stored, null, instance);
+  return {
+    service_instance_id: instanceId,
+    submission_id: instance.submission_id ? String(instance.submission_id) : null,
+    environment_code: env,
+    legacy: timeline.legacy,
+    notice: timeline.notice,
+    events: timeline.events
+  };
+}
+
 async function handleTrace(req, body, deps) {
   const user = await deps.requireAuth(req);
   const profile = await deps.getUserProfile(user.id, req);
@@ -1007,6 +1069,7 @@ async function handleTrace(req, body, deps) {
     err.status = 403;
     throw err;
   }
+  if (body.instance_id != null && body.instance_id !== '') return handleInstanceTrace(req, body, deps, { user, profile, env });
   const id = deps.cleanSubmissionId(body.id || body.submission_id);
   if (!id) {
     const err = new Error('Identifiant de saisie invalide.');
@@ -1030,7 +1093,7 @@ async function handleTrace(req, body, deps) {
       deps.assertRecordAllowed('forms', form, 'view', profile, 'Consultation de la saisie refusée.');
     }
   }
-  const stored = await readLog(deps.serviceRest, req, env, id);
+  const stored = await ownSubmissionRows(deps.serviceRest, req, env, id, await readLog(deps.serviceRest, req, env, id));
   if (body.record_view === true && !recentView(stored, user.id, Date.now())) {
     const actor = actorFromSession(user, profile);
     try {

@@ -279,3 +279,140 @@ test('Planning : un mois de la vue Année ouvre la vue Mois', () => {
 test('SLA de l’overlay : plus de bornage 40–99 %', () => {
   assert.equal(/Math\.max\(40,\s*Math\.min\(99/.test(overlay), false);
 });
+
+// ---- E : traçabilité des dossiers de service ----
+const audit = require('./_submission-audit');
+
+function traceDeps(rowsByPath, opts = {}) {
+  const seen = [];
+  return {
+    seen,
+    deps: {
+      requireAuth: async () => ({ id: 'u1', email: 'a@b' }),
+      getUserProfile: async () => ({ id: 'u1', role: 'admin', environment_code: 'GIT' }),
+      isPlatform: () => false,
+      effectiveEnvironmentCode: (p, e) => e || 'GIT',
+      normalizeEnvRecordValue: v => String(v || '').toUpperCase(),
+      normalizeEnvCode: v => String(v || '').toUpperCase(),
+      cleanSubmissionId: v => (/^[0-9]+$/.test(String(v || '')) ? String(v) : ''),
+      readFormForSubmission: async () => null,
+      assertRecordAllowed: () => {},
+      assertInstanceVisible: opts.visible === false
+        ? async () => { throw Object.assign(new Error('Introuvable.'), { status: 404 }); }
+        : async () => {},
+      serviceRest: async (p) => {
+        seen.push(p);
+        for (const key of Object.keys(rowsByPath)) if (p.startsWith(key)) return rowsByPath[key];
+        return [];
+      }
+    }
+  };
+}
+
+test('E : la trace d’un dossier sans saisie liée se lit par service_instance_id (plus de « Saisie introuvable »)', async () => {
+  const log = [
+    { id: 'a', environment_code: 'GIT', submission_id: '5', service_instance_id: '5', event_type: 'created', occurred_at: '2026-10-19T09:18:42Z', actor_name: 'admin', detail: {} },
+    { id: 'b', environment_code: 'GIT', submission_id: '5', service_instance_id: '5', event_type: 'closed', occurred_at: '2026-10-19T13:09:14Z', actor_name: 'admin', detail: {} }
+  ];
+  const { deps, seen } = traceDeps({
+    'service_instances?id=eq.5': [{ id: 5, environment_code: 'GIT', submission_id: null, service_id: 2 }],
+    'submission_audit_log?environment_code=eq.GIT&service_instance_id=eq.5': log
+  });
+  const res = await audit.handleTrace({ headers: {} }, { action: 'submission_trace', instance_id: '5', environment_code: 'GIT' }, deps);
+  assert.equal(res.service_instance_id, '5');
+  assert.equal(res.events.length, 2);
+  assert.ok(!seen.some(p => p.startsWith('submissions?')), 'aucune recherche de saisie pour un dossier autonome');
+});
+
+test('E : trace de dossier refusée si le dossier est masqué par les rôles', async () => {
+  const { deps } = traceDeps({ 'service_instances?id=eq.5': [{ id: 5, environment_code: 'GIT' }] }, { visible: false });
+  await assert.rejects(() => audit.handleTrace({ headers: {} }, { instance_id: '5', environment_code: 'GIT' }, deps), e => e.status === 404);
+});
+
+test('E : la trace d’une saisie n’affiche jamais les lignes d’un dossier non lié portant le même id', async () => {
+  const { deps } = traceDeps({
+    'submissions?id=eq.5': [{ id: 5, environment_code: 'GIT', form_id: null }],
+    'submission_audit_log?environment_code=eq.GIT&submission_id=eq.5': [
+      { id: 'own', environment_code: 'GIT', submission_id: '5', service_instance_id: null, event_type: 'created', occurred_at: '2026-10-19T08:00:00Z', detail: {} },
+      { id: 'other', environment_code: 'GIT', submission_id: '5', service_instance_id: '5', event_type: 'closed', occurred_at: '2026-10-19T13:00:00Z', detail: {} }
+    ],
+    'service_instances?submission_id=eq.5': []
+  });
+  const res = await audit.handleTrace({ headers: {} }, { id: '5', environment_code: 'GIT' }, deps);
+  assert.deepEqual(res.events.map(e => e.id).filter(id => id === 'own' || id === 'other'), ['own']);
+});
+
+test('E : panneau dossier — onglets branchés, libellés lisibles et trace demandée par id de dossier', async () => {
+  assert.match(bundle, /window\.ptEventLabel\(e,t\)/, 'le mini-historique utilise les libellés');
+  assert.doesNotMatch(bundle, /<b>\$\{h\(e\.type\)\}<\/b>/, 'plus de code brut');
+  const { ctx, calls, nodes } = sandbox(() => ({ events: [] }));
+  const svc = { id: 2, statuses: [{ id: '1', nom: 'Nouveau' }, { id: '2', nom: 'En cours' }], actions: [{ id: 'a1', nom: 'Valider' }] };
+  const l1 = ctx.ptEventLabel({ type: 'status_changed', actor: 'admin', at: '19/10/2026 15:09:11', payload: { fromStatus: '1', toStatus: '2' } }, svc);
+  assert.equal(l1.label, 'Changement d’étape');
+  assert.equal(l1.detail, 'Nouveau → En cours');
+  const l2 = ctx.ptEventLabel({ id: 'decl-1792415351095', type: 'declared_action', payload: { actionId: 'a1' } }, svc);
+  assert.equal(l2.label, 'Action déclarée');
+  assert.equal(l2.detail, 'Valider');
+  assert.ok(l2.when, 'date déduite de l’identifiant');
+  const attrs = {};
+  nodes.t = { id: 't', style: {}, innerHTML: '', setAttribute(k, v) { attrs[k] = v; }, getAttribute(k) { return attrs[k] || null; }, removeAttribute(k) { delete attrs[k]; } };
+  ctx.ptMountTrace('t', '', true, '5');
+  await tick();
+  const sent = calls.find(c => c[1].action === 'submission_trace');
+  assert.equal(sent[1].instance_id, '5');
+  assert.equal(sent[1].id, undefined, 'jamais l’id du dossier pris pour un id de saisie');
+});
+
+// ---- G : clic sur un rendez-vous ----
+test('G : un rendez-vous ouvre le dossier lié, sinon la demande relue par l’API ; refus = message, rien d’ouvert', async () => {
+  const { ctx } = sandbox(() => []);
+  const opened = [];
+  const notices = [];
+  ctx.alert = m => notices.push(m);
+  ctx.openInstanceDetail = id => opened.push(['instance', id]);
+  ctx.openSubmission = id => opened.push(['submission', id]);
+  ctx.SERVICES_DATA = [{ id: 2 }];
+  ctx.SERVICE_INSTANCES_DATA = [{ id: 9, serviceId: 2, submissionId: 23 }];
+  assert.equal(await ctx.ptOpenAppointmentRecord({ response_id: 23 }), 'instance');
+  ctx.ptEnsureSubmissionDetail = async id => ({ id });
+  assert.equal(await ctx.ptOpenAppointmentRecord({ response_id: 24 }), 'submission');
+  ctx.ptEnsureSubmissionDetail = async () => { throw Object.assign(new Error('x'), { status: 403 }); };
+  assert.equal(await ctx.ptOpenAppointmentRecord({ response_id: 25 }), 'error');
+  ctx.SERVICES_DATA = []; // service masqué : on ne force pas le dossier
+  ctx.ptEnsureSubmissionDetail = async () => null;
+  assert.equal(await ctx.ptOpenAppointmentRecord({ response_id: 23 }), 'none');
+  assert.deepEqual(opened, [['instance', 9], ['submission', 24]]);
+  assert.equal(notices.length, 2);
+  assert.match(bundle, /ptPlanningOpenDay\('\$\{n\}'\)/, 'le badge « N RDV » du mois est cliquable');
+});
+
+test('G : un créneau à une seule réservation ouvre directement la demande', async () => {
+  const { ctx } = sandbox(() => []);
+  let overlay = 0;
+  const opened = [];
+  ctx.ptOpenAppointmentGroup = () => { overlay++; };
+  ctx.ptPlanningGroupsCache = [{ groupKey: 'k1', rows: [{ response_id: 31 }] }, { groupKey: 'k2', rows: [{ response_id: 32 }, { response_id: 33 }] }];
+  ctx.SERVICES_DATA = []; ctx.SERVICE_INSTANCES_DATA = [];
+  ctx.openSubmission = id => opened.push(id);
+  ctx.ptEnsureSubmissionDetail = async id => ({ id });
+  ctx.ptInstallPlanningOpen();
+  await ctx.ptOpenAppointmentGroup('k1');
+  assert.deepEqual(opened, [31]);
+  assert.equal(overlay, 0);
+  ctx.ptOpenAppointmentGroup('k2');
+  assert.equal(overlay, 1, 'plusieurs réservations : liste avec un bouton par demande');
+});
+
+// ---- F : navigation planning ----
+test('F : le planning lit une fenêtre large une fois puis filtre côté client ; écriture ou 401/403 l’invalide', async () => {
+  assert.match(bundle, /function inWindow\(store, from, to\)/);
+  assert.match(bundle, /if \(inWindow\(store, from, to\)\) \{\n      rows = store\.rows;/);
+  assert.match(bundle, /both\[0\]\.length >= 500/, 'fenêtre tronquée : repli sur la période seule');
+  const { ctx } = sandbox((p, b) => { if (b.action === 'save') return { ok: 1 }; throw httpError(403); });
+  ctx.__ptPlanningWide = { from: '2024-01-01', to: '2029-01-01', rows: [{ id: 1 }], at: 1 };
+  await ctx._apiPost('/api/records', { action: 'save', entity: 'appointments' });
+  assert.equal(ctx.__ptPlanningWide, null, 'écriture : jeu planning invalidé');
+  ctx.__ptPlanningWide = { from: '2024-01-01', to: '2029-01-01', rows: [{ id: 1 }], at: 1 };
+  await ctx._apiPost('/api/records', { action: 'list', entity: 'appointments' }).catch(() => {});
+  assert.equal(ctx.__ptPlanningWide, null, '403 : jeu planning purgé');
+});
