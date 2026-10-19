@@ -3595,7 +3595,7 @@
   var STALE_MS = 5 * 60 * 1000;
   var MAX_ENTRIES = 200;
   var READ_ACTIONS = {
-    '/api/records': ['list', 'view', 'initial_load', 'integrations_load'],
+    '/api/records': ['list', 'view', 'initial_load', 'integrations_load', 'labels_load'],
     '/api/appointments': ['list', 'range', 'by_date', 'by_slot', 'availability', 'view', 'month_counts'],
     '/api/users': ['summary']
   };
