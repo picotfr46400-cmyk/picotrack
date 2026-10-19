@@ -260,6 +260,8 @@
     if (type === 'service_instance') {
       const instance = Object.assign({}, payload.instance || {});
       if (instance.form_data == null && payload.values != null) instance.form_data = payload.values;
+      // Id local d'une saisie pas encore envoyée : jamais transmis tel quel (colonne bigint).
+      if (instance.submission_id != null && !/^\d+$/.test(String(instance.submission_id))) instance.submission_id = null;
       if (!payload.serviceId && instance.service_id) payload.serviceId = instance.service_id;
       payload.instance = instance;
     }
@@ -335,6 +337,9 @@
     let sawSignedOut = false;
     let transientAttempts = 0;
     const memory = new Map();
+    // Issue de chaque action envoyée : ligne serveur (id réel) ou refus lisible.
+    const results = new Map();
+    const sleep = options.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
 
     function bySeq(a, b) { return (a.seq - b.seq) || String(a.deviceCapturedAt).localeCompare(String(b.deviceCapturedAt)); }
 
@@ -528,6 +533,10 @@
               if (canonicalType(action.type) === 'service_instance' && result && result.row && result.row.id != null) {
                 await adoptServerId(rows, action.id, result.row.id);
               }
+              if (canonicalType(action.type) === 'form_submission' && result && result.row && result.row.id != null) {
+                await adoptSubmissionId(rows, action.id, result.row.id);
+              }
+              results.set(action.id, { row: result && result.row ? result.row : null, duplicate: kind === 'duplicate' });
               action.status = 'synced';
               await store.deleteAction(action.id).catch(() => {});
               memory.delete(action.id);
@@ -550,6 +559,7 @@
             } else if (kind === 'rejected') {
               action.status = 'rejected';
               action.lastError = readableRefusal(result);
+              results.set(action.id, { rejected: true, status: Number(result && result.status) || 400, error: action.lastError });
               lastError = action.lastError;
               await store.putAction(clone(action)).catch(() => {});
               memory.set(action.id, action);
@@ -606,6 +616,50 @@
         other.payload = payload;
         memory.set(other.id, other);
         await store.putAction(clone(other)).catch(() => {});
+      }
+    }
+
+    // Dossier créé hors ligne avant sa saisie d'origine : le lien prend l'id serveur de la saisie.
+    async function adoptSubmissionId(rows, localId, serverId) {
+      const local = String(localId || '');
+      const remote = serverId;
+      if (!local || remote == null || local === String(remote)) return;
+      for (const other of rows) {
+        if (!other || canonicalType(other.type) !== 'service_instance') continue;
+        const payload = other.payload || {};
+        const instance = payload.instance && typeof payload.instance === 'object' ? payload.instance : null;
+        if (!instance || String(instance.submission_id == null ? '' : instance.submission_id) !== local) continue;
+        instance.submission_id = remote;
+        other.payload = payload;
+        memory.set(other.id, other);
+        await store.putAction(clone(other)).catch(() => {});
+      }
+    }
+
+    // En ligne, l'appelant attend l'id serveur (rendez-vous, lien du dossier) au lieu d'un id local.
+    async function awaitAction(actionId, timeoutMs) {
+      const id = String(actionId || '');
+      const limit = Date.now() + (Number(timeoutMs) > 0 ? Number(timeoutMs) : 8000);
+      while (true) {
+        if (results.has(id)) { const out = results.get(id); results.delete(id); return out; }
+        const action = memory.get(id);
+        if (!action) return { missing: true };
+        if (action.status === 'rejected') return { rejected: true, status: 400, error: action.lastError || 'Cette action a été refusée.' };
+        const left = limit - Date.now();
+        if (online() === false || left <= 0) return { pending: true };
+        // Un envoi qui ne répond pas ne bloque jamais l'écran au-delà du délai.
+        let timer = null;
+        const run = await Promise.race([
+          flush().catch(() => ({ failed: true })),
+          new Promise(resolve => { timer = setTimeout(() => resolve({ timeout: true }), left); })
+        ]);
+        if (timer) clearTimeout(timer);
+        if (run && run.timeout && !results.has(id)) return { pending: true };
+        if (results.has(id)) continue;
+        const after = memory.get(id);
+        if (after && after.status === 'pending' && after.lastError && !(run && run.skipped === 'busy')) return { pending: true, error: after.lastError };
+        if (run && run.skipped && run.skipped !== 'busy') return { pending: true };
+        await sleep(120);
       }
     }
 
@@ -684,6 +738,7 @@
       enqueue: enqueue,
       list: list,
       flush: flush,
+      awaitAction: awaitAction,
       retry: retry,
       dropScope: dropScope,
       migrateLegacy: migrateLegacy,
@@ -1048,9 +1103,11 @@
           priority: row.priority,
           events: row.events,
           assigned_to: row.assigned_to || '',
-          created_by: row.created_by || ''
+          created_by: row.created_by || '',
+          submission_id: row.submission_id != null ? row.submission_id : (row.submissionId != null ? row.submissionId : null)
         };
       }
+      const online = context.online !== false;
       return engine.enqueue({
         type: type,
         idempotency_key: suppliedIdempotencyKey(row),
@@ -1064,7 +1121,18 @@
           return Promise.reject(Object.assign(new Error(action.error || 'Action refusée.'), { refused: true }));
         }
         if (afterChange) afterChange();
-        return { id: id || action.id, pendingSync: true, queued: true };
+        const placeholder = { id: id || action.id, pendingSync: true, queued: true };
+        if (id || !online || typeof engine.awaitAction !== 'function') return placeholder;
+        // Création en ligne : on attend l'envoi pour rendre l'id réel (jamais un id local à l'appelant).
+        return engine.awaitAction(action.id, Number(win.PT_OFFLINE_AWAIT_MS) > 0 ? Number(win.PT_OFFLINE_AWAIT_MS) : 8000).then(function (out) {
+          if (afterChange) afterChange();
+          if (out && out.row && out.row.id != null) return [out.row];
+          if (out && out.rejected) {
+            return Promise.reject(Object.assign(new Error(out.error || 'Action refusée.'), { refused: true, status: out.status || 400 }));
+          }
+          // Délai dépassé ou coupure : la saisie reste en file (envoi en cours), l'appelant ne doit rien annuler.
+          return Object.assign(placeholder, { sending: true });
+        });
       });
     };
     db.__ptOfflineWrapped = true;
@@ -1198,6 +1266,8 @@
     if (action.type === 'service_instance') {
       const instance = Object.assign({}, payload.instance || {});
       if (instance.form_data == null && payload.values != null) instance.form_data = payload.values;
+      // Id local d'une saisie pas encore envoyée : jamais transmis tel quel (colonne bigint).
+      if (instance.submission_id != null && !/^\d+$/.test(String(instance.submission_id))) instance.submission_id = null;
       return {
         action: 'save',
         entity: 'service_instances',

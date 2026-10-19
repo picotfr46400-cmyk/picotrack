@@ -22,7 +22,7 @@ test('file tablette : un refus 403 ou 404 sort de la file avec un message', () =
 
 test('cache-buster et overlay core-supervision sont branchés', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/app\.secured\.js\?v=20261008w/g) || []).length, 2);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008x/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261008w/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
@@ -170,7 +170,7 @@ test('créneau plein : le bouton redevient cliquable et le message s’affiche',
     assert.equal(createCalls, 1);
     assert.equal(btn.textContent, '⏳ Enregistrement...');
     assert.equal(btn.style.pointerEvents, 'none');
-    resolveCreate({ id: 'sub-full' });
+    resolveCreate({ id: 501 }); // id serveur (numérique) : seul un id serveur est annulé
     await new Promise((resolve) => setImmediate(resolve));
     rejectSlot(Object.assign(new Error('Créneau complet pour cette date et cette heure : 09:00 (1/1)'), { code: 'SLOT_FULL' }));
     await pending;
@@ -182,7 +182,7 @@ test('créneau plein : le bouton redevient cliquable et le message s’affiche',
     assert.equal(btn.style.pointerEvents, 'auto');
     assert.equal(String(btn.style.opacity), '1');
     assert.equal(ctx.__ptSubmittingSaisie, false);
-    assert.deepEqual(deleted, ['sub-full']);
+    assert.deepEqual(deleted, [501]);
     assert.equal(toasts.length, 1);
     assert.equal(toasts[0].type, 'e');
     assert.match(toasts[0].msg, /Saisie annulée/);

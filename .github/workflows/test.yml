@@ -106,6 +106,21 @@ jobs:
           PGUSER: postgres
           PGDATABASE: picotrack
         run: node scripts/submission-audit-pg.js
+      - name: Réservation de créneau atomique (migration appliquée deux fois)
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: |
+          psql -v ON_ERROR_STOP=1 -f scripts/appointments-booking-fixture.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019180000_appointment_atomic_booking.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019180000_appointment_atomic_booking.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019190000_appointment_booking_scope.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019190000_appointment_booking_scope.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019200000_appointment_rebook_after_cancel.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019200000_appointment_rebook_after_cancel.sql
+          node scripts/appointments-booking-pg.js
 
   mail-postgres:
     runs-on: ubuntu-latest

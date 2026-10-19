@@ -370,12 +370,90 @@ function normalizeAppointmentRecord(record, env) {
   };
 }
 
+function fieldsOf(form) {
+  let fields = form && form.fields;
+  if (typeof fields === 'string') { try { fields = JSON.parse(fields); } catch (_) { fields = []; } }
+  return Array.isArray(fields) ? fields : [];
+}
+
+// Même règle que l'écran de saisie (ptAppointmentCapacity) : la capacité vient du formulaire, pas du client.
+function slotCapacity(field) {
+  const raw = field ? (field.parallelSlots ?? field.parallel_slots ?? field.capacity ?? field.capacite ?? field.places ?? 2) : 2;
+  const n = parseInt(raw, 10);
+  return Math.max(1, Number.isNaN(n) ? 2 : n);
+}
+
+function slotFullError(startTime, used, capacity) {
+  return Object.assign(new Error(`Créneau complet : ${String(startTime).slice(0, 5)} (${used}/${capacity} places prises). Choisissez un autre créneau.`), { status: 409, code: 'slot_full', used, capacity });
+}
+
+// La saisie liée doit exister dans cet environnement et appartenir au formulaire du rendez-vous.
+async function assertResponseBelongs(req, env, record) {
+  if (record.response_id == null) return;
+  let rows;
+  try {
+    rows = await serviceRest(`submissions?id=eq.${encodeURIComponent(record.response_id)}&environment_code=eq.${encodeURIComponent(env)}&select=id,form_id&limit=1`, { method: 'GET', prefer: '', req });
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+  if (!Array.isArray(rows)) throw access.unavailable();
+  const sub = rows[0];
+  if (!sub) throw Object.assign(new Error('Saisie introuvable dans cet environnement : rendez-vous refusé.'), { status: 400, code: 'response_not_found' });
+  if (String(sub.form_id) !== String(record.form_id)) {
+    throw Object.assign(new Error('Cette saisie n’appartient pas au formulaire du rendez-vous.'), { status: 400, code: 'response_form_mismatch' });
+  }
+}
+
+// Clé d'idempotence : fournie, sinon dérivée de (saisie, champ). Rattachée côté base à
+// (environnement, formulaire, créateur) : une clé connue ailleurs répond 409 sans aucune donnée.
+function bookingKey(body, record) {
+  const supplied = cleanString(body.idempotency_key || (body.record && body.record.idempotency_key) || '', 160);
+  if (supplied) return supplied;
+  return record.response_id != null ? `resp:${record.response_id}:${record.field_id}` : null;
+}
+
 async function handleCreate(req, env, body, profile) {
   const record = normalizeAppointmentRecord(body.record || body, env);
+  if (record.response_id != null && record.response_id !== '' && !/^\d+$/.test(String(record.response_id))) {
+    throw Object.assign(new Error('Saisie pas encore enregistrée : le rendez-vous ne peut pas être réservé. Réessayez dans un instant.'), { status: 400, code: 'response_not_saved' });
+  }
+  if (record.response_id === '') record.response_id = null;
   await assertAppointmentAccess(req, env, record.form_id, profile, 'write');
-  const saved = await serviceRest('appointments?select=*', { method: 'POST', body: record, prefer: 'return=representation', req });
-  const row = Array.isArray(saved) ? saved[0] : saved;
-  return { ok: true, success: true, environment_code: env, row, rows: row ? [row] : [] };
+  const form = await readForm(req, env, record.form_id);
+  if (!form) throw Object.assign(new Error('Formulaire introuvable pour ce rendez-vous.'), { status: 404 });
+  await assertResponseBelongs(req, env, record);
+  const field = fieldsOf(form).find(f => f && String(f.id) === String(record.field_id));
+  // Capacité : celle du formulaire (la base la relit aussi). Toute valeur du client est ignorée.
+  const capacity = slotCapacity(field);
+  delete record.parallel_slots;
+  delete record.capacity_limit;
+  record.capacity_group = String(record.field_id);
+  let out;
+  try {
+    out = await serviceRest('rpc/picotrack_book_appointment', {
+      method: 'POST',
+      body: { p_record: record, p_created_by: String(profile.id), p_idempotency_key: bookingKey(body, record) },
+      prefer: '',
+      req
+    });
+  } catch (err) {
+    const msg = String(err && err.message || '');
+    if (/complet|PT409/i.test(msg) || (err && err.status === 409)) throw slotFullError(record.start_time, capacity, capacity);
+    if (err && err.status >= 400 && err.status < 500 && err.status !== 404) throw Object.assign(new Error('Rendez-vous refusé : données de réservation invalides.'), { status: 400 });
+    throw access.unavailable(err);
+  }
+  if (out && out.ok === false && out.code === 'idempotency_conflict') {
+    throw Object.assign(new Error('Conflit : cette clé de réservation est déjà utilisée.'), { status: 409, code: 'idempotency_conflict' });
+  }
+  if (out && out.ok === false && out.code === 'slot_full') throw slotFullError(record.start_time, out.used, out.capacity || capacity);
+  const row = out && out.row;
+  if (!out || out.ok !== true || !row || row.id == null) throw Object.assign(new Error('Rendez-vous non confirmé par la base : réessayez.'), { status: 503 });
+  if (out.duplicate) {
+    // Rejeu légitime (droits déjà contrôlés plus haut) : id et statut seulement.
+    return { ok: true, success: true, environment_code: env, row: { id: row.id, status: row.status }, rows: [{ id: row.id, status: row.status }], duplicate: true };
+  }
+  const used = out.used != null ? Number(out.used) : null;
+  return { ok: true, success: true, environment_code: env, row, rows: [row], duplicate: false, used, capacity: out.capacity || capacity, remaining: used == null ? null : Math.max(0, (out.capacity || capacity) - used) };
 }
 
 module.exports = async function handler(req, res) {
@@ -399,9 +477,10 @@ module.exports = async function handler(req, res) {
     return json(res, 400, { error: 'Action rendez-vous non autorisée' });
   } catch (err) {
     const payload = { error: err.message || 'Erreur API rendez-vous' };
-    if (err.code === 'range_too_large') payload.code = err.code;
+    if (['range_too_large', 'slot_full', 'response_not_saved', 'response_not_found', 'response_form_mismatch', 'idempotency_conflict'].includes(err.code)) payload.code = err.code;
+    if (err.code === 'slot_full') { payload.used = err.used; payload.capacity = err.capacity; }
     return json(res, err.status && err.status >= 400 ? err.status : 500, payload);
   }
 };
 
-module.exports._internals = { handleList, handleMonthCounts, buildAppointmentsPath, MAX_RANGE_DAYS };
+module.exports._internals = { handleList, handleMonthCounts, handleCreate, handleAvailability, buildAppointmentsPath, slotCapacity, MAX_RANGE_DAYS };

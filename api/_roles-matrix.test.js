@@ -418,6 +418,12 @@ function installWorld(world) {
     }
 
     const parsed = new URL(u);
+    // RPC de réservation atomique (#34) : écrit la ligne dans la table appointments du monde simulé.
+    if (parsed.pathname.endsWith('/rpc/picotrack_book_appointment') && method === 'POST') {
+      const stored = { id: `rdv-${tableOf(world, 'appointments').length + 1}`, ...(body && body.p_record) };
+      tableOf(world, 'appointments').push(stored);
+      return jsonResponse(200, { ok: true, duplicate: false, row: stored, used: 1, capacity: 2 });
+    }
     const table = parsed.pathname.split('/').filter(Boolean).pop();
     const filters = [];
     const ors = [];
@@ -617,6 +623,14 @@ test('matrice : handlers selon le rôle et la licence', async () => {
     ['supervision', 'records', { action: 'save', entity: 'forms', id: 'form-locked', record: { nom: 'Privé modifié' } }, 403],
     ['manager', 'records', { action: 'save', entity: 'forms', id: 'form-locked', record: { nom: 'Privé modifié' } }, 200],
     ['platform', 'records', { action: 'save', entity: 'forms', id: 'form-locked', record: { nom: 'Privé plateforme' } }, 200],
+    ['manager', 'records', { action: 'save', entity: 'appointments', id: 'rdv-1', record: { parallel_slots: 99 } }, 403],
+    ['manager', 'records', { action: 'save', entity: 'appointments', id: 'rdv-1', record: { capacity_limit: 99 } }, 403],
+    ['platform', 'records', { action: 'save', entity: 'appointments', id: 'rdv-1', record: { parallelSlots: 99 } }, 403],
+    ['pad', 'records', { action: 'save', entity: 'appointments', record: { id: 'rdv-1', title: 'Création par record.id' } }, 400],
+    ['readonly', 'records', { action: 'save', entity: 'appointments', record: { id: 'rdv-1', title: 'Création par record.id' } }, 403],
+    ['manager', 'records', { action: 'save', entity: 'appointments', id: 'rdv-1', record: { id: 'rdv-2', title: 'Ids divergents' } }, 400],
+    ['manager', 'records', { action: 'save', entity: 'appointments', record: { title: 'Création directe' } }, 403],
+    ['manager', 'records', { action: 'save', entity: 'appointments', id: 'rdv-inconnu', record: { title: 'Fiche absente' } }, 404],
     ['pad', 'records', { action: 'save', entity: 'user_profiles', record: { email: 'x@efc.picotrack.fr', role: 'super_admin', license_type: 'super_admin' } }, 403],
     ['supervision', 'records', { action: 'save', entity: 'user_profiles', id: 'sup-1', record: { role: 'super_admin', scope: 'platform', license_type: 'super_admin' } }, 200],
     ['pad', 'records', { action: 'export_submission_pdf', id: 'sub-1', environment_code: 'EFC' }, 403],

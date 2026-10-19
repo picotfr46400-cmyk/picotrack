@@ -939,21 +939,39 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
     assert.equal(submissionWrite.body.environment_code, 'EFC');
     assert.equal(submissionWrite.body.tenant_id, undefined);
 
+    // Réservation et capacité : /api/appointments seulement (décision du 19/10, #34).
     const createdSlot = await callJson(records, {
       action: 'save',
       entity: 'appointments',
       record: {
         form_id: 'form-1', field_id: 'rdv', response_id: 'sub-1', title: 'Visite - Rendez-vous',
         customer_name: 'Client EFC', date: '2026-10-03', start_time: '09:00:00', end_time: '09:30:00',
-        status: 'confirmed', assigned_team: '', capacity_group: 'rdv', parallel_slots: 2,
-        environment_code: 'ACME'
+        status: 'confirmed', assigned_team: '', environment_code: 'ACME'
       }
     }, authHeaders());
-    assert.equal(createdSlot.status, 200, createdSlot.payload.error || '');
+    assert.equal(createdSlot.status, 403);
+    const editedSlot = await callJson(records, {
+      action: 'save', entity: 'appointments', id: 'rdv-1',
+      record: { title: 'Visite - Rendez-vous', customer_name: 'Client EFC', environment_code: 'ACME' }
+    }, authHeaders());
+    assert.equal(editedSlot.status, 200, editedSlot.payload.error || '');
     assert.equal(writes.at(-1).body.title, 'Visite - Rendez-vous');
     assert.equal(writes.at(-1).body.customer_name, 'Client EFC');
-    assert.equal(writes.at(-1).body.environment_code, 'EFC');
-    assert.equal(writes.at(-1).body.date, '2026-10-03');
+
+    // Replanification vers un créneau plein : le déclencheur lève PT409 -> 409 « Créneau complet », sans SQL.
+    const fetchBefore = global.fetch;
+    global.fetch = async (url, options = {}) => {
+      if (String(url).includes('/rest/v1/appointments') && (options.method === 'PATCH' || options.method === 'POST')) {
+        return jsonResponse(400, { code: 'PT409', message: 'Créneau complet', details: '2/2', hint: null });
+      }
+      return fetchBefore(url, options);
+    };
+    const fullMove = await callJson(records, { action: 'save', entity: 'appointments', id: 'appt-1', record: { start_time: '11:00:00' } }, authHeaders());
+    global.fetch = fetchBefore;
+    assert.equal(fullMove.status, 409);
+    assert.equal(fullMove.payload.code, 'slot_full');
+    assert.match(fullMove.payload.error, /Créneau complet/);
+    assert.doesNotMatch(JSON.stringify(fullMove.payload), /PT409|2\/2/);
 
     const updatedSlot = await callJson(records, {
       action: 'save',
@@ -1288,13 +1306,13 @@ test('handler : tenant_id est posé seulement sur les tables qui ont la colonne,
       const record = entity === 'user_profiles'
         ? { email: 'nora@efc.picotrack.fr', role: 'pad_user' }
         : entity === 'appointments'
-          ? { title: 'Visite', form_id: 'form-1', capacity_limit: 3 }
+          ? { title: 'Visite', status: 'confirmed' }
           : entity === 'app_roles'
             ? { name: 'Agent', permissions: { view: true }, active: true }
             : entity === 'service_instances'
               ? { nom: 'Visite', service_id: 'svc-1' }
               : { nom: 'Visite' };
-      const out = await callJson(records, { action: 'save', entity, record }, authHeaders());
+      const out = await callJson(records, Object.assign({ action: 'save', entity, record }, entity === 'appointments' ? { id: 'rdv-1' } : {}), authHeaders());
       assert.equal(out.status, 200, `${entity} ${out.payload.error || ''}`);
       const business = [...writes].reverse().find((row) => row && row.tenant_id === 'ten-1' && !row.event_type && !row.p_environment_code && !row.p_id);
       assert.equal(business.tenant_id, 'ten-1', entity);
