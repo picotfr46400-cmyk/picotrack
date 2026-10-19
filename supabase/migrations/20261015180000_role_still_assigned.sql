@@ -31,8 +31,8 @@ do $guard$
 begin
   if to_regprocedure('public.role_still_assigned(text,text[])') is not null
      and (
-       strpos(pg_get_functiondef('public.role_still_assigned(text,text[])'::regprocedure), 'normalize_role_name') > 0
-       or strpos(pg_get_functiondef('public.role_still_assigned(text,text[])'::regprocedure), 'role_keys_cap') > 0
+       strpos(pg_get_functiondef(to_regprocedure('public.role_still_assigned(text,text[])')), 'normalize_role_name') > 0
+       or strpos(pg_get_functiondef(to_regprocedure('public.role_still_assigned(text,text[])')), 'role_keys_cap') > 0
      )
   then
     raise notice 'role_still_assigned deja plus recente, conservation';
