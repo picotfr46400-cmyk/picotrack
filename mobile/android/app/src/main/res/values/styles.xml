@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Opaque theme: a translucent window plus a locked orientation crashes some devices. -->
+    <style name="Theme.PicoTrackPad" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/backgroundColor</item>
+        <item name="android:statusBarColor">@color/colorPrimaryDark</item>
+        <item name="android:navigationBarColor">@color/navigationColor</item>
+    </style>
+</resources>

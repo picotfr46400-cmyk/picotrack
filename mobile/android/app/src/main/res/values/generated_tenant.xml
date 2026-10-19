@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Généré par mobile/configure.mjs. Une origine, une application. -->
+<resources>
+    <string name="assetStatements">[{\"relation\":[\"delegate_permission/common.handle_all_urls\"],\"target\":{\"namespace\":\"web\",\"site\":\"https://efc.picotrack.fr\"}}]</string>
+    <string name="launchUrl">https://efc.picotrack.fr/?mode=pad</string>
+    <string name="hostName">efc.picotrack.fr</string>
+    <string name="appName">PicoTrack PAD</string>
+    <string name="launcherName">PicoTrack EFC</string>
+    <string name="providerAuthority">fr.picotrack.efc.twa.fileprovider</string>
+    <string name="webManifestUrl">https://efc.picotrack.fr/manifest.json</string>
+</resources>

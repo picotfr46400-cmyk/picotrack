@@ -1,11 +1,30 @@
 {
   "version": 2,
+  "git": {
+    "deploymentEnabled": {
+      "main": true,
+      "v2": true,
+      "cursor/*": false,
+      "cursor/**": false,
+      "*": false,
+      "**": false
+    }
+  },
   "buildCommand": "npm run build",
+  "regions": [
+    "dub1"
+  ],
   "functions": {
     "api/**/*.js": {
       "maxDuration": 20
     }
   },
+  "crons": [
+    {
+      "path": "/api/records",
+      "schedule": "0 4 * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/public.html",
@@ -75,8 +94,16 @@
           "value": "camera=(self), microphone=(self), geolocation=(self)"
         },
         {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000; includeSubDomains; preload"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://*.supabase.co https://*.vercel.app https://api.resend.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://*.supabase.co https://*.vercel.app https://cdn.jsdelivr.net https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
         }
       ]
     },
@@ -115,6 +142,19 @@
           "value": "public, max-age=300, must-revalidate"
         }
       ]
+    },
+    {
+      "source": "/.well-known/assetlinks.json",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=300, must-revalidate"
+        }
+      ]
     }
   ],
   "rewrites": [
@@ -135,7 +175,7 @@
       "destination": "/public/index.html"
     },
     {
-      "source": "/((?!api(?:/|$)|assets(?:/|$)|icons(?:/|$)|public(?:\\.html)?(?:/|$)|sw\\.js$|manifest\\.json$|style\\.css$|pad\\.css$|pad-mode\\.js$).*)",
+      "source": "/((?!api(?:/|$)|assets(?:/|$)|icons(?:/|$)|\\.well-known(?:/|$)|public(?:\\.html)?(?:/|$)|sw\\.js$|manifest\\.json$|style\\.css$|pad\\.css$|pad-mode\\.js$|pad-device\\.js$).*)",
       "destination": "/index.html"
     }
   ],

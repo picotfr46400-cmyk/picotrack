@@ -1,11 +1,10 @@
 const { getSupabaseConfig, json, setCors, bearer, getAuthUser, getUserProfile, validateActiveDeviceSession, serviceRest, normalizeEnvironmentCode, isPlatformProfile } = require('./_server-supabase');
+const { interpretedLicenseType, seatLicenseType } = require('./_license-type');
+const { normalizeEmail } = require('./_email');
+const { canManageUsers, isPlatform, projectAppRoles, unavailable, readPaged, APP_ROLE_CATALOG_BOUND, normalizeRoleToken } = require('./_access');
 
 function cleanString(value, max = 255) {
   return String(value ?? '').trim().slice(0, max);
-}
-
-function normalizeEmail(value) {
-  return cleanString(value, 320).toLowerCase();
 }
 
 function safeArray(value) {
@@ -25,35 +24,37 @@ function safeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
-function normalizeLicenseType(value, roles) {
-  const v = String(value || '').trim().toLowerCase();
-  const roleList = safeArray(roles).map(r => String(r).toLowerCase());
-  if (['pad', 'pad_terrain', 'terrain', 'mobile', 'operateur', 'operator'].includes(v) || roleList.includes('pad_user')) return 'pad';
-  if (['readonly', 'read_only', 'lecture', 'lecture_seule', 'viewer', 'consultation'].includes(v)) return 'readonly';
-  return 'supervision';
-}
-
 function isPlatformRow(row) {
-  const role = String(row?.role || '').toLowerCase();
+  const role = normalizeRoleToken(row?.role);
   const scope = String(row?.scope || '').toLowerCase();
   const env = String(row?.environment_code || '').toUpperCase();
   const perms = safeObject(row?.resolved_permissions);
   return role === 'super_admin' || role === 'platform_admin' || scope === 'platform' || env === 'GLOBAL' || perms.platform_admin === true;
 }
 
-function normalizeUserRow(row, source, environmentCode) {
+function canReadLicenseKey(profile) {
+  if (!profile || profile.active === false) return false;
+  if (isPlatformProfile(profile)) return true;
+  const role = normalizeRoleToken(profile.role);
+  const rawType = String(profile.license_type || '').toLowerCase();
+  const type = interpretedLicenseType(profile.license_type) === 'pad' ? 'pad' : rawType;
+  const perms = safeObject(profile.resolved_permissions);
+  return role === 'admin' || role === 'client_admin' || role === 'environment_admin' || role === 'supervision_user' || type === 'supervision' || perms.manage_users === true;
+}
+
+function normalizeUserRow(row, source, environmentCode, options = {}) {
   const roles = safeArray(row?.roles);
-  const licenseType = normalizeLicenseType(row?.license_type, roles);
-  const label = cleanString(row?.label || [row?.firstname || row?.first_name || '', row?.lastname || row?.last_name || ''].join(' ').trim() || row?.email || row?.login_user || row?.username || row?.license_key || '');
+  const licenseType = seatLicenseType(row);
   const email = normalizeEmail(row?.email || '');
-  return {
-    id: row?.id || row?.license_key || row?.email || row?.login_user || row?.username,
+  const label = cleanString(row?.label || [row?.firstname || row?.first_name || '', row?.lastname || row?.last_name || ''].join(' ').trim() || row?.email || row?.login_user || row?.username || '');
+  const normalized = {
+    id: row?.id || email || row?.login_user || row?.username,
     license_id: source === 'licenses' ? row?.id : row?.license_id || null,
     __source: source,
     environment_code: normalizeEnvironmentCode(row?.environment_code || environmentCode),
     email,
-    login_user: cleanString(row?.login_user || row?.username || row?.email || row?.license_key || ''),
-    username: cleanString(row?.username || row?.login_user || row?.email || row?.license_key || ''),
+    login_user: cleanString(row?.login_user || row?.username || row?.email || ''),
+    username: cleanString(row?.username || row?.login_user || row?.email || ''),
     label,
     firstname: cleanString(row?.firstname || row?.first_name || ''),
     lastname: cleanString(row?.lastname || row?.last_name || ''),
@@ -61,12 +62,23 @@ function normalizeUserRow(row, source, environmentCode) {
     roles,
     scope: cleanString(row?.scope || 'environment'),
     license_type: licenseType,
-    license_key: row?.license_key || null,
     active: row?.active !== false,
     created_at: row?.created_at || null,
-    updated_at: row?.updated_at || null,
-    resolved_permissions: safeObject(row?.resolved_permissions)
+    updated_at: row?.updated_at || null
   };
+  if (options.revealLicenseKey) normalized.license_key = row?.license_key || null;
+  if (options.revealPermissions) normalized.resolved_permissions = safeObject(row?.resolved_permissions);
+  if (String(row?.email ?? '') !== '' && String(row?.email ?? '') !== normalizeEmail(row?.email || '')) {
+    normalized.email_unnormalized = true;
+  }
+  return normalized;
+}
+
+function requestedLicenseStatus(body) {
+  const raw = cleanString(body?.license_status || body?.status || 'active', 40).toLowerCase();
+  if (raw === 'inactive' || raw === 'inactives' || raw === 'inactif' || raw === 'inactifs') return 'inactive';
+  if (raw === 'all' || raw === 'toutes' || raw === 'tous') return 'all';
+  return 'active';
 }
 
 function sameEnv(profile, environmentCode) {
@@ -95,6 +107,11 @@ async function requireProfile(req) {
     err.status = 403;
     throw err;
   }
+  if (profile.active === false) {
+    const err = new Error('Compte désactivé');
+    err.status = 403;
+    throw err;
+  }
   await validateActiveDeviceSession(req, user, profile);
   return { user, profile };
 }
@@ -117,35 +134,84 @@ async function readBody(req) {
   });
 }
 
+async function readCatalog(req, path) {
+  try {
+    const rows = await serviceRest(path, { method: 'GET', prefer: '', req });
+    if (!Array.isArray(rows)) throw unavailable();
+    return rows;
+  } catch (err) {
+    throw unavailable(err);
+  }
+}
+
+async function pageCatalog(req, path, pageSize, bound) {
+  return readPaged(pageSize, (after) => {
+    const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+    return readCatalog(req, `${path}&order=id.asc&limit=${pageSize}${cursor}`);
+  }, bound);
+}
+
 async function handleSummary(req, body) {
   const { profile } = await requireProfile(req);
   const environmentCode = sameEnv(profile, body.environment_code || body.env || profile.environment_code);
   const env = normalizeEnvironmentCode(environmentCode);
 
-  const profileSelect = 'id,email,role,roles,scope,environment_code,active,created_at,updated_at,label,firstname,lastname,first_name,last_name,login_user,username,license_type,license_key,resolved_permissions';
-  const licenseSelect = 'id,email,role,roles,scope,environment_code,active,created_at,label,license_type,license_key';
+  const revealLicenseKey = canReadLicenseKey(profile);
+  const revealPermissions = isPlatformProfile(profile);
+  const licenseStatus = requestedLicenseStatus(body);
+  if (licenseStatus !== 'active' && !canReadLicenseKey(profile)) {
+    const err = new Error('Droit insuffisant pour lire les licences.');
+    err.status = 403;
+    throw err;
+  }
+  let profileSelect = 'id,email,role,roles,scope,environment_code,active,created_at,updated_at,label,firstname,lastname,first_name,last_name,login_user,username,license_type';
+  let licenseSelect = 'id,email,role,roles,scope,environment_code,active,created_at,label,license_type';
+  if (revealLicenseKey) {
+    profileSelect += ',license_key';
+    licenseSelect += ',license_key';
+  }
+  if (revealPermissions) profileSelect += ',resolved_permissions';
   const roleSelect = 'id,name,description,permissions,active,created_at,updated_at,environment_code';
 
-  const [limitsRows, profilesRows, licensesRows, rolesRows] = await Promise.all([
-    serviceRest(`environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,lecture_limit,readonly_limit&limit=1`, { method: 'GET', prefer: '', req }).catch(() => []),
-    serviceRest(`user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${profileSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []),
-    serviceRest(`licenses?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${licenseSelect}&order=created_at.desc&limit=200`, { method: 'GET', prefer: '', req }).catch(() => []),
-    serviceRest(`app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=name.asc&limit=100`, { method: 'GET', prefer: '', req }).catch(() => [])
+  const profileQuery = activeEq => pageCatalog(req, `user_profiles?environment_code=eq.${encodeURIComponent(env)}&active=${activeEq}&select=${profileSelect}`, 200, 20000);
+  const licenseQuery = activeEq => pageCatalog(req, `licenses?environment_code=eq.${encodeURIComponent(env)}&active=${activeEq}&select=${licenseSelect}`, 200, 20000);
+  const [limitsRows, profilesRows, licensesRows, inactiveProfiles, inactiveLicenses, rolesRows] = await Promise.all([
+    readCatalog(req, `environment_license_limits?environment_code=eq.${encodeURIComponent(env)}&select=environment_code,supervision_limit,pad_limit,lecture_limit&limit=1`),
+    licenseStatus === 'inactive' ? Promise.resolve([]) : profileQuery('eq.true'),
+    licenseStatus === 'inactive' ? Promise.resolve([]) : licenseQuery('eq.true'),
+    licenseStatus === 'active' ? Promise.resolve([]) : profileQuery('eq.false'),
+    licenseStatus === 'active' ? Promise.resolve([]) : licenseQuery('eq.false'),
+    // Le catalogue roles du résumé est trié par id croissant, clé de pagination.
+    readPaged(100, (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      return readCatalog(req, `app_roles?environment_code=eq.${encodeURIComponent(env)}&active=eq.true&select=${roleSelect}&order=id.asc&limit=100${cursor}`);
+    }, APP_ROLE_CATALOG_BOUND)
   ]);
+  const roleServices = canManageUsers(profile, rolesRows) && !isPlatform(profile)
+    ? await pageCatalog(req, `services?environment_code=eq.${encodeURIComponent(env)}&select=id,form_id`, 500, 5000)
+    : [];
 
   const rows = [];
   const seen = new Set();
   function push(row, source) {
     if (!row || isPlatformRow(row)) return;
-    const normalized = normalizeUserRow(row, source, env);
-    const key = String(normalized.email || normalized.login_user || normalized.username || normalized.license_key || normalized.id || '').toLowerCase();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
+    const normalized = normalizeUserRow(row, source, env, { revealLicenseKey, revealPermissions });
+    const key = String(normalized.email || normalized.login_user || normalized.username || normalized.id || '').toLowerCase();
+    if (!normalized.email_unnormalized) {
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+    }
     rows.push(normalized);
+  }
+  function pushLicense(row) {
+    if (!row || isPlatformRow(row)) return;
+    rows.push(normalizeUserRow(row, 'licenses', env, { revealLicenseKey, revealPermissions }));
   }
 
   for (const row of Array.isArray(profilesRows) ? profilesRows : []) push(row, 'user_profiles');
   for (const row of Array.isArray(licensesRows) ? licensesRows : []) push(row, 'licenses');
+  for (const row of Array.isArray(inactiveProfiles) ? inactiveProfiles : []) push(row, 'user_profiles');
+  for (const row of Array.isArray(inactiveLicenses) ? inactiveLicenses : []) pushLicense(row);
 
   rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
 
@@ -155,7 +221,8 @@ async function handleSummary(req, body) {
   const readonlyLimit = Number(limits.readonly_limit ?? limits.lecture_limit ?? 0) || 0;
 
   const counts = rows.reduce((acc, row) => {
-    const type = normalizeLicenseType(row.license_type, row.roles);
+    if (row.active === false) return acc;
+    const type = seatLicenseType(row);
     acc[type] = (acc[type] || 0) + 1;
     acc.total += 1;
     return acc;
@@ -166,7 +233,7 @@ async function handleSummary(req, body) {
     success: true,
     environment_code: env,
     rows,
-    roles: Array.isArray(rolesRows) ? rolesRows : [],
+    roles: projectAppRoles(profile, rolesRows, roleServices),
     counts,
     limits: {
       environment_code: normalizeEnvironmentCode(limits.environment_code || env),

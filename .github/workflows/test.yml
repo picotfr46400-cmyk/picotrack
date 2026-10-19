@@ -1,0 +1,177 @@
+name: test
+
+on:
+  pull_request:
+    branches: [v2, main]
+  push:
+    branches: [v2, main]
+
+permissions:
+  contents: read
+
+jobs:
+  npm-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm install --no-save --ignore-scripts eslint@9.36.0
+      - run: npx eslint api
+      - run: npm test
+
+  schema-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: pico
+          POSTGRES_DB: picotrack
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm install --no-save --ignore-scripts pg@8.13.1
+      - run: npm test
+        env:
+          DATABASE_URL: postgres://postgres:pico@localhost:5432/picotrack
+          PICO_SCHEMA_REQUIRED: '1'
+
+  audit-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: picotrack
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d picotrack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Client Postgres
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Rôles et migrations du journal
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "create role anon nologin;"
+          psql -v ON_ERROR_STOP=1 -c "create role authenticated nologin;"
+          psql -v ON_ERROR_STOP=1 -c "create role service_role nologin bypassrls;"
+          psql -v ON_ERROR_STOP=1 -c "grant service_role to postgres;"
+          psql -v ON_ERROR_STOP=1 -c "grant authenticated to postgres;"
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008221500_submission_audit_log.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008233000_submission_audit_idempotence_purge.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008234500_business_idempotency_key.sql
+          psql -v ON_ERROR_STOP=1 -c "create table if not exists public.user_profiles (id uuid primary key, email text, login_user text, username text, environment_code text);"
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261009120000_match_short_logins.sql
+      - name: PostgREST
+        run: |
+          curl -fsSL -o /tmp/postgrest.tar.xz -L https://github.com/PostgREST/postgrest/releases/download/v16.4/postgrest-v16.4-linux-static-x86-64.tar.xz
+          sudo tar -xJf /tmp/postgrest.tar.xz -C /usr/local/bin postgrest
+          postgrest --version
+      - name: Contraintes du journal
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: node scripts/submission-audit-pg.js
+      - name: Réservation de créneau atomique (migration appliquée deux fois)
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: |
+          psql -v ON_ERROR_STOP=1 -f scripts/appointments-booking-fixture.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019180000_appointment_atomic_booking.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019180000_appointment_atomic_booking.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019190000_appointment_booking_scope.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019190000_appointment_booking_scope.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019200000_appointment_rebook_after_cancel.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261019200000_appointment_rebook_after_cancel.sql
+          node scripts/appointments-booking-pg.js
+
+  mail-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: picotrack
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d picotrack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Client Postgres
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Rôles et migration mail
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "create role anon nologin;"
+          psql -v ON_ERROR_STOP=1 -c "create role authenticated nologin;"
+          psql -v ON_ERROR_STOP=1 -c "create role service_role nologin bypassrls;"
+          psql -v ON_ERROR_STOP=1 -c "grant service_role to postgres;"
+          psql -v ON_ERROR_STOP=1 -c "grant authenticated to postgres;"
+          psql -v ON_ERROR_STOP=1 -c "create table public.forms (id text primary key, nom text, fields jsonb, triggers jsonb, environment_code text);"
+          psql -v ON_ERROR_STOP=1 -c "create table public.submissions (id text primary key, form_id text, values jsonb, device text, created_at timestamptz, environment_code text, idempotency_key text);"
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008221500_submission_audit_log.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008233000_submission_audit_idempotence_purge.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261008234500_business_idempotency_key.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261009130000_mail_outbox.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261009140000_mail_quota.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261009150000_mail_uncertain_release.sql
+      - name: Dépendances
+        run: npm ci
+      - name: Mails sur Postgres
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: picotrack
+        run: node scripts/mail-rules-pg.js

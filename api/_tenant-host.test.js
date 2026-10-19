@@ -257,6 +257,38 @@ test('Lot 4: writes sans clés dédiées = 500, jamais EFC', async () => {
   });
 });
 
+test('localhost.evil.com et 127.0.0.1.evil.com n’héritent pas des clés EFC', () => {
+  withLiveEfcEnv(() => {
+    for (const host of ['localhost.evil.com', '127.0.0.1.evil.com', '0.0.0.0.evil.com']) {
+      const cfg = supabaseFor(host);
+      assert.equal(cfg.url, '', host);
+      assert.equal(cfg.serviceRole, '', host);
+      assert.notEqual(bootstrap(host).environmentCode, 'EFC', host);
+    }
+  });
+});
+
+test('X-Forwarded-Host différent du Host ne sélectionne pas le tenant', () => {
+  withLiveEfcEnv(() => {
+    const req = { headers: { host: 'acme.picotrack.fr', 'x-forwarded-host': 'localhost.evil.com' } };
+    const cfg = getSupabaseConfig(req);
+    assert.equal(cfg.url, '');
+    assert.equal(cfg.host, 'acme.picotrack.fr');
+    assert.equal(publicRuntimeConfig(req).host, 'acme.picotrack.fr');
+  });
+});
+
+test('efc.picotrack.fr refuse un projet Supabase qui n’est pas le ref connu', () => {
+  withLiveEfcEnv(() => {
+    process.env.SUPABASE_URL = ACME_URL;
+    process.env.EFC_SUPABASE_URL = ACME_URL;
+    process.env.EFC_SUPABASE_ANON_KEY = 'anon-other';
+    process.env.EFC_SUPABASE_SERVICE_ROLE_KEY = 'service-other';
+    assert.equal(supabaseFor('efc.picotrack.fr').url, '');
+    assert.equal(bootstrap('efc.picotrack.fr').configured, false);
+  });
+});
+
 test('Lot 4: preview vercel.app et 127.0.0.1', () => {
   withLiveEfcEnv(() => {
     const preview = supabaseFor('picotrack-h4kg0b2nc-acme.vercel.app');
