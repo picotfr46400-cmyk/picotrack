@@ -22,8 +22,8 @@ test('file tablette : un refus 403 ou 404 sort de la file avec un message', () =
 
 test('cache-buster et overlay core-supervision sont branchés', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/app\.secured\.js\?v=20261008u/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008u/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008v/g) || []).length, 2);
+  assert.match(html, /core-supervision\.js\?v=20261008v/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);

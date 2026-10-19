@@ -435,9 +435,9 @@ self.addEventListener('fetch',event=>{
   assert.equal(sw.includes('cache.add'), false);
   assert.equal(sw.includes('public.html'), false);
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
-  assert.match(html, /offline-sync\.js\?v=20261008u/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008u/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008u/);
+  assert.match(html, /offline-sync\.js\?v=20261008v/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008v/g) || []).length, 2);
+  assert.match(html, /core-supervision\.js\?v=20261008v/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.match(fs.readFileSync(path.join(__dirname, '../build.js'), 'utf8'), /offline-sync\.js/);
   assert.equal(fs.readFileSync(path.join(__dirname, 'pad-sync.js'), 'utf8').includes('Type de file PAD inconnu'), true);

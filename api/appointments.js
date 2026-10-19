@@ -164,6 +164,10 @@ function paramsFromFilters(filters = []) {
   return out;
 }
 
+function pgList(ids) {
+  return ids.map(id => `"${String(id).replace(/["\\]/g, '')}"`).join(',');
+}
+
 function buildAppointmentsPath(env, options = {}) {
   const p = new URLSearchParams();
   p.set('select', options.select || '*');
@@ -174,9 +178,80 @@ function buildAppointmentsPath(env, options = {}) {
   if (options.from) p.set('date', `gte.${normalizeDate(options.from)}`);
   if (options.to) p.append('date', `lt.${normalizeDate(options.to)}`);
   if (options.start_time) p.set('start_time', `eq.${normalizeTime(options.start_time)}`);
+  // Droits appliqués dans la requête, avant la limite : la limite ne porte que sur des lignes autorisées.
+  // NOT IN écarterait les form_id NULL (visibles) : on les garde explicitement.
+  if (Array.isArray(options.hidden_forms) && options.hidden_forms.length) {
+    p.set('or', `(form_id.is.null,form_id.not.in.(${pgList(options.hidden_forms)}))`);
+  }
   p.set('order', options.order || 'date.asc,start_time.asc');
-  p.set('limit', String(safeNumber(options.limit, 100)));
+  const limit = options.raw_limit != null ? Number(options.raw_limit) : safeNumber(options.limit, 100);
+  p.set('limit', String(limit));
+  if (options.offset) p.set('offset', String(Number(options.offset) || 0));
   return `appointments?${p.toString()}`;
+}
+
+// 13 mois : la vue Année (12 mois) plus le débord d'une semaine ou d'un mois voisin.
+// Au-delà, la requête est refusée plutôt que tronquée en silence.
+const MAX_RANGE_DAYS = 400;
+const PAGE = 1000; // max-rows PostgREST par défaut : chaque page reste sous ce plafond
+const COUNT_CAP = 20000;
+
+function rangeError() {
+  return Object.assign(new Error('Plage trop large, affinez les dates (13 mois maximum).'), { status: 400, code: 'range_too_large' });
+}
+
+function assertRange(from, to, required) {
+  if (!from || !to) {
+    if (required) throw rangeError();
+    return;
+  }
+  const a = Date.parse(`${normalizeDate(from)}T00:00:00Z`);
+  const b = Date.parse(`${normalizeDate(to)}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) throw Object.assign(new Error('Plage de dates invalide.'), { status: 400 });
+  if ((b - a) / 86400000 > MAX_RANGE_DAYS) throw rangeError();
+}
+
+async function readRows(req, path) {
+  let rows;
+  try {
+    rows = await serviceRest(path, { method: 'GET', prefer: '', req });
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+  if (!Array.isArray(rows)) throw access.unavailable();
+  return rows;
+}
+
+async function readFormIds(req, env) {
+  try {
+    return await access.readPaged(PAGE, async (after) => {
+      const cursor = after ? `&id=gt.${encodeURIComponent(after)}` : '';
+      const rows = await serviceRest(`forms?environment_code=eq.${encodeURIComponent(env)}&select=id&order=id.asc&limit=${PAGE}${cursor}`, { method: 'GET', prefer: '', req });
+      if (!Array.isArray(rows)) throw access.unavailable();
+      return rows;
+    }, 20000);
+  } catch (err) {
+    throw access.unavailable(err);
+  }
+}
+
+async function rightsScope(req, env, profile) {
+  const catalog = await catalogFor(req, env, profile);
+  const services = await servicesFor(req, env, profile);
+  if (access.isPlatform(profile)) return { catalog, services, hidden: [] };
+  const forms = await readFormIds(req, env);
+  const hidden = forms.map(f => String(f.id)).filter(id => access.formLevel(profile, catalog, id, services) === 'hidden');
+  return { catalog, services, hidden };
+}
+
+async function countRows(req, env, options) {
+  let total = 0;
+  for (let offset = 0; offset < COUNT_CAP; offset += PAGE) {
+    const page = await readRows(req, buildAppointmentsPath(env, { ...options, select: 'id', order: 'id.asc', raw_limit: PAGE, offset }));
+    total += page.length;
+    if (page.length < PAGE) return { total, capped: false };
+  }
+  return { total, capped: true };
 }
 
 async function handleList(req, env, body, profile) {
@@ -192,16 +267,56 @@ async function handleList(req, env, body, profile) {
     order: cleanString(body.order || 'date.asc,start_time.asc', 100),
     limit: body.limit || 100
   };
-  const catalog = await catalogFor(req, env, profile);
-  const services = await servicesFor(req, env, profile);
+  assertRange(options.from, options.to, false);
+  const { catalog, services, hidden } = await rightsScope(req, env, profile);
   if (options.form_id) {
     const level = access.formLevel(profile, catalog, options.form_id, services);
     access.assertLevel(level, 'read');
     if (level === 'normal') await assertFormPermission(req, env, options.form_id, profile, 'view');
   }
-  const rows = await serviceRest(buildAppointmentsPath(env, options), { method: 'GET', prefer: '', req });
-  const visible = (Array.isArray(rows) ? rows : []).filter(row => access.formLevel(profile, catalog, row?.form_id, services) !== 'hidden');
-  return { ok: true, success: true, environment_code: env, rows: visible };
+  options.hidden_forms = hidden;
+  const limit = safeNumber(options.limit, 100);
+  const raw = await readRows(req, buildAppointmentsPath(env, { ...options, raw_limit: limit + 1 }));
+  const truncated = raw.length > limit;
+  // Garde-fou : le filtre SQL a déjà écarté les formulaires masqués.
+  const visible = raw.slice(0, limit).filter(row => access.formLevel(profile, catalog, row?.form_id, services) !== 'hidden');
+  const out = { ok: true, success: true, environment_code: env, rows: visible, truncated, limit };
+  if (truncated) {
+    const counted = await countRows(req, env, options);
+    out.total = counted.total;
+    if (counted.capped) out.total_is_minimum = true;
+  } else {
+    out.total = visible.length;
+  }
+  return out;
+}
+
+// Vue Année : nombre de RDV par mois, calculé sur les seules lignes autorisées (filtre SQL),
+// sans renvoyer aucune ligne brute. Clé de regroupement = mois + formulaire + service + statut,
+// pour que les filtres du planning restent exacts.
+async function handleMonthCounts(req, env, body, profile) {
+  const from = normalizeDate(body.from || '');
+  const to = normalizeDate(body.to || '');
+  assertRange(from, to, true);
+  const { hidden } = await rightsScope(req, env, profile);
+  const options = { from, to, hidden_forms: hidden, select: 'id,date,form_id,status,assigned_team,capacity_group', order: 'id.asc' };
+  const groups = {};
+  let seen = 0;
+  let truncated = false;
+  for (let offset = 0; ; offset += PAGE) {
+    if (offset >= COUNT_CAP) { truncated = true; break; }
+    const page = await readRows(req, buildAppointmentsPath(env, { ...options, raw_limit: PAGE, offset }));
+    for (const row of page) {
+      const month = String(row.date || '').slice(0, 7);
+      if (!month) continue;
+      const key = [month, row.form_id ?? '', row.assigned_team || row.capacity_group || '', row.status || 'confirmed'].join('|');
+      if (!groups[key]) groups[key] = { month, form_id: row.form_id ?? null, service: row.assigned_team || row.capacity_group || '', status: row.status || 'confirmed', count: 0 };
+      groups[key].count += 1;
+      seen += 1;
+    }
+    if (page.length < PAGE) break;
+  }
+  return { ok: true, success: true, environment_code: env, from, to, groups: Object.values(groups), total: seen, truncated };
 }
 
 async function handleAvailability(req, env, body, profile) {
@@ -277,11 +392,16 @@ module.exports = async function handler(req, res) {
     if (action === 'list' || action === 'range') return json(res, 200, await handleList(req, env, body, profile));
     if (action === 'by_date') return json(res, 200, await handleList(req, env, { ...body, date: body.date, limit: body.limit || 100 }, profile));
     if (action === 'by_slot') return json(res, 200, await handleList(req, env, { ...body, date: body.date, start_time: body.start_time, limit: body.limit || 50 }, profile));
+    if (action === 'month_counts') return json(res, 200, await handleMonthCounts(req, env, body, profile));
     if (action === 'availability') return json(res, 200, await handleAvailability(req, env, body, profile));
     if (action === 'create') return json(res, 200, await handleCreate(req, env, body, profile));
 
     return json(res, 400, { error: 'Action rendez-vous non autorisée' });
   } catch (err) {
-    return json(res, err.status && err.status >= 400 ? err.status : 500, { error: err.message || 'Erreur API rendez-vous' });
+    const payload = { error: err.message || 'Erreur API rendez-vous' };
+    if (err.code === 'range_too_large') payload.code = err.code;
+    return json(res, err.status && err.status >= 400 ? err.status : 500, payload);
   }
 };
+
+module.exports._internals = { handleList, handleMonthCounts, buildAppointmentsPath, MAX_RANGE_DAYS };

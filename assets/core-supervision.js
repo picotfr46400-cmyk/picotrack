@@ -2095,6 +2095,9 @@
     var notice = payload && payload.notice
       ? '<p style="font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px;margin:0 0 10px">' + html(payload.notice) + '</p>'
       : '';
+    if (payload && payload.truncated) {
+      notice += '<p data-pt-trace-truncated style="font-size:11px;color:#9a3412;background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:8px;margin:0 0 10px">Historique tronqué : seuls les 500 événements les plus récents sont affichés.</p>';
+    }
     el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px">' +
       '<div style="font-size:10.5px;font-weight:800;color:var(--tl);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">Traçabilité</div>' +
       notice +
@@ -2112,7 +2115,16 @@
     }
   }
 
-  function mountTrace(elementId, submissionId, recordView, instanceId) {
+  function localTraceEvents(inst) {
+    var svc = null;
+    try { svc = (typeof SERVICES_DATA !== 'undefined' ? SERVICES_DATA : []).filter(function (x) { return String(x.id) === String(inst.serviceId); })[0] || null; } catch (_) {}
+    return (inst.events || []).map(function (ev, i) {
+      var L = window.ptEventLabel ? window.ptEventLabel(ev, svc) : { label: ev.type, detail: '', actor: ev.actor, when: ev.at, ms: 0 };
+      return { id: 'local-' + i, event_type: ev.type, label: L.label, occurred_at_paris: L.when, actor_name: L.actor, origin_label: 'Historique local', detail: L.detail ? { summary: L.detail } : {}, _ms: L.ms };
+    }).sort(function (a, b) { return b._ms - a._ms; });
+  }
+
+  function mountTrace(elementId, submissionId, recordView, instanceId, opts) {
     var el = document.getElementById(elementId);
     var sid = String(submissionId == null ? '' : submissionId).trim();
     var iid = String(instanceId == null ? '' : instanceId).trim();
@@ -2128,6 +2140,10 @@
     var payload = sid
       ? { action: 'submission_trace', id: sid, record_view: !!record, environment_code: envCode() }
       : { action: 'submission_trace', instance_id: iid, environment_code: envCode() };
+    var hint = opts && opts.submissionHint != null ? String(opts.submissionHint).trim() : '';
+    if (!sid && hint) payload.submission_id = hint;
+    el._ptTraceLocal = opts && opts.instance ? opts.instance : null;
+    el._ptTraceOpts = opts || null;
     var req;
     try {
       req = apiPost('/api/records', payload);
@@ -2145,7 +2161,14 @@
       if (el.getAttribute('data-pt-submission') !== key) return;
       try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
       var denied = err && (err.status === 403 || err.status === 404);
-      el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:#b91c1c">' + (denied ? 'Traçabilité non accessible avec vos droits.' : 'Traçabilité indisponible.') + '</div>';
+      var reason = denied ? 'Traçabilité serveur non accessible avec vos droits.' : 'Traçabilité serveur indisponible' + (err && err.status ? ' (' + err.status + ')' : '') + '.';
+      var local = el._ptTraceLocal;
+      if (local && !denied && Array.isArray(local.events) && local.events.length) {
+        // Repli : historique local du dossier, clairement signalé comme tel.
+        paintTrace(el, { notice: reason + ' Historique local du dossier affiché.', events: localTraceEvents(local) });
+        return;
+      }
+      el.innerHTML = '<div style="background:#fff;border-radius:12px;border:1.5px solid var(--bd);padding:14px;font-size:12px;color:#b91c1c">' + html(reason) + '</div>';
     });
   }
   window.ptMountTrace = mountTrace;
@@ -2156,7 +2179,7 @@
       var key = el.getAttribute('data-pt-submission') || '';
       var iid = el.getAttribute('data-pt-instance') || '';
       if (!el.id) return;
-      if (iid) mountTrace(el.id, '', false, iid);
+      if (iid) mountTrace(el.id, '', false, iid, el._ptTraceOpts || null);
       else if (key) mountTrace(el.id, key, false);
     });
   }
@@ -2246,7 +2269,7 @@
     events.sort(function (a, b) { return b.ms - a.ms; });
     if (index === 1) {
       host.innerHTML = '<div id="pt-drawer-trace" data-pt-trace-wide="1"></div>';
-      if (inst) mountTrace('pt-drawer-trace', inst.submissionId || inst.submission_id || '', true, inst.id);
+      if (inst) mountTrace('pt-drawer-trace', '', true, inst.id, { submissionHint: inst.submissionId || inst.submission_id, instance: inst });
       else host.innerHTML = '<p>Dossier introuvable.</p>';
       return;
     }
@@ -2339,6 +2362,23 @@
   }
   window.ptInstallPlanningOpen = installPlanningOpen;
 
+
+  // Badge « Utilisateurs » du menu : mis à jour dès la lecture des comptes, sans attendre l'écran Licences.
+  function wrapUsersBadge() {
+    if (typeof DB === 'undefined' || !DB || typeof DB.getUsersByTenant !== 'function' || DB.getUsersByTenant.__ptBadge) return;
+    var orig = DB.getUsersByTenant;
+    DB.getUsersByTenant = function () {
+      var ret = orig.apply(this, arguments);
+      Promise.resolve(ret).then(function (rows) {
+        var el = document.getElementById && document.getElementById('sb-users-cnt');
+        if (el && Array.isArray(rows)) el.textContent = String(rows.length);
+      }).catch(function () {});
+      return ret;
+    };
+    DB.getUsersByTenant.__ptBadge = true;
+  }
+  window.ptWrapUsersBadge = wrapUsersBadge;
+
   function wireDrawerTabs() {
     if (wireDrawerTabs.done || !document.addEventListener) return;
     wireDrawerTabs.done = true;
@@ -2370,7 +2410,7 @@
       window.renderInstanceHistory = function (inst) {
         var ret = origHistory.apply(this, arguments);
         try {
-          mountTrace('sid-history', inst && (inst.submissionId || inst.submission_id), true, inst && inst.id);
+          if (inst && inst.id != null) mountTrace('sid-history', '', true, inst.id, { submissionHint: inst.submissionId || inst.submission_id, instance: inst });
         } catch (err) {
           try { console.warn('[PicoTrack] traçabilité', err); } catch (_) {}
         }
@@ -2379,6 +2419,8 @@
       window.renderInstanceHistory.__ptTrace = true;
     }
   }
+
+  window.ptWrapTraceForTest = function () { wrapTrace(); };
 
   function wrapDbAudit() {
     if (typeof DB === 'undefined' || !DB || typeof DB.save !== 'function' || DB.save.__ptAudit) return;
@@ -3414,6 +3456,7 @@
     wrapSubmissionPdf();
     wrapTrace();
     wireDrawerTabs();
+    wrapUsersBadge();
     installPlanningOpen();
     wrapDbAudit();
     installRoleAccess();
@@ -3460,7 +3503,7 @@
   var MAX_ENTRIES = 200;
   var READ_ACTIONS = {
     '/api/records': ['list', 'view', 'initial_load', 'integrations_load'],
-    '/api/appointments': ['list', 'range', 'by_date', 'by_slot', 'availability', 'view'],
+    '/api/appointments': ['list', 'range', 'by_date', 'by_slot', 'availability', 'view', 'month_counts'],
     '/api/users': ['summary']
   };
   var NEUTRAL_ACTIONS = ['ping', 'health', 'currentProfile', 'current_profile'];
@@ -3469,6 +3512,8 @@
   var cache = new Map();
   var inflight = new Map();
   var gen = 0;
+  // Époque de session : change à chaque purge (401/403, changement de compte ou de droits).
+  var epoch = 0;
   var lastScope = '';
   var navPath = '';
   var prefetchedFor = '';
@@ -3522,7 +3567,7 @@
     inflight.clear();
     stats.clears++;
     // Le jeu planning large suit le même cycle de vie : écriture, 401/403, changement de compte.
-    try { window.__ptPlanningWide = null; } catch (_) {}
+    try { window.__ptPlanningMonths = null; } catch (_) {}
   }
   function clearStoredData() {
     try {
@@ -3552,6 +3597,7 @@
   }
   // Purge complète des données de la session ; la file hors ligne (IndexedDB) n'est jamais touchée.
   function purgeSessionData() {
+    epoch++;
     clearAll();
     stats.purges++;
     clearStoredData();
@@ -3566,7 +3612,7 @@
   function checkScope() {
     var sc = scope();
     if (sc !== lastScope) {
-      if (lastScope) { clearAll(); clearStoredData(); }
+      if (lastScope) { epoch++; clearAll(); clearStoredData(); }
       lastScope = sc;
     }
     return sc;
@@ -3633,9 +3679,18 @@
     el.textContent = 'Données possiblement périmées : le serveur ne répond pas.';
     document.body.appendChild(el);
   }
-  function onAuthFailure(err) {
+  function sessionTag() {
+    try {
+      var sess = typeof _readStoredSession === 'function' ? _readStoredSession() : null;
+      return String(sess && sess.access_token || '') + '|' + String(localStorage.getItem('pt_active_session_token') || '');
+    } catch (_) { return ''; }
+  }
+  function onAuthFailure(err, tag) {
     var st = statusOf(err);
     if (st !== 401 && st !== 403) return;
+    // Erreur d'une requête partie sous une autre session (ex. juste avant une reconnexion) : ignorée,
+    // pour ne pas purger les données de la nouvelle session.
+    if (tag != null && tag !== sessionTag()) return;
     purgeSessionData();
     showStaleBanner(false);
     if (st === 401) {
@@ -3655,7 +3710,10 @@
     window.__ptSwrInstalled = true;
     function fetchStore(key, self, args) {
       var g = gen;
+      var e = epoch;
       var p = Promise.resolve(orig.apply(self, args)).then(function (res) {
+        // Réponse partie avant une purge : ni rendue, ni remise en cache.
+        if (e !== epoch) throw Object.assign(new Error('Réponse obsolète : session purgée pendant la lecture.'), { ptEpoch: true });
         var s = JSON.stringify(res === undefined ? null : res);
         store(key, s, g);
         showStaleBanner(false);
@@ -3669,20 +3727,22 @@
     var wrapped = function (path, body) {
       var self = this;
       var args = arguments;
+      var tag = sessionTag();
+      var authFail = function (err) { onAuthFailure(err, tag); };
       if (!isRead(path, body)) {
         if (!isNeutral(path, body)) clearAll();
         var ret = orig.apply(self, args);
         // Le résultat rendu à l’appelant reste celui d’origine ; 401/403 purgent tout.
         Promise.resolve(ret).then(function () { if (!isNeutral(path, body)) clearAll(); }).catch(function (err) {
           if (!isNeutral(path, body)) clearAll();
-          onAuthFailure(err);
+          authFail(err);
         });
         return ret;
       }
       var key = keyFor(path, body);
       if (!key) {
         var direct = orig.apply(self, args);
-        Promise.resolve(direct).then(function () {}).catch(onAuthFailure);
+        Promise.resolve(direct).then(function () {}).catch(authFail);
         return direct;
       }
       var entry = cache.get(key);
@@ -3691,7 +3751,8 @@
       if (pending) { stats.dedup++; return pending.then(parse); }
       stats.misses++;
       return fetchStore(key, self, args).then(parse, function (err) {
-        if (isAuthError(err)) { onAuthFailure(err); throw err; }
+        if (err && err.ptEpoch) throw err;
+        if (isAuthError(err)) { authFail(err); throw err; }
         var old = cache.get(key);
         if (isStaleAllowed(err) && old && Date.now() - old.at < STALE_MS) {
           stats.stale++;
@@ -3714,17 +3775,17 @@
     prefetchedFor = sc;
     var run = function () {
       var jobs = [];
-      try { jobs.push(window._apiPost('/api/users', { action: 'summary', environment_code: env })); } catch (_) {}
+      try {
+        if (window.DB && typeof window.DB.getUsersByTenant === 'function') jobs.push(window.DB.getUsersByTenant(env));
+        else jobs.push(window._apiPost('/api/users', { action: 'summary', environment_code: env }));
+      } catch (_) {}
       try { if (typeof loadStandaloneDatabasesFromSupabase === 'function') jobs.push(loadStandaloneDatabasesFromSupabase()); } catch (_) {}
       try { if (typeof window.ptEnsureServicesLoaded === 'function') jobs.push(window.ptEnsureServicesLoaded()); } catch (_) {}
       try { if (typeof window.loadFromSupabase === 'function') jobs.push(window.loadFromSupabase({ scope: 'services' })); } catch (_) {}
       try {
         if (window.DB && typeof window.DB.getAppointments === 'function') {
-          jobs.push(window.DB.getAppointments('2000-01-01', '2100-01-01'));
-          if (typeof ptPlanningRange === 'function' && typeof ptDateISO === 'function') {
-            var r = ptPlanningRange();
-            jobs.push(window.DB.getAppointments(ptDateISO(r.from), ptDateISO(r.to)));
-          }
+          // Planning : le mois affiché seulement (plage bornée côté serveur) ; les voisins se préchargent ensuite.
+          if (typeof window.ptPlanningMonthRows === 'function') jobs.push(window.ptPlanningMonthRows(new Date()));
         }
         if (window.DB && typeof window.DB.list === 'function') jobs.push(window.DB.list('submissions', { select: '*', limit: 500 }));
       } catch (_) {}
@@ -3768,6 +3829,7 @@
     keyFor: keyFor,
     size: function () { return cache.size; },
     stats: function () { return Object.assign({}, stats); },
+    epoch: function () { return epoch; },
     install: install
   };
 })();

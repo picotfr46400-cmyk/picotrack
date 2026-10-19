@@ -770,13 +770,23 @@ async function flushAudit(req, serviceRest) {
   return insertEvents(serviceRest, req, rows);
 }
 
+const TRACE_LIMIT = 500;
+
+// Lit au plus TRACE_LIMIT lignes ; une ligne de plus signale la troncature (jamais silencieuse).
+function markTruncated(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const out = list.slice(0, TRACE_LIMIT);
+  if (list.length > TRACE_LIMIT) out.truncated = true;
+  return out;
+}
+
 async function readLog(serviceRest, req, env, submissionId) {
   try {
     const rows = await journalCall(serviceRest, req,
-      `${TABLE}?environment_code=eq.${enc(env)}&submission_id=eq.${enc(submissionId)}&select=${SELECT_COLUMNS}&order=occurred_at.desc&limit=500`,
+      `${TABLE}?environment_code=eq.${enc(env)}&submission_id=eq.${enc(submissionId)}&select=${SELECT_COLUMNS}&order=occurred_at.desc&limit=${TRACE_LIMIT + 1}`,
       { method: 'GET', prefer: '' }
     );
-    return Array.isArray(rows) ? rows.filter((row) => String(row?.environment_code || '') === env) : [];
+    return markTruncated(Array.isArray(rows) ? rows.filter((row) => String(row?.environment_code || '') === env) : []);
   } catch (err) {
     console.error('[submission-audit] lecture journal impossible', err && (err.message || err));
     return [];
@@ -1001,15 +1011,29 @@ function recentView(rows, actorId, now) {
 async function ownSubmissionRows(serviceRest, req, env, submissionId, rows) {
   const list = Array.isArray(rows) ? rows : [];
   if (!list.some((row) => row && row.service_instance_id)) return list;
-  let linked = new Set();
+  let found;
   try {
-    const found = await serviceRest(
+    found = await serviceRest(
       `service_instances?submission_id=eq.${enc(submissionId)}&environment_code=eq.${enc(env)}&select=id&limit=200`,
       { method: 'GET', prefer: '', req }
     );
-    linked = new Set((Array.isArray(found) ? found : []).map((row) => String(row.id)));
-  } catch (_) {}
-  return list.filter((row) => !row || !row.service_instance_id || linked.has(String(row.service_instance_id)));
+  } catch (err) {
+    throw Object.assign(new Error('Lecture des dossiers liés impossible.'), { status: 503 });
+  }
+  if (!Array.isArray(found)) throw Object.assign(new Error('Lecture des dossiers liés impossible.'), { status: 503 });
+  const linked = new Set(found.map((row) => String(row.id)));
+  const out = list.filter((row) => !row || !row.service_instance_id || linked.has(String(row.service_instance_id)));
+  if (list.truncated) out.truncated = true;
+  return out;
+}
+
+async function formIdOf(deps, req, env, submissionId) {
+  const rows = await deps.serviceRest(
+    `submissions?id=eq.${enc(submissionId)}&environment_code=eq.${enc(env)}&select=id,form_id&limit=1`,
+    { method: 'GET', prefer: '', req }
+  );
+  const row = Array.isArray(rows) ? rows[0] : null;
+  return row && row.form_id != null ? String(row.form_id) : '';
 }
 
 async function handleInstanceTrace(req, body, deps, ctx) {
@@ -1036,23 +1060,65 @@ async function handleInstanceTrace(req, body, deps, ctx) {
     throw err;
   }
   await deps.assertInstanceVisible(req, profile, instance);
-  let stored = [];
+  let stored;
   try {
     const found = await journalCall(deps.serviceRest, req,
-      `${TABLE}?environment_code=eq.${enc(env)}&service_instance_id=eq.${enc(instanceId)}&select=${SELECT_COLUMNS}&order=occurred_at.desc&limit=500`,
+      `${TABLE}?environment_code=eq.${enc(env)}&service_instance_id=eq.${enc(instanceId)}&select=${SELECT_COLUMNS}&order=occurred_at.desc&limit=${TRACE_LIMIT + 1}`,
       { method: 'GET', prefer: '' }
     );
-    stored = Array.isArray(found) ? found.filter((row) => String(row?.environment_code || '') === env) : [];
+    if (!Array.isArray(found)) throw new Error('réponse invalide');
+    stored = markTruncated(found.filter((row) => String(row?.environment_code || '') === env));
   } catch (err) {
     console.error('[submission-audit] lecture journal impossible', err && (err.message || err));
+    throw Object.assign(new Error('Journal de traçabilité indisponible.'), { status: 503 });
+  }
+  let truncated = !!stored.truncated;
+  // Saisie d'origine : le lien enregistré, sinon l'indication du client vérifiée côté serveur
+  // (même environnement, formulaire du service, droit de consultation du formulaire).
+  let submissionId = deps.cleanSubmissionId(instance.submission_id);
+  let linkedBy = submissionId ? 'stored' : '';
+  if (!submissionId) {
+    const hint = deps.cleanSubmissionId(body.submission_id);
+    if (hint) {
+      const subs = await deps.serviceRest(
+        `submissions?id=eq.${enc(hint)}&environment_code=eq.${enc(env)}&select=id,form_id,environment_code&limit=1`,
+        { method: 'GET', prefer: '', req }
+      );
+      const sub = Array.isArray(subs) ? subs[0] : null;
+      const services = await deps.serviceRest(
+        `services?id=eq.${enc(instance.service_id)}&environment_code=eq.${enc(env)}&select=id,form_id,environment_code&limit=1`,
+        { method: 'GET', prefer: '', req }
+      );
+      const service = Array.isArray(services) ? services[0] : null;
+      if (sub && service && String(sub.form_id) === String(service.form_id)) {
+        submissionId = hint;
+        linkedBy = 'hint';
+      }
+    }
+  }
+  if (submissionId) {
+    const formId = await formIdOf(deps, req, env, submissionId);
+    const form = formId ? await deps.readFormForSubmission(req, formId, env) : null;
+    if (form && deps.normalizeEnvCode(form.environment_code) === env) {
+      deps.assertRecordAllowed('forms', form, 'view', profile, 'Consultation de la saisie refusée.');
+    }
+    const subRows = await readLog(deps.serviceRest, req, env, submissionId);
+    if (subRows.truncated) truncated = true;
+    const ids = new Set(stored.map((row) => String(row.id)));
+    for (const row of subRows) {
+      if (row.service_instance_id && String(row.service_instance_id) !== String(instanceId)) continue;
+      if (!ids.has(String(row.id))) stored.push(row);
+    }
   }
   const timeline = composeTimeline(stored, null, instance);
   return {
     service_instance_id: instanceId,
-    submission_id: instance.submission_id ? String(instance.submission_id) : null,
+    submission_id: submissionId || null,
+    linked_by: linkedBy || null,
     environment_code: env,
     legacy: timeline.legacy,
     notice: timeline.notice,
+    truncated,
     events: timeline.events
   };
 }
@@ -1118,6 +1184,7 @@ async function handleTrace(req, body, deps) {
     environment_code: env,
     legacy: timeline.legacy,
     notice: timeline.notice,
+    truncated: !!stored.truncated,
     events: timeline.events
   };
 }

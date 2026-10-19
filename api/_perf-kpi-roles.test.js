@@ -404,15 +404,113 @@ test('G : un créneau à une seule réservation ouvre directement la demande', a
 });
 
 // ---- F : navigation planning ----
-test('F : le planning lit une fenêtre large une fois puis filtre côté client ; écriture ou 401/403 l’invalide', async () => {
-  assert.match(bundle, /function inWindow\(store, from, to\)/);
-  assert.match(bundle, /if \(inWindow\(store, from, to\)\) \{\n      rows = store\.rows;/);
-  assert.match(bundle, /both\[0\]\.length >= 500/, 'fenêtre tronquée : repli sur la période seule');
+test('F : écriture ou 401/403 invalident le cache planning par mois', async () => {
   const { ctx } = sandbox((p, b) => { if (b.action === 'save') return { ok: 1 }; throw httpError(403); });
-  ctx.__ptPlanningWide = { from: '2024-01-01', to: '2029-01-01', rows: [{ id: 1 }], at: 1 };
+  ctx.__ptPlanningMonths = { epoch: 0, months: { '2028-02': { rows: [{ id: 1 }] } } };
   await ctx._apiPost('/api/records', { action: 'save', entity: 'appointments' });
-  assert.equal(ctx.__ptPlanningWide, null, 'écriture : jeu planning invalidé');
-  ctx.__ptPlanningWide = { from: '2024-01-01', to: '2029-01-01', rows: [{ id: 1 }], at: 1 };
+  assert.equal(ctx.__ptPlanningMonths, null, 'écriture : cache planning invalidé');
+  ctx.__ptPlanningMonths = { epoch: 0, months: { '2028-02': { rows: [{ id: 1 }] } } };
   await ctx._apiPost('/api/records', { action: 'list', entity: 'appointments' }).catch(() => {});
-  assert.equal(ctx.__ptPlanningWide, null, '403 : jeu planning purgé');
+  assert.equal(ctx.__ptPlanningMonths, null, '403 : cache planning purgé');
+});
+
+test('réponse en cours pendant une purge : ni rendue, ni remise en cache', async () => {
+  let release;
+  const { ctx, calls } = sandbox((p, b) => (b.entity === 'forms' ? new Promise(r => { release = r; }) : Promise.reject(httpError(403))));
+  const before = ctx.ptNavCache.epoch();
+  const pending = ctx._apiPost('/api/records', { action: 'list', entity: 'forms' });
+  await ctx._apiPost('/api/records', { action: 'list', entity: 'services' }).catch(() => {});
+  assert.ok(ctx.ptNavCache.epoch() > before, 'la purge change l’époque');
+  release([{ id: 'secret' }]);
+  await assert.rejects(pending, e => e.ptEpoch === true);
+  assert.equal(ctx.ptNavCache.size(), 0, 'rien remis en cache');
+  assert.equal(calls.length, 2);
+});
+
+test('401/403 d’une requête partie sous une autre session : ignoré (pas de purge de la nouvelle session)', async () => {
+  let release;
+  const { ctx, flags, sess } = sandbox(() => new Promise((res, rej) => { release = rej; }));
+  const p = ctx._apiPost('/api/records', { action: 'save', entity: 'forms' });
+  ctx._readStoredSession = () => ({ access_token: 'tok-B' }); // reconnexion entre-temps
+  release(httpError(401));
+  await p.catch(() => {});
+  await tick();
+  assert.equal(flags.reloads, 0);
+  assert.equal(sess.getItem('pt_cache_GIT'), '{"forms":[1]}', 'données de la nouvelle session intactes');
+});
+
+test('badge Utilisateurs : rempli dès la lecture des comptes', async () => {
+  const { ctx, nodes } = sandbox(() => []);
+  nodes['sb-users-cnt'] = { textContent: '0' };
+  ctx.DB = { getUsersByTenant: async () => [{ id: 1 }, { id: 2 }] };
+  ctx.ptWrapUsersBadge();
+  await ctx.DB.getUsersByTenant('GIT');
+  await tick();
+  assert.equal(nodes['sb-users-cnt'].textContent, '2');
+});
+
+// ---- Traçabilité : fiche complète du dossier, troncature, liens ----
+test('fiche complète : trace par id de dossier avec la saisie d’origine en indication ; repli local signalé', async () => {
+  let fail = false;
+  const { ctx, calls, nodes } = sandbox((p, b) => {
+    if (b.action !== 'submission_trace') return [];
+    if (fail) throw httpError(503);
+    return { events: [{ id: 'x', event_type: 'created', label: 'Création', occurred_at: '2026-10-19T14:09:19Z' }], truncated: true };
+  });
+  const attrs = {};
+  nodes['sid-history'] = { id: 'sid-history', style: {}, innerHTML: '', setAttribute(k, v) { attrs[k] = v; }, getAttribute(k) { return attrs[k] || null; }, removeAttribute(k) { delete attrs[k]; } };
+  ctx.renderInstanceHistory = function () { nodes['sid-history'].innerHTML = 'Historique'; };
+  ctx.ptWrapTraceForTest();
+  const inst = { id: 6, serviceId: 2, submissionId: 24, events: [{ id: 1792418952347, type: 'created', actor: 'Picot Clément', at: '19/10/2026 16:09:12', payload: {} }] };
+  ctx.renderInstanceHistory(inst, { id: 2 });
+  await tick(); await tick();
+  const sent = calls.find(c => c[1].action === 'submission_trace')[1];
+  assert.equal(sent.instance_id, '6');
+  assert.equal(sent.submission_id, '24');
+  assert.equal(sent.id, undefined);
+  assert.match(nodes['sid-history'].innerHTML, /Traçabilité/);
+  assert.match(nodes['sid-history'].innerHTML, /Historique tronqué/);
+  fail = true;
+  ctx.renderInstanceHistory(inst, { id: 2 });
+  await tick(); await tick();
+  assert.doesNotMatch(nodes['sid-history'].innerHTML, /^<div[^>]*>Traçabilité indisponible/);
+  assert.match(nodes['sid-history'].innerHTML, /Historique local du dossier affiché/);
+  assert.match(nodes['sid-history'].innerHTML, /Création du dossier/);
+});
+
+test('trace serveur : indicateur de troncature au-delà de 500 et échec de lecture des liens remonté', async () => {
+  const many = Array.from({ length: 501 }, (_, i) => ({ id: 'e' + i, environment_code: 'GIT', submission_id: '5', service_instance_id: i === 0 ? '9' : null, event_type: 'updated', occurred_at: '2026-10-19T08:00:00Z', detail: {} }));
+  const { deps } = traceDeps({
+    'submissions?id=eq.5': [{ id: 5, environment_code: 'GIT', form_id: null }],
+    'submission_audit_log?environment_code=eq.GIT&submission_id=eq.5': many,
+    'service_instances?submission_id=eq.5': [{ id: '9' }]
+  });
+  const res = await audit.handleTrace({ headers: {} }, { id: '5', environment_code: 'GIT' }, deps);
+  assert.equal(res.truncated, true);
+  const broken = traceDeps({
+    'submissions?id=eq.5': [{ id: 5, environment_code: 'GIT', form_id: null }],
+    'submission_audit_log?environment_code=eq.GIT&submission_id=eq.5': many
+  });
+  broken.deps.serviceRest = async (p) => {
+    if (p.startsWith('service_instances?submission_id')) throw new Error('boom');
+    if (p.startsWith('submissions?')) return [{ id: 5, environment_code: 'GIT', form_id: null }];
+    return many;
+  };
+  await assert.rejects(() => audit.handleTrace({ headers: {} }, { id: '5', environment_code: 'GIT' }, broken.deps), e => e.status === 503);
+});
+
+test('trace de dossier : saisie d’origine fusionnée seulement si elle appartient au formulaire du service', async () => {
+  const base = {
+    'service_instances?id=eq.6': [{ id: 6, environment_code: 'GIT', submission_id: null, service_id: 2 }],
+    'submission_audit_log?environment_code=eq.GIT&service_instance_id=eq.6': [{ id: 'i1', environment_code: 'GIT', submission_id: '6', service_instance_id: '6', event_type: 'created', occurred_at: '2026-10-19T14:09:19Z', detail: {} }],
+    'submission_audit_log?environment_code=eq.GIT&submission_id=eq.24': [{ id: 's1', environment_code: 'GIT', submission_id: '24', service_instance_id: null, event_type: 'created', occurred_at: '2026-10-19T14:09:16Z', detail: {} }],
+    'submissions?id=eq.24': [{ id: 24, environment_code: 'GIT', form_id: 7 }]
+  };
+  const ok = traceDeps(Object.assign({ 'services?id=eq.2': [{ id: 2, form_id: 7, environment_code: 'GIT' }] }, base));
+  const merged = await audit.handleTrace({ headers: {} }, { instance_id: '6', submission_id: '24', environment_code: 'GIT' }, ok.deps);
+  assert.deepEqual(merged.events.map(e => e.id).filter(id => id === 'i1' || id === 's1').sort(), ['i1', 's1']);
+  assert.equal(merged.linked_by, 'hint');
+  const other = traceDeps(Object.assign({ 'services?id=eq.2': [{ id: 2, form_id: 8, environment_code: 'GIT' }] }, base));
+  const alone = await audit.handleTrace({ headers: {} }, { instance_id: '6', submission_id: '24', environment_code: 'GIT' }, other.deps);
+  assert.ok(!alone.events.some(e => e.id === 's1'), 'indication refusée : saisie d’un autre formulaire');
 });
