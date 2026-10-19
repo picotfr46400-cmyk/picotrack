@@ -1098,7 +1098,7 @@
     list.forEach(function (it) {
       if (!it || !terminal[String(it.serviceId) + '|' + String(it.currentStatusId || it.statusId)]) return;
       var a = ptTs(it.createdAt || it.created_at);
-      var b = ptTs(it.closedAt || it.closed_at || it.updatedAt || it.updated_at);
+      var b = ptTs(it.closedAt || it.closed_at); // vraie date de clôture uniquement, jamais updatedAt
       if (isFinite(a) && isFinite(b) && b >= a) durations.push(b - a);
     });
     var avgValue = DASH;
@@ -3224,7 +3224,18 @@
     ready = true;
     installClickFallback();
     stripDemoApiConfig();
-    loadIntegrations().catch(function () {});
+    if (clientMayLoadIntegrations()) loadIntegrations().catch(function () {});
+  }
+
+  // Ne pas provoquer de 403 au démarrage : seuls les administrateurs d'environnement lisent les intégrations.
+  function clientMayLoadIntegrations() {
+    var u = window.PT_CURRENT_USER;
+    if (!u || u.active === false) return false;
+    var lic = String(u.license_type || '').toLowerCase();
+    if (lic === 'pad' || lic === 'readonly' || lic === 'lecture') return false;
+    var names = [u.role].concat(Array.isArray(u.roles) ? u.roles : []).map(function (r) { return String(r || '').trim().toLowerCase(); });
+    var perms = u.resolved_permissions || {};
+    return names.some(function (r) { return ['admin', 'client_admin', 'environment_admin', 'super_admin', 'platform_admin'].indexOf(r) >= 0; }) || perms.platform_admin === true;
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
@@ -3234,13 +3245,18 @@
   setTimeout(boot, 1200);
 })();
 
-/* PicoTrack — Vitesse de navigation (cache mémoire stale-while-revalidate).
-   Seules les lectures /api sont mises en cache, en mémoire, par jeton + environnement + requête exacte :
-   droits et filtres restent ceux du serveur. Toute écriture, la déconnexion et le changement
-   d'environnement vident le cache. */
+/* PicoTrack — Vitesse de navigation (cache mémoire court des lectures /api).
+   Règles (décision manager du 19/10) :
+   - clé = utilisateur + environnement + version des droits (rôles, licences, permissions) + requête exacte ;
+   - une donnée n'est servie sans réseau que pendant FRESH_MS ; au-delà, on relit le serveur ;
+   - données périmées seulement sur erreur réseau ou 503, avec un bandeau « données possiblement périmées » ;
+   - toute réponse 401 ou 403 sur n'importe quel appel /api vide tout le cache de données de la session
+     (mémoire, sessionStorage, localStorage de données ; jamais la file hors ligne des écritures) ;
+     401 → retour à la connexion, 403 → écran « accès refusé » sans contenu en cache ;
+   - toute écriture, la déconnexion et un changement de compte, de droits ou d'environnement vident le cache. */
 (function () {
   'use strict';
-  var FRESH_MS = 4000;
+  var FRESH_MS = 10000;
   var STALE_MS = 5 * 60 * 1000;
   var MAX_ENTRIES = 200;
   var READ_ACTIONS = {
@@ -3249,50 +3265,57 @@
     '/api/users': ['summary']
   };
   var NEUTRAL_ACTIONS = ['ping', 'health', 'currentProfile', 'current_profile'];
-  var ROUTES = {
-    '/dashboard': 'goDashboard', '/services': 'goProdServices', '/planning': 'goPlanning',
-    '/workflows': 'goWorkflows', '/donnees': 'goProDatabase', '/roles': 'goRoles', '/users': 'goUsers',
-    '/automations': 'goAutomations', '/integrations': 'goApiConfig', '/database': 'goStudioDatabase',
-    '/production': 'goProduction', '/studio': 'goStudio'
-  };
+  var SESSION_DATA_PREFIXES = ['pt_cache_'];
+  var LOCAL_DATA_KEYS = ['pt_mail_history', 'pt_pdf_history'];
   var cache = new Map();
   var inflight = new Map();
   var gen = 0;
-  var lastEnv = '';
-  var navAt = 0;
+  var lastScope = '';
   var navPath = '';
-  var lastInteract = 0;
-  var rerenderTimer = null;
   var prefetchedFor = '';
-  var stats = { hits: 0, stale: 0, misses: 0, dedup: 0, clears: 0 };
+  var stats = { hits: 0, misses: 0, dedup: 0, stale: 0, clears: 0, purges: 0 };
 
   function cleanPath(path) { return String(path || '').split('?')[0].replace(/\/+$/, ''); }
   function actionOf(body) { return String((body && body.action) || ''); }
   function isNeutral(path, body) {
     var p = cleanPath(path);
-    var a = actionOf(body);
-    return NEUTRAL_ACTIONS.indexOf(a) >= 0 && (p === '/api/records' || p === '/api/auth');
+    return NEUTRAL_ACTIONS.indexOf(actionOf(body)) >= 0 && (p === '/api/records' || p === '/api/auth');
   }
   function isRead(path, body) {
     var list = READ_ACTIONS[cleanPath(path)];
     return !!list && list.indexOf(actionOf(body)) >= 0;
   }
-  function hash(str) {
-    var h = 5381;
-    for (var i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
-    return (h >>> 0).toString(36) + ':' + str.length;
-  }
-  function authFp() {
-    var token = '';
-    var pico = '';
-    try { if (typeof _readStoredSession === 'function') token = String((_readStoredSession() || {}).access_token || ''); } catch (_) {}
-    try { pico = String(localStorage.getItem('pt_active_session_token') || ''); } catch (_) {}
-    return hash(token + '|' + pico);
-  }
   function currentEnv() {
     try { if (typeof _getEnvironmentCode === 'function') return String(_getEnvironmentCode() || ''); } catch (_) {}
     try { return String(sessionStorage.getItem('pt_active_env') || ''); } catch (_) {}
     return '';
+  }
+  function sortedTokens(value) {
+    if (value == null || value === '') return [];
+    if (Array.isArray(value)) return value.map(function (v) { return typeof v === 'object' ? JSON.stringify(v) : String(v); }).sort();
+    return [typeof value === 'object' ? JSON.stringify(value) : String(value)];
+  }
+  function stable(value) {
+    if (value == null || typeof value !== 'object') return JSON.stringify(value === undefined ? null : value);
+    if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
+    return '{' + Object.keys(value).sort().map(function (k) { return JSON.stringify(k) + ':' + stable(value[k]); }).join(',') + '}';
+  }
+  // Version des droits du profil courant : tout changement de rôle, de licence ou de permission change la clé.
+  function rightsVersion(user) {
+    return stable({
+      role: String(user.role || ''),
+      roles: sortedTokens(user.roles),
+      license_type: String(user.license_type || ''),
+      license_roles: sortedTokens(user.license_roles),
+      environment_code: String(user.environment_code || ''),
+      permissions: user.resolved_permissions || null,
+      active: user.active !== false
+    });
+  }
+  function scope() {
+    var user = window.PT_CURRENT_USER;
+    if (!user || user.id == null || user.id === '') return '';
+    return String(user.id) + '|' + currentEnv() + '|' + rightsVersion(user);
   }
   function clearAll() {
     gen++;
@@ -3300,16 +3323,59 @@
     inflight.clear();
     stats.clears++;
   }
-  function checkEnv() {
-    var env = currentEnv();
-    if (env !== lastEnv) { if (lastEnv) clearAll(); lastEnv = env; }
-    return env;
+  function clearStoredData() {
+    try {
+      var keys = [];
+      for (var i = 0; i < sessionStorage.length; i++) keys.push(sessionStorage.key(i));
+      keys.forEach(function (k) {
+        if (k && SESSION_DATA_PREFIXES.some(function (p) { return k.indexOf(p) === 0; })) sessionStorage.removeItem(k);
+      });
+    } catch (_) {}
+    try { LOCAL_DATA_KEYS.forEach(function (k) { localStorage.removeItem(k); }); } catch (_) {}
+  }
+  // Vide les tableaux de données du bundle (liaisons lexicales globales) et leurs miroirs window.*.
+  function emptyDataLists() {
+    var lists = [];
+    try { if (typeof FORMS_DATA !== 'undefined') lists.push(FORMS_DATA); } catch (_) {}
+    try { if (typeof SUBMISSIONS_DATA !== 'undefined') lists.push(SUBMISSIONS_DATA); } catch (_) {}
+    try { if (typeof SERVICES_DATA !== 'undefined') lists.push(SERVICES_DATA); } catch (_) {}
+    try { if (typeof SERVICE_INSTANCES_DATA !== 'undefined') lists.push(SERVICE_INSTANCES_DATA); } catch (_) {}
+    try { if (typeof DATABASES_DATA !== 'undefined') lists.push(DATABASES_DATA); } catch (_) {}
+    try { if (typeof USERS_DATA !== 'undefined') lists.push(USERS_DATA); } catch (_) {}
+    try { if (typeof ROLES_DATA !== 'undefined') lists.push(ROLES_DATA); } catch (_) {}
+    try { if (typeof filtered !== 'undefined') lists.push(filtered); } catch (_) {}
+    ['FORMS_DATA', 'SUBMISSIONS_DATA', 'SERVICES_DATA', 'SERVICE_INSTANCES_DATA', 'DATABASES_DATA', 'USERS_DATA', 'ROLES_DATA', 'forms', 'services', 'submissions', 'serviceInstances', 'databases'].forEach(function (n) {
+      try { lists.push(window[n]); } catch (_) {}
+    });
+    lists.forEach(function (l) { if (Array.isArray(l)) l.length = 0; });
+  }
+  // Purge complète des données de la session ; la file hors ligne (IndexedDB) n'est jamais touchée.
+  function purgeSessionData() {
+    clearAll();
+    stats.purges++;
+    clearStoredData();
+    emptyDataLists();
+    try {
+      window._ptPlanningCache = null; window._ptPlanningLoadedAt = 0; window._ptUsersSummary = null;
+      if (window.PT_CACHE) { window.PT_CACHE.v55Services = null; window.PT_CACHE.v55ServicesLoaded = false; window.PT_CACHE.v55ServicesPromise = null; }
+      if (typeof window.ptNavMarkDirty === 'function') window.ptNavMarkDirty('all');
+    } catch (_) {}
+    prefetchedFor = '';
+  }
+  function checkScope() {
+    var sc = scope();
+    if (sc !== lastScope) {
+      if (lastScope) { clearAll(); clearStoredData(); }
+      lastScope = sc;
+    }
+    return sc;
   }
   function keyFor(path, body) {
-    var env = checkEnv();
+    var sc = checkScope();
+    if (!sc) return '';
     var b = '';
-    try { b = JSON.stringify(body || {}); } catch (_) { return ''; }
-    return cleanPath(path) + '|' + env + '|' + authFp() + '|' + b;
+    try { b = stable(body || {}); } catch (_) { return ''; }
+    return cleanPath(path) + '|' + sc + '|' + b;
   }
   function parse(s) { return s === undefined ? undefined : JSON.parse(s); }
   function store(key, s, g) {
@@ -3318,6 +3384,69 @@
     cache.set(key, { at: Date.now(), s: s });
     while (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value);
   }
+  function statusOf(err) { return err && Number(err.status || (err.response && err.response.status) || 0) || 0; }
+  function isAuthError(err) { var st = statusOf(err); return st === 401 || st === 403; }
+  function isStaleAllowed(err) {
+    var st = statusOf(err);
+    if (st === 503) return true;
+    return !st && !!err && (err.name === 'TypeError' || /network|failed to fetch|connexion/i.test(String(err.message || '')));
+  }
+
+  function hasStoredSession() {
+    try { return typeof _readStoredSession === 'function' && !!(_readStoredSession() || {}).access_token; } catch (_) { return false; }
+  }
+  function showDenied() {
+    var main = document.getElementById && document.getElementById('main');
+    if (!main) return;
+    if (main.classList) main.classList.add('pt-denied');
+    var panel = document.getElementById('pt-access-denied');
+    if (!panel && document.createElement) {
+      panel = document.createElement('div');
+      panel.id = 'pt-access-denied';
+      panel.setAttribute('role', 'alert');
+      panel.style.cssText = 'margin:40px auto;max-width:520px;background:#fff;border:1px solid #fecaca;border-radius:16px;padding:28px;text-align:center;color:#991b1b';
+      panel.innerHTML = '<div style="font-size:32px">⛔</div><h2 style="margin:8px 0">Accès refusé</h2><p style="color:#6b7280">Vos droits ne permettent pas d’afficher ce contenu. Choisissez une autre rubrique ou contactez votre administrateur.</p>';
+      if (main.insertBefore) main.insertBefore(panel, main.firstChild);
+    }
+    if (!document.getElementById('pt-denied-style') && document.createElement && document.head) {
+      var st = document.createElement('style');
+      st.id = 'pt-denied-style';
+      st.textContent = '#main.pt-denied .view{display:none!important}';
+      document.head.appendChild(st);
+    }
+  }
+  function hideDenied() {
+    var main = document.getElementById && document.getElementById('main');
+    if (main && main.classList) main.classList.remove('pt-denied');
+    var panel = document.getElementById && document.getElementById('pt-access-denied');
+    if (panel && panel.remove) panel.remove();
+  }
+  function showStaleBanner(on) {
+    var el = document.getElementById && document.getElementById('pt-stale-banner');
+    if (!on) { if (el && el.remove) el.remove(); return; }
+    if (el || !document.createElement || !document.body) return;
+    el = document.createElement('div');
+    el.id = 'pt-stale-banner';
+    el.setAttribute('role', 'status');
+    el.style.cssText = 'position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:10000;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:10px;padding:8px 14px;font-size:13px;font-weight:700';
+    el.textContent = 'Données possiblement périmées : le serveur ne répond pas.';
+    document.body.appendChild(el);
+  }
+  function onAuthFailure(err) {
+    var st = statusOf(err);
+    if (st !== 401 && st !== 403) return;
+    purgeSessionData();
+    showStaleBanner(false);
+    if (st === 401) {
+      if (!hasStoredSession()) return; // écran de connexion déjà affiché : rien à rediriger
+      try { if (typeof _clearStoredSession === 'function') _clearStoredSession(); } catch (_) {}
+      try { sessionStorage.removeItem('pt_active_env'); localStorage.removeItem('pt_active_session_token'); } catch (_) {}
+      try { location.reload(); } catch (_) {}
+      return;
+    }
+    showDenied();
+  }
+  window.ptHandleAuthFailure = onAuthFailure;
 
   function install() {
     var orig = window._apiPost;
@@ -3328,6 +3457,7 @@
       var p = Promise.resolve(orig.apply(self, args)).then(function (res) {
         var s = JSON.stringify(res === undefined ? null : res);
         store(key, s, g);
+        showStaleBanner(false);
         return s;
       });
       inflight.set(key, p);
@@ -3338,61 +3468,49 @@
     var wrapped = function (path, body) {
       var self = this;
       var args = arguments;
-      if (isNeutral(path, body)) return orig.apply(self, args);
       if (!isRead(path, body)) {
-        clearAll();
+        if (!isNeutral(path, body)) clearAll();
         var ret = orig.apply(self, args);
-        Promise.resolve(ret).then(clearAll).catch(clearAll); // le résultat rendu à l’appelant reste celui d’origine
+        // Le résultat rendu à l’appelant reste celui d’origine ; 401/403 purgent tout.
+        Promise.resolve(ret).then(function () { if (!isNeutral(path, body)) clearAll(); }).catch(function (err) {
+          if (!isNeutral(path, body)) clearAll();
+          onAuthFailure(err);
+        });
         return ret;
       }
       var key = keyFor(path, body);
-      if (!key) return orig.apply(self, args);
-      var pending = inflight.get(key);
-      var entry = cache.get(key);
-      var age = entry ? Date.now() - entry.at : Infinity;
-      if (entry && age < FRESH_MS) { stats.hits++; return Promise.resolve(parse(entry.s)); }
-      if (entry && age < STALE_MS) {
-        stats.stale++;
-        if (!pending) {
-          var before = entry.s;
-          fetchStore(key, self, args).then(function (s) { if (s !== before) scheduleRerender(); }, function () {});
-        }
-        return Promise.resolve(parse(entry.s));
+      if (!key) {
+        var direct = orig.apply(self, args);
+        Promise.resolve(direct).then(function () {}).catch(onAuthFailure);
+        return direct;
       }
+      var entry = cache.get(key);
+      if (entry && Date.now() - entry.at < FRESH_MS) { stats.hits++; return Promise.resolve(parse(entry.s)); }
+      var pending = inflight.get(key);
       if (pending) { stats.dedup++; return pending.then(parse); }
       stats.misses++;
-      return fetchStore(key, self, args).then(parse);
+      return fetchStore(key, self, args).then(parse, function (err) {
+        if (isAuthError(err)) { onAuthFailure(err); throw err; }
+        var old = cache.get(key);
+        if (isStaleAllowed(err) && old && Date.now() - old.at < STALE_MS) {
+          stats.stale++;
+          showStaleBanner(true);
+          return parse(old.s);
+        }
+        cache.delete(key);
+        throw err;
+      });
     };
     wrapped.__ptSwr = true;
     window._apiPost = wrapped;
     return true;
   }
 
-  function modalOpen() {
-    return !!document.querySelector('#db-create-modal, .modal.open, .modal-bg.open, [role="dialog"]:not([hidden])');
-  }
-  function scheduleRerender() {
-    if (rerenderTimer) return;
-    rerenderTimer = setTimeout(function () {
-      rerenderTimer = null;
-      if (lastInteract > navAt + 50 || modalOpen()) return;
-      var name = ROUTES[navPath];
-      var fn = name && window[name];
-      if (typeof fn !== 'function') return;
-      if (cleanPath(location.pathname) !== navPath) return;
-      try { if (typeof window.ptNavMarkDirty === 'function') window.ptNavMarkDirty('all'); } catch (_) {}
-      try { fn(); } catch (err) { try { console.warn('[PicoTrack] rafraîchissement', err); } catch (_) {} }
-    }, 60);
-  }
-
   function prefetch() {
+    var sc = scope();
+    if (!sc || prefetchedFor === sc || !hasStoredSession()) return;
     var env = currentEnv();
-    var fp = authFp() + '|' + env;
-    if (!env || prefetchedFor === fp) return;
-    var hasSession = false;
-    try { hasSession = typeof _readStoredSession === 'function' && !!(_readStoredSession() || {}).access_token; } catch (_) {}
-    if (!hasSession) return;
-    prefetchedFor = fp;
+    prefetchedFor = sc;
     var run = function () {
       var jobs = [];
       try { jobs.push(window._apiPost('/api/users', { action: 'summary', environment_code: env })); } catch (_) {}
@@ -3421,9 +3539,9 @@
     var orig = window.ptSyncUrl;
     if (typeof orig === 'function' && !orig.__ptSwr) {
       window.ptSyncUrl = function (path) {
-        navAt = Date.now();
         navPath = cleanPath(path);
-        checkEnv();
+        hideDenied();
+        checkScope();
         setTimeout(prefetch, 0);
         return orig.apply(this, arguments);
       };
@@ -3431,19 +3549,11 @@
     }
     var out = window.ptSignOut;
     if (typeof out === 'function' && !out.__ptSwr) {
-      window.ptSignOut = function () { clearAll(); prefetchedFor = ''; return out.apply(this, arguments); };
+      window.ptSignOut = function () { purgeSessionData(); lastScope = ''; return out.apply(this, arguments); };
       window.ptSignOut.__ptSwr = true;
     }
   }
 
-  if (typeof document !== 'undefined' && document.addEventListener) {
-    ['pointerdown', 'keydown'].forEach(function (ev) {
-      document.addEventListener(ev, function (e) {
-        if (e && e.target && e.target.closest && e.target.closest('#sb')) return;
-        lastInteract = Date.now();
-      }, true);
-    });
-  }
   install();
   wrapNav();
   if (typeof window.addEventListener === 'function') {
@@ -3451,6 +3561,7 @@
   }
   window.ptNavCache = {
     clear: clearAll,
+    purge: purgeSessionData,
     isRead: isRead,
     isNeutral: isNeutral,
     keyFor: keyFor,

@@ -435,7 +435,7 @@ self.addEventListener('fetch',event=>{
   assert.equal(sw.includes('cache.add'), false);
   assert.equal(sw.includes('public.html'), false);
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
-  assert.match(html, /offline-sync\.js\?v=20261008s/);
+  assert.match(html, /offline-sync\.js\?v=20261008t/);
   assert.equal((html.match(/app\.secured\.js\?v=20261008t/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261008t/);
   assert.match(html, /pad-device\.js\?v=20261008a/);

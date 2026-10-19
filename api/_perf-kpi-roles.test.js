@@ -7,27 +7,55 @@ const vm = require('node:vm');
 const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
 const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
 
-function sandbox(apiImpl) {
-  const store = { pt_active_session_token: 'pico-1' };
-  const session = { access_token: 'tok-A' };
+function storage(init) {
+  const data = Object.assign({}, init || {});
+  return {
+    data,
+    get length() { return Object.keys(data).length; },
+    key: i => Object.keys(data)[i] || null,
+    getItem: k => (k in data ? data[k] : null),
+    setItem: (k, v) => { data[k] = String(v); },
+    removeItem: k => { delete data[k]; }
+  };
+}
+
+function sandbox(apiImpl, opts = {}) {
+  const clock = { t: 1_000_000 };
+  class FakeDate extends Date { static now() { return clock.t; } }
+  const local = storage({ pt_active_session_token: 'pico-1', pt_mail_history: '[1]', pt_pad: '{"keep":1}' });
+  const sess = storage({ pt_active_env: 'GIT', pt_cache_GIT: '{"forms":[1]}' });
+  let session = { access_token: 'tok-A' };
   const calls = [];
+  const flags = { reloads: 0, cleared: 0 };
+  const main = { classList: { set: new Set(), add(c) { this.set.add(c); }, remove(c) { this.set.delete(c); }, contains(c) { return this.set.has(c); } }, insertBefore(el) { nodes[el.id] = el; } };
+  const nodes = {};
+  const FORMS_DATA = [{ id: 'f1', nom: 'Secret A' }];
   const ctx = {
-    console, Promise, JSON, Map, Date, Math, Object, Array, String, Number, isFinite, isNaN,
-    setTimeout(fn) { return 0; }, clearTimeout() {},
+    console, Promise, JSON, Map, Set, Math, Object, Array, String, Number, isFinite, isNaN, Error, TypeError,
+    Date: FakeDate,
+    setTimeout() { return 0; }, clearTimeout() {},
     document: {
-      readyState: 'complete', addEventListener() {}, getElementById() { return null; },
+      readyState: 'complete', addEventListener() {},
+      getElementById(id) { return id === 'main' ? main : (nodes[id] || null); },
       querySelector() { return null; }, querySelectorAll() { return []; },
-      createElement() { return { style: {}, innerHTML: '', setAttribute() {}, appendChild() {} }; },
-      body: { appendChild() {} }
+      createElement() { const el = { style: {}, setAttribute() {}, appendChild() {}, remove() { delete nodes[el.id]; } }; return el; },
+      head: { appendChild(el) { nodes[el.id] = el; } },
+      body: { appendChild(el) { nodes[el.id] = el; } }
     },
-    location: { pathname: '/dashboard' },
-    localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: k => { delete store[k]; } },
-    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    location: { pathname: '/dashboard', reload() { flags.reloads++; } },
+    localStorage: local,
+    sessionStorage: sess,
     toast() {}, addEventListener() {}, removeEventListener() {},
     _readStoredSession: () => session,
+    _clearStoredSession: () => { flags.cleared++; session = null; },
     _getEnvironmentCode: () => ctx.__env,
     __env: 'GIT',
-    _apiPost(p, body) { calls.push([p, JSON.parse(JSON.stringify(body || {}))]); return Promise.resolve(apiImpl(p, body, calls.length)); },
+    FORMS_DATA,
+    PT_CURRENT_USER: opts.user || { id: 'user-A', role: 'admin', roles: [], license_type: 'supervision', environment_code: 'GIT', active: true },
+    _apiPost(p, body) {
+      calls.push([p, JSON.parse(JSON.stringify(body || {}))]);
+      try { return Promise.resolve(apiImpl(p, body, calls.length, ctx)); } catch (e) { return Promise.reject(e); }
+    },
     ptSignOut() { return 'out'; },
     ptSyncUrl() {}
   };
@@ -35,10 +63,13 @@ function sandbox(apiImpl) {
   vm.createContext(ctx);
   vm.runInContext(overlay, ctx, { filename: 'core-supervision.js' });
   calls.length = 0; // appels d’amorçage de l’overlay
-  return { ctx, calls, session, store };
+  return { ctx, calls, clock, local, sess, flags, nodes, main, FORMS_DATA, getSession: () => session };
 }
 
-test('nav cache : lecture servie depuis la mémoire, appels en double fusionnés', async () => {
+const httpError = status => Object.assign(new Error('HTTP ' + status), { status });
+const tick = () => new Promise(r => setImmediate(r));
+
+test('nav cache : lecture fraîche servie depuis la mémoire, appels en double fusionnés', async () => {
   const { ctx, calls } = sandbox((p, b, n) => [{ id: n }]);
   const body = { action: 'list', entity: 'forms' };
   const [a, b] = await Promise.all([ctx._apiPost('/api/records', body), ctx._apiPost('/api/records', body)]);
@@ -50,24 +81,117 @@ test('nav cache : lecture servie depuis la mémoire, appels en double fusionnés
   assert.equal(c[0].id, 1);
 });
 
-test('nav cache : écriture, changement de jeton, d’environnement et déconnexion isolent le cache', async () => {
-  const { ctx, calls, session, store } = sandbox((p, b, n) => ({ n }));
+test('nav cache : au-delà de 10 s, on relit le serveur (aucune donnée périmée servie d’office)', async () => {
+  const { ctx, calls, clock } = sandbox((p, b, n) => ({ n }));
+  const body = { action: 'summary', environment_code: 'GIT' };
+  await ctx._apiPost('/api/users', body);
+  clock.t += 11_000;
+  const r = await ctx._apiPost('/api/users', body);
+  assert.equal(calls.length, 2);
+  assert.equal(r.n, 2);
+});
+
+test('droit retiré puis 403 : tout le cache est vidé, l’élément disparaît et l’écran « accès refusé » remplace le contenu', async () => {
+  let deny = false;
+  const { ctx, calls, clock, sess, local, main, nodes, FORMS_DATA } = sandbox((p, b, n) => { if (deny) throw httpError(403); return [{ id: 'f1', nom: 'Secret A', n }]; });
+  const body = { action: 'list', entity: 'forms' };
+  await ctx._apiPost('/api/records', body);
+  assert.equal(ctx.ptNavCache.size(), 1);
+  deny = true;
+  clock.t += 11_000;
+  await assert.rejects(ctx._apiPost('/api/records', body), e => e.status === 403);
+  await tick();
+  assert.equal(ctx.ptNavCache.size(), 0, 'cache mémoire vidé');
+  assert.equal(FORMS_DATA.length, 0, 'données en mémoire du bundle vidées');
+  assert.equal(sess.getItem('pt_cache_GIT'), null, 'cache sessionStorage vidé');
+  assert.equal(local.getItem('pt_mail_history'), null, 'données localStorage vidées');
+  assert.equal(local.getItem('pt_pad'), '{"keep":1}', 'configuration PAD conservée');
+  assert.ok(main.classList.contains('pt-denied') && nodes['pt-access-denied'], 'écran accès refusé');
+  await assert.rejects(ctx._apiPost('/api/records', body), e => e.status === 403);
+  assert.equal(calls.length, 3, 'l’entrée n’est plus jamais servie : chaque lecture repart au serveur');
+  ctx.ptSyncUrl('/planning');
+  assert.equal(main.classList.contains('pt-denied'), false, 'une nouvelle rubrique retire l’écran');
+});
+
+test('un 403 sur une écriture ou une action quelconque purge aussi le cache', async () => {
+  const { ctx } = sandbox((p, b) => { if (b.action === 'save') throw httpError(403); return [{ id: 1 }]; });
+  await ctx._apiPost('/api/records', { action: 'list', entity: 'forms' });
+  await assert.rejects(ctx._apiPost('/api/records', { action: 'save', entity: 'forms', record: {} }));
+  await tick();
+  assert.equal(ctx.ptNavCache.size(), 0);
+});
+
+test('un 401 renvoie à la connexion avec un cache vide, sans toucher à la file hors ligne', async () => {
+  let expired = false;
+  const { ctx, flags, sess, local, getSession } = sandbox(() => { if (expired) throw httpError(401); return { ok: 1 }; });
+  await ctx._apiPost('/api/users', { action: 'summary', environment_code: 'GIT' });
+  expired = true;
+  await assert.rejects(ctx._apiPost('/api/records', { action: 'list', entity: 'forms' }), e => e.status === 401);
+  await tick();
+  assert.equal(ctx.ptNavCache.size(), 0);
+  assert.equal(flags.cleared, 1, 'session locale effacée');
+  assert.equal(getSession(), null);
+  assert.equal(flags.reloads, 1, 'retour à l’écran de connexion');
+  assert.equal(sess.getItem('pt_active_env'), null);
+  assert.equal(sess.getItem('pt_cache_GIT'), null);
+  assert.equal(local.getItem('pt_active_session_token'), null);
+  assert.equal(/indexedDB/.test(overlay.slice(overlay.indexOf('Vitesse de navigation'))), false, 'la purge ne touche jamais IndexedDB (file hors ligne)');
+});
+
+test('changement de compte ou de rôle : aucune donnée du compte précédent ne fuit', async () => {
+  const { ctx, calls } = sandbox((p, b, n, c) => [{ owner: (c.PT_CURRENT_USER || {}).id, role: (c.PT_CURRENT_USER || {}).role, n }]);
+  const body = { action: 'list', entity: 'forms' };
+  const a = await ctx._apiPost('/api/records', body);
+  assert.equal(a[0].owner, 'user-A');
+  ctx.PT_CURRENT_USER = { id: 'user-B', role: 'supervision_user', roles: [], license_type: 'supervision', environment_code: 'GIT' };
+  const b = await ctx._apiPost('/api/records', body);
+  assert.equal(calls.length, 2, 'autre compte = nouvelle lecture serveur');
+  assert.equal(b[0].owner, 'user-B');
+  ctx.PT_CURRENT_USER = Object.assign({}, ctx.PT_CURRENT_USER, { role: 'admin' });
+  const c = await ctx._apiPost('/api/records', body);
+  assert.equal(calls.length, 3, 'rôle changé = version des droits changée');
+  assert.equal(c[0].role, 'admin');
+  ctx.__env = 'DEMO';
+  await ctx._apiPost('/api/records', body);
+  assert.equal(calls.length, 4, 'changement d’environnement');
+  ctx.PT_CURRENT_USER = null;
+  await ctx._apiPost('/api/records', body);
+  await ctx._apiPost('/api/records', body);
+  assert.equal(calls.length, 6, 'sans profil chargé, rien n’est mis en cache');
+});
+
+test('écriture et déconnexion vident le cache', async () => {
+  const { ctx, calls } = sandbox((p, b, n) => ({ n }));
   const body = { action: 'summary', environment_code: 'GIT' };
   await ctx._apiPost('/api/users', body);
   await ctx._apiPost('/api/records', { action: 'save', entity: 'forms', record: {} });
   await ctx._apiPost('/api/users', body);
   assert.equal(calls.length, 3, 'une écriture vide le cache');
-  session.access_token = 'tok-B';
-  await ctx._apiPost('/api/users', body);
-  assert.equal(calls.length, 4, 'un autre jeton ne réutilise jamais le cache');
-  store.pt_active_session_token = 'pico-2';
-  await ctx._apiPost('/api/users', body);
-  assert.equal(calls.length, 5);
-  ctx.__env = 'DEMO';
-  await ctx._apiPost('/api/users', body);
-  assert.equal(calls.length, 6, 'changement d’environnement');
   ctx.ptSignOut();
   assert.equal(ctx.ptNavCache.size(), 0, 'déconnexion = cache vide');
+});
+
+test('données périmées seulement sur erreur réseau ou 503, avec bandeau ; autre erreur = entrée retirée', async () => {
+  let mode = 'ok';
+  const { ctx, clock, nodes } = sandbox((p, b, n) => {
+    if (mode === 'net') throw new TypeError('Failed to fetch');
+    if (mode === '503') throw httpError(503);
+    if (mode === '500') throw httpError(500);
+    return { n };
+  });
+  const body = { action: 'summary', environment_code: 'GIT' };
+  await ctx._apiPost('/api/users', body);
+  clock.t += 11_000; mode = 'net';
+  assert.deepEqual(await ctx._apiPost('/api/users', body), { n: 1 });
+  assert.ok(nodes['pt-stale-banner'], 'bandeau « données possiblement périmées »');
+  mode = '503';
+  assert.deepEqual(await ctx._apiPost('/api/users', body), { n: 1 });
+  mode = 'ok';
+  await ctx._apiPost('/api/users', body);
+  assert.equal(nodes['pt-stale-banner'], undefined, 'bandeau retiré au retour du serveur');
+  clock.t += 11_000; mode = '500';
+  await assert.rejects(ctx._apiPost('/api/users', body));
+  assert.equal(ctx.ptNavCache.size(), 0, 'erreur non réseau : entrée retirée');
 });
 
 test('nav cache : actions neutres et inconnues ne sont pas mises en cache', async () => {
@@ -80,6 +204,13 @@ test('nav cache : actions neutres et inconnues ne sont pas mises en cache', asyn
   assert.equal(calls.length, 2);
 });
 
+test('les erreurs /api portent leur statut HTTP et la file hors ligne vide le cache après rejeu', () => {
+  assert.match(bundle, /throw Object\.assign\(new Error\(a\?\.error\|\|a\?\.message\|\|`\$\{e\} \$\{i\.status\}`\),\{status:i\.status\}\)/);
+  const offline = fs.readFileSync(path.join(__dirname, '../assets/offline-sync.js'), 'utf8');
+  assert.match(offline, /win\.ptNavCache\.clear\(\)/);
+  assert.match(offline, /win\.ptHandleAuthFailure\(\{ status: response\.status \}\)/);
+});
+
 test('KPI Centre d’exécution : calculés sur les données, « — » sinon', () => {
   const { ctx } = sandbox(() => null);
   const now = new Date(2026, 9, 19, 15, 0).getTime();
@@ -90,13 +221,14 @@ test('KPI Centre d’exécution : calculés sur les données, « — » sinon', 
   assert.equal(empty.servicesSub, '\u2014', 'pas de date de création = pas de « +N ce mois » inventé');
   const inst = [
     { serviceId: 2, currentStatusId: 's1', createdAt: new Date(2026, 9, 19, 9).toISOString() },
-    { serviceId: 2, currentStatusId: 'done', createdAt: new Date(2026, 9, 18, 8).toISOString(), updatedAt: new Date(2026, 9, 18, 14).toISOString() },
-    { serviceId: 2, currentStatusId: 'done', createdAt: new Date(2026, 9, 17, 8).toISOString(), updatedAt: new Date(2026, 9, 17, 18).toISOString() }
+    { serviceId: 2, currentStatusId: 'done', createdAt: new Date(2026, 9, 18, 8).toISOString(), closedAt: new Date(2026, 9, 18, 14).toISOString() },
+    { serviceId: 2, currentStatusId: 'done', createdAt: new Date(2026, 9, 16, 8).toISOString(), updatedAt: new Date(2026, 9, 18, 9).toISOString() },
+    { serviceId: 2, currentStatusId: 'done', createdAt: new Date(2026, 9, 17, 8).toISOString(), closed_at: new Date(2026, 9, 17, 18).toISOString() }
   ];
   const k = ctx.ptExecKpis([svc], inst, [svc], now);
   assert.equal(k.activeSub, '+1 aujourd\u2019hui');
   assert.equal(k.avgValue, '8h');
-  assert.equal(k.avgSub, 'sur 2 dossiers clôturés');
+  assert.equal(k.avgSub, 'sur 2 dossiers clôturés', 'updatedAt n’est jamais pris pour une clôture');
 });
 
 test('Dashboard : dernière activité réelle', () => {
