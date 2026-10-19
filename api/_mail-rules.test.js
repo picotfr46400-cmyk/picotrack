@@ -2378,7 +2378,7 @@ test('l’overlay n’envoie plus depuis le navigateur et le cache supervision e
   const app = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
   assert.equal((app.match(/mailStatus === 'queued' \|\| mailStatus === 'sent'/g) || []).length, 2);
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/core-supervision\.js\?v=20261008w/g) || []).length, 1);
+  assert.equal((html.match(/core-supervision\.js\?v=20261008y/g) || []).length, 1);
   assert.equal((html.match(/app\.secured\.js\?v=20261008x/g) || []).length, 2);
   assert.match(overlay, /Envoi incertain/);
   const recordsSrc = fs.readFileSync(path.join(__dirname, 'records.js'), 'utf8');
