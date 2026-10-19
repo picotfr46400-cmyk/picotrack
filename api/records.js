@@ -1332,7 +1332,12 @@ async function handleSave(req, body) {
     if (locked.some(key => Object.prototype.hasOwnProperty.call(source, key))) {
       throw Object.assign(new Error('Capacité et champs de réservation non modifiables.'), { status: 403 });
     }
-    if (!body.id && !source.id) {
+    const recordId = source.id == null ? '' : String(source.id).trim();
+    if (recordId && recordId !== String(body.id || '').trim()) {
+      throw Object.assign(new Error('Identifiant de rendez-vous : body.id seulement (record.id absent ou identique).'), { status: 400 });
+    }
+    // L'id réellement utilisé est body.id : un record.id seul (sans body.id) serait une création déguisée.
+    if (!String(body.id || '').trim()) {
       throw Object.assign(new Error('Réservation de créneau : passer par /api/appointments.'), { status: 403 });
     }
   }
@@ -1427,6 +1432,7 @@ async function handleSave(req, body) {
     let formId = record.form_id || source?.formId;
     if (id) {
       const existing = await mustRead(req, 'appointments', id, env);
+      if (!existing) throw Object.assign(new Error('Rendez-vous introuvable.'), { status: 404 });
       if (existing) {
         await assertFormWritable(req, profile, catalog, services, existing.form_id, env);
         if (formId && String(formId) !== String(existing.form_id || '')) {
@@ -2212,6 +2218,10 @@ async function handler(req, res) {
     }
     return;
   } catch (err) {
+    // Garde-fou SQL de capacité (PT409, replanification vers un créneau plein) : 409 lisible, jamais le message SQL.
+    if (/PT409|Créneau complet/i.test(String(err && err.message || ''))) {
+      return json(res, 409, { error: 'Créneau complet : choisissez un autre créneau.', code: 'slot_full' });
+    }
     return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}) });
   }
 }

@@ -110,5 +110,47 @@ const countSlot = (date, time) => Number(psql(`select count(*) from public.appoi
   assert.equal(JSON.parse(psql(book(record(Object.assign({ response_id: 7 }, slot)), 'user-a', null))).ok, true);
   assert.equal(JSON.parse(psql(book(record(Object.assign({ environment_code: 'EFC', form_id: 4000 }, slot)), 'user-a', null))).ok, true);
   assert.equal(JSON.parse(psql(book(record(Object.assign({ environment_code: 'EFC', form_id: 4000 }, slot)), 'user-a', null))).code, 'slot_full', 'capacité 1 lue dans le formulaire EFC');
+
+  // Annuler puis réserver avec la même clé (même périmètre) : vraie nouvelle ligne, jamais un faux OK.
+  const rebook = JSON.parse(psql(book(record(slot), 'user-a', key)));
+  assert.equal(rebook.ok, true, JSON.stringify(rebook));
+  assert.equal(rebook.duplicate, false);
+  assert.notEqual(rebook.row.id, first.row.id);
+  assert.equal(psql(`select status from public.appointments where id = ${q(rebook.row.id)};`), 'confirmed');
+  assert.equal(psql(`select count(*) from public.appointments where idempotency_key = ${q(key)};`), '1', 'clé portée par la nouvelle ligne seule');
+  assert.equal(psql(`select coalesce(idempotency_key, '') from public.appointments where id = ${q(first.row.id)};`), '');
+  assert.equal(countSlot('2026-10-20', '15:00:00'), 2);
+  const replayNew = JSON.parse(psql(book(record(slot), 'user-a', key)));
+  assert.equal(replayNew.duplicate, true);
+  assert.equal(replayNew.row.id, rebook.row.id);
+  // Annulé puis rejoué dans un créneau désormais plein : 409, aucune ligne.
+  psql(`update public.appointments set status = 'cancelled' where id = ${q(rebook.row.id)};`);
+  assert.equal(JSON.parse(psql(book(record(Object.assign({ response_id: 8 }, slot)), 'user-a', null))).ok, true);
+  const rebookFull = JSON.parse(psql(book(record(slot), 'user-a', key)));
+  assert.equal(rebookFull.ok, false);
+  assert.equal(rebookFull.code, 'slot_full');
+  assert.equal(countSlot('2026-10-20', '15:00:00'), 2);
+  // Annulé, autre compte : conflit, sans libération ni donnée.
+  const k2 = 'c0ffee00-0000-4000-8000-000000000002';
+  const own = JSON.parse(psql(book(record({ start_time: '21:00:00', end_time: '21:30:00' }), 'user-a', k2)));
+  psql(`update public.appointments set status = 'cancelled' where id = ${q(own.row.id)};`);
+  assert.deepEqual(JSON.parse(psql(book(record({ start_time: '21:00:00', end_time: '21:30:00' }), 'user-b', k2))), { ok: false, code: 'idempotency_conflict' });
+  console.log('Annuler puis réserver (même clé) : nouvelle ligne réelle ; créneau plein : 409 ; autre compte : conflit');
+
+  // Environnement en casse différente : compté dans le même créneau.
+  psql("insert into public.appointments (environment_code, form_id, field_id, response_id, date, start_time, end_time, status) values ('demo', 4, '1792401253084', 900, '2026-10-21', '09:00:00', '09:30:00', 'confirmed'), (' Demo ', 4, '1792401253084', 901, '2026-10-21', '09:00:00', '09:30:00', 'confirmed');");
+  assert.equal(JSON.parse(psql(book(record({ date: '2026-10-21', start_time: '09:00:00', end_time: '09:30:00' }), 'user-a', null))).code, 'slot_full');
+  assert.throws(() => psql("insert into public.appointments (environment_code, form_id, field_id, response_id, date, start_time, end_time, status) values ('DEMO', 4, '1792401253084', 902, '2026-10-21', '09:00:00', '09:30:00', 'confirmed');"), /Créneau complet/);
+  console.log('Casse de environment_code : demo / Demo / DEMO comptés ensemble');
+
+  // 3 replanifications simultanées vers un créneau de 2 places : exactement 2 acceptées.
+  const moved = [];
+  for (const t of ['18:00:00', '18:30:00', '19:00:00']) moved.push(JSON.parse(psql(book(record({ date: '2026-10-22', start_time: t, end_time: t }), 'user-a', null))).row.id);
+  const moves = await Promise.all(moved.map(id => session(`begin; update public.appointments set start_time = '20:00:00', end_time = '20:30:00' where id = ${q(id)}; select pg_sleep(0.3); commit;`)));
+  const movedOk = moves.filter(r => r.ok).length;
+  console.log(`Replanification : 3 simultanées vers 2 places -> ${movedOk} OK, ${moves.length - movedOk} refusées`);
+  assert.equal(movedOk, 2, JSON.stringify(moves));
+  assert.ok(moves.filter(r => !r.ok).every(r => /Créneau complet/.test(r.err)));
+  assert.equal(psql("select count(*) from public.appointments where date = '2026-10-22' and start_time = '20:00:00';"), '2');
   console.log('appointments-booking-pg : OK');
 })().catch(err => { console.error(err); process.exit(1); });

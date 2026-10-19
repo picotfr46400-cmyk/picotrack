@@ -33,8 +33,9 @@ function fakeBook({ p_record: rec, p_created_by: who, p_idempotency_key: key }) 
   if (key) {
     const dup = state.appointments.find(r => r.environment_code === envc && r.idempotency_key === key);
     if (dup) {
-      if (String(dup.form_id) === String(rec.form_id) && dup.created_by === who) return Promise.resolve({ ok: true, duplicate: true, row: { id: dup.id, status: dup.status } });
-      return Promise.resolve({ ok: false, code: 'idempotency_conflict' });
+      if (String(dup.form_id) !== String(rec.form_id) || dup.created_by !== who) return Promise.resolve({ ok: false, code: 'idempotency_conflict' });
+      if (active(dup)) return Promise.resolve({ ok: true, duplicate: true, row: { id: dup.id, status: dup.status } });
+      dup.idempotency_key = null; // annulé : clé libérée, vraie nouvelle réservation (comme la migration 200000)
     }
   }
   const used = state.appointments.filter(r => r.environment_code === envc && String(r.form_id) === String(rec.form_id) && r.field_id === rec.field_id && r.date === rec.date && r.start_time === rec.start_time && active(r)).length;
@@ -163,6 +164,18 @@ test('clé rejouée depuis un autre formulaire ET un autre compte : 409 généri
     });
   }
   assert.equal(state.appointments.length, 1);
+});
+
+test('annuler puis réserver avec la même clé : nouvelle ligne réelle, jamais un faux OK', async () => {
+  world();
+  const first = await appts.handleCreate(req(), 'GIT', booking({ idempotency_key: 'k-2' }), admin);
+  state.appointments[0].status = 'cancelled';
+  const again = await appts.handleCreate(req(), 'GIT', booking({ idempotency_key: 'k-2' }), admin);
+  assert.equal(again.duplicate, false);
+  assert.notEqual(again.row.id, first.row.id);
+  assert.equal(state.appointments.filter(active).length, 1);
+  const sql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/20261019200000_appointment_rebook_after_cancel.sql'), 'utf8');
+  assert.match(sql, /if public\.picotrack_appointment_is_active\(existing\.status\) then/);
 });
 
 test('capacité forgée puis 3 réservations sur capacité 2 : exactement 2 acceptées', async () => {
