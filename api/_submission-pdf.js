@@ -26,7 +26,7 @@ const MAX_DIMENSION = 4096;
 const MAX_PIXELS = 16_000_000;
 const MAX_DECODED_BYTES = 64 * 1024 * 1024;
 const OMITTED_IMAGE = 'image non incluse';
-const SKIP_TYPES = new Set(['separator', 'sep', 'image', 'titre', 'title', 'groupe', 'group', 'son', 'sound', 'video']);
+const SKIP_TYPES = new Set(['separator', 'sep', 'image', 'titre', 'title', 'groupe', 'group', 'son', 'sound', 'video', 'soustitre', 'paragraphe', 'html']);
 
 const WIN_EXTRA = new Map([
   [0x20AC, 0x80], [0x201A, 0x82], [0x0192, 0x83], [0x201E, 0x84], [0x2026, 0x85],
@@ -509,6 +509,7 @@ function collectImages(value, out, budget) {
     const direct = value.dataUrl || value.data_url || value.url || '';
     if (typeof direct === 'string') collectImages(direct, out, budget);
     if (Array.isArray(value.files)) value.files.forEach((item) => collectImages(item, out, budget));
+    if (value.annotated && value.original && typeof value.original === 'object') collectImages(value.original, out, budget);
   }
 }
 
@@ -597,6 +598,12 @@ function formatSubmissionDocument(input) {
   const used = new Set();
   const rows = [];
   const budget = createImageBudget();
+  const groupNames = {};
+  fields.forEach((field) => {
+    if (field && typeof field === 'object' && ['groupe', 'group'].includes(String(field.type || '').toLowerCase()) && field.id != null) {
+      groupNames[String(field.id)] = clip(field.nom || field.label || 'Groupe', 80) || 'Groupe';
+    }
+  });
   fields.forEach((field) => {
     if (!field || typeof field !== 'object') return;
     const type = String(field.type || '').toLowerCase();
@@ -606,8 +613,8 @@ function formatSubmissionDocument(input) {
     const raw = maskPdfAnswer(field, type, id ? values[id] : undefined);
     const images = [];
     rows.push({
-      label: clip(field.nom || field.label || field.name || id || 'Champ', 160) || 'Champ',
-      value: formatAnswer(type, raw, images, budget),
+      label: clip((field.groupId != null && groupNames[String(field.groupId)] ? groupNames[String(field.groupId)] + ' › ' : '') + (field.nom || field.label || field.name || id || 'Champ'), 160) || 'Champ',
+      value: formatAnswer(type, raw, images, budget) + (raw && typeof raw === 'object' && raw.annotated ? ' (photo annotée + originale)' : ''),
       images
     });
   });
@@ -621,6 +628,19 @@ function formatSubmissionDocument(input) {
       images
     });
   });
+  const geo = values._geo;
+  if (geo && typeof geo === 'object') {
+    const lat = Number(geo.lat);
+    const lng = Number(geo.lng);
+    const ok = Number.isFinite(lat) && Number.isFinite(lng);
+    rows.push({
+      label: 'Position GPS',
+      value: ok
+        ? `${lat.toFixed(6)}, ${lng.toFixed(6)}${Number.isFinite(Number(geo.accuracy)) ? ` (± ${Math.round(Number(geo.accuracy))} m)` : ''} · https://www.openstreetmap.org/?mlat=${lat.toFixed(6)}&mlon=${lng.toFixed(6)}#map=18/${lat.toFixed(6)}/${lng.toFixed(6)}`
+        : 'Position non disponible',
+      images: []
+    });
+  }
   const environmentCode = clip(source.environmentCode, 80) || '—';
   return {
     environmentName: clip(source.environmentName || source.environmentCode, 80) || environmentCode,

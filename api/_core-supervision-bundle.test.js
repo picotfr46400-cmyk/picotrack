@@ -22,7 +22,7 @@ test('file tablette : un refus 403 ou 404 sort de la file avec un message', () =
 
 test('cache-buster et overlay core-supervision sont branchés', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.equal((html.match(/app\.secured\.js\?v=20261008x/g) || []).length, 2);
+  assert.equal((html.match(/app\.secured\.js\?v=20261008z/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261008y/);
   for (const asset of ["qrcode.js", "labels-core.js", "labels.js"]) assert.match(html, new RegExp(asset.replace(".", "\\.") + "\\?v=20261019a"));
   assert.match(html, /pad-device\.js\?v=20261008a/);
