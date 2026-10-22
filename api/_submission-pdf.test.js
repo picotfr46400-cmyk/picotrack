@@ -1284,3 +1284,13 @@ test('le détail supervision expose Exporter en PDF via /api/records', async () 
   assert.equal(link.download, 'saisie-sub-1.pdf');
   assert.equal(toasts.some((item) => item.kind === 's'), true);
 });
+
+test('PDF : unité des champs nombre', () => {
+  const doc = pdf.formatSubmissionDocument({
+    fields: [{ id: 'p', nom: 'Poids', type: 'number', unite: 'kg' }, { id: 'q', nom: 'Qté', type: 'number' }, { id: 'v', nom: 'Vide', type: 'number', unite: 'kg' }],
+    values: { p: 12.5, q: 3 }
+  });
+  assert.equal(doc.fields.find(f => f.label === 'Poids').value, '12.5 kg');
+  assert.equal(doc.fields.find(f => f.label === 'Qté').value, '3');
+  assert.equal(doc.fields.find(f => f.label === 'Vide').value, '—');
+});

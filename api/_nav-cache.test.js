@@ -11,7 +11,7 @@ const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
 const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
 
 function cacheBusters(html, fileName) {
-  const re = new RegExp(fileName.replace(/\./g, '\\.') + '\\?v=([A-Za-z0-9]+)', 'g');
+  const re = new RegExp(fileName.replace(/\./g, '\\.') + '\\?v=([A-Za-z0-9-]+)', 'g');
   return [...String(html).matchAll(re)].map(match => match[1]);
 }
 
@@ -46,10 +46,9 @@ function branchRevision(name) {
   return `origin/${branch}`;
 }
 
-function letterOf(token) {
-  const match = String(token || '').match(/([a-z])$/i);
-  return match ? match[1].toLowerCase() : '';
-}
+const SERVED = JSON.parse(fs.readFileSync(path.join(__dirname, '../cache-keys-served.json'), 'utf8')).keys;
+const SERVED_SET = new Set(SERVED);
+const KEY_FORMAT = /^\d{8}-[1-9]\d*$/;
 
 function historicalBusters(rev, fileName) {
   const log = execFileSync('git', ['log', rev, '-p', '--pretty=format:', '--', 'index.html'], {
@@ -58,7 +57,7 @@ function historicalBusters(rev, fileName) {
     maxBuffer: 32 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe']
   });
-  const re = new RegExp(fileName.replace(/\./g, '\\.') + '\\?v=([A-Za-z0-9]+)', 'g');
+  const re = new RegExp(fileName.replace(/\./g, '\\.') + '\\?v=([A-Za-z0-9-]+)', 'g');
   const found = new Set();
   for (const match of log.matchAll(re)) found.add(match[1]);
   for (const token of cacheBusters(gitShow(rev, 'index.html'), fileName)) found.add(token);
@@ -87,30 +86,22 @@ function fileAt(rev, file) {
 
 function assertFreshCache(revs, fileName, filePath) {
   const currentFile = fs.readFileSync(path.join(__dirname, '..', filePath), 'utf8');
-  const currentHtml = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  const current = cacheBusters(currentHtml, fileName);
+  const current = cacheBusters(html, fileName);
   assert.equal(new Set(current).size, 1, fileName);
+  const token = current[0];
   for (const rev of revs) {
     const baseFile = fileAt(rev, filePath);
-    const token = current[0];
-    const history = historicalBusters(rev, fileName);
-    if (baseFile == null) {
-      assert.ok(token, fileName);
-      assert.equal(history.has(token), false, `${fileName} réutilise ${token} (${rev})`);
-      continue;
-    }
-    const base = cacheBusters(gitShow(rev, 'index.html'), fileName);
     if (baseFile === currentFile) {
-      assert.deepEqual(current, base, `${fileName} inchangé sur ${rev}`);
+      assert.deepEqual(current, cacheBusters(gitShow(rev, 'index.html'), fileName), `${fileName} inchangé sur ${rev}`);
       continue;
     }
-    assert.equal(history.has(token), false, `${fileName} réutilise ${token} (${rev})`);
-    const highest = [...history].map(letterOf).filter(Boolean).sort().at(-1);
-    assert.equal(letterOf(token) > highest, true, `${fileName} ${token} doit dépasser ${highest} (${rev})`);
+    assert.match(token, KEY_FORMAT, `${fileName} : clé ${token} au format AAAAMMJJ-N`);
+    assert.equal(SERVED_SET.has(token), false, `${fileName} : ${token} déjà servie (cache-keys-served.json)`);
+    assert.equal(historicalBusters(rev, fileName).has(token), false, `${fileName} réutilise ${token} (${rev})`);
   }
 }
 
-test('cache-buster : une lettre neuve, au-dessus de l’historique de chaque branche déployée', () => {
+test('cache-buster : clé AAAAMMJJ-N absente du registre des clés servies', () => {
   const branches = deployBranches();
   assert.deepEqual(branches, ['main', 'v2']);
   const revs = branches.map(branchRevision);
@@ -118,7 +109,20 @@ test('cache-buster : une lettre neuve, au-dessus de l’historique de chaque bra
   assertFreshCache(revs, 'app.secured.js', 'assets/app.secured.js');
   assertFreshCache(revs, 'core-supervision.js', 'assets/core-supervision.js');
   assertFreshCache(revs, 'offline-sync.js', 'assets/offline-sync.js');
+  assertFreshCache(revs, 'qrcode.js', 'assets/qrcode.js');
+  assertFreshCache(revs, 'labels-core.js', 'assets/labels-core.js');
+  assertFreshCache(revs, 'labels.js', 'assets/labels.js');
   assertFreshCache(revs, 'pad-device.js', 'pad-device.js');
+});
+
+test('registre des clés servies : trié, sans doublon, et contient tout ce que sert main (prod)', () => {
+  assert.equal(SERVED.length, SERVED_SET.size, 'doublons');
+  assert.deepEqual([...SERVED].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })), SERVED);
+  const main = branchRevision('main');
+  const prodKeys = [...gitShow(main, 'index.html').matchAll(/\?v=([0-9][A-Za-z0-9-]*)/g)].map(m => m[1]);
+  for (const key of prodKeys) assert.ok(SERVED_SET.has(key), `${key} servie par main mais absente de cache-keys-served.json`);
+  const { extract } = require('../scripts/record-served-keys.js');
+  assert.deepEqual(extract('<script src="/a.js?v=20261022-1"></script>'), ['20261022-1']);
 });
 
 test('previews Vercel : le shell n’est pas figé, les assets versionnés restent immuables', () => {
@@ -137,11 +141,11 @@ test('previews Vercel : le shell n’est pas figé, les assets versionnés reste
   assert.match(csp && csp.value || '', /https:\/\/\*\.vercel\.app/);
 });
 
-test('index.html : Babel absent, React conservé, cache-buster 20261008z sur le bundle modifié', () => {
+test('index.html : Babel absent, React conservé, cache-buster 20261022-1 sur le bundle modifié', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008z/g) || []).length, 2);
+  assert.equal((html.match(/app\.secured\.js\?v=20261022-1/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261008y/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);
