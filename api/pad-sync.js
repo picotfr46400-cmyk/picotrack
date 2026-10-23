@@ -437,7 +437,7 @@ async function storeStepFiles(req, environmentCode, stepKey, files) {
   return stored;
 }
 
-async function applyWorkflowStep(req, environmentCode, payload, key, actor) {
+async function applyWorkflowStep(req, environmentCode, payload, key, actor, channel) {
   armRequestClock(req);
   const instanceId = String(payload && (payload.instanceId || payload.instance_id) || (payload && payload.instance && payload.instance.id) || '').trim();
   if (!instanceId) throw refusalError(400, 'Dossier manquant pour cette étape.');
@@ -451,8 +451,10 @@ async function applyWorkflowStep(req, environmentCode, payload, key, actor) {
     const stepService = await loadById(req, 'services', environmentCode, opened.service_id, 'id,form_id');
     if (!stepService) throw refusalError(404, 'Service introuvable.');
     const previous = opened.form_data && typeof opened.form_data === 'object' ? opened.form_data : {};
-    await validatePadValues(req, environmentCode, stepService.form_id, Object.assign({}, previous, fields), previous,
-      String(actor && actor.license_type || '').toLowerCase() === 'pad' ? 'pad' : 'sup');
+    // Canal déduit de l'endpoint : pad-sync = pad, /api/records = sup.
+    const kept = await validatePadValues(req, environmentCode, stepService.form_id, Object.assign({}, previous, fields), previous,
+      channel === 'sup' ? 'sup' : 'pad');
+    for (const k of Object.keys(fields)) if (!Object.prototype.hasOwnProperty.call(kept, k)) delete fields[k];
   }
   const statusId = payload.statusId || payload.status_id || null;
   const files = await storeStepFiles(req, environmentCode, key, collectFiles(payload, key));
@@ -789,7 +791,7 @@ async function handler(req, res) {
             if (target !== 'normal') level = target;
           }
           if (level === 'normal' && !access.legacyAllows(stepService, 'create', profile)) throw refusalError(403);
-          const written = await applyWorkflowStep(req, environmentCode, payload, resolved.key, license);
+          const written = await applyWorkflowStep(req, environmentCode, payload, resolved.key, license, 'pad');
           if (!written.duplicate) {
             mailWrites.push({
               entity: 'service_instances',

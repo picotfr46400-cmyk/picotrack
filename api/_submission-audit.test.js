@@ -1684,7 +1684,8 @@ const GUARD_FIELDS = [
   { id: 'ref', nom: 'Référence', type: 'text', lectureSeule: true },
   { id: 'qte', nom: 'Quantité', type: 'number', minEnabled: true, minValue: 0, maxEnabled: true, maxValue: 10 },
   { id: 'motif', nom: 'Motif', type: 'text', conditions: [{ field: 'note', op: '=', val: 'ko' }] },
-  { id: 'tablette', nom: 'Tablette seulement', type: 'text', vis_sup: false, vis_nom: true }
+  { id: 'tablette', nom: 'Tablette seulement', type: 'text', vis_sup: false, vis_nom: true },
+  { id: 'bureau', nom: 'Bureau seulement', type: 'text', vis_sup: true, vis_nom: false }
 ];
 
 function guardBackend(opts = {}) {
@@ -1761,23 +1762,27 @@ test('records service_instances : un form_data valide passe (ancien form_data en
   });
 });
 
-test('champ masqué : visibilité recalculée côté serveur, une valeur sur un champ masqué est rejetée', async () => {
+test('champ masqué : visibilité recalculée côté serveur, la valeur d’un champ masqué est retirée sans rejet', async () => {
   await withSupabase(async () => {
     let r = await saveInstance({ note: 'ok', ref: 'R-1', qte: 2, motif: 'caché' });
-    assert.equal(r.out.status, 400, JSON.stringify(r.out.payload));
-    assert.equal(instanceWrites(r.writes).length, 0);
+    assert.equal(r.out.status, 200, JSON.stringify(r.out.payload));
+    assert.equal(instanceWrites(r.writes)[0].body.form_data.motif, undefined);
     r = await saveInstance({ note: 'ko', ref: 'R-1', qte: 2, motif: 'visible' });
     assert.equal(r.out.status, 200, JSON.stringify(r.out.payload));
   });
 });
 
-test('canal pris de la session : record.device = pad ne rend pas visible un champ tablette pour la supervision', async () => {
+test('supervision inchangée : /api/records = canal sup, record.device = pad ne rend pas visible un champ tablette', async () => {
   await withSupabase(async () => {
     const backend = guardBackend();
     global.fetch = backend.fetch;
-    const out = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-1', device: 'pad', values: { note: 'ok', tablette: 'forcé' } } });
-    assert.equal(out.status, 400, JSON.stringify(out.payload));
-    assert.equal(submissionWrites(backend.writes).length, 0);
+    const out = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-1', device: 'pad', values: { note: 'ok', tablette: 'forcé', bureau: 'gardé' } } });
+    assert.equal(out.status, 200, JSON.stringify(out.payload));
+    const w = submissionWrites(backend.writes);
+    assert.equal(w.length, 1);
+    const body = Array.isArray(w[0].body) ? w[0].body[0] : w[0].body;
+    assert.equal(body.values.tablette, undefined);
+    assert.equal(body.values.bureau, 'gardé');
   });
 });
 
@@ -1816,12 +1821,24 @@ test('pad-sync service_instance : form_data validé (lecture seule 403, inconnu 
   });
 });
 
-test('pad-sync : champ masqué rejeté, formulaire inconnu 404, autre environnement 400, base muette 503', async () => {
+test('pad-sync : champ visible seulement sur PAD gardé, champ masqué sur PAD retiré sans rejet (saisie de l’ancien client)', async () => {
+  await withSupabase(async () => {
+    const r = await padCall([{ id: 'ps-old', type: 'form_submission', created_at: '2026-10-08T08:00:00.000Z',
+      payload: { formId: 'form-1', values: { note: 'ok', tablette: 'gardé', bureau: 'retiré', motif: 'caché' } } }]);
+    assert.equal(r.out.payload.results[0].status, 'applied', JSON.stringify(r.out.payload));
+    const w = submissionWrites(r.writes);
+    assert.equal(w.length, 1);
+    const body = Array.isArray(w[0].body) ? w[0].body[0] : w[0].body;
+    assert.equal(body.values.tablette, 'gardé');
+    assert.equal(body.values.bureau, undefined);
+    assert.equal(body.values.motif, undefined);
+  });
+});
+
+test('pad-sync : formulaire inconnu 404, autre environnement 400, base muette 503', async () => {
   await withSupabase(async () => {
     const sub = (id, formId, values) => ({ id, type: 'form_submission', created_at: '2026-10-08T08:00:00.000Z', payload: { formId, values } });
-    let r = await padCall([sub('ps-hid', 'form-1', { note: 'ok', motif: 'caché' })]);
-    assert.equal(r.out.payload.results[0].status, 400, JSON.stringify(r.out.payload));
-    r = await padCall([sub('ps-404', 'form-absent', { note: 'x' })]);
+    let r = await padCall([sub('ps-404', 'form-absent', { note: 'x' })]);
     assert.equal(r.out.payload.results[0].status, 404, JSON.stringify(r.out.payload));
     r = await padCall([sub('ps-env', 'form-other', { note: 'x' })]);
     assert.equal(r.out.payload.results[0].status, 400, JSON.stringify(r.out.payload));

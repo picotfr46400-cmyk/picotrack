@@ -228,12 +228,16 @@ test('pad-sync : même validation, canal nomade, refus par action sans écriture
   });
 });
 
-test('PR #42 : valeur sur champ masqué rejetée, stripHidden côté navigateur, formFieldsOrThrow fermé', () => {
+test('PR #42 : valeur sur champ masqué retirée, stripHidden côté navigateur, formFieldsOrThrow fermé', () => {
   const V = require('./_field-validation');
   const fields = [{ id: 'a', type: 'text' }, { id: 'b', type: 'text', conditions: [{ field: 'a', op: '=', val: 'oui' }] }];
   const hidden = V.validateSubmission({ fields, values: { a: 'non', b: 'x' }, channel: 'sup' });
-  assert.equal(hidden.ok, false);
-  assert.equal(hidden.errors[0].code, 'hidden');
+  assert.equal(hidden.ok, true);
+  assert.deepEqual(hidden.values, { a: 'non' });
+  assert.deepEqual(hidden.removed, ['b']);
+  const byChannel = [{ id: 'p', type: 'text', vis_sup: false }, { id: 's', type: 'text', vis_nom: false }];
+  assert.deepEqual(V.stripHidden(byChannel, { p: 1, s: 2 }, 'pad'), { p: 1 });
+  assert.deepEqual(V.stripHidden(byChannel, { p: 1, s: 2 }, 'sup'), { s: 2 });
   assert.equal(V.validateSubmission({ fields, values: { a: 'oui', b: 'x' }, channel: 'sup' }).ok, true);
   assert.deepEqual(V.stripHidden(fields, { a: 'non', b: 'x' }, 'sup'), { a: 'non' });
   assert.throws(() => V.formFieldsOrThrow(null, 'EFC', 'f'), (e) => e.status === 404);

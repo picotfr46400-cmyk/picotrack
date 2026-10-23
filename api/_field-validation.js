@@ -258,6 +258,7 @@
     var values = src.values;
     var previous = src.previous && typeof src.previous === 'object' && !Array.isArray(src.previous) ? src.previous : null;
     var errors = [];
+    var removed = [];
     if (!values || typeof values !== 'object' || Array.isArray(values)) {
       return { ok: false, status: 400, errors: [{ field: '', label: '', code: 'invalid', message: 'valeurs de saisie illisibles' }], values: {} };
     }
@@ -290,13 +291,13 @@
       if (!changed(k)) return; // pas de revalidation rétroactive
       if (lower(f.type) === 'calcul') return; // calcul : valeur dérivée
       var visible = isVisible(f, fields, clean, channel);
+      if (!visible) {
+        // Visibilité recalculée ici (conditions + canal de l'endpoint + groupe) : la valeur d'un champ masqué est retirée, sans rejet.
+        if (own(clean, k)) { delete clean[k]; removed.push(k); }
+        return;
+      }
       if (lower(f.type) === 'signature' || lower(f.type) === 'sign') {
         if (!isEmpty(v)) { var se = signatureError(v); if (se) { errors.push({ field: k, label: label(f), code: 'invalid', message: se }); return; } }
-      }
-      if (!visible) {
-        // Visibilité recalculée ici (conditions + canal + groupe) : une valeur sur un champ masqué est refusée.
-        if (!isEmpty(v)) errors.push({ field: k, label: label(f), code: 'hidden', message: 'valeur envoyée sur un champ masqué' });
-        return;
       }
       if (f.obligatoire && isMissing(v)) {
         errors.push({ field: k, label: label(f), code: 'required', message: 'champ obligatoire' });
@@ -306,7 +307,7 @@
     });
 
     var readonly = errors.some(function (e) { return e.code === 'readonly'; });
-    return { ok: !errors.length, status: errors.length ? (readonly ? 403 : 400) : 200, errors: errors, values: clean };
+    return { ok: !errors.length, status: errors.length ? (readonly ? 403 : 400) : 200, errors: errors, values: clean, removed: removed };
   }
 
   function errorMessage(result) {
@@ -318,7 +319,10 @@
   /* Serveur : lève une erreur { status 400|403, fieldErrors } ; renvoie les valeurs nettoyées. */
   function assertValidSubmission(input) {
     var result = validateSubmission(input);
-    if (result.ok) return result.values;
+    if (result.ok) {
+      if (result.removed.length && typeof console !== 'undefined') console.warn('[field-validation] valeurs de champs masqués retirées', result.removed.join(','));
+      return result.values;
+    }
     var err = new Error(errorMessage(result));
     err.status = result.status;
     err.fieldErrors = result.errors;

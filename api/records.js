@@ -1059,11 +1059,6 @@ async function readFormStrict(req, formId) {
   return rows[0] || null;
 }
 
-// Canal pris de l'identité côté serveur (licence de la session), jamais de record.device.
-function sessionChannel(profile) {
-  return String(profile && profile.license_type || '').toLowerCase() === 'pad' ? 'pad' : 'sup';
-}
-
 async function readServiceForInstance(req, serviceId, env) {
   if (!serviceId) return null;
   let path = `services?id=eq.${encodeURIComponent(serviceId)}&select=*&limit=1`;
@@ -1454,7 +1449,7 @@ async function handleSave(req, body) {
         fields,
         values: record.values,
         previous: sameForm ? (existingSubmission.values || {}) : null,
-        channel: sessionChannel(profile)
+        channel: 'sup'
       });
     }
   }
@@ -1525,7 +1520,7 @@ async function handleSave(req, body) {
         fields,
         values: incoming,
         previous: previousInstance ? (previousInstance.form_data || {}) : null,
-        channel: sessionChannel(profile)
+        channel: 'sup'
       });
       if (Object.prototype.hasOwnProperty.call(record, 'form_data')) record.form_data = checked;
     }
@@ -1665,7 +1660,7 @@ async function handleSave(req, body) {
         events: source && source.events !== undefined ? source.events : record.events,
         files: source && source.files,
         comment: source && source.comment
-      }, uuidKey ? suppliedKey.toLowerCase() : suppliedKey, profile);
+      }, uuidKey ? suppliedKey.toLowerCase() : suppliedKey, profile, 'sup');
     } catch (err) {
       throw padSync.normalizeSyncError(err);
     }

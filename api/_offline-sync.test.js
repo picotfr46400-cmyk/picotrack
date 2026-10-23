@@ -435,7 +435,7 @@ self.addEventListener('fetch',event=>{
   assert.equal(sw.includes('cache.add'), false);
   assert.equal(sw.includes('public.html'), false);
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
-  assert.match(html, /offline-sync\.js\?v=20261008x/);
+  assert.match(html, /offline-sync\.js\?v=20261023-1/);
   assert.equal((html.match(/app\.secured\.js\?v=20261023-1/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261008y/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
@@ -1971,3 +1971,19 @@ function createFakeIndexedDB() {
 function openFake(db) {
   return new Promise((resolve) => { resolve(db); });
 }
+
+test('file hors ligne : valeurs masquées retirées avec le vrai canal (pad et sup), rejet gardé en file avec erreur', () => {
+  const prev = globalThis.PtFieldValidation;
+  globalThis.PtFieldValidation = require('./_field-validation');
+  try {
+    const fields = [{ id: 'p', type: 'text', vis_sup: false }, { id: 's', type: 'text', vis_nom: false }];
+    const base = { id: 'a1', type: 'form_submission', deviceCapturedAt: 't', payload: { formId: 'f', form: { id: 'f', fields }, values: { p: 'tab', s: 'bur' } } };
+    assert.deepEqual(offline.toWireAction(base).payload.values, { p: 'tab' });
+    assert.deepEqual(offline.toWireAction({ ...base, channel: 'web' }).payload.values, { s: 'bur' });
+    const inst = offline.toWireAction({ ...base, type: 'service_instance', payload: { ...base.payload, serviceId: 's1', instance: { service_id: 's1' } } });
+    assert.deepEqual(inst.payload.instance.form_data, { p: 'tab' });
+  } finally {
+    globalThis.PtFieldValidation = prev;
+  }
+  assert.equal(offline.classifySyncResult ? offline.classifySyncResult({ status: 400, error: 'x' }) : 'rejected', 'rejected');
+});
