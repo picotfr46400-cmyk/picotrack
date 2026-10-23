@@ -90,10 +90,72 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
   function fileSafe(s) { return String(s || 'etiquette').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 60); }
+  /* ---------- connexions : système, Bluetooth, TCP/IP, FTP ---------- */
+  var TWA_KEY = 'pt_twa_pkg';
+  var CONN_LABEL = { system: 'Système', bluetooth: 'Bluetooth', tcp: 'TCP/IP', ftp: 'FTP' };
+  function connOf(p) { return p && CONN_LABEL[p.connection] ? p.connection : 'system'; }
+  // L'application PicoTrack PAD (TWA) ouvre la page avec document.referrer = android-app://<package>.
+  (function rememberTwa() {
+    try {
+      var m = /^android-app:\/\/([a-zA-Z][\w.]*\.twa)\/?/.exec(document.referrer || '');
+      if (m) localStorage.setItem(TWA_KEY, m[1]);
+    } catch (_) {}
+  })();
+  function twaPackage() {
+    try { var v = localStorage.getItem(TWA_KEY) || ''; return /^[a-zA-Z][\w.]*\.twa$/.test(v) ? v : ''; } catch (_) { return ''; }
+  }
+  function isAndroid() { return /Android/i.test(navigator.userAgent || ''); }
+  // Ce type de connexion est-il utilisable sur cet appareil ? { ok, fallback, message }
+  function capability(p) {
+    var c = connOf(p);
+    if (c === 'system') return { ok: true };
+    if (c === 'ftp') return p.address ? { ok: true } : { ok: false, message: 'Hôte FTP manquant : modifiez l’imprimante.' };
+    if (isAndroid() && twaPackage()) return { ok: true, native: true };
+    if (isAndroid()) return { ok: false, fallback: true, message: CONN_LABEL[c] + ' : ouvrez PicoTrack depuis l’application PicoTrack PAD (version 1.0.3 ou plus). Ici, la fenêtre d’impression du système s’ouvre à la place.' };
+    return { ok: false, fallback: true, message: 'Sur ordinateur, le navigateur ne peut pas joindre une imprimante ' + CONN_LABEL[c] + ' : la fenêtre d’impression du système s’ouvre à la place. L’envoi direct se fait depuis la tablette Android (application PicoTrack PAD).' };
+  }
+  function nativeUrl(p, zpl) {
+    var q = 'S.pt_conn=' + encodeURIComponent(connOf(p)) + ';S.pt_addr=' + encodeURIComponent(p.address || '') +
+      ';i.pt_port=' + (Number(p.port) || 9100) + ';S.pt_name=' + encodeURIComponent(String(p.name || '').slice(0, 60)) +
+      ';S.pt_zpl=' + encodeURIComponent(zpl);
+    var back = location.href.split('#')[0] + '#pt-print-noapp';
+    return 'intent://print#Intent;scheme=picotrack-print;package=' + twaPackage() + ';' + q + ';S.browser_fallback_url=' + encodeURIComponent(back) + ';end';
+  }
+  window.addEventListener('hashchange', function () {
+    if (location.hash !== '#pt-print-noapp') return;
+    try { history.replaceState(null, '', location.href.split('#')[0]); } catch (_) {}
+    toast('e', 'L’application PicoTrack PAD installée ne sait pas encore imprimer en direct : mettez-la à jour (version 1.0.3 ou plus).');
+  });
+  function zplFor(p, tpl, contexts) {
+    return L.zplDocument(tpl, contexts, { dpi: p.dpi, margin_mm: p.margin_mm, rotation: p.rotation });
+  }
+  // Envoi direct. Repli sur la fenêtre système si l'appareil ne peut pas.
+  function sendDirect(p, tpl, contexts, onFallback) {
+    var cap = capability(p);
+    if (!cap.ok) {
+      if (cap.fallback) { toast('w', cap.message); onFallback(); return Promise.resolve('fallback'); }
+      toast('e', cap.message); return Promise.resolve('error');
+    }
+    var zpl = zplFor(p, tpl, contexts);
+    if (connOf(p) === 'ftp') {
+      toast('i', 'Envoi FTP vers « ' + p.name + ' »…');
+      return api('labels_print_ftp', { printer_id: p.id, zpl: zpl }).then(function () {
+        toast('s', contexts.length + ' étiquette(s) envoyée(s) à « ' + p.name + ' » (FTP).'); return 'sent';
+      }).catch(function (e) { toast('e', (e && e.message) || 'Envoi FTP impossible.'); return 'error'; });
+    }
+    toast('i', 'Envoi à « ' + p.name + ' » par l’application PicoTrack PAD (' + CONN_LABEL[connOf(p)] + ')…');
+    location.href = nativeUrl(p, zpl);
+    return Promise.resolve('native');
+  }
+
   function doPrint(tpl, contexts, mode) {
     if (!contexts.length) { toast('e', 'Aucune saisie à imprimer.'); return; }
     var pr = printerFor(tpl);
-    var opts = pr ? { margin_mm: pr.margin_mm, dpi: pr.dpi } : {};
+    var opts = pr ? { margin_mm: pr.margin_mm, dpi: pr.dpi, rotation: pr.rotation } : {};
+    if (!mode && pr && connOf(pr) !== 'system') {
+      sendDirect(pr, tpl, contexts, function () { printHtml(L.printDocument(tpl, contexts, opts)); });
+      return;
+    }
     if (mode === 'zpl' || (!mode && pr && pr.kind === 'zpl')) {
       download(L.zplDocument(tpl, contexts, opts), fileSafe(tpl.name) + '.zpl', 'text/plain');
       toast('s', contexts.length + ' étiquette(s) en ZPL téléchargée(s). Envoyez le fichier à l’imprimante Zebra (voir Académie).');
@@ -158,7 +220,7 @@
         function paint() {
           var t = cur(), pr = printerFor(t);
           box.querySelector('[data-prev]').innerHTML = previewHtml(t, ctx, 300);
-          box.querySelector('[data-pr]').innerHTML = pr ? 'Imprimante : <b>' + esc(pr.name) + '</b> (' + (pr.kind === 'zpl' ? 'Zebra ZPL' : 'impression système') + ')' : 'Aucune imprimante réglée : la fenêtre d’impression du système s’ouvre au format du modèle.';
+          box.querySelector('[data-pr]').innerHTML = pr ? 'Imprimante : <b>' + esc(pr.name) + '</b> (' + (connOf(pr) !== 'system' ? CONN_LABEL[connOf(pr)] + (capability(pr).ok ? '' : ', ' + esc(capability(pr).message)) : pr.kind === 'zpl' ? 'Zebra ZPL' : 'impression système') + ')' : 'Aucune imprimante réglée : la fenêtre d’impression du système s’ouvre au format du modèle.';
         }
         sel.onchange = paint; paint();
         function copies() { return Math.max(1, Math.min(50, parseInt(box.querySelector('[data-copies]').value, 10) || 1)); }
@@ -454,22 +516,25 @@
     var root = document.getElementById('printers-wrap'); if (!root) return;
     var poste = posteDefault();
     var head = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap"><div><h2 style="margin:0;font-size:18px">Imprimantes</h2>' +
-      '<div style="font-size:12.5px;color:var(--tl,#64748b)">PicoTrack imprime par la fenêtre d’impression du système : toute imprimante installée sur l’ordinateur ou la tablette fonctionne.</div></div>' +
+      '<div style="font-size:12.5px;color:var(--tl,#64748b)">Système : fenêtre d’impression de l’ordinateur ou de la tablette. Bluetooth et TCP/IP : envoi direct depuis l’application PicoTrack PAD sur Android. FTP : envoi par le serveur PicoTrack.</div></div>' +
       (state.canManage ? '<button type="button" class="btn btn-p" data-new>＋ Ajouter une imprimante</button>' : '') + '</div>';
     var body;
     if (!state.loaded && !state.error) body = '<div style="' + card + ';font-size:13px;color:var(--tl,#64748b)">Chargement…</div>';
     else if (!state.printers.length) body = '<div style="' + card + ';text-align:center;padding:36px;color:var(--tl,#64748b)"><div style="font-size:30px">🖨️</div><b>Aucune imprimante réglée</b><div style="font-size:12.5px;margin-top:4px">Sans réglage, l’impression s’ouvre au format du modèle. Ajoutez une imprimante pour fixer son format, ses marges et lancer une page de test.</div></div>';
     else body = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">' + state.printers.map(function (p) {
-      return '<div style="' + card + '"><div style="display:flex;justify-content:space-between;gap:8px"><b>' + esc(p.name) + '</b><span style="font-size:11px;padding:2px 7px;border-radius:99px;background:' + (p.kind === 'zpl' ? '#fef3c7' : '#e0f2fe') + '">' + (p.kind === 'zpl' ? 'Zebra ZPL' : 'Système') + '</span></div>' +
-        '<div style="font-size:12px;color:var(--tl,#64748b);margin:6px 0">' + p.width_mm + ' × ' + p.height_mm + ' mm · marge ' + p.margin_mm + ' mm · ' + p.dpi + ' dpi' + (p.is_default ? ' · <b>par défaut</b>' : '') + (String(p.id) === poste ? ' · <b>ce poste</b>' : '') + '</div>' +
+      return '<div style="' + card + '"><div style="display:flex;justify-content:space-between;gap:8px"><b>' + esc(p.name) + '</b><span style="font-size:11px;padding:2px 7px;border-radius:99px;background:' + (connOf(p) !== 'system' ? '#ede9fe' : p.kind === 'zpl' ? '#fef3c7' : '#e0f2fe') + '">' + (connOf(p) !== 'system' ? CONN_LABEL[connOf(p)] : p.kind === 'zpl' ? 'Système · fichier ZPL' : 'Système') + '</span></div>' +
+        '<div style="font-size:12px;color:var(--tl,#64748b);margin:6px 0">' + p.width_mm + ' × ' + p.height_mm + ' mm · marge ' + p.margin_mm + ' mm · ' + p.dpi + ' dpi' + (Number(p.rotation) ? ' · rotation ' + p.rotation + '°' : '') + (p.is_default ? ' · <b>par défaut</b>' : '') + (String(p.id) === poste ? ' · <b>ce poste</b>' : '') + '</div>' +
+        (connOf(p) !== 'system' ? '<div style="font-size:12px;margin-bottom:4px">' + esc(p.address || '') + (p.port && connOf(p) !== 'bluetooth' ? ':' + esc(p.port) : '') + (connOf(p) === 'ftp' && p.ftp_dir ? ' · ' + esc(p.ftp_dir) : '') + '</div>' : '') +
+        (p.site ? '<div style="font-size:12px;margin-bottom:4px">Site : ' + esc(p.site) + '</div>' : '') +
+        (!capability(p).ok ? '<div style="font-size:11.5px;color:#92400e;background:#fffbeb;border-radius:6px;padding:5px 7px;margin-bottom:6px">' + esc(capability(p).message) + '</div>' : '') +
         (p.notes ? '<div style="font-size:12px;margin-bottom:6px">' + esc(p.notes) + '</div>' : '') +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn" data-test="' + p.id + '">Page de test</button>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn" data-test="' + p.id + '">Imprimer une page de test</button>' +
         (String(p.id) === poste ? '<button type="button" class="btn" data-unposte>Retirer de ce poste</button>' : '<button type="button" class="btn" data-poste="' + p.id + '">Utiliser sur ce poste</button>') +
         (state.canManage ? '<button type="button" class="btn" data-edit="' + p.id + '">Modifier</button><button type="button" class="btn" data-del="' + p.id + '" style="color:#b91c1c">Supprimer</button>' : '') + '</div></div>';
     }).join('') + '</div>';
     root.innerHTML = head + notice() + (editing ? printerForm(editing) : '') + body;
     bindRetry(root, paintPrinters);
-    var n = root.querySelector('[data-new]'); if (n) n.onclick = function () { paintPrinters({ name: '', kind: 'system', width_mm: 100, height_mm: 50, margin_mm: 0, dpi: 203, notes: '', is_default: !state.printers.length }); };
+    var n = root.querySelector('[data-new]'); if (n) n.onclick = function () { paintPrinters({ name: '', kind: 'system', connection: 'system', address: '', port: null, site: '', rotation: 0, ftp_user: '', ftp_dir: '', width_mm: 100, height_mm: 50, margin_mm: 0, dpi: 203, notes: '', is_default: !state.printers.length }); };
     root.querySelectorAll('[data-test]').forEach(function (b) { b.onclick = function () { testPage(printerById(b.getAttribute('data-test'))); }; });
     root.querySelectorAll('[data-poste]').forEach(function (b) { b.onclick = function () { setPosteDefault(b.getAttribute('data-poste')); toast('s', 'Imprimante choisie pour ce poste.'); paintPrinters(); }; });
     var up = root.querySelector('[data-unposte]'); if (up) up.onclick = function () { setPosteDefault(''); paintPrinters(); };
@@ -487,26 +552,57 @@
   function printerForm(p) {
     var preset = (L.PRESETS.filter(function (x) { return x.w === numIn(p.width_mm) && x.h === numIn(p.height_mm); })[0] || {}).id || 'custom';
     var lab = function (t, h) { return '<label style="font-size:12px;display:block;margin-bottom:8px">' + t + h + '</label>'; };
+    var full = ';display:block;width:100%;box-sizing:border-box';
+    var c = connOf(p);
+    var cap = capability(p);
+    var conn = '';
+    if (c === 'system') conn = lab('Format envoyé', '<select data-f="kind" style="' + inp + full + '">' + opt('system', 'Page au format de l’étiquette (toute imprimante)', p.kind) + opt('zpl', 'Fichier ZPL à télécharger (Zebra)', p.kind) + '</select>');
+    if (c === 'bluetooth') conn = lab('Adresse Bluetooth (MAC)', '<input data-f="address" value="' + esc(p.address || '') + '" placeholder="00:11:22:AA:BB:CC" style="' + inp + full + '">');
+    if (c === 'tcp') conn = lab('Adresse IP', '<input data-f="address" value="' + esc(p.address || '') + '" placeholder="192.168.1.50" style="' + inp + full + '">') +
+      lab('Port', '<input data-f="port" type="number" min="1" max="65535" value="' + esc(p.port || 9100) + '" style="' + inp + ';width:100px;display:block">');
+    if (c === 'ftp') conn = lab('Hôte FTP', '<input data-f="address" value="' + esc(p.address || '') + '" placeholder="imprimante.mondomaine.fr" style="' + inp + full + '">') +
+      lab('Port', '<input data-f="port" type="number" min="1" max="65535" value="' + esc(p.port || 21) + '" style="' + inp + ';width:100px;display:block">') +
+      lab('Utilisateur', '<input data-f="ftp_user" value="' + esc(p.ftp_user || '') + '" autocomplete="off" placeholder="anonymous" style="' + inp + full + '">') +
+      lab('Mot de passe', '<input data-f="ftp_password" type="password" autocomplete="new-password" value="" placeholder="' + (p.ftp_password_set ? 'Enregistré (laisser vide pour le garder)' : '') + '" style="' + inp + full + '">' +
+        (p.ftp_password_set ? '<span style="display:block;margin-top:3px"><input data-f="ftp_password_clear" type="checkbox"' + (p.ftp_password_clear ? ' checked' : '') + '> Effacer le mot de passe enregistré</span>' : '')) +
+      lab('Dossier distant', '<input data-f="ftp_dir" value="' + esc(p.ftp_dir || '') + '" placeholder="ex. /zpl (vide = dossier d’accueil)" style="' + inp + full + '">');
+    var help = c === 'system' ? 'Le choix de l’imprimante physique se fait dans la fenêtre d’impression du système : PicoTrack prépare la page au bon format.'
+      : c === 'ftp' ? 'Le serveur PicoTrack dépose un fichier .zpl sur l’imprimante par FTP : elle doit être joignable depuis Internet. Le mot de passe est chiffré et n’est jamais réaffiché.'
+      : 'La tablette Android envoie le ZPL directement à l’imprimante (' + (c === 'tcp' ? 'même réseau Wi-Fi, port 9100 en général' : 'imprimante appairée au préalable dans les réglages Bluetooth d’Android') + ').';
     return '<div data-pform style="' + card + ';margin-bottom:14px;border-color:#059669"><b style="font-size:14px">' + (p.id ? 'Modifier l’imprimante' : 'Nouvelle imprimante') + '</b>' +
-      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:10px">' +
-      lab('Nom', '<input data-f="name" value="' + esc(p.name) + '" placeholder="ex. Zebra accueil" style="' + inp + ';display:block;width:100%;box-sizing:border-box">') +
-      lab('Type', '<select data-f="kind" style="' + inp + ';display:block;width:100%">' + opt('system', 'Impression système (toute imprimante)', p.kind) + opt('zpl', 'Zebra ZPL (fichier .zpl)', p.kind) + '</select>') +
+      '<div style="font-size:12px;font-weight:700;margin:12px 0 4px">Informations générales</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">' +
+      lab('Nom', '<input data-f="name" value="' + esc(p.name) + '" placeholder="ex. Zebra accueil" style="' + inp + full + '">') +
+      lab('Type de connexion', '<select data-f="connection" style="' + inp + full + '">' + opt('system', 'Système (fenêtre d’impression)', c) + opt('bluetooth', 'Bluetooth', c) + opt('tcp', 'TCP/IP', c) + opt('ftp', 'FTP', c) + '</select>') +
+      conn +
+      lab('Site', '<input data-f="site" value="' + esc(p.site || '') + '" placeholder="ex. Entrepôt Cahors" style="' + inp + full + '">') +
+      '</div>' +
+      (!cap.ok && cap.message ? '<div data-pcap style="font-size:11.5px;color:#92400e;background:#fffbeb;border-radius:6px;padding:6px 8px;margin-bottom:8px">' + esc(cap.message) + '</div>' : '') +
+      '<div style="font-size:12px;font-weight:700;margin:6px 0 4px">Paramètres d’impression</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">' +
       lab('Format d’étiquette', '<select data-fpreset style="' + inp + ';display:block;width:100%">' + L.PRESETS.map(function (x) { return opt(x.id, x.label, preset); }).join('') + opt('custom', 'Personnalisé', preset) + '</select>') +
       lab('Largeur / hauteur (mm)', '<span style="display:flex;gap:6px"><input data-f="width_mm" type="number" value="' + esc(p.width_mm) + '" style="' + inp + ';width:80px"><input data-f="height_mm" type="number" value="' + esc(p.height_mm) + '" style="' + inp + ';width:80px"></span>') +
       lab('Marge (mm)', '<input data-f="margin_mm" type="number" step="0.5" min="0" max="20" value="' + esc(p.margin_mm) + '" style="' + inp + ';width:80px;display:block">') +
-      lab('Résolution', '<select data-f="dpi" style="' + inp + ';display:block">' + [150, 203, 300, 600].map(function (d) { return opt(d, d + ' dpi', p.dpi); }).join('') + '</select>') +
-      lab('Note', '<input data-f="notes" value="' + esc(p.notes) + '" placeholder="ex. Poste de l’accueil, rouleau 100 × 50" style="' + inp + ';display:block;width:100%;box-sizing:border-box">') +
+      lab('Résolution d’impression', '<select data-f="dpi" style="' + inp + ';display:block">' + [[152, '6 dpmm (152 dpi)'], [203, '8 dpmm (203 dpi)'], [300, '12 dpmm (300 dpi)'], [600, '24 dpmm (600 dpi)']].map(function (d) { return opt(d[0], d[1], Number(p.dpi) === 150 ? 152 : p.dpi); }).join('') + '</select>') +
+      lab('Rotation des étiquettes', '<select data-f="rotation" style="' + inp + ';display:block">' + [[0, 'Aucune rotation'], [90, '90°'], [180, '180°'], [270, '270°']].map(function (r) { return opt(r[0], r[1], Number(p.rotation) || 0); }).join('') + '</select>') +
+      lab('Note', '<input data-f="notes" value="' + esc(p.notes) + '" placeholder="ex. Poste de l’accueil, rouleau 100 × 50" style="' + inp + full + '">') +
       lab('', '<span><input data-f="is_default" type="checkbox"' + (p.is_default ? ' checked' : '') + '> Imprimante par défaut de l’environnement</span>') +
-      '</div><div style="font-size:11.5px;color:var(--tl,#64748b);margin-bottom:10px">Le choix de l’imprimante physique se fait dans la fenêtre d’impression du système : PicoTrack ne voit pas les imprimantes installées, il prépare la page au bon format.</div>' +
+      '</div><div style="font-size:11.5px;color:var(--tl,#64748b);margin-bottom:10px">' + esc(help) + (c === 'system' && Number(p.rotation) ? ' La rotation s’applique au fichier ZPL ; pour la page système, réglez l’orientation dans la fenêtre d’impression.' : '') + '</div>' +
       '<div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn" data-fcancel>Annuler</button><button type="button" class="btn btn-p" data-fsave>Enregistrer</button></div></div>';
   }
   function bindPrinterForm(f, p) {
+    var NUMS = { dpi: 1, rotation: 1, port: 1 };
     f.querySelectorAll('[data-f]').forEach(function (i) {
-      i.addEventListener('change', function () {
+      function read() {
         var k = i.getAttribute('data-f');
-        p[k] = i.type === 'checkbox' ? i.checked : (i.type === 'number' || k === 'dpi') ? numIn(i.value) : i.value;
+        p[k] = i.type === 'checkbox' ? i.checked : (i.type === 'number' || NUMS[k]) ? (i.value === '' ? null : numIn(i.value)) : i.value;
+        return k;
+      }
+      i.addEventListener('change', function () {
+        var k = read();
+        if (k === 'connection') { p.port = p.connection === 'tcp' ? 9100 : p.connection === 'ftp' ? 21 : null; p.kind = p.connection === 'system' ? 'system' : 'zpl'; paintPrinters(p); }
       });
-      i.addEventListener('input', function () { var k = i.getAttribute('data-f'); if (i.type !== 'checkbox') p[k] = (i.type === 'number' || k === 'dpi') ? numIn(i.value) : i.value; });
+      i.addEventListener('input', function () { if (i.type !== 'checkbox' && i.tagName !== 'SELECT') read(); });
     });
     var ps = f.querySelector('[data-fpreset]');
     ps.onchange = function () { var x = L.PRESETS.filter(function (y) { return y.id === ps.value; })[0]; if (x) { p.width_mm = x.w; p.height_mm = x.h; } paintPrinters(p); };
@@ -514,7 +610,9 @@
     f.querySelector('[data-fsave]').onclick = function () {
       var btn = this; btn.disabled = true;
       var lbl = btn.textContent; btn.textContent = 'Enregistrement…';
-      api('labels_save_printer', { id: p.id || null, printer: p }).then(function (res) {
+      var payload = JSON.parse(JSON.stringify(p));
+      api('labels_save_printer', { id: p.id || null, printer: payload }).then(function (res) {
+        delete p.ftp_password;
         toast('s', 'Imprimante enregistrée.');
         var row = res && res.printer;
         if (row && row.is_default) state.printers.forEach(function (x) { if (String(x.id) !== String(row.id)) x.is_default = false; });
@@ -526,8 +624,10 @@
   function testPage(p) {
     if (!p) return;
     var t = L.testTemplate(p);
-    if (p.kind === 'zpl') { download(L.zplLabel(t, {}, { dpi: p.dpi, margin_mm: p.margin_mm }), 'test-' + fileSafe(p.name) + '.zpl', 'text/plain'); toast('s', 'Page de test ZPL téléchargée.'); return; }
-    printHtml(L.printDocument(t, [{}], { margin_mm: p.margin_mm, frame: true }));
+    var sys = function () { printHtml(L.printDocument(t, [{}], { margin_mm: p.margin_mm, frame: true })); };
+    if (connOf(p) !== 'system') { sendDirect(p, t, [{}], sys); return; }
+    if (p.kind === 'zpl') { download(L.zplLabel(t, {}, { dpi: p.dpi, margin_mm: p.margin_mm, rotation: p.rotation }), 'test-' + fileSafe(p.name) + '.zpl', 'text/plain'); toast('s', 'Page de test ZPL téléchargée.'); return; }
+    sys();
   }
 
   /* ---------- boutons sur la fiche saisie et le dossier ---------- */
@@ -580,6 +680,10 @@
     '<details class="pt-ac-faq"><summary>Comment brancher une imprimante d’étiquettes ?</summary><p>1. Installez l’imprimante sur l’ordinateur comme d’habitude (USB ou réseau) avec le pilote du fabricant (Zebra, Brother, Dymo…). 2. Dans les réglages du pilote, choisissez le format du rouleau (ex. 100 × 50 mm). 3. Dans PicoTrack, menu <b>Imprimantes</b>, ajoutez-la avec le même format, cliquez « Utiliser sur ce poste » puis « Page de test ». 4. Dans la fenêtre d’impression : choisissez l’imprimante, marges « Aucune », échelle 100 %. Le cadre de la page de test doit tomber à 1 mm du bord.</p></details>' +
     '<details class="pt-ac-faq"><summary>Et sur tablette Android ?</summary><p>Installez l’application d’impression du fabricant (ex. « Brother Print Service Plugin » ou « Zebra Printer Setup »), qui ajoute l’imprimante au menu Imprimer d’Android. PicoTrack ouvre ensuite ce même menu.</p></details>' +
     '<details class="pt-ac-faq"><summary>À quoi sert le type « Zebra ZPL » ?</summary><p>PicoTrack télécharge un fichier .zpl, le langage natif des imprimantes Zebra : texte, QR code et code-barres sont imprimés par l’imprimante elle-même, très nets. Envoyez ce fichier avec l’outil gratuit Zebra Setup Utilities, ou sous Windows avec <code>copy /b etiquette.zpl \\\\NOM-PC\\Zebra</code> (imprimante partagée). Le navigateur ne peut pas parler directement à l’imprimante sur le réseau.</p></details>' +
+    '<details class="pt-ac-faq"><summary>Quel type de connexion choisir ?</summary><p><b>Système</b> (par défaut) : la fenêtre d’impression de l’ordinateur ou de la tablette, pour toute imprimante installée. <b>Bluetooth</b> : imprimante mobile Zebra appairée à la tablette ; indiquez son adresse MAC (00:11:22:AA:BB:CC, visible dans les réglages Bluetooth d’Android ou sur l’étiquette de configuration de l’imprimante). <b>TCP/IP</b> : imprimante réseau sur le même Wi-Fi que la tablette ; indiquez son adresse IP et le port (9100 en général). <b>FTP</b> : le serveur PicoTrack dépose le fichier .zpl sur l’imprimante ; elle doit être joignable depuis Internet (hôte, port 21, utilisateur, mot de passe, dossier). Bluetooth, TCP/IP et FTP envoient du ZPL : imprimantes Zebra ou compatibles ZPL.</p></details>' +
+    '<details class="pt-ac-faq"><summary>Bluetooth et TCP/IP : sur quel appareil ?</summary><p>Uniquement depuis l’application <b>PicoTrack PAD</b> sur tablette Android (version 1.0.3 ou plus) : c’est elle qui parle à l’imprimante. Au premier envoi vers une imprimante, la tablette demande de confirmer, puis s’en souvient. Sur un ordinateur, un navigateur ne peut pas joindre une imprimante Bluetooth ou réseau : PicoTrack l’indique et ouvre la fenêtre d’impression du système à la place. Pour Bluetooth, appairez d’abord l’imprimante dans les réglages Android et autorisez « Appareils à proximité » quand l’application le demande.</p></details>' +
+    '<details class="pt-ac-faq"><summary>Résolution et rotation</summary><p>Choisissez la résolution de la tête d’impression : 152 dpi (6 dpmm), 203 dpi (8 dpmm, la plus courante), 300 dpi (12 dpmm) ou 600 dpi (24 dpmm). Une mauvaise résolution donne une étiquette trop grande ou trop petite. La rotation (90°, 180°, 270°) tourne toute l’étiquette, utile quand le rouleau sort dans l’autre sens. Validez avec « Imprimer une page de test » : le texte, le code-barres et le QR code doivent tenir dans l’étiquette.</p></details>' +
+    '<details class="pt-ac-faq"><summary>La page de test ne sort pas</summary><p>Bluetooth : imprimante allumée, appairée, à moins de 10 m, pas connectée à un autre téléphone. TCP/IP : tablette sur le même Wi-Fi, adresse IP et port justes (imprimez la configuration réseau depuis l’imprimante). FTP : l’imprimante doit être accessible depuis Internet ; les adresses privées (192.168…, 10…) sont refusées par le serveur sauf autorisation de l’environnement. Le message d’erreur affiché indique l’étape qui a échoué.</p></details>' +
     '<details class="pt-ac-faq"><summary>Qui peut modifier ?</summary><p>Les administrateurs de l’environnement créent les modèles et les imprimantes. Tout utilisateur qui voit une saisie peut imprimer son étiquette. Le choix « Utiliser sur ce poste » reste sur cet appareil.</p></details>' +
     '</div>';
   function wrapAcademy() {
@@ -609,5 +713,5 @@
   // L'app peut reconstruire la barre latérale après connexion.
   var tries = 0;
   var iv = setInterval(function () { boot(); if (++tries > 40) clearInterval(iv); }, 500);
-  window.PTLabelsUI = { load: load, state: state, ACADEMY: ACADEMY };
+  window.PTLabelsUI = { load: load, state: state, ACADEMY: ACADEMY, capability: capability, nativeUrl: nativeUrl };
 })();

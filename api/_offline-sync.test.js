@@ -435,7 +435,7 @@ self.addEventListener('fetch',event=>{
   assert.equal(sw.includes('cache.add'), false);
   assert.equal(sw.includes('public.html'), false);
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
-  assert.match(html, /offline-sync\.js\?v=20261023-1/);
+  assert.match(html, /offline-sync\.js\?v=20261023-3/);
   assert.equal((html.match(/app\.secured\.js\?v=20261023-2/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261023-2/);
   assert.match(html, /pad-device\.js\?v=20261023-2/);
@@ -1986,4 +1986,13 @@ test('file hors ligne : valeurs masquées retirées avec le vrai canal (pad et s
     globalThis.PtFieldValidation = prev;
   }
   assert.equal(offline.classifySyncResult ? offline.classifySyncResult({ status: 400, error: 'x' }) : 'rejected', 'rejected');
+});
+
+test('bandeau de synchro : masqué quand tout est envoyé, visible en attente ou en erreur', () => {
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, pending: 0 })), false);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, syncing: true, pending: 0 })), false);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, syncing: true, pending: 2 })), true);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, pending: 1 })), true);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, pending: 0, rejected: [{ lastError: 'Champ invalide' }] })), true);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: false, pending: 1 })), true);
 });
