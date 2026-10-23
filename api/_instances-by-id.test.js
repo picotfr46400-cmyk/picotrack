@@ -23,6 +23,8 @@ function efcShape() {
 function load({ inst, services, api } = efcShape()) {
   const calls = { exec: [], toasts: [], open: [], api: [] };
   const ctx = {
+    // serveur : seuls les services en cache existent (le service 7 est supprimé côté serveur aussi)
+    DB: { list: async (t, q) => services.filter(s => String(s.id) === String(q.filters[0].value)) },
     console, Date, Math, JSON, Number, String, Array, Object, Promise, setTimeout,
     SERVICE_INSTANCES_DATA: inst, SERVICES_DATA: services,
     toast: (t, m) => calls.toasts.push(t + ':' + m),

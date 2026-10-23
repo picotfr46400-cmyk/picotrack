@@ -105,7 +105,7 @@ test('le navigateur utilise le même module (ptFieldErrors délègue) et le buil
   const bundle = fs.readFileSync(path.join(__dirname, '../assets/app.secured.js'), 'utf8');
   assert.ok(bundle.includes('window.PtFieldValidation)return window.PtFieldValidation.fieldErrors(f,v)'));
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /<script src="\/assets\/field-validation\.js\?v=20261023-1" defer><\/script><script src="\/assets\/app\.secured\.js\?v=20261023-5" defer>/);
+  assert.match(html, /<script src="\/assets\/field-validation\.js\?v=20261023-1" defer><\/script><script src="\/assets\/app\.secured\.js\?v=20261023-6" defer>/);
   assert.match(fs.readFileSync(path.join(__dirname, '../build.js'), 'utf8'), /_field-validation\.js'\), path\.join\(out, 'assets', 'field-validation\.js'\)/);
   const win = {};
   new Function('window', 'module', fs.readFileSync(path.join(__dirname, '_field-validation.js'), 'utf8'))(win, undefined);
