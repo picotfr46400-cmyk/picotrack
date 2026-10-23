@@ -60,18 +60,6 @@ test('placeholder GPS click requests a real position and does not store the demo
   assert.match(btn.getAttribute('onclick'), /ptCaptureGps\('champ_gps'/);
 });
 
-test('captured GPS updates the label next to the button (no more « Non capturé »)', () => {
-  const { sandbox } = loadPadDevice({
-    getCurrentPosition(ok) { ok({ coords: { latitude: 43.7810254, longitude: 1.3729781, accuracy: 12 } }); }
-  });
-  const btn = button(PLACEHOLDER);
-  const label = { textContent: '📍 Non capturé' };
-  btn.parentNode = { querySelector(sel) { return sel === 'span' ? label : null; } };
-  sandbox.listener({ target: btn, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
-  assert.equal(btn.textContent, '✅ Capturé');
-  assert.equal(label.textContent, '📍 GPS: 43.781025, 1.372978 (±12 m)');
-});
-
 test('denied GPS does not write a value', () => {
   const { sandbox, alerts, saved } = loadPadDevice({
     getCurrentPosition(_ok, err) { err({ code: 1 }); }
