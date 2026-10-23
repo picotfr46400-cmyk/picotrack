@@ -1,3 +1,4 @@
+const instanceRef = require('./_instance-ref');
 const crypto = require('crypto');
 const { getSupabaseConfig, json, setCors, bearer, requireAuth, readJsonBody, serviceRest, getUserProfile } = require('./_server-supabase');
 const { handleIntegrations, INTEGRATIONS_NAME } = require('./_integrations');
@@ -1481,6 +1482,19 @@ async function handleSave(req, body) {
       if (!service) throw Object.assign(new Error('Introuvable.'), { status: 404 });
       record.service_id = service.id;
       auditService = service;
+      // V2-20261023 : référence unique dans l'environnement (évite les SVC-AAAA-0001 en double).
+      try {
+        const targetEnv = record.environment_code || env;
+        const refRows = await serviceRead(req, buildReadPath('service_instances', { filters: [{ column: 'environment_code', op: 'eq', value: targetEnv }], select: 'reference,ref', limit: 5000 }));
+        const refs = [];
+        for (const row of Array.isArray(refRows) ? refRows : []) { if (row?.reference) refs.push(row.reference); if (row?.ref) refs.push(row.ref); }
+        const wanted = record.reference || record.ref || source?.reference || source?.ref || '';
+        const unique = instanceRef.uniqueReference(wanted, refs, service.id_pattern || service.idPattern);
+        record.reference = unique;
+        record.ref = unique;
+      } catch (err) {
+        console.warn('[records] référence unique non vérifiée', err && (err.message || err));
+      }
       let level = access.effectiveLevel(profile, catalog, 'service', service.id);
       access.assertLevel(level, 'write');
       if (requestedStatus) {
