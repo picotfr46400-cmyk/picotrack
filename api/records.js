@@ -2242,6 +2242,7 @@ async function handler(req, res) {
         break;
       }
       case 'labels_load':
+      case 'labels_print_ftp':
       case 'labels_save_template':
       case 'labels_delete_template':
       case 'labels_save_printer':

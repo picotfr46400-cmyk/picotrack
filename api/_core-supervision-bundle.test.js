@@ -24,8 +24,9 @@ test('cache-buster et overlay core-supervision sont branchés', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
   assert.equal((html.match(/app\.secured\.js\?v=20261023-2/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261023-2/);
-  for (const asset of ["qrcode.js", "labels-core.js"]) assert.match(html, new RegExp(asset.replace(".", "\\.") + "\\?v=20261019a"));
-  assert.match(html, /\/labels\.js\?v=20261023-2/);
+  assert.match(html, /qrcode\.js\?v=20261019a/);
+  assert.match(html, /labels-core\.js\?v=20261023-3/);
+  assert.match(html, /\/labels\.js\?v=20261023-3/);
   assert.match(html, /pad-device\.js\?v=20261023-2/);
   assert.equal(html.includes('20260916c'), false);
   assert.equal(html.includes('20260916d'), false);

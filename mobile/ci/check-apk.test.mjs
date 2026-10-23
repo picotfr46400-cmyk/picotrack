@@ -16,15 +16,15 @@ const workflow = readFileSync(join(root, '.github/workflows/pad-android-apk.yml'
 
 test('versionCode est exactement la base v2 plus un', () => {
   const head = parseProperties(tenantText);
-  assert.deepEqual(versionBumpErrors({ versionCode: '2', versionName: '1.0.1' }, head, configureText), []);
-  assert.equal(head.versionCode, '3');
-  assert.equal(head.versionName, '1.0.2');
+  assert.deepEqual(versionBumpErrors({ versionCode: '3', versionName: '1.0.2' }, head, configureText), []);
+  assert.equal(head.versionCode, '4');
+  assert.equal(head.versionName, '1.0.3');
   const same = versionBumpErrors(head, head, configureText);
   assert.equal(same.some(line => line.includes('base+1')), true);
 });
 
 test('aapt : package, versionCode et versionName suivent le tenant', () => {
-  const badge = "package: name='fr.picotrack.efc.twa' versionCode='3' versionName='1.0.2' platformBuildVersionName='15'";
+  const badge = "package: name='fr.picotrack.efc.twa' versionCode='4' versionName='1.0.3' platformBuildVersionName='15'";
   assert.deepEqual(badgeErrors(badge, tenantText), []);
   assert.equal(readBadge(badge).packageName, 'fr.picotrack.efc.twa');
   assert.equal(badgeErrors("package: name='fr.picotrack.autre.twa' versionCode='3' versionName='1.0.2'", tenantText).length > 0, true);
