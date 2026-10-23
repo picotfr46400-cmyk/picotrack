@@ -328,7 +328,7 @@ test('enregistrement, cloisonnement, auteur serveur, et échec de journal non bl
       if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
       if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
-      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [], permissions: {} }]);
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
       if (u.includes('/rest/v1/submissions') && method === 'POST') return jsonResponse(200, [{ id: 'sub-ok', form_id: 'form-1', environment_code: 'EFC', values: { client: 'OK' } }]);
       return jsonResponse(200, []);
     };
@@ -1630,7 +1630,7 @@ test('records PAD réutilise la même insertion atomique', async () => {
       if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
       if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
-      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [], permissions: {} }]);
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
       if (u.includes('/rest/v1/submissions') && method === 'POST') {
         assert.match(u, /on_conflict=environment_code,idempotency_key/);
         const body = JSON.parse(options.body);

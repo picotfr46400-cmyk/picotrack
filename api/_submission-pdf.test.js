@@ -1033,6 +1033,7 @@ function targetedForm(id, roleName) {
     id,
     nom: id,
     environment_code: 'EFC',
+    fields: [{ id: 'note', nom: 'Note', type: 'text' }],
     visible_roles: [roleName],
     permissions: { view: [roleName], submit: [roleName] }
   };

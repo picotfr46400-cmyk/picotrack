@@ -436,7 +436,7 @@ self.addEventListener('fetch',event=>{
   assert.equal(sw.includes('public.html'), false);
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
   assert.match(html, /offline-sync\.js\?v=20261008x/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261022-1/g) || []).length, 2);
+  assert.equal((html.match(/app\.secured\.js\?v=20261023-1/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261008y/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.match(fs.readFileSync(path.join(__dirname, '../build.js'), 'utf8'), /offline-sync\.js/);
@@ -873,7 +873,7 @@ test('web : réponse perdue, renvoi, rechargement, une seule saisie avec le mêm
       if (href.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (href.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
       if (href.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
-      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [], permissions: {} }]);
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [{ id: 'nom', nom: 'Nom', type: 'text' }], permissions: {} }]);
       if (href.includes('/rest/v1/submissions') && method === 'POST') {
         assert.match(href, /on_conflict=environment_code,idempotency_key/);
         const key = body.idempotency_key;
@@ -1338,7 +1338,7 @@ test('B6 : une saisie bureau en ligne sans clé crée deux lignes', async () => 
       if (href.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (href.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
       if (href.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
-      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', permissions: {} }]);
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
       if (href.includes('/rest/v1/submissions') && method === 'POST') {
         posts.push(href);
         assert.equal(href.includes('on_conflict'), false);
@@ -1797,7 +1797,7 @@ test('deux saisies bureau identiques donnent deux lignes, la clé dérivée exig
       if (href.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (href.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
       if (href.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
-      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', fields: [], permissions: {} }]);
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
       if (href.includes('/rest/v1/submissions') && method === 'POST') {
         const key = body.idempotency_key || '';
         if (key && submissions.has(key)) return jsonResponse(200, []);

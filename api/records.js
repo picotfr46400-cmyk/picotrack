@@ -9,6 +9,7 @@ const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChang
 const { assertWritableEmail } = require('./_email');
 const access = require('./_access');
 const { handleLabels } = require('./_labels');
+const fieldValidation = require('./_field-validation');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -1416,9 +1417,11 @@ async function handleSave(req, body) {
     }
   }
   if (entity === 'submissions') {
+    let existingSubmission = null;
     if (id) {
       const existing = await mustRead(req, 'submissions', id, env);
       if (!existing) throw Object.assign(new Error('Introuvable.'), { status: 404 });
+      existingSubmission = existing;
       await assertSubmissionWritable(req, profile, catalog, services, existing, env);
       const nextForm = record.form_id || source?.formId;
       if (nextForm && String(nextForm) !== String(existing.form_id || '')) {
@@ -1427,7 +1430,17 @@ async function handleSave(req, body) {
     } else {
       await assertFormWritable(req, profile, catalog, services, record.form_id || source?.formId, env);
     }
-    auditForm = await readFormForSubmission(req, record.form_id || source?.formId, env);
+    auditForm = await readFormForSubmission(req, record.form_id || source?.formId || existingSubmission?.form_id, env);
+    // Validation des champs sur la définition relue en base (jamais celle du client).
+    if (Object.prototype.hasOwnProperty.call(record, 'values') && auditForm) {
+      const sameForm = existingSubmission && String(auditForm.id) === String(existingSubmission.form_id || '');
+      record.values = fieldValidation.assertValidSubmission({
+        fields: auditForm.fields,
+        values: record.values,
+        previous: sameForm ? (existingSubmission.values || {}) : null,
+        channel: String(record.device || existingSubmission?.device || '').toLowerCase() === 'pad' ? 'pad' : 'sup'
+      });
+    }
   }
   if (entity === 'appointments') {
     let formId = record.form_id || source?.formId;
@@ -2234,7 +2247,7 @@ async function handler(req, res) {
     if (/PT409|Créneau complet/i.test(String(err && err.message || ''))) {
       return json(res, 409, { error: 'Créneau complet : choisissez un autre créneau.', code: 'slot_full' });
     }
-    return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}) });
+    return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}), ...(err.fieldErrors ? { fields: err.fieldErrors } : {}) });
   }
 }
 

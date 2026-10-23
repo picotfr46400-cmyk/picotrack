@@ -112,6 +112,7 @@ test('cache-buster : clé AAAAMMJJ-N absente du registre des clés servies', () 
   assertFreshCache(revs, 'qrcode.js', 'assets/qrcode.js');
   assertFreshCache(revs, 'labels-core.js', 'assets/labels-core.js');
   assertFreshCache(revs, 'labels.js', 'assets/labels.js');
+  assertFreshCache(revs, 'field-validation.js', 'api/_field-validation.js');
   assertFreshCache(revs, 'pad-device.js', 'pad-device.js');
 });
 
@@ -141,11 +142,11 @@ test('previews Vercel : le shell n’est pas figé, les assets versionnés reste
   assert.match(csp && csp.value || '', /https:\/\/\*\.vercel\.app/);
 });
 
-test('index.html : Babel absent, React conservé, cache-buster 20261022-1 sur le bundle modifié', () => {
+test('index.html : Babel absent, React conservé, cache-buster 20261023-1 sur le bundle modifié', () => {
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261022-1/g) || []).length, 2);
+  assert.equal((html.match(/app\.secured\.js\?v=20261023-1/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261008y/);
   assert.match(html, /pad-device\.js\?v=20261008a/);
   assert.equal(html.includes('20260916c'), false);

@@ -29,4 +29,6 @@ for (const extra of ['qrcode.js', 'labels-core.js', 'labels.js']) {
   if (!fs.existsSync(extraPath)) throw new Error(`${extra} manquant`);
   fs.copyFileSync(extraPath, path.join(out, 'assets', extra));
 }
+// Validation des champs partagée serveur / navigateur : une seule source (api/_field-validation.js).
+fs.copyFileSync(path.join('api', '_field-validation.js'), path.join(out, 'assets', 'field-validation.js'));
 console.log('PicoTrack build : asset courant + overlay core-supervision + portail public publiés.');

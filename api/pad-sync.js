@@ -3,6 +3,7 @@ const { sendJson, setCors, verifyToken, sbRest } = require('./_pad-security');
 const submissionAudit = require('./_submission-audit');
 const { notifyAfterWrite, processMailQueue, continueAfterResponse, invocationDeadline, OPPORTUNISTIC_LIMIT, requestOrigin } = require('./_mail-rules');
 const access = require('./_access');
+const fieldValidation = require('./_field-validation');
 
 const REQUEST_DEADLINE_MS = 10000;
 const MIN_CALL_MS = 50;
@@ -692,10 +693,14 @@ async function handler(req, res) {
         const serviceId = item.type === 'service_instance' ? String(inst.service_id || payload.serviceId || payload.service_id || '') : '';
         const statusId = serviceId ? String(inst.current_status_id || inst.status_id || payload.statusId || payload.status_id || '') : '';
         const [form, service] = await Promise.all([
-          formId ? loadById(req, 'forms', environmentCode, formId, 'id,permissions') : null,
+          formId ? loadById(req, 'forms', environmentCode, formId, 'id,permissions,fields') : null,
           serviceId ? loadById(req, 'services', environmentCode, serviceId, 'id,form_id,permissions') : null
         ]);
         await assertPadWrite(profile, catalog, serviceIndex, form, formId, service, serviceId, statusId);
+        if (form && (item.type === 'form_submission' || item.type === 'service_instance')) {
+          // Même validation que /api/records, sur la définition relue en base.
+          payload.values = fieldValidation.assertValidSubmission({ fields: form.fields, values: payload.values || {}, previous: null, channel: 'pad' });
+        }
         if (item.type === 'form_submission') {
           const written = await insertSubmission(req, environmentCode, payload, resolved.key);
           const row = written.row;
