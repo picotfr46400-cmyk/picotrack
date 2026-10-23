@@ -3972,6 +3972,25 @@ function ptAutoShowHistory(){var el=document.getElementById('pt-auto-mail-histor
   function findById(id){ var k=S(id).trim(); if(!k) return null; return list().find(function(x){ return x && S(x.id)===k; }) || null; }
   function serviceOf(inst){ var k=S(inst && (inst.serviceId || inst.service_id)); return services().find(function(s){ return s && S(s.id)===k; }) || null; }
   function isOrphan(inst){ return !!inst && !serviceOf(inst); }
+  // V2-20261023c : orphelin UNIQUEMENT si le serveur confirme que le service n'existe pas.
+  // Un service créé après le chargement du cache (ou un id chaîne/nombre) n'est jamais pris pour un service supprimé.
+  // executeAction d'origine compare en === : on aligne le type de serviceId sur celui du service en cache.
+  function alignServiceId(inst, svc){ try{ if(svc && inst.serviceId!==svc.id) inst.serviceId=svc.id; }catch(_){} }
+  async function confirmOrphan(inst){
+    if(!inst) return false;
+    var known=serviceOf(inst); if(known){ alignServiceId(inst, known); return false; }
+    var k=S(inst.serviceId || inst.service_id).trim(); if(!k) return false;
+    var rows;
+    try{ rows=await DB.list('services',{ select:'*', filters:[{ column:'id', op:'eq', value:k }], limit:1 }); }
+    catch(err){ try{ console.warn('[PicoTrack] vérification service impossible, action laissée au serveur', err&&err.message||err); }catch(_){} return false; }
+    if(!Array.isArray(rows)) return false;
+    if(!rows.length) return true;
+    var svc=rows[0]; try{ if(typeof mapServiceFromDb==='function') svc=mapServiceFromDb(svc); }catch(_){}
+    var arr=services(); if(!arr.some(function(x){ return x && S(x.id)===S(svc.id); })) arr.push(svc);
+    alignServiceId(inst, serviceOf(inst) || svc);
+    try{ if(typeof window.ptEnsureServicesLoaded==='function') window.ptEnsureServicesLoaded(true); else if(typeof ptEnsureServicesLoaded==='function') ptEnsureServicesLoaded(true); }catch(_){}
+    return false;
+  }
 
   // Si le dossier n'est pas (encore) en mémoire, on le relit par id auprès du serveur.
   async function ensureInstance(id){
@@ -3993,7 +4012,7 @@ function ptAutoShowHistory(){var el=document.getElementById('pt-auto-mail-histor
     window.executeAction=async function(instanceId, actionId){
       var inst=await ensureInstance(instanceId);
       if(!inst) return toastSafe('e','Dossier service introuvable (#'+S(instanceId)+')');
-      if(isOrphan(inst)) return toastSafe('e', orphanMsg(inst));
+      if(await confirmOrphan(inst)) return toastSafe('e', orphanMsg(inst));
       return origExec.call(this, inst.id, actionId);
     };
   }
@@ -4001,7 +4020,7 @@ function ptAutoShowHistory(){var el=document.getElementById('pt-auto-mail-histor
   if(typeof origSubmit==='function'){
     window.submitLinkedForm=async function(){
       var modal=document.getElementById('linked-form-modal');
-      if(modal && modal.dataset.instId){ var inst=await ensureInstance(modal.dataset.instId); if(inst && isOrphan(inst)) return toastSafe('e', orphanMsg(inst)); }
+      if(modal && modal.dataset.instId){ var inst=await ensureInstance(modal.dataset.instId); if(inst && await confirmOrphan(inst)) return toastSafe('e', orphanMsg(inst)); }
       return origSubmit.apply(this, arguments);
     };
   }
@@ -4010,12 +4029,12 @@ function ptAutoShowHistory(){var el=document.getElementById('pt-auto-mail-histor
     window.openInstanceDetail=async function(id){
       var inst=await ensureInstance(id);
       if(!inst) return toastSafe('e','Dossier service introuvable (#'+S(id)+')');
-      if(isOrphan(inst)) return toastSafe('e', orphanMsg(inst));
+      if(await confirmOrphan(inst)) return toastSafe('e', orphanMsg(inst));
       return origOpen.call(this, inst.id);
     };
   }
 
-  // Référence suivante : max des références déjà connues pour ce motif (tous services), jamais un compteur remis à zéro au rechargement.
+  // Référence suivante : séquence GLOBALE par motif (ex. SVC-{YYYY}-{0000}) sur tous les services, car la référence est unique par environnement (api/_instance-ref.js) : un nouveau service poursuit la numérotation (ex. SVC-2026-0005), jamais un compteur remis à zéro. Pour une numérotation propre au service, lui donner un motif distinct (idPattern).
   function nextRef(service, instances, counters){
     var pattern=S(service && service.idPattern) || 'SVC-{YYYY}-{0000}';
     if(pattern.indexOf('{0000}')<0) return null;
@@ -4031,6 +4050,7 @@ function ptAutoShowHistory(){var el=document.getElementById('pt-auto-mail-histor
     return pre+String(max+1).padStart(4,'0')+post;
   }
   window.ptNextServiceRef=nextRef;
+  window.ptConfirmOrphan=confirmOrphan;
 
   // Dossiers urgents : UNE seule règle pour la cloche, la tuile « Dossiers urgents », les cartes service et le panneau.
   // Urgent = dossier d'un service actif, statut non terminal, créé il y a plus de 24 h.
