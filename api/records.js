@@ -1445,12 +1445,16 @@ async function handleSave(req, body) {
       const targetEnv = record.environment_code || existingSubmission?.environment_code || env;
       const fields = fieldValidation.formFieldsOrThrow(await readFormStrict(req, formId), targetEnv, formId);
       const sameForm = existingSubmission && String(formId) === String(existingSubmission.form_id || '');
+      // Auteur : clé système posée par le serveur uniquement (jamais celle envoyée par le client).
+      if (record.values && typeof record.values === 'object' && !Array.isArray(record.values)) delete record.values._author;
       record.values = fieldValidation.assertValidSubmission({
         fields,
         values: record.values,
         previous: sameForm ? (existingSubmission.values || {}) : null,
         channel: 'sup'
       });
+      if (!existingSubmission) record.values._author = submissionAuthorStamp(profile);
+      else if (!sameForm) delete record.values._author;
     }
   }
   if (entity === 'appointments') {
@@ -1995,6 +1999,14 @@ async function handleCurrentProfile(req) {
 function cleanSubmissionId(value) {
   const id = String(value ?? '').trim();
   return /^[A-Za-z0-9_-]{1,80}$/.test(id) ? id : '';
+}
+
+// Auteur réel d'une saisie, stocké dans values._author à la création (id + nom affiché).
+function submissionAuthorStamp(profile) {
+  const name = submissionAuthorName(profile).replace(/\s+/g, ' ').trim().slice(0, 120);
+  const stamp = { name: name || 'Utilisateur' };
+  if (profile && profile.id) stamp.id = String(profile.id).slice(0, 80);
+  return stamp;
 }
 
 function submissionAuthorName(profile) {

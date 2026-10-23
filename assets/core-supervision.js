@@ -319,11 +319,21 @@
       listFp(dataList('services')),
       listFp(dataList('instances')),
       String(window._prodServicesAssignee || 'all'),
-      String(window._prodServicesPriority || 'all'),
-      String(window._prodServicesQuery || ''),
+      // Variables `let` du script principal : invisibles sur window, lues directement.
+      String(execVar('priority') || 'all'),
+      String(execVar('query') || ''),
       JSON.stringify(window._prodServicesExtra || {}),
-      String(window._prodServicesViewMode || '')
+      String(execVar('view') || '')
     ].join('|');
+  }
+
+  function execVar(kind) {
+    /* global _prodServicesPriority, _prodServicesQuery, _prodServicesViewMode */
+    try {
+      if (kind === 'priority') return typeof _prodServicesPriority !== 'undefined' ? _prodServicesPriority : window._prodServicesPriority;
+      if (kind === 'query') return typeof _prodServicesQuery !== 'undefined' ? _prodServicesQuery : window._prodServicesQuery;
+      return typeof _prodServicesViewMode !== 'undefined' ? _prodServicesViewMode : window._prodServicesViewMode;
+    } catch (_) { return ''; }
   }
 
   function wrapPainter(name, getRoot, fpFn) {
@@ -660,7 +670,8 @@
   window.ptResetExecFilters = function () {
     window._prodServicesAssignee = 'all';
     window._prodServicesExtra = { sla: 'all', waiting: false, unassigned: false };
-    if (typeof _prodServicesPriority !== 'undefined') window._prodServicesPriority = 'all';
+    try { if (typeof _prodServicesPriority !== 'undefined') _prodServicesPriority = 'all'; } catch (_) { /* lecture seule */ }
+    window._prodServicesPriority = 'all';
     var prio = document.querySelector('.exec-toolbar-v2 select.exec-select');
     if (prio) prio.value = 'all';
     populateResponsableSelect();
@@ -671,7 +682,8 @@
   };
 
   window.ptOpenMoreExecFilters = function () {
-    window.ptToggleExecFilters();
+    // « Plus de filtres » ouvre le panneau, ne le referme jamais.
+    if (!document.getElementById('pt-exec-filter-panel')) window.ptToggleExecFilters();
     var panel = document.getElementById('pt-exec-filter-panel');
     if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
@@ -1409,6 +1421,8 @@
         ev.preventDefault();
         window.importForms();
       }
+      // Repli seulement si le bouton n'a pas son propre onclick (sinon double bascule : ouvre puis referme).
+      if (btn.getAttribute('onclick')) return;
       if (btn.classList.contains('exec-filter-btn') && /Plus de filtres/.test(label)) {
         ev.preventDefault();
         window.ptOpenMoreExecFilters();
@@ -1532,6 +1546,16 @@
         if (planningCacheFresh() && window.ptNavShouldSkip('renderPlanning', el, fp)) return;
         if (planningCacheFresh() && typeof ptPlanningShell === 'function') {
           paintPlanningFromCache(el, window._ptPlanningCache);
+          return;
+        }
+        // KO13 : cache périmé mais même période → affichage immédiat, relecture en arrière-plan.
+        var range = planningRangeKey();
+        if (Array.isArray(window._ptPlanningCache) && (!window._ptPlanningCacheRange || window._ptPlanningCacheRange === range) && typeof ptPlanningShell === 'function' && typeof window.ptLoadPlanningAppointments === 'function') {
+          paintPlanningFromCache(el, window._ptPlanningCache);
+          Promise.resolve(window.ptLoadPlanningAppointments()).then(function (rows) {
+            var v = document.getElementById('v-planning');
+            if (v && v.classList.contains('on') && planningRangeKey() === range) paintPlanningFromCache(el, rows);
+          }).catch(function (e) { console.warn('[planning] relecture', e && e.message); });
           return;
         }
         var ret = await origRender.apply(this, arguments);
@@ -3077,6 +3101,7 @@
     return role === 'admin' || role === 'client_admin' || role === 'environment_admin';
   }
 
+  window.ptCanManageUsersClient = function (user) { return ptCanManageUsersClient(user); };
   function ptCanManageUsersClient(user) {
     user = user || ptUser();
     if (!user || user.active === false) return false;

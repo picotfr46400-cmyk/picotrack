@@ -653,7 +653,7 @@ function formatSubmissionDocument(input) {
     environmentCode,
     formName: clip(source.formName, 160) || 'Formulaire',
     dateLabel: formatSubmissionDate(source.createdAt),
-    author: clip(source.author, 120) || deviceAuthor(source.device),
+    author: clip(source.author, 120) || clip(values._author && typeof values._author === 'object' ? values._author.name : '', 120) || deviceAuthor(source.device),
     status: clip(source.status, 80) || 'Enregistrée',
     reference: clip(source.reference, 80) || '—',
     fields: rows,

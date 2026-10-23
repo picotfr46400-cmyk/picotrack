@@ -307,6 +307,8 @@ test('enregistrement, cloisonnement, auteur serveur, et échec de journal non bl
     assert.equal(created.body.environment_code, 'EFC');
     assert.equal(created.body.actor_id, 'sup-1');
     assert.equal(created.body.actor_name, 'Marie Martin');
+    const subPost = writes.find((row) => row.url.includes('/rest/v1/submissions') && row.method === 'POST');
+    assert.deepEqual(subPost && subPost.body.values._author && subPost.body.values._author.name, 'Marie Martin', 'auteur réel posé par le serveur sur la saisie');
     assert.equal(created.body.actor_role, 'supervision_user');
     assert.equal(created.body.actor_license_type, 'supervision');
     assert.equal(created.body.origin, 'supervision');
@@ -565,7 +567,7 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
 test('la frise de traçabilité interroge le serveur et filtre sans réécrire l’historique', () => {
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /core-supervision\.js\?v=20261008y/);
+  assert.match(html, /core-supervision\.js\?v=20261023-2/);
   assert.match(overlay, /action: 'submission_trace'/);
   assert.match(overlay, /Europe\/Paris/);
   assert.match(overlay, /data-pt-trace-filter/);
