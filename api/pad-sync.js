@@ -48,13 +48,22 @@ function canonicalValue(value) {
   return value;
 }
 
+// _author est posé par le serveur après validation : il ne doit pas changer la clé d'idempotence.
+function withoutServerStamp(content) {
+  const values = content && content.values;
+  if (!values || typeof values !== 'object' || Array.isArray(values) || !Object.prototype.hasOwnProperty.call(values, '_author')) return content;
+  const rest = Object.assign({}, values);
+  delete rest._author;
+  return Object.assign({}, content, { values: rest });
+}
+
 function deriveIdempotencyKey(parts) {
   const anchor = String(parts.localId || '').trim() || String(parts.createdAt || '').trim();
   const material = JSON.stringify([
     String(parts.license || ''),
     String(parts.form || ''),
     anchor,
-    canonicalValue(parts.content == null ? {} : parts.content)
+    canonicalValue(withoutServerStamp(parts.content == null ? {} : parts.content))
   ]);
   return 'legacy:' + crypto.createHash('sha256').update(material).digest('hex');
 }
@@ -606,6 +615,16 @@ async function notifyPadMail(req, mailWrites, session, license) {
   }
 }
 
+// Auteur réel d'une saisie tablette : le compte PAD connecté (jamais une valeur du client).
+function padAuthorStamp(license) {
+  const l = license || {};
+  const full = [l.firstname || l.first_name, l.lastname || l.last_name].map(v => String(v || '').trim()).filter(Boolean).join(' ');
+  const name = String(full || l.label || l.login_user || l.username || l.device_name || l.email || 'Tablette').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const stamp = { name, device: 'pad' };
+  if (l.id) stamp.id = String(l.id).slice(0, 80);
+  return stamp;
+}
+
 function padMailProfile(license, session) {
   return {
     email: license && license.email || '',
@@ -719,7 +738,10 @@ async function handler(req, res) {
         if (item.type === 'form_submission' || item.type === 'service_instance') {
           // Même validation que /api/records, sur la définition relue en base. Échec fermé.
           if (item.type === 'form_submission' || fieldValidation.hasValues(payload.values)) {
-            payload.values = await validatePadValues(req, environmentCode, formId, payload.values || {}, null, 'pad', form);
+            const incoming = payload.values && typeof payload.values === 'object' && !Array.isArray(payload.values) ? payload.values : {};
+            delete incoming._author; // clé système posée par le serveur uniquement
+            payload.values = await validatePadValues(req, environmentCode, formId, incoming, null, 'pad', form);
+            if (item.type === 'form_submission') payload.values._author = padAuthorStamp(license);
           }
           if (item.type === 'service_instance' && fieldValidation.hasValues(inst.form_data)) {
             if (!service) throw refusalError(404, 'Service introuvable.');

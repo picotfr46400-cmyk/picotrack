@@ -56,6 +56,15 @@
     }).then(function () { state.loading = null; });
     return state.loading;
   }
+  window.ptLabelsPrefetch = function () { return ensureLoaded(); };
+  // Après un enregistrement : on applique la ligne renvoyée tout de suite, la relecture complète part en arrière-plan.
+  function upsertLocal(list, row) {
+    if (!row || row.id == null) return false;
+    var i = list.findIndex(function (x) { return String(x.id) === String(row.id); });
+    if (i >= 0) list[i] = row; else list.push(row);
+    list.sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || '')); });
+    return true;
+  }
   function ensureLoaded() {
     if (state.loaded && state.env === envCode()) return Promise.resolve();
     return load(true);
@@ -425,9 +434,12 @@
     root.querySelector('[data-testprint]').onclick = function () { doPrint(t, [sampleCtx()], 'html'); };
     root.querySelector('[data-save]').onclick = function () {
       var btn = this; btn.disabled = true;
-      api('labels_save_template', { id: t.id || null, template: t }).then(function () {
-        toast('s', 'Modèle enregistré.'); editor = null; return load(true);
-      }).then(paintLabels).catch(function (err) { toast('e', err.message || 'Enregistrement impossible.'); }).then(function () { btn.disabled = false; });
+      var lbl = btn.textContent; btn.textContent = 'Enregistrement…';
+      api('labels_save_template', { id: t.id || null, template: t }).then(function (res) {
+        toast('s', 'Modèle enregistré.'); editor = null;
+        if (upsertLocal(state.templates, res && res.template)) { paintLabels(); load(true).then(function () { if (!editor) paintLabels(); }); return; }
+        return load(true).then(paintLabels);
+      }).catch(function (err) { toast('e', err.message || 'Enregistrement impossible.'); btn.textContent = lbl; }).then(function () { btn.disabled = false; });
     };
   }
 
@@ -501,8 +513,14 @@
     f.querySelector('[data-fcancel]').onclick = function () { paintPrinters(); };
     f.querySelector('[data-fsave]').onclick = function () {
       var btn = this; btn.disabled = true;
-      api('labels_save_printer', { id: p.id || null, printer: p }).then(function () { toast('s', 'Imprimante enregistrée.'); return load(true); })
-        .then(function () { paintPrinters(); }).catch(function (e) { toast('e', e.message || 'Enregistrement impossible.'); btn.disabled = false; });
+      var lbl = btn.textContent; btn.textContent = 'Enregistrement…';
+      api('labels_save_printer', { id: p.id || null, printer: p }).then(function (res) {
+        toast('s', 'Imprimante enregistrée.');
+        var row = res && res.printer;
+        if (row && row.is_default) state.printers.forEach(function (x) { if (String(x.id) !== String(row.id)) x.is_default = false; });
+        if (upsertLocal(state.printers, row)) { paintPrinters(); load(true).then(function () { paintPrinters(); }); return; }
+        return load(true).then(function () { paintPrinters(); });
+      }).catch(function (e) { toast('e', e.message || 'Enregistrement impossible.'); btn.disabled = false; btn.textContent = lbl; });
     };
   }
   function testPage(p) {
