@@ -257,6 +257,13 @@
     const type = canonicalType(action.type) || action.type;
     const key = suppliedIdempotencyKey(action);
     if (type === 'workflow_step' && key) absorbStepFiles(payload, key);
+    // Valeurs des champs masqués retirées avec le vrai canal (web = supervision, sinon PAD).
+    const fv = typeof globalThis !== 'undefined' ? globalThis.PtFieldValidation : null;
+    const formFields = payload.form && Array.isArray(payload.form.fields) ? payload.form.fields : null;
+    const channel = action.channel === 'web' ? 'sup' : 'pad';
+    if (fv && fv.stripHidden && formFields && payload.values && typeof payload.values === 'object') {
+      payload.values = fv.stripHidden(formFields, payload.values, channel);
+    }
     if (type === 'service_instance') {
       const instance = Object.assign({}, payload.instance || {});
       if (instance.form_data == null && payload.values != null) instance.form_data = payload.values;

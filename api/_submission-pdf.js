@@ -552,6 +552,12 @@ function plainText(value) {
   return '';
 }
 
+function numberUnit(field, type, raw) {
+  if (type !== 'number' || raw == null || raw === '' || typeof raw === 'object') return '';
+  const unit = clip(String(field.unite || '').trim(), 20);
+  return unit ? ' ' + unit : '';
+}
+
 function formatAnswer(type, value, images, budget) {
   const kind = String(type || '').toLowerCase();
   if (value == null || value === '') return '—';
@@ -614,7 +620,7 @@ function formatSubmissionDocument(input) {
     const images = [];
     rows.push({
       label: clip((field.groupId != null && groupNames[String(field.groupId)] ? groupNames[String(field.groupId)] + ' › ' : '') + (field.nom || field.label || field.name || id || 'Champ'), 160) || 'Champ',
-      value: formatAnswer(type, raw, images, budget) + (raw && typeof raw === 'object' && raw.annotated ? ' (photo annotée + originale)' : ''),
+      value: formatAnswer(type, raw, images, budget) + numberUnit(field, type, raw) + (raw && typeof raw === 'object' && raw.annotated ? ' (photo annotée + originale)' : ''),
       images
     });
   });

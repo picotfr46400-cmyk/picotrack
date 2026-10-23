@@ -178,6 +178,12 @@ async function runPadHandler() {
     insert into public.licenses (id, environment_code, license_key, license_type, label, email, role, device_name, active)
     values (${licenseId}, 'EFC', 'pad-e2e', 'pad', 'Tablette', 'pad@efc.picotrack.fr', 'pad_user', 'Tab', true);
   `);
+  // Formulaire 1 relu en base par pad-sync (validation serveur, échec fermé si absent).
+  psql(`
+    delete from public.forms where id = 1;
+    insert into public.forms (id, nom, environment_code, fields, permissions)
+    values (1, 'Contrôle', 'EFC', '[{"id":"client","nom":"Client","type":"text"},{"id":"note","nom":"Note","type":"text"}]'::jsonb, '{}'::jsonb);
+  `);
   psql(`
     alter table public.user_profiles add column if not exists role text;
     alter table public.user_profiles add column if not exists roles jsonb;

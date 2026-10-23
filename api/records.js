@@ -9,6 +9,7 @@ const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChang
 const { assertWritableEmail } = require('./_email');
 const access = require('./_access');
 const { handleLabels } = require('./_labels');
+const fieldValidation = require('./_field-validation');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -1050,6 +1051,14 @@ async function readFormForSubmission(req, formId, env) {
   return rows[0] || null;
 }
 
+// Lecture du formulaire par id, sans filtre d'environnement : le contrôle d'environnement
+// est fait par formFieldsOrThrow (404 inconnu, 400 autre environnement). Base muette : 503.
+async function readFormStrict(req, formId) {
+  if (!formId) return null;
+  const rows = await readStrictRows(req, `forms?id=eq.${encodeURIComponent(formId)}&select=id,environment_code,fields&limit=1`);
+  return rows[0] || null;
+}
+
 async function readServiceForInstance(req, serviceId, env) {
   if (!serviceId) return null;
   let path = `services?id=eq.${encodeURIComponent(serviceId)}&select=*&limit=1`;
@@ -1416,9 +1425,11 @@ async function handleSave(req, body) {
     }
   }
   if (entity === 'submissions') {
+    let existingSubmission = null;
     if (id) {
       const existing = await mustRead(req, 'submissions', id, env);
       if (!existing) throw Object.assign(new Error('Introuvable.'), { status: 404 });
+      existingSubmission = existing;
       await assertSubmissionWritable(req, profile, catalog, services, existing, env);
       const nextForm = record.form_id || source?.formId;
       if (nextForm && String(nextForm) !== String(existing.form_id || '')) {
@@ -1427,7 +1438,20 @@ async function handleSave(req, body) {
     } else {
       await assertFormWritable(req, profile, catalog, services, record.form_id || source?.formId, env);
     }
-    auditForm = await readFormForSubmission(req, record.form_id || source?.formId, env);
+    auditForm = await readFormForSubmission(req, record.form_id || source?.formId || existingSubmission?.form_id, env);
+    // Validation des champs sur la définition relue en base (jamais celle du client). Échec fermé.
+    if (Object.prototype.hasOwnProperty.call(record, 'values')) {
+      const formId = record.form_id || source?.formId || existingSubmission?.form_id;
+      const targetEnv = record.environment_code || existingSubmission?.environment_code || env;
+      const fields = fieldValidation.formFieldsOrThrow(await readFormStrict(req, formId), targetEnv, formId);
+      const sameForm = existingSubmission && String(formId) === String(existingSubmission.form_id || '');
+      record.values = fieldValidation.assertValidSubmission({
+        fields,
+        values: record.values,
+        previous: sameForm ? (existingSubmission.values || {}) : null,
+        channel: 'sup'
+      });
+    }
   }
   if (entity === 'appointments') {
     let formId = record.form_id || source?.formId;
@@ -1483,6 +1507,23 @@ async function handleSave(req, body) {
   let previousInstance = null;
   if (entity === 'service_instances' && id) {
     previousInstance = await readOneById(req, 'service_instances', id, record.environment_code || env);
+  }
+  if (entity === 'service_instances') {
+    // form_data validé comme une saisie : formulaire du service relu en base, ancien form_data en previous.
+    const incoming = source && source.form_data !== undefined ? source.form_data : record.form_data;
+    if (fieldValidation.hasValues(incoming)) {
+      const targetEnv = record.environment_code || previousInstance?.environment_code || env;
+      const service = auditService || await readServiceForInstance(req, record.service_id || previousInstance?.service_id, targetEnv);
+      if (!service) throw Object.assign(new Error('Service introuvable.'), { status: 404 });
+      const fields = fieldValidation.formFieldsOrThrow(await readFormStrict(req, service.form_id), targetEnv, service.form_id);
+      const checked = fieldValidation.assertValidSubmission({
+        fields,
+        values: incoming,
+        previous: previousInstance ? (previousInstance.form_data || {}) : null,
+        channel: 'sup'
+      });
+      if (Object.prototype.hasOwnProperty.call(record, 'form_data')) record.form_data = checked;
+    }
   }
 
   if (entity === 'user_profiles' || entity === 'licenses' || entity === 'app_roles') {
@@ -1619,7 +1660,7 @@ async function handleSave(req, body) {
         events: source && source.events !== undefined ? source.events : record.events,
         files: source && source.files,
         comment: source && source.comment
-      }, uuidKey ? suppliedKey.toLowerCase() : suppliedKey, profile);
+      }, uuidKey ? suppliedKey.toLowerCase() : suppliedKey, profile, 'sup');
     } catch (err) {
       throw padSync.normalizeSyncError(err);
     }
@@ -2234,7 +2275,7 @@ async function handler(req, res) {
     if (/PT409|Créneau complet/i.test(String(err && err.message || ''))) {
       return json(res, 409, { error: 'Créneau complet : choisissez un autre créneau.', code: 'slot_full' });
     }
-    return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}) });
+    return json(res, err.status || 500, { error: err.message || 'Erreur API records', ...(err.logs ? { logs: err.logs } : {}), ...(err.fieldErrors ? { fields: err.fieldErrors } : {}) });
   }
 }
 
