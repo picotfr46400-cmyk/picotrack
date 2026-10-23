@@ -1443,7 +1443,8 @@
       var terminal = statuses.filter(function (st) { return st && st.type === 'terminal'; }).map(function (st) { return st.id; });
       var active = t.filter(function (inst) { return terminal.indexOf(inst.currentStatusId) < 0; });
       var parseMs = typeof _svcParseDateMs === 'function' ? _svcParseDateMs : function () { return 0; };
-      var urgent = active.filter(function (inst) { return Date.now() - parseMs(inst.createdAt) > 864e5; }).length;
+      // V2-20261023b : même règle que la cloche et le panneau.
+      var urgent = (typeof window.ptUrgentForService === 'function' ? window.ptUrgentForService(svc) : active.filter(function (inst) { return Date.now() - parseMs(inst.createdAt) > 864e5; })).length;
       var waiting = active.filter(function (inst) {
         var st = statuses.find(function (s) { return s.id === inst.currentStatusId; });
         return String((st && st.nom) || '').toLowerCase().indexOf('attente') >= 0;
