@@ -341,3 +341,18 @@ test('Android : PrintActivity déclarée, ZPL seul, IP privées, permission Blue
   assert.match(java, /getBondedDevices/);
   assert.match(java, /AlertDialog/);
 });
+
+test('production : clé PRINTER_SECRET_KEY dédiée obligatoire (pas de repli sur la clé de service)', () => {
+  const labels = require('./_labels.js');
+  const saved = { v: process.env.VERCEL_ENV, k: process.env.PRINTER_SECRET_KEY };
+  try {
+    delete process.env.PRINTER_SECRET_KEY;
+    process.env.VERCEL_ENV = 'production';
+    assert.throws(() => labels.deps.secret({ headers: { host: 'localhost' } }), /PRINTER_SECRET_KEY/);
+    process.env.PRINTER_SECRET_KEY = 'cle-dediee-test';
+    assert.equal(labels.deps.secret({ headers: { host: 'localhost' } }), 'cle-dediee-test');
+  } finally {
+    if (saved.v === undefined) delete process.env.VERCEL_ENV; else process.env.VERCEL_ENV = saved.v;
+    if (saved.k === undefined) delete process.env.PRINTER_SECRET_KEY; else process.env.PRINTER_SECRET_KEY = saved.k;
+  }
+});

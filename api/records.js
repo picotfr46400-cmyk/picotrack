@@ -2011,6 +2011,9 @@ function submissionAuthorStamp(profile) {
 
 function submissionAuthorName(profile) {
   if (!profile || typeof profile !== 'object') return '';
+  // Nom affiché du profil d'abord, puis prénom + nom, puis libellé, l'email en dernier recours.
+  const display = String(profile.display_name || profile.full_name || '').replace(/\s+/g, ' ').trim();
+  if (display) return display;
   const name = [profile.firstname || profile.first_name, profile.lastname || profile.last_name]
     .map(part => String(part || '').trim())
     .filter(Boolean)

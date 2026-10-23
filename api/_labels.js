@@ -157,6 +157,10 @@ const deps = {
     try { prefix = ss.prefixForHost(ss.requestHost(req)) || ''; } catch (_) {}
     const own = (prefix && process.env[`${prefix}_PRINTER_SECRET_KEY`]) || process.env.PRINTER_SECRET_KEY;
     if (own && String(own).trim()) return String(own).trim();
+    // En production, une clé dédiée est obligatoire : pas de repli sur la clé de service.
+    if (process.env.VERCEL_ENV === 'production') {
+      throw deny(500, `Clé de chiffrement des imprimantes absente : définir ${prefix ? prefix + '_PRINTER_SECRET_KEY ou ' : ''}PRINTER_SECRET_KEY dans l’environnement de production.`);
+    }
     try { return ss.getSupabaseConfig(req).serviceRole || ''; } catch (_) { return ''; }
   },
   allowPrivate(req) {
