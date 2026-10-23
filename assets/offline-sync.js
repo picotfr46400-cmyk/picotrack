@@ -223,7 +223,7 @@
       const extra = pending ? ' · ' + pending + ' action' + (pending > 1 ? 's' : '') + ' en attente' : '';
       return { level: 'offline', text: 'Hors ligne' + extra, retry: false };
     }
-    if (state && state.syncing) return { level: 'sync', text: 'Synchronisation en cours', retry: false };
+    if (state && state.syncing) return { level: 'sync', text: 'Synchronisation en cours', retry: false, pending: pending };
     if (state && state.sessionPaused) {
       return {
         level: 'error',
@@ -257,6 +257,13 @@
     const type = canonicalType(action.type) || action.type;
     const key = suppliedIdempotencyKey(action);
     if (type === 'workflow_step' && key) absorbStepFiles(payload, key);
+    // Valeurs des champs masqués retirées avec le vrai canal (web = supervision, sinon PAD).
+    const fv = typeof globalThis !== 'undefined' ? globalThis.PtFieldValidation : null;
+    const formFields = payload.form && Array.isArray(payload.form.fields) ? payload.form.fields : null;
+    const channel = action.channel === 'web' ? 'sup' : 'pad';
+    if (fv && fv.stripHidden && formFields && payload.values && typeof payload.values === 'object') {
+      payload.values = fv.stripHidden(formFields, payload.values, channel);
+    }
     if (type === 'service_instance') {
       const instance = Object.assign({}, payload.instance || {});
       if (instance.form_data == null && payload.values != null) instance.form_data = payload.values;
@@ -1204,15 +1211,26 @@
     return true;
   }
 
+  function shouldShowStatus(view) {
+    if (!view || view.level === 'ok') return false;
+    if (view.level === 'sync' && !(Number(view.pending) > 0)) return false;
+    return true;
+  }
+
   function paintStatus(doc, view, onRetry) {
     if (!doc || !doc.body) return;
     let node = doc.getElementById('pt-offline-status');
+    // Tout est envoyé : aucun bandeau. Il n'apparaît que s'il reste des actions en attente, rejetées ou en erreur.
+    if (!shouldShowStatus(view)) {
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+      return;
+    }
     if (!node) {
       node = doc.createElement('div');
       node.id = 'pt-offline-status';
       node.setAttribute('role', 'status');
       node.setAttribute('aria-live', 'polite');
-      node.style.cssText = 'position:fixed;left:12px;right:12px;top:64px;z-index:10050;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;font:700 13px system-ui,sans-serif;box-shadow:0 10px 30px rgba(15,23,42,.25)';
+      node.style.cssText = 'position:fixed;right:12px;bottom:12px;max-width:min(420px,calc(100vw - 24px));z-index:10050;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;font:600 12px system-ui,sans-serif;box-shadow:0 4px 14px rgba(15,23,42,.18)';
       doc.body.appendChild(node);
     }
     const colors = { ok: ['#ecfdf5', '#065f46'], offline: ['#1e293b', '#e2e8f0'], sync: ['#fffbeb', '#92400e'], pending: ['#eff6ff', '#1d4ed8'], error: ['#fef2f2', '#991b1b'] };
@@ -1350,6 +1368,7 @@
     backoffMs: backoffMs,
     classifySyncResult: classifySyncResult,
     statusView: statusView,
+    shouldShowStatus: shouldShowStatus,
     logoutDecision: logoutDecision,
     toWireAction: toWireAction,
     suppliedIdempotencyKey: suppliedIdempotencyKey,

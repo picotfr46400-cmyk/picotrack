@@ -132,3 +132,227 @@ test('ZPL : format en points et UTF-8', () => {
   assert.match(z, /\^BQN,2,\d+\^FDMA,x/);
   assert.match(z, /\^XZ$/);
 });
+
+/* ---------- connexions d'imprimante (Système, Bluetooth, TCP/IP, FTP) ---------- */
+const ftp = require('./_printer-ftp');
+const net = require('net');
+
+test('imprimante : validation par type de connexion', () => {
+  const sys = labels.cleanPrinter({ name: 'A', connection: 'nope', rotation: 45, dpi: 152, site: ' Cahors ' });
+  assert.equal(sys.connection, 'system');
+  assert.equal(sys.rotation, 0);
+  assert.equal(sys.dpi, 152);
+  assert.equal(sys.site, 'Cahors');
+  assert.equal(sys.address, '');
+  const bt = labels.cleanPrinter({ name: 'B', connection: 'bluetooth', address: 'ac-3f-a4-01-02-0f', rotation: 90 });
+  assert.equal(bt.address, 'AC:3F:A4:01:02:0F');
+  assert.equal(bt.kind, 'zpl');
+  assert.equal(bt.rotation, 90);
+  assert.throws(() => labels.cleanPrinter({ name: 'B', connection: 'bluetooth', address: 'zebra' }), /Bluetooth invalide/);
+  const tcp = labels.cleanPrinter({ name: 'T', connection: 'tcp', address: '192.168.1.50' });
+  assert.equal(tcp.port, 9100);
+  assert.throws(() => labels.cleanPrinter({ name: 'T', connection: 'tcp', address: '192.168.1.50', port: 70000 }), /Port invalide/);
+  assert.throws(() => labels.cleanPrinter({ name: 'T', connection: 'tcp', address: 'a b' }), /IP invalide/);
+  const f = labels.cleanPrinter({ name: 'F', connection: 'ftp', address: 'Print.Example.com', ftp_user: 'zebra', ftp_dir: '/zpl' });
+  assert.equal(f.port, 21);
+  assert.equal(f.address, 'print.example.com');
+  assert.throws(() => labels.cleanPrinter({ name: 'F', connection: 'ftp', address: 'x.fr', port: 22 }), /21 ou 1024/);
+  assert.throws(() => labels.cleanPrinter({ name: 'F', connection: 'ftp', address: 'x.fr', ftp_user: 'a\r\nDELE x' }), /FTP invalide/);
+  assert.throws(() => labels.cleanPrinter({ name: 'F', connection: 'ftp', address: 'x.fr', ftp_dir: '../etc' }), /Dossier/);
+  // Champs FTP ignorés pour un autre type
+  assert.equal(labels.cleanPrinter({ name: 'T', connection: 'tcp', address: '10.0.0.2', ftp_user: 'x' }).ftp_user, '');
+});
+
+test('FTP : mot de passe chiffré, jamais renvoyé au navigateur', async () => {
+  const realSecret = labels.deps.secret;
+  labels.deps.secret = () => 'cle-de-test';
+  try {
+    calls.length = 0;
+    responder = (p, o) => (o && o.method === 'POST') ? [Object.assign({ id: 3 }, o.body)] : [];
+    const res = await labels.handleLabels({}, { action: 'labels_save_printer', printer: { name: 'F', connection: 'ftp', address: 'print.example.com', ftp_password: 's3cret!' } }, admin);
+    const sent = calls.find(c => c.opts && c.opts.method === 'POST').opts.body;
+    assert.match(sent.ftp_password_enc, /^v1:/);
+    assert.ok(!JSON.stringify(sent).includes('s3cret!'));
+    assert.equal(ftp.decryptSecret(sent.ftp_password_enc, 'cle-de-test', 'GIT'), 's3cret!');
+    assert.throws(() => ftp.decryptSecret(sent.ftp_password_enc, 'cle-de-test', 'EFC'), /illisible/);
+    assert.equal(res.printer.ftp_password_set, true);
+    assert.equal(res.printer.ftp_password_enc, undefined);
+    assert.ok(!JSON.stringify(res).includes('v1:'));
+    // Chargement : jamais le chiffré
+    responder = (p) => String(p).includes('printer_profiles') ? [{ id: 3, name: 'F', connection: 'ftp', ftp_password_enc: sent.ftp_password_enc }] : [];
+    const loaded = await labels.handleLabels({}, { action: 'labels_load' }, admin);
+    assert.equal(loaded.printers[0].ftp_password_set, true);
+    assert.ok(!JSON.stringify(loaded).includes('v1:'));
+    // Modification sans mot de passe : la colonne n'est pas touchée ; effacement explicite : null
+    calls.length = 0;
+    responder = (p, o) => (o && o.method === 'PATCH') ? [Object.assign({ id: 3 }, o.body)] : [];
+    await labels.handleLabels({}, { action: 'labels_save_printer', id: '3', printer: { name: 'F', connection: 'ftp', address: 'print.example.com', ftp_password: '' } }, admin);
+    assert.equal('ftp_password_enc' in calls.find(c => c.opts.method === 'PATCH').opts.body, false);
+    calls.length = 0;
+    await labels.handleLabels({}, { action: 'labels_save_printer', id: '3', printer: { name: 'F', connection: 'tcp', address: '10.0.0.9' } }, admin);
+    assert.equal(calls.find(c => c.opts.method === 'PATCH').opts.body.ftp_password_enc, null);
+  } finally { labels.deps.secret = realSecret; }
+});
+
+test('FTP : classement des adresses (SSRF)', async () => {
+  for (const ip of ['127.0.0.1', '0.0.0.0', '169.254.169.254', '100.64.1.1', '224.0.0.1', '::1', 'fe80::1', '::ffff:127.0.0.1', '::ffff:169.254.169.254']) assert.equal(ftp.classifyAddress(ip), 'blocked', ip);
+  for (const ip of ['10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.20', 'fd00::1', '::ffff:192.168.1.2']) assert.equal(ftp.classifyAddress(ip), 'private', ip);
+  for (const ip of ['8.8.8.8', '172.32.0.1', '2a01:cb00::1']) assert.equal(ftp.classifyAddress(ip), 'public', ip);
+  await assert.rejects(ftp.resolveTarget('localhost'), /refusé/);
+  await assert.rejects(ftp.resolveTarget('metadata.google.internal'), /refusé/);
+  await assert.rejects(ftp.resolveTarget('127.0.0.1', { allowPrivate: true }), /refusée/);
+  await assert.rejects(ftp.resolveTarget('169.254.169.254', { allowPrivate: true }), /refusée/);
+  await assert.rejects(ftp.resolveTarget('192.168.1.20'), /privée/);
+  assert.equal(await ftp.resolveTarget('192.168.1.20', { allowPrivate: true }), '192.168.1.20');
+  // DNS qui renvoie une adresse interne : refusé ; une seule mauvaise adresse suffit
+  await assert.rejects(ftp.resolveTarget('evil.example', { lookup: async () => [{ address: '93.184.216.34' }, { address: '127.0.0.1' }] }), /refusée/);
+  assert.equal(await ftp.resolveTarget('ok.example', { lookup: async () => [{ address: '93.184.216.34' }] }), '93.184.216.34');
+  assert.equal(ftp.allowPrivate('ACME', { ACME_PRINTER_FTP_ALLOW_PRIVATE: '1' }), true);
+  assert.equal(ftp.allowPrivate('ACME', { EFC_PRINTER_FTP_ALLOW_PRIVATE: '1' }), false);
+  assert.throws(() => ftp.checkPort(22), /refusé/);
+  assert.equal(ftp.checkPort(2121), 2121);
+  assert.throws(() => ftp.ftpCommandSafe('a\r\nDELE b'), /invalide/);
+});
+
+test('FTP : garde-fous de l’action labels_print_ftp', async () => {
+  const realDeps = Object.assign({}, labels.deps);
+  const sentJobs = [];
+  labels.deps.secret = () => 'cle-de-test';
+  labels.deps.allowPrivate = () => false;
+  labels.deps.uploadFtp = async (o) => { sentJobs.push(o); return { bytes: o.content.length }; };
+  try {
+    const enc = ftp.encryptSecret('pw', 'cle-de-test', 'GIT');
+    const row = { id: 7, name: 'F', connection: 'ftp', address: 'print.example.com', port: 21, ftp_user: 'u', ftp_dir: '/zpl', ftp_password_enc: enc };
+    responder = () => [row];
+    labels.deps.resolveTarget = async () => '93.184.216.34';
+    const zpl = '^XA^FDok^FS^XZ';
+    // Lecteur simple (opérateur) autorisé, scope environnement dans la requête
+    calls.length = 0;
+    const res = await labels.handleLabels({}, { action: 'labels_print_ftp', printer_id: '7', zpl, address: '127.0.0.1' }, operator);
+    assert.equal(res.sent, true);
+    assert.match(calls[0].path, /^printer_profiles\?id=eq\.7&environment_code=eq\.GIT/);
+    assert.equal(sentJobs[0].address, '93.184.216.34');
+    assert.equal(sentJobs[0].password, 'pw');
+    assert.equal(sentJobs[0].dir, '/zpl');
+    assert.match(sentJobs[0].filename, /^picotrack-\d+-[0-9a-f]{6}\.zpl$/);
+    assert.ok(!JSON.stringify(res).includes('pw'));
+    // Contenu non ZPL, trop gros, imprimante absente, autre type, compte inactif
+    await assert.rejects(labels.handleLabels({}, { action: 'labels_print_ftp', printer_id: '7', zpl: 'USER x' }, admin), e => e.status === 400);
+    await assert.rejects(labels.handleLabels({}, { action: 'labels_print_ftp', printer_id: '7', zpl: '^XA' + 'x'.repeat(300 * 1024) + '^XZ' }, admin), e => e.status === 413);
+    await assert.rejects(labels.handleLabels({}, { action: 'labels_print_ftp', printer_id: 'x', zpl }, admin), e => e.status === 400);
+    await assert.rejects(labels.handleLabels({}, { action: 'labels_print_ftp', printer_id: '7', zpl }, Object.assign({}, admin, { active: false })), e => e.status === 403);
+    responder = () => [];
+    await assert.rejects(labels.handleLabels({}, { action: 'labels_print_ftp', printer_id: '7', zpl }, admin), e => e.status === 404);
+    responder = () => [Object.assign({}, row, { connection: 'tcp' })];
+    await assert.rejects(labels.handleLabels({}, { action: 'labels_print_ftp', printer_id: '7', zpl }, admin), /pas en FTP/);
+    // Le vrai garde SSRF s'applique à l'hôte enregistré
+    labels.deps.resolveTarget = ftp.resolveTarget;
+    responder = () => [Object.assign({}, row, { address: '10.0.0.5' })];
+    await assert.rejects(labels.handleLabels({}, { action: 'labels_print_ftp', printer_id: '7', zpl }, admin), /privée/);
+    responder = () => [Object.assign({}, row, { address: '127.0.0.1' })];
+    labels.deps.allowPrivate = () => true;
+    await assert.rejects(labels.handleLabels({}, { action: 'labels_print_ftp', printer_id: '7', zpl }, admin), /refusée/);
+    assert.equal(sentJobs.length, 1);
+  } finally { Object.assign(labels.deps, realDeps); }
+});
+
+test('FTP : envoi réel sur un serveur FTP local de test (PASV, IP annoncée ignorée)', async () => {
+  let stored = '';
+  let storedName = '';
+  const commands = [];
+  let lastData = null;
+  const dataServer = net.createServer(sock => { lastData = sock; sock.on('data', d => { stored += d.toString('utf8'); }); });
+  await new Promise(r => dataServer.listen(0, '127.0.0.1', r));
+  const dport = dataServer.address().port;
+  const ctrl = net.createServer(sock => {
+    sock.write('220 test\r\n');
+    let buf = '';
+    sock.on('data', chunk => {
+      buf += chunk;
+      let i;
+      while ((i = buf.indexOf('\r\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        commands.push(line.startsWith('PASS') ? 'PASS ***' : line);
+        if (line.startsWith('USER')) sock.write('331 pass\r\n');
+        else if (line.startsWith('PASS')) sock.write(line === 'PASS pw' ? '230 ok\r\n' : '530 no\r\n');
+        else if (line.startsWith('TYPE')) sock.write('200 ok\r\n');
+        else if (line.startsWith('CWD')) sock.write('250 ok\r\n');
+        else if (line === 'EPSV') sock.write('500 no\r\n');
+        // IP annoncée volontairement différente (rebond FTP) : le client doit l'ignorer.
+        else if (line === 'PASV') sock.write(`227 Entering Passive Mode (10,9,8,7,${dport >> 8},${dport & 255})\r\n`);
+        else if (line.startsWith('STOR')) {
+          storedName = line.slice(5);
+          sock.write('150 go\r\n');
+          lastData.on('end', () => sock.write('226 done\r\n'));
+        } else if (line === 'QUIT') sock.end('221 bye\r\n');
+      }
+    });
+  });
+  await new Promise(r => ctrl.listen(0, '127.0.0.1', r));
+  try {
+    const res = await ftp.uploadFtp({ address: '127.0.0.1', port: ctrl.address().port, user: 'zebra', password: 'pw', dir: '/zpl', filename: 'a.zpl', content: '^XA^FDÉté^FS^XZ', timeoutMs: 3000 });
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(stored, '^XA^FDÉté^FS^XZ');
+    assert.equal(storedName, 'a.zpl');
+    assert.ok(res.bytes > 0);
+    assert.deepEqual(commands.slice(0, 5), ['USER zebra', 'PASS ***', 'TYPE I', 'CWD /zpl', 'EPSV']);
+    await assert.rejects(ftp.uploadFtp({ address: '127.0.0.1', port: ctrl.address().port, user: 'zebra', password: 'bad', filename: 'a.zpl', content: '^XA^XZ', timeoutMs: 3000 }), /mot de passe refusé/);
+  } finally { ctrl.close(); dataServer.close(); }
+});
+
+test('ZPL : résolutions et rotations', () => {
+  const tpl = { width_mm: 100, height_mm: 50, elements: [
+    { type: 'text', x: 10, y: 5, w: 80, h: 10, size: 12, text: 'A' },
+    { type: 'barcode', source: 'text', text: 'ABC', x: 5, y: 20, w: 60, h: 15 }
+  ] };
+  const dots = { 152: [598, 299], 203: [799, 400], 300: [1181, 591], 600: [2362, 1181] };
+  for (const dpi of [152, 203, 300, 600]) {
+    const z = L.zplLabel(tpl, {}, { dpi });
+    assert.match(z, new RegExp('\\^PW' + dots[dpi][0] + '\\n\\^LL' + dots[dpi][1]), String(dpi));
+  }
+  assert.match(L.zplLabel(tpl, {}, { dpi: 150 }), /\^PW598/); // ancien 150 dpi = 6 dpmm
+  assert.match(L.zplLabel(tpl, {}, { dpi: 600 }), /\^BY6\^BCN/);
+  const r0 = L.zplLabel(tpl, {}, { dpi: 203, rotation: 0 });
+  assert.match(r0, /\^FO80,40\^A0N/);
+  const r90 = L.zplLabel(tpl, {}, { dpi: 203, rotation: 90 });
+  assert.match(r90, /\^PW400\n\^LL799/); // support tourné : largeur et longueur inversées
+  assert.match(r90, /\^FO280,80\^A0R/); // x = 50-5-10 = 35 mm, y = 10 mm
+  assert.match(r90, /\^BCR/);
+  const r180 = L.zplLabel(tpl, {}, { dpi: 203, rotation: 180 });
+  assert.match(r180, /\^PW799\n\^LL400/);
+  assert.match(r180, /\^FO80,280\^A0I/); // x = 100-10-80 = 10 mm, y = 50-5-10 = 35 mm
+  const r270 = L.zplLabel(tpl, {}, { dpi: 203, rotation: 270 });
+  assert.match(r270, /\^FO40,80\^A0B/); // x = 5 mm, y = 100-10-80 = 10 mm
+  assert.match(L.zplLabel(tpl, {}, { dpi: 203, rotation: 45 }), /\^A0N/);
+  assert.deepEqual(L.rotateBox({ x: 1, y: 2, w: 3, h: 4 }, 10, 20, 90), { x: 14, y: 1, w: 4, h: 3 });
+});
+
+test('Android : PrintActivity déclarée, ZPL seul, IP privées, permission Bluetooth', () => {
+  const fs = require('fs');
+  const root = path.join(__dirname, '../mobile/android/app/src/main');
+  const manifest = fs.readFileSync(path.join(root, 'AndroidManifest.xml'), 'utf8');
+  assert.match(manifest, /android:name="\.PrintActivity"/);
+  assert.match(manifest, /android:scheme="picotrack-print"/);
+  assert.match(manifest, /BLUETOOTH_CONNECT/);
+  const java = fs.readFileSync(path.join(root, 'java/fr/picotrack/pad/PrintActivity.java'), 'utf8');
+  assert.match(java, /startsWith\("\^XA"\)/);
+  assert.match(java, /privateIpv4\(addr\)/);
+  assert.match(java, /00001101-0000-1000-8000-00805F9B34FB/);
+  assert.match(java, /getBondedDevices/);
+  assert.match(java, /AlertDialog/);
+});
+
+test('production : clé PRINTER_SECRET_KEY dédiée obligatoire (pas de repli sur la clé de service)', () => {
+  const labels = require('./_labels.js');
+  const saved = { v: process.env.VERCEL_ENV, k: process.env.PRINTER_SECRET_KEY };
+  try {
+    delete process.env.PRINTER_SECRET_KEY;
+    process.env.VERCEL_ENV = 'production';
+    assert.throws(() => labels.deps.secret({ headers: { host: 'localhost' } }), /PRINTER_SECRET_KEY/);
+    process.env.PRINTER_SECRET_KEY = 'cle-dediee-test';
+    assert.equal(labels.deps.secret({ headers: { host: 'localhost' } }), 'cle-dediee-test');
+  } finally {
+    if (saved.v === undefined) delete process.env.VERCEL_ENV; else process.env.VERCEL_ENV = saved.v;
+    if (saved.k === undefined) delete process.env.PRINTER_SECRET_KEY; else process.env.PRINTER_SECRET_KEY = saved.k;
+  }
+});

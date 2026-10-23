@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('node:vm');
+const PAD_FORM = { id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', permissions: {}, fields: ['client', 'nom', 'note'].map((k) => ({ id: k, nom: k, type: 'text' })) };
 const audit = require('./_submission-audit');
 const records = require('./records');
 const pdf = require('./_submission-pdf');
@@ -306,6 +307,8 @@ test('enregistrement, cloisonnement, auteur serveur, et échec de journal non bl
     assert.equal(created.body.environment_code, 'EFC');
     assert.equal(created.body.actor_id, 'sup-1');
     assert.equal(created.body.actor_name, 'Marie Martin');
+    const subPost = writes.find((row) => row.url.includes('/rest/v1/submissions') && row.method === 'POST');
+    assert.deepEqual(subPost && subPost.body.values._author && subPost.body.values._author.name, 'Marie Martin', 'auteur réel posé par le serveur sur la saisie');
     assert.equal(created.body.actor_role, 'supervision_user');
     assert.equal(created.body.actor_license_type, 'supervision');
     assert.equal(created.body.origin, 'supervision');
@@ -328,7 +331,7 @@ test('enregistrement, cloisonnement, auteur serveur, et échec de journal non bl
       if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
       if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
-      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [], permissions: {} }]);
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
       if (u.includes('/rest/v1/submissions') && method === 'POST') return jsonResponse(200, [{ id: 'sub-ok', form_id: 'form-1', environment_code: 'EFC', values: { client: 'OK' } }]);
       return jsonResponse(200, []);
     };
@@ -520,6 +523,7 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
       const u = String(url);
       const method = options.method || 'GET';
       if (method !== 'GET' && options.body) writes.push({ url: u, method, body: JSON.parse(options.body) });
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [PAD_FORM]);
       if (u.includes('/rest/v1/licenses?')) {
         return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
       }
@@ -563,7 +567,7 @@ test('le passage d’étape, la suppression et la synchro PAD sont journalisés 
 test('la frise de traçabilité interroge le serveur et filtre sans réécrire l’historique', () => {
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /core-supervision\.js\?v=20261008y/);
+  assert.match(html, /core-supervision\.js\?v=20261023-2/);
   assert.match(overlay, /action: 'submission_trace'/);
   assert.match(overlay, /Europe\/Paris/);
   assert.match(overlay, /data-pt-trace-filter/);
@@ -814,6 +818,7 @@ test('un journal qui ne répond pas laisse la sauvegarde et la synchro sous 4 s'
       if (u.includes('/rest/v1/submissions') && method === 'POST') {
         return jsonResponse(200, [{ id: 'sub-new', form_id: 'form-1', environment_code: 'EFC', values: { client: 'Nord' } }]);
       }
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [PAD_FORM]);
       if (u.includes('/rest/v1/licenses?')) {
         return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
       }
@@ -881,6 +886,7 @@ test('une synchro PAD rejouée ne duplique ni la saisie ni l’événement', asy
       const method = options.method || 'GET';
       const decoded = decodeURIComponent(u);
       if (method !== 'GET' && options.body) writes.push({ url: u, method, prefer: options.headers && (options.headers.Prefer || options.headers.prefer), body: JSON.parse(options.body) });
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [PAD_FORM]);
       if (u.includes('/rest/v1/licenses?')) {
         return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
       }
@@ -1272,6 +1278,7 @@ test('une table de reçus absente ou trop lente ne refuse pas la synchro PAD', a
         const u = String(url);
         const method = options.method || 'GET';
         if (method !== 'GET' && options.body) writes.push({ url: u, method, body: JSON.parse(options.body) });
+        if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [PAD_FORM]);
         if (u.includes('/rest/v1/licenses?')) return license();
         if (u.includes('pad_sync_receipts')) return jsonResponse(404, { code: '42P01', message: 'relation "public.pad_sync_receipts" does not exist' });
         if (u.includes('/rest/v1/submissions') && method === 'POST') {
@@ -1338,6 +1345,7 @@ test('une table de reçus absente ou trop lente ne refuse pas la synchro PAD', a
       global.fetch = async (url, options = {}) => {
         const u = String(url);
         const method = options.method || 'GET';
+        if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [PAD_FORM]);
         if (u.includes('/rest/v1/licenses?')) return license();
         if (u.includes('pad_sync_receipts')) {
           receiptCalls += 1;
@@ -1382,6 +1390,7 @@ test('une erreur Postgres de synchro PAD répond 503 sans le message SQL', async
       global.fetch = async (url, options = {}) => {
         const u = String(url);
         const method = options.method || 'GET';
+        if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [PAD_FORM]);
         if (u.includes('/rest/v1/licenses?')) {
           return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette quai', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad_terrain', device_name: 'Galaxy Tab', active: true, environment_code: 'EFC' }]);
         }
@@ -1440,6 +1449,7 @@ test('une limite de temps en milieu de lot laisse les actions non commencées à
       const u = String(url);
       const method = options.method || 'GET';
       const decoded = decodeURIComponent(String(url));
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [PAD_FORM]);
       if (u.includes('/rest/v1/licenses?')) {
         return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', device_name: 'Tab', active: true, environment_code: 'EFC' }]);
       }
@@ -1511,6 +1521,7 @@ test('la licence puis le catalogue de l’acteur restent dans les 10 s', { timeo
       if ((method === 'GET' && (u.includes('/rest/v1/licenses?') || u.includes('/rest/v1/services?'))) || (String(method).toUpperCase() === 'POST' && u.includes('/rpc/app_roles_for_actor'))) {
         await new Promise((resolve) => setTimeout(resolve, 4000));
       }
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [PAD_FORM]);
       if (u.includes('/rest/v1/licenses?')) {
         return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', device_name: 'Tab', active: true, environment_code: 'EFC', roles: [] }]);
       }
@@ -1571,6 +1582,7 @@ test('un insert bloqué est coupé par le temps restant, sous 15 s', { timeout: 
     global.fetch = async (url, options = {}) => {
       const u = String(url);
       const method = options.method || 'GET';
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [PAD_FORM]);
       if (u.includes('/rest/v1/licenses?')) {
         return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', device_name: 'Tab', active: true, environment_code: 'EFC' }]);
       }
@@ -1630,7 +1642,7 @@ test('records PAD réutilise la même insertion atomique', async () => {
       if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
       if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
-      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [], permissions: {} }]);
+      if (u.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
       if (u.includes('/rest/v1/submissions') && method === 'POST') {
         assert.match(u, /on_conflict=environment_code,idempotency_key/);
         const body = JSON.parse(options.body);
@@ -1665,5 +1677,226 @@ test('records PAD réutilise la même insertion atomique', async () => {
     } finally {
       console.warn = previousWarn;
     }
+  });
+});
+
+/* ── PR #42 : form_data, champs masqués, canal serveur, échec fermé ─────────────────────────── */
+const GUARD_FIELDS = [
+  { id: 'note', nom: 'Note', type: 'text' },
+  { id: 'ref', nom: 'Référence', type: 'text', lectureSeule: true },
+  { id: 'qte', nom: 'Quantité', type: 'number', minEnabled: true, minValue: 0, maxEnabled: true, maxValue: 10 },
+  { id: 'motif', nom: 'Motif', type: 'text', conditions: [{ field: 'note', op: '=', val: 'ko' }] },
+  { id: 'tablette', nom: 'Tablette seulement', type: 'text', vis_sup: false, vis_nom: true },
+  { id: 'bureau', nom: 'Bureau seulement', type: 'text', vis_sup: true, vis_nom: false }
+];
+
+function guardBackend(opts = {}) {
+  const writes = [];
+  const profile = actor(opts.profile || {});
+  const fetch = async (url, options = {}) => {
+    const u = String(url);
+    const method = options.method || 'GET';
+    if (method !== 'GET' && options.body) writes.push({ url: u, method, body: JSON.parse(options.body) });
+    if (u.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
+    if (u.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
+    if (u.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
+    if (u.includes('/rest/v1/licenses?')) {
+      return jsonResponse(200, [{ id: 'lic-1', label: 'Tablette', email: 'pad@efc.picotrack.fr', role: 'pad_user', license_type: 'pad', device_name: 'Tab', active: true, environment_code: 'EFC' }]);
+    }
+    if (u.includes('/rest/v1/services?')) return jsonResponse(200, [{ id: 'svc-1', environment_code: 'EFC', form_id: 'form-1', statuses: [{ id: 'open', nom: 'Ouvert' }], permissions: {} }]);
+    if (u.includes('/rest/v1/forms?')) {
+      if (opts.formsDown) return jsonResponse(500, { message: 'down' });
+      const id = decodeURIComponent((u.match(/id=eq\.([^&]+)/) || [])[1] || '');
+      if (id === 'form-1') return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: GUARD_FIELDS, permissions: {} }]);
+      if (id === 'form-other' && !u.includes('environment_code=eq.EFC')) return jsonResponse(200, [{ id: 'form-other', environment_code: 'DEMO', fields: GUARD_FIELDS, permissions: {} }]);
+      return jsonResponse(200, []);
+    }
+    if (u.includes('/rest/v1/service_instances') && method === 'GET') {
+      return jsonResponse(200, [{ id: 'inst-1', environment_code: 'EFC', service_id: 'svc-1', submission_id: 'sub-1', current_status_id: 'open', status_id: 'open',
+        form_data: opts.instanceData || { note: 'ok', ref: 'R-1', qte: 2 }, events: [], updated_at: '2026-10-08T09:00:00.000Z' }]);
+    }
+    if (u.includes('/rest/v1/submissions') && method === 'GET' && opts.existingSub) return jsonResponse(200, [opts.existingSub]);
+    if (u.includes('/rest/v1/submissions') && method === 'PATCH') return jsonResponse(200, [{ ...opts.existingSub, ...JSON.parse(options.body) }]);
+    if (u.includes('/rest/v1/service_instances') && method === 'PATCH') return jsonResponse(200, [{ id: 'inst-1', environment_code: 'EFC', ...JSON.parse(options.body) }]);
+    if (u.includes('/rest/v1/submissions') && method === 'POST') {
+      const posted = JSON.parse(options.body);
+      return jsonResponse(201, [{ id: 'sub-new', environment_code: 'EFC', ...(Array.isArray(posted) ? posted[0] : posted) }]);
+    }
+    if (u.includes('/rest/v1/service_instances') && method === 'POST') {
+      const posted = JSON.parse(options.body);
+      return jsonResponse(201, [{ id: 'inst-new', environment_code: 'EFC', ...(Array.isArray(posted) ? posted[0] : posted) }]);
+    }
+    if (method === 'POST' || method === 'PATCH') return jsonResponse(200, []);
+    return jsonResponse(200, []);
+  };
+  return { fetch, writes };
+}
+
+const instanceWrites = (writes) => writes.filter((w) => w.url.includes('/rest/v1/service_instances') && (w.method === 'PATCH' || w.method === 'POST'));
+const submissionWrites = (writes) => writes.filter((w) => w.url.includes('/rest/v1/submissions') && w.method === 'POST');
+
+async function saveInstance(formData, opts) {
+  const backend = guardBackend(opts);
+  global.fetch = backend.fetch;
+  const out = await callJson(records, { action: 'save', entity: 'service_instances', id: 'inst-1', record: { service_id: 'svc-1', form_data: formData } });
+  return { out, writes: backend.writes };
+}
+
+test('records service_instances : form_data lecture seule → 403, valeur invalide → 400, champ inconnu → 400, rien n’est écrit', async () => {
+  await withSupabase(async () => {
+    let r = await saveInstance({ note: 'ok', ref: 'PIRATE', qte: 2 });
+    assert.equal(r.out.status, 403, JSON.stringify(r.out.payload));
+    assert.equal(instanceWrites(r.writes).length, 0);
+    r = await saveInstance({ note: 'ok', ref: 'R-1', qte: 99 });
+    assert.equal(r.out.status, 400);
+    assert.equal(instanceWrites(r.writes).length, 0);
+    r = await saveInstance({ note: 'ok', ref: 'R-1', qte: 2, inconnu: 'x' });
+    assert.equal(r.out.status, 400);
+    assert.equal(instanceWrites(r.writes).length, 0);
+  });
+});
+
+test('records service_instances : un form_data valide passe (ancien form_data en previous)', async () => {
+  await withSupabase(async () => {
+    const r = await saveInstance({ note: 'mise à jour', ref: 'R-1', qte: 3 });
+    assert.equal(r.out.status, 200, JSON.stringify(r.out.payload));
+    const w = instanceWrites(r.writes);
+    assert.equal(w.length, 1);
+    assert.equal(w[0].body.form_data.note, 'mise à jour');
+  });
+});
+
+test('champ masqué : visibilité recalculée côté serveur, la valeur d’un champ masqué est retirée sans rejet', async () => {
+  await withSupabase(async () => {
+    let r = await saveInstance({ note: 'ok', ref: 'R-1', qte: 2, motif: 'caché' });
+    assert.equal(r.out.status, 200, JSON.stringify(r.out.payload));
+    assert.equal(instanceWrites(r.writes)[0].body.form_data.motif, undefined);
+    r = await saveInstance({ note: 'ko', ref: 'R-1', qte: 2, motif: 'visible' });
+    assert.equal(r.out.status, 200, JSON.stringify(r.out.payload));
+  });
+});
+
+test('supervision inchangée : /api/records = canal sup, record.device = pad ne rend pas visible un champ tablette', async () => {
+  await withSupabase(async () => {
+    const backend = guardBackend();
+    global.fetch = backend.fetch;
+    const out = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-1', device: 'pad', values: { note: 'ok', tablette: 'forcé', bureau: 'gardé' } } });
+    assert.equal(out.status, 200, JSON.stringify(out.payload));
+    const w = submissionWrites(backend.writes);
+    assert.equal(w.length, 1);
+    const body = Array.isArray(w[0].body) ? w[0].body[0] : w[0].body;
+    assert.equal(body.values.tablette, undefined);
+    assert.equal(body.values.bureau, 'gardé');
+  });
+});
+
+test('records submissions : formulaire inconnu 404, autre environnement 400, base muette 503, jamais d’écriture', async () => {
+  await withSupabase(async () => {
+    for (const [formId, opts, status] of [['form-absent', {}, 404], ['form-other', {}, 400], ['form-1', { formsDown: true }, 503]]) {
+      const backend = guardBackend(opts);
+      global.fetch = backend.fetch;
+      const out = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: formId, values: { note: 'x' } } });
+      assert.equal(out.status, status, formId + ' ' + JSON.stringify(out.payload));
+      assert.equal(submissionWrites(backend.writes).length, 0);
+    }
+  });
+});
+
+async function padCall(actions, opts) {
+  const backend = guardBackend(opts);
+  global.fetch = backend.fetch;
+  const token = signPayload({ headers: { host: 'localhost' } }, { typ: 'pad', licenseId: 'lic-1', environmentCode: 'EFC', exp: Date.now() + 60_000 });
+  const out = await callJson(padSync, { pad: { sessionToken: token }, actions });
+  return { out, writes: backend.writes };
+}
+
+test('pad-sync service_instance : form_data validé (lecture seule 403, inconnu 400), une instance valide passe', async () => {
+  await withSupabase(async () => {
+    const action = (id, formData) => ({ id, type: 'service_instance', created_at: '2026-10-08T08:00:00.000Z',
+      payload: { formId: 'form-1', serviceId: 'svc-1', values: { note: 'ok' }, instance: { service_id: 'svc-1', status_id: 'open', current_status_id: 'open', form_data: formData } } });
+    let r = await padCall([action('pi-ro', { note: 'ok', ref: 'PIRATE' })]);
+    assert.equal(r.out.payload.results[0].status, 403, JSON.stringify(r.out.payload));
+    assert.equal(instanceWrites(r.writes).length, 0);
+    r = await padCall([action('pi-unk', { inconnu: 'x' })]);
+    assert.equal(r.out.payload.results[0].status, 400, JSON.stringify(r.out.payload));
+    assert.equal(instanceWrites(r.writes).length, 0);
+    r = await padCall([action('pi-ok', { note: 'ok', qte: 4, tablette: 'oui' })]);
+    assert.equal(r.out.payload.results[0].status, 'applied', JSON.stringify(r.out.payload));
+  });
+});
+
+test('pad-sync : champ visible seulement sur PAD gardé, champ masqué sur PAD retiré sans rejet (saisie de l’ancien client)', async () => {
+  await withSupabase(async () => {
+    const r = await padCall([{ id: 'ps-old', type: 'form_submission', created_at: '2026-10-08T08:00:00.000Z',
+      payload: { formId: 'form-1', values: { note: 'ok', tablette: 'gardé', bureau: 'retiré', motif: 'caché' } } }]);
+    assert.equal(r.out.payload.results[0].status, 'applied', JSON.stringify(r.out.payload));
+    const w = submissionWrites(r.writes);
+    assert.equal(w.length, 1);
+    const body = Array.isArray(w[0].body) ? w[0].body[0] : w[0].body;
+    assert.equal(body.values.tablette, 'gardé');
+    assert.equal(body.values.bureau, undefined);
+    assert.equal(body.values.motif, undefined);
+  });
+});
+
+test('pad-sync : formulaire inconnu 404, autre environnement 400, base muette 503', async () => {
+  await withSupabase(async () => {
+    const sub = (id, formId, values) => ({ id, type: 'form_submission', created_at: '2026-10-08T08:00:00.000Z', payload: { formId, values } });
+    let r = await padCall([sub('ps-404', 'form-absent', { note: 'x' })]);
+    assert.equal(r.out.payload.results[0].status, 404, JSON.stringify(r.out.payload));
+    r = await padCall([sub('ps-env', 'form-other', { note: 'x' })]);
+    assert.equal(r.out.payload.results[0].status, 400, JSON.stringify(r.out.payload));
+    assert.equal(submissionWrites(r.writes).length, 0);
+    r = await padCall([sub('ps-503', 'form-1', { note: 'x' })], { formsDown: true });
+    assert.ok(r.out.status === 503 || (r.out.payload.results && r.out.payload.results[0].status === 'retry'), JSON.stringify(r.out.payload));
+    assert.equal(submissionWrites(r.writes).length, 0);
+  });
+});
+
+test('pad-sync workflow_step : un champ en lecture seule modifié par l’étape est refusé (403)', async () => {
+  await withSupabase(async () => {
+    const r = await padCall([{ id: 'ws-ro', type: 'workflow_step', idempotency_key: '4f4f4f4f-4f4f-4f4f-8f4f-4f4f4f4f4f4f', created_at: '2026-10-08T08:00:00.000Z',
+      payload: { instanceId: 'inst-1', serviceId: 'svc-1', statusId: 'open', form_data: { ref: 'PIRATE' } } }]);
+    assert.equal(r.out.payload.results[0].status, 403, JSON.stringify(r.out.payload));
+    assert.equal(instanceWrites(r.writes).length, 0);
+  });
+});
+
+test('édition sup d’une saisie PAD : les champs propres au PAD restent identiques en base, un champ commun est écrit', async () => {
+  await withSupabase(async () => {
+    const existingSub = { id: 'sub-9', form_id: 'form-1', environment_code: 'EFC', device: 'pad', values: { note: 'ok', ref: 'R-1', tablette: 'terrain' } };
+    for (const values of [{ note: 'corrigé', ref: 'R-1' }, { note: 'corrigé', ref: 'R-1', tablette: 'écrasé' }]) {
+      const backend = guardBackend({ existingSub });
+      global.fetch = backend.fetch;
+      const out = await callJson(records, { action: 'save', entity: 'submissions', id: 'sub-9', record: { form_id: 'form-1', values } });
+      assert.equal(out.status, 200, JSON.stringify(out.payload));
+      const w = backend.writes.filter((x) => x.url.includes('/rest/v1/submissions') && x.method === 'PATCH');
+      assert.equal(w.length, 1);
+      assert.equal(w[0].body.values.tablette, 'terrain');
+      assert.equal(w[0].body.values.note, 'corrigé');
+    }
+  });
+});
+
+test('service_instances édité sur le web : form_data PAD conservé, champ commun écrit', async () => {
+  await withSupabase(async () => {
+    const r = await saveInstance({ note: 'web', tablette: 'écrasé' }, { instanceData: { note: 'ok', ref: 'R-1', tablette: 'terrain' } });
+    assert.equal(r.out.status, 200, JSON.stringify(r.out.payload));
+    const fd = instanceWrites(r.writes)[0].body.form_data;
+    assert.deepEqual(fd, { note: 'web', ref: 'R-1', tablette: 'terrain' });
+  });
+});
+
+test('inverse : saisie web éditée sur le PAD (étape), le champ bureau reste, le champ commun est écrit', async () => {
+  await withSupabase(async () => {
+    const r = await padCall([{ id: 'ws-inv', type: 'workflow_step', idempotency_key: '5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a', created_at: '2026-10-08T08:00:00.000Z',
+      payload: { instanceId: 'inst-1', serviceId: 'svc-1', statusId: 'open', form_data: { note: 'pad', bureau: 'écrasé' } } }],
+      { instanceData: { note: 'ok', ref: 'R-1', bureau: 'siège' } });
+    assert.equal(r.out.payload.results[0].status, 'applied', JSON.stringify(r.out.payload));
+    const patch = instanceWrites(r.writes).find((w) => w.method === 'PATCH');
+    const ev = patch.body.events[patch.body.events.length - 1];
+    assert.equal(ev.payload.fields.note, 'pad');
+    assert.equal(ev.payload.fields.bureau, undefined);
+    assert.equal(patch.body.form_data, undefined);
   });
 });

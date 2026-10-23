@@ -2733,14 +2733,14 @@ test('formulaire sans droit propre : le workflow le plus permissif décide', asy
   await withSupabase(async () => {
     const readOnly = accessWorld(ROLE_R);
     link(readOnly, 'svc-inherit-r', 'read', ROLE_R);
-    readOnly.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    readOnly.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [{ id: 'nom', nom: 'Nom', type: 'text' }] });
     installWorld(readOnly);
     const readSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'non' } } });
     assert.equal(readSave.status, 403, readSave.payload.error || '');
 
     const hiddenOnly = accessWorld(ROLE_H);
     link(hiddenOnly, 'svc-inherit-h', 'hidden', ROLE_H);
-    hiddenOnly.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    hiddenOnly.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [{ id: 'nom', nom: 'Nom', type: 'text' }] });
     installWorld(hiddenOnly);
     const hiddenSave = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'non' } } });
     assert.equal(hiddenSave.status, 404, hiddenSave.payload.error || '');
@@ -2750,7 +2750,7 @@ test('formulaire sans droit propre : le workflow le plus permissif décide', asy
     const both = accessWorld(ROLE_W);
     link(both, 'svc-inherit-r', 'read', ROLE_W);
     link(both, 'svc-inherit-w', 'write', ROLE_W);
-    both.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    both.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [{ id: 'nom', nom: 'Nom', type: 'text' }] });
     installWorld(both);
     const allowed = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'oui' } } });
     assert.equal(allowed.status, 200, allowed.payload.error || '');
@@ -2762,14 +2762,14 @@ test('formulaire sans droit propre : le workflow le plus permissif décide', asy
     const explicit = accessWorld(ROLE_W);
     explicit.app_roles.find(row => row.id === ROLE_W).permissions.access.forms['form-inherit'] = 'hidden';
     link(explicit, 'svc-inherit-w', 'write', ROLE_W);
-    explicit.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    explicit.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [{ id: 'nom', nom: 'Nom', type: 'text' }] });
     installWorld(explicit);
     const ownEntry = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'non' } } });
     assert.equal(ownEntry.status, 404, ownEntry.payload.error || '');
 
     const open = accessWorld([ROLE_H, ROLE_OPEN]);
     link(open, 'svc-inherit-h', 'hidden', ROLE_H);
-    open.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [] });
+    open.forms.push({ id: 'form-inherit', nom: 'Hérité', environment_code: 'EFC', permissions: {}, actif: true, fields: [{ id: 'nom', nom: 'Nom', type: 'text' }] });
     installWorld(open);
     const restored = await callJson(records, { action: 'save', entity: 'submissions', record: { form_id: 'form-inherit', values: { nom: 'oui' } } });
     assert.equal(restored.status, 200, restored.payload.error || '');
@@ -3863,7 +3863,7 @@ test('pad-sync : Chef en base, chef ou CHEF, la tablette garde les droits du web
     return withSupabase(async () => {
       const world = worldFor('supervision');
       world.app_roles = [chefRole, blocker, inspecteur];
-      world.forms = [{ id: formId, nom: 'Visite', environment_code: 'EFC', actif: true, fields: [], permissions: {} }];
+      world.forms = [{ id: formId, nom: 'Visite', environment_code: 'EFC', actif: true, fields: [{ id: 'nom', nom: 'Nom', type: 'text' }], permissions: {} }];
       world.licenses = [{
         id: 'lic-chef',
         email: 'chef@efc.picotrack.fr',
@@ -3899,7 +3899,7 @@ test('pad-sync : Chef en base, chef ou CHEF, la tablette garde les droits du web
     const world = worldFor('supervision');
     world.user_profiles[0].roles = ['CHEF', 'bloqueur'];
     world.app_roles = [chefRole, blocker, inspecteur];
-    world.forms = [{ id: formId, nom: 'Visite', environment_code: 'EFC', actif: true, fields: [], permissions: {} }];
+    world.forms = [{ id: formId, nom: 'Visite', environment_code: 'EFC', actif: true, fields: [{ id: 'nom', nom: 'Nom', type: 'text' }], permissions: {} }];
     installWorld(world);
     const saved = await callJson(records, {
       action: 'save', entity: 'forms', id: formId, record: { nom: 'Tenue web' }

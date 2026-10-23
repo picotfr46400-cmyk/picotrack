@@ -177,27 +177,43 @@
 
   // ZPL II (imprimantes Zebra et compatibles). ^CI28 = UTF-8.
   function zplEscape(s) { return String(s == null ? '' : s).replace(/[\^~\\]/g, ' '); }
+  var ZPL_DPIS = [152, 203, 300, 600];
+  var ZPL_ORIENT = { 0: 'N', 90: 'R', 180: 'I', 270: 'B' };
+  // Boîte (x, y, w, h) du modèle → position sur le support une fois tournée (sens horaire).
+  function rotateBox(el, W, H, rot) {
+    if (rot === 90) return { x: H - el.y - el.h, y: el.x, w: el.h, h: el.w };
+    if (rot === 180) return { x: W - el.x - el.w, y: H - el.y - el.h, w: el.w, h: el.h };
+    if (rot === 270) return { x: el.y, y: W - el.x - el.w, w: el.h, h: el.w };
+    return { x: el.x, y: el.y, w: el.w, h: el.h };
+  }
   function zplLabel(template, ctx, opts) {
     opts = opts || {};
     var dpi = Number(opts.dpi) || 203;
+    if (dpi === 150) dpi = 152;
+    var rot = [0, 90, 180, 270].indexOf(Number(opts.rotation)) >= 0 ? Number(opts.rotation) : 0;
+    var o = ZPL_ORIENT[rot];
     var margin = Number(opts.margin_mm) || 0;
+    var W = Number(template.width_mm), H = Number(template.height_mm);
     var d = function (mm) { return Math.max(0, Math.round((Number(mm) + 0) * dpi / 25.4)); };
-    var out = ['^XA', '^CI28', '^PW' + d(template.width_mm), '^LL' + d(template.height_mm), '^LH' + d(margin) + ',' + d(margin)];
+    var side = rot === 90 || rot === 270;
+    var by = Math.max(2, Math.round(2 * dpi / 203));
+    var out = ['^XA', '^CI28', '^PW' + d(side ? H : W), '^LL' + d(side ? W : H), '^LH' + d(margin) + ',' + d(margin)];
     (template.elements || []).forEach(function (el) {
       var v = resolveElement(el, ctx);
       if (!v) return;
-      var fo = '^FO' + d(el.x) + ',' + d(el.y);
+      var box = rotateBox(el, W, H, rot);
+      var fo = '^FO' + d(box.x) + ',' + d(box.y);
       if (el.type === 'qr') {
         var n = (qrMatrix(v) || [[]]).length + 4;
         var mag = Math.max(1, Math.min(10, Math.floor(d(Math.min(el.w, el.h)) / n)));
         out.push(fo + '^BQN,2,' + mag + '^FDMA,' + zplEscape(v) + '^FS');
       } else if (el.type === 'barcode') {
-        out.push(fo + '^BY2^BCN,' + Math.max(10, d(el.h) - (el.h > 8 ? d(3) : 0)) + ',' + (el.h > 8 ? 'Y' : 'N') + ',N,N^FD' + zplEscape(v) + '^FS');
+        out.push(fo + '^BY' + by + '^BC' + o + ',' + Math.max(10, d(el.h) - (el.h > 8 ? d(3) : 0)) + ',' + (el.h > 8 ? 'Y' : 'N') + ',N,N^FD' + zplEscape(v) + '^FS');
       } else {
         var dots = Math.max(10, Math.round(el.size * dpi / 72));
         var just = el.align === 'center' ? 'C' : el.align === 'right' ? 'R' : 'L';
         var lines = Math.max(1, Math.floor(d(el.h) / dots));
-        out.push(fo + '^A0N,' + dots + ',' + dots + '^FB' + d(el.w) + ',' + lines + ',0,' + just + '^FD' + zplEscape(v) + '^FS');
+        out.push(fo + '^A0' + o + ',' + dots + ',' + dots + '^FB' + d(el.w) + ',' + lines + ',0,' + just + '^FD' + zplEscape(v) + '^FS');
       }
     });
     out.push('^XZ');
@@ -232,7 +248,7 @@
   root.PTLabels = {
     PRESETS: PRESETS, code128Modules: code128Modules, barcodeSvg: barcodeSvg, qrMatrix: qrMatrix, qrSvg: qrSvg,
     valueText: valueText, resolveElement: resolveElement, labelHtml: labelHtml, printDocument: printDocument,
-    zplLabel: zplLabel, zplDocument: zplDocument, testTemplate: testTemplate, testFrameHtml: testFrameHtml, esc: esc, frDate: frDate
+    zplLabel: zplLabel, zplDocument: zplDocument, rotateBox: rotateBox, ZPL_DPIS: ZPL_DPIS, testTemplate: testTemplate, testFrameHtml: testFrameHtml, esc: esc, frDate: frDate
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.PTLabels;
 })(typeof window !== 'undefined' ? window : globalThis);

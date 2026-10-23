@@ -435,10 +435,10 @@ self.addEventListener('fetch',event=>{
   assert.equal(sw.includes('cache.add'), false);
   assert.equal(sw.includes('public.html'), false);
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
-  assert.match(html, /offline-sync\.js\?v=20261008x/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261008x/g) || []).length, 2);
-  assert.match(html, /core-supervision\.js\?v=20261008y/);
-  assert.match(html, /pad-device\.js\?v=20261008a/);
+  assert.match(html, /offline-sync\.js\?v=20261023-3/);
+  assert.equal((html.match(/app\.secured\.js\?v=20261023-4/g) || []).length, 2);
+  assert.match(html, /core-supervision\.js\?v=20261023-2/);
+  assert.match(html, /pad-device\.js\?v=20261023-2/);
   assert.match(fs.readFileSync(path.join(__dirname, '../build.js'), 'utf8'), /offline-sync\.js/);
   assert.equal(fs.readFileSync(path.join(__dirname, 'pad-sync.js'), 'utf8').includes('Type de file PAD inconnu'), true);
 });
@@ -615,6 +615,7 @@ test('pad-sync : la file réutilise la clé et le POST unique déduplique', asyn
         const key = decodeURIComponent((href.match(/idempotency_key=eq\.([^&]+)/) || [])[1] || '');
         return jsonResponse(200, submissions.has(key) ? [submissions.get(key)] : []);
       }
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [GENERIC_FORM('form-1')]);
       if (href.includes('/rpc/app_roles_for_actor') || href.includes('/services') || href.includes('/forms')) {
         return jsonResponse(200, []);
       }
@@ -697,6 +698,13 @@ test('une étape attend sa saisie refusée, une saisie indépendante part', asyn
   assert.equal(engine.list().some(action => action.payload && action.payload.values && action.payload.values.nom === 'libre'), false);
 });
 
+function GENERIC_FORM(id) {
+  return {
+    id, nom: 'Générique', environment_code: 'EFC', permissions: {},
+    fields: ['nom', 'client', 'deja', 'etape', 'lot', 'note', 'password'].map((k) => ({ id: k, nom: k, type: 'text' }))
+  };
+}
+
 function padBackend({ instances, services, submissions, patches, files }) {
   const fileRows = files || new Map();
   let fileSeq = fileRows.size;
@@ -724,7 +732,11 @@ function padBackend({ instances, services, submissions, patches, files }) {
     if (href.includes('/services') && method === 'GET') {
       const id = decodeURIComponent((href.match(/id=eq\.([^&]+)/) || [])[1] || '');
       const service = services.get(id);
-      return jsonResponse(200, service ? [service] : []);
+      return jsonResponse(200, service ? [{ form_id: 'form-1', ...service }] : []);
+    }
+    if (href.includes('/rest/v1/forms?') && method === 'GET') {
+      const id = decodeURIComponent((href.match(/id=eq\.([^&]+)/) || [])[1] || '');
+      return jsonResponse(200, id ? [GENERIC_FORM(id)] : []);
     }
     if (href.includes('/service_instances') && method === 'GET') {
       const id = decodeURIComponent((href.match(/id=eq\.([^&]+)/) || [])[1] || '');
@@ -873,7 +885,7 @@ test('web : réponse perdue, renvoi, rechargement, une seule saisie avec le mêm
       if (href.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (href.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
       if (href.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
-      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [], permissions: {} }]);
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Contrôle', environment_code: 'EFC', fields: [{ id: 'nom', nom: 'Nom', type: 'text' }], permissions: {} }]);
       if (href.includes('/rest/v1/submissions') && method === 'POST') {
         assert.match(href, /on_conflict=environment_code,idempotency_key/);
         const key = body.idempotency_key;
@@ -1338,7 +1350,7 @@ test('B6 : une saisie bureau en ligne sans clé crée deux lignes', async () => 
       if (href.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (href.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
       if (href.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
-      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', permissions: {} }]);
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
       if (href.includes('/rest/v1/submissions') && method === 'POST') {
         posts.push(href);
         assert.equal(href.includes('on_conflict'), false);
@@ -1797,7 +1809,7 @@ test('deux saisies bureau identiques donnent deux lignes, la clé dérivée exig
       if (href.includes('/auth/v1/user')) return jsonResponse(200, { id: profile.id, email: profile.email });
       if (href.includes('user_profiles?id=eq.sup-1')) return jsonResponse(200, [profile]);
       if (href.includes('active_device_sessions')) return jsonResponse(200, [{ id: 'sess' }]);
-      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', fields: [], permissions: {} }]);
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
       if (href.includes('/rest/v1/submissions') && method === 'POST') {
         const key = body.idempotency_key || '';
         if (key && submissions.has(key)) return jsonResponse(200, []);
@@ -1959,3 +1971,28 @@ function createFakeIndexedDB() {
 function openFake(db) {
   return new Promise((resolve) => { resolve(db); });
 }
+
+test('file hors ligne : valeurs masquées retirées avec le vrai canal (pad et sup), rejet gardé en file avec erreur', () => {
+  const prev = globalThis.PtFieldValidation;
+  globalThis.PtFieldValidation = require('./_field-validation');
+  try {
+    const fields = [{ id: 'p', type: 'text', vis_sup: false }, { id: 's', type: 'text', vis_nom: false }];
+    const base = { id: 'a1', type: 'form_submission', deviceCapturedAt: 't', payload: { formId: 'f', form: { id: 'f', fields }, values: { p: 'tab', s: 'bur' } } };
+    assert.deepEqual(offline.toWireAction(base).payload.values, { p: 'tab' });
+    assert.deepEqual(offline.toWireAction({ ...base, channel: 'web' }).payload.values, { s: 'bur' });
+    const inst = offline.toWireAction({ ...base, type: 'service_instance', payload: { ...base.payload, serviceId: 's1', instance: { service_id: 's1' } } });
+    assert.deepEqual(inst.payload.instance.form_data, { p: 'tab' });
+  } finally {
+    globalThis.PtFieldValidation = prev;
+  }
+  assert.equal(offline.classifySyncResult ? offline.classifySyncResult({ status: 400, error: 'x' }) : 'rejected', 'rejected');
+});
+
+test('bandeau de synchro : masqué quand tout est envoyé, visible en attente ou en erreur', () => {
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, pending: 0 })), false);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, syncing: true, pending: 0 })), false);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, syncing: true, pending: 2 })), true);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, pending: 1 })), true);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: true, pending: 0, rejected: [{ lastError: 'Champ invalide' }] })), true);
+  assert.equal(offline.shouldShowStatus(offline.statusView({ online: false, pending: 1 })), true);
+});

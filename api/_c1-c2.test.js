@@ -878,7 +878,7 @@ test('non-régression : le front EFC et le PAD passent la liste blanche', async 
       if (u.includes('user_profiles?id=eq.target-1')) return jsonResponse(200, [userTarget]);
       if (u.includes('/rest/v1/app_roles?')) return jsonResponse(200, EFC_CATALOG);
       if (u.includes('environment_license_limits')) return jsonResponse(200, [{ environment_code: 'EFC', supervision_limit: 10, pad_limit: 10 }]);
-      if (u.includes('forms?id=')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', permissions: {} }]);
+      if (u.includes('forms?id=')) return jsonResponse(200, [{ id: 'form-1', nom: 'Visite', environment_code: 'EFC', fields: [{ id: 'client', nom: 'Client', type: 'text' }], permissions: {} }]);
       if (u.includes('/rest/v1/user_profiles?environment_code=')) return jsonResponse(200, [userTarget]);
       if (u.includes('/rest/v1/licenses?')) return jsonResponse(200, []);
       if (method !== 'GET') return jsonResponse(200, [{ id: 'saved-1', ...(options.body ? JSON.parse(options.body) : {}) }]);

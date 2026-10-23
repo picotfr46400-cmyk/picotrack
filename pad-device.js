@@ -47,6 +47,9 @@
       var text = 'GPS: ' + lat.toFixed(6) + ', ' + lng.toFixed(6);
       if (Number.isFinite(accuracy)) text += ' (±' + Math.round(accuracy) + ' m)';
       if (typeof window.saisieChange === 'function') window.saisieChange(id, text);
+      // Le libellé à côté du bouton affiche la position capturée (plus « Non capturé »).
+      var label = btn && btn.parentNode && typeof btn.parentNode.querySelector === 'function' ? btn.parentNode.querySelector('span') : null;
+      if (label) label.textContent = '📍 ' + text;
       if (btn) {
         btn.disabled = false;
         btn.textContent = '✅ Capturé';

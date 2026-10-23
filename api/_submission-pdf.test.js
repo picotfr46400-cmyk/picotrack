@@ -1033,6 +1033,7 @@ function targetedForm(id, roleName) {
     id,
     nom: id,
     environment_code: 'EFC',
+    fields: [{ id: 'note', nom: 'Note', type: 'text' }],
     visible_roles: [roleName],
     permissions: { view: [roleName], submit: [roleName] }
   };
@@ -1173,7 +1174,7 @@ test('export PDF refuse un compte pad_user', async () => {
 
 test('le détail supervision expose Exporter en PDF via /api/records', async () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /core-supervision\.js\?v=20261008y/);
+  assert.match(html, /core-supervision\.js\?v=20261023-2/);
   const overlay = fs.readFileSync(path.join(__dirname, '../assets/core-supervision.js'), 'utf8');
   assert.match(overlay, /Exporter en PDF/);
   assert.match(overlay, /export_submission_pdf/);
@@ -1283,4 +1284,14 @@ test('le détail supervision expose Exporter en PDF via /api/records', async () 
   const link = body.children.find((child) => child.tag === 'a');
   assert.equal(link.download, 'saisie-sub-1.pdf');
   assert.equal(toasts.some((item) => item.kind === 's'), true);
+});
+
+test('PDF : unité des champs nombre', () => {
+  const doc = pdf.formatSubmissionDocument({
+    fields: [{ id: 'p', nom: 'Poids', type: 'number', unite: 'kg' }, { id: 'q', nom: 'Qté', type: 'number' }, { id: 'v', nom: 'Vide', type: 'number', unite: 'kg' }],
+    values: { p: 12.5, q: 3 }
+  });
+  assert.equal(doc.fields.find(f => f.label === 'Poids').value, '12.5 kg');
+  assert.equal(doc.fields.find(f => f.label === 'Qté').value, '3');
+  assert.equal(doc.fields.find(f => f.label === 'Vide').value, '—');
 });

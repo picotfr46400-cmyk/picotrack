@@ -15,7 +15,13 @@
          que l'installation liste l'usage photo / QR. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Impression d'étiquettes : Bluetooth (imprimante appairée) et TCP/IP local (PrintActivity). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <uses-feature android:name="android.hardware.location.network" android:required="false" />
 
@@ -131,6 +137,21 @@
             android:name=".WebViewFallbackActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize" />
+
+        <!-- Lien picotrack-print://print ouvert par la page PicoTrack (intent:// depuis Chrome). -->
+        <activity
+            android:name=".PrintActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="picotrack-print" android:host="print" />
+            </intent-filter>
+        </activity>
 
         <provider
             android:name="androidx.core.content.FileProvider"
