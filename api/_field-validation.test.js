@@ -58,7 +58,8 @@ test('lecture seule : modifier → 403, valeur par défaut ou absente acceptée'
   const prev = good({ ref: 'R-7' });
   assert.equal(check(good({ ref: 'R-7' }), { previous: prev }).ok, true);
   assert.equal(check(good({ ref: 'R-8' }), { previous: prev }).status, 403);
-  assert.equal(check(good(), { previous: prev }).status, 403, 'effacer un champ en lecture seule est une modification');
+  assert.equal(check(good(), { previous: prev }).ok, true, 'champ absent : valeur stockée conservée (jamais de remplacement complet)');
+  assert.equal(check(good({ ref: '' }), { previous: prev }).status, 403, 'effacer un champ en lecture seule est une modification');
 });
 
 test('signature : PNG seul, 200 Ko max, SVG refusé', () => {
@@ -91,7 +92,7 @@ test('pas de revalidation rétroactive : valeur inchangée non recontrôlée', (
   assert.equal(check({ client: 'ab', ancien_champ: 'gardé', statut: 'ok' }, { previous: old }).ok, true);
   assert.equal(check({ client: 'ab', ancien_champ: 'modifié' }, { previous: old }).status, 400);
   assert.equal(check({ client: 'xy', ancien_champ: 'gardé' }, { previous: old }).status, 400);
-  assert.equal(check({ ancien_champ: 'gardé' }, { previous: old }).status, 400, 'vider un obligatoire visible est refusé');
+  assert.equal(check({ client: '', ancien_champ: 'gardé' }, { previous: old }).status, 400, 'vider un obligatoire visible est refusé');
 });
 
 test('validateurs historiques et avancé : jamais de code exécuté côté serveur', () => {
@@ -245,4 +246,14 @@ test('PR #42 : valeur sur champ masqué retirée, stripHidden côté navigateur,
   assert.throws(() => V.formFieldsOrThrow({ environment_code: 'EFC', fields: 'pas du json' }, 'EFC', 'f'), (e) => e.status === 400);
   assert.throws(() => V.formFieldsOrThrow(null, 'EFC', ''), (e) => e.status === 400);
   assert.deepEqual(V.formFieldsOrThrow({ environment_code: 'EFC', fields: '[{"id":"a"}]' }, 'EFC', 'f'), [{ id: 'a' }]);
+});
+
+test('PR #42 : modification = valeur stockée + champs visibles du canal ; inverse PAD', () => {
+  const V = require('./_field-validation');
+  const fields = [{ id: 'c', type: 'text' }, { id: 'p', type: 'text', vis_sup: false }, { id: 's', type: 'text', vis_nom: false }];
+  const sup = V.validateSubmission({ fields, values: { c: 'web', p: 'x' }, previous: { c: 'a', p: 'terrain', s: 'siège' }, channel: 'sup' });
+  assert.deepEqual(sup.values, { c: 'web', p: 'terrain', s: 'siège' });
+  const pad = V.validateSubmission({ fields, values: { c: 'pad', s: 'x' }, previous: { c: 'a', p: 'terrain', s: 'siège' }, channel: 'pad' });
+  assert.deepEqual(pad.values, { c: 'pad', p: 'terrain', s: 'siège' });
+  assert.deepEqual(V.validateSubmission({ fields, values: { c: 'n', p: 'x' }, channel: 'sup' }).values, { c: 'n' });
 });

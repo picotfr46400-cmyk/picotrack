@@ -270,6 +270,10 @@
       if (f && isLayout(f.type)) return; // mise en page : pas de donnée (comme ptStripLayoutValues)
       clean[k] = values[k];
     });
+    // Modification : on part de la valeur stockée, jamais de remplacement complet.
+    if (previous) {
+      Object.keys(previous).forEach(function (k) { if (!own(clean, k)) clean[k] = previous[k]; });
+    }
     var changed = function (k) { return !previous || !same(clean[k], previous[k]); };
 
     Object.keys(clean).forEach(function (k) {
@@ -293,7 +297,9 @@
       var visible = isVisible(f, fields, clean, channel);
       if (!visible) {
         // Visibilité recalculée ici (conditions + canal de l'endpoint + groupe) : la valeur d'un champ masqué est retirée, sans rejet.
-        if (own(clean, k)) { delete clean[k]; removed.push(k); }
+        // Création : valeur retirée. Modification : l'ancienne valeur est conservée, la tentative est ignorée.
+        if (previous && own(previous, k)) { clean[k] = previous[k]; removed.push(k); }
+        else if (own(clean, k)) { delete clean[k]; removed.push(k); }
         return;
       }
       if (lower(f.type) === 'signature' || lower(f.type) === 'sign') {

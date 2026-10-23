@@ -1711,8 +1711,10 @@ function guardBackend(opts = {}) {
     }
     if (u.includes('/rest/v1/service_instances') && method === 'GET') {
       return jsonResponse(200, [{ id: 'inst-1', environment_code: 'EFC', service_id: 'svc-1', submission_id: 'sub-1', current_status_id: 'open', status_id: 'open',
-        form_data: { note: 'ok', ref: 'R-1', qte: 2 }, events: [], updated_at: '2026-10-08T09:00:00.000Z' }]);
+        form_data: opts.instanceData || { note: 'ok', ref: 'R-1', qte: 2 }, events: [], updated_at: '2026-10-08T09:00:00.000Z' }]);
     }
+    if (u.includes('/rest/v1/submissions') && method === 'GET' && opts.existingSub) return jsonResponse(200, [opts.existingSub]);
+    if (u.includes('/rest/v1/submissions') && method === 'PATCH') return jsonResponse(200, [{ ...opts.existingSub, ...JSON.parse(options.body) }]);
     if (u.includes('/rest/v1/service_instances') && method === 'PATCH') return jsonResponse(200, [{ id: 'inst-1', environment_code: 'EFC', ...JSON.parse(options.body) }]);
     if (u.includes('/rest/v1/submissions') && method === 'POST') {
       const posted = JSON.parse(options.body);
@@ -1855,5 +1857,44 @@ test('pad-sync workflow_step : un champ en lecture seule modifié par l’étape
       payload: { instanceId: 'inst-1', serviceId: 'svc-1', statusId: 'open', form_data: { ref: 'PIRATE' } } }]);
     assert.equal(r.out.payload.results[0].status, 403, JSON.stringify(r.out.payload));
     assert.equal(instanceWrites(r.writes).length, 0);
+  });
+});
+
+test('édition sup d’une saisie PAD : les champs propres au PAD restent identiques en base, un champ commun est écrit', async () => {
+  await withSupabase(async () => {
+    const existingSub = { id: 'sub-9', form_id: 'form-1', environment_code: 'EFC', device: 'pad', values: { note: 'ok', ref: 'R-1', tablette: 'terrain' } };
+    for (const values of [{ note: 'corrigé', ref: 'R-1' }, { note: 'corrigé', ref: 'R-1', tablette: 'écrasé' }]) {
+      const backend = guardBackend({ existingSub });
+      global.fetch = backend.fetch;
+      const out = await callJson(records, { action: 'save', entity: 'submissions', id: 'sub-9', record: { form_id: 'form-1', values } });
+      assert.equal(out.status, 200, JSON.stringify(out.payload));
+      const w = backend.writes.filter((x) => x.url.includes('/rest/v1/submissions') && x.method === 'PATCH');
+      assert.equal(w.length, 1);
+      assert.equal(w[0].body.values.tablette, 'terrain');
+      assert.equal(w[0].body.values.note, 'corrigé');
+    }
+  });
+});
+
+test('service_instances édité sur le web : form_data PAD conservé, champ commun écrit', async () => {
+  await withSupabase(async () => {
+    const r = await saveInstance({ note: 'web', tablette: 'écrasé' }, { instanceData: { note: 'ok', ref: 'R-1', tablette: 'terrain' } });
+    assert.equal(r.out.status, 200, JSON.stringify(r.out.payload));
+    const fd = instanceWrites(r.writes)[0].body.form_data;
+    assert.deepEqual(fd, { note: 'web', ref: 'R-1', tablette: 'terrain' });
+  });
+});
+
+test('inverse : saisie web éditée sur le PAD (étape), le champ bureau reste, le champ commun est écrit', async () => {
+  await withSupabase(async () => {
+    const r = await padCall([{ id: 'ws-inv', type: 'workflow_step', idempotency_key: '5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a', created_at: '2026-10-08T08:00:00.000Z',
+      payload: { instanceId: 'inst-1', serviceId: 'svc-1', statusId: 'open', form_data: { note: 'pad', bureau: 'écrasé' } } }],
+      { instanceData: { note: 'ok', ref: 'R-1', bureau: 'siège' } });
+    assert.equal(r.out.payload.results[0].status, 'applied', JSON.stringify(r.out.payload));
+    const patch = instanceWrites(r.writes).find((w) => w.method === 'PATCH');
+    const ev = patch.body.events[patch.body.events.length - 1];
+    assert.equal(ev.payload.fields.note, 'pad');
+    assert.equal(ev.payload.fields.bureau, undefined);
+    assert.equal(patch.body.form_data, undefined);
   });
 });

@@ -454,7 +454,8 @@ async function applyWorkflowStep(req, environmentCode, payload, key, actor, chan
     // Canal déduit de l'endpoint : pad-sync = pad, /api/records = sup.
     const kept = await validatePadValues(req, environmentCode, stepService.form_id, Object.assign({}, previous, fields), previous,
       channel === 'sup' ? 'sup' : 'pad');
-    for (const k of Object.keys(fields)) if (!Object.prototype.hasOwnProperty.call(kept, k)) delete fields[k];
+    // Champ masqué dans ce canal : la tentative est ignorée (ancienne valeur conservée).
+    for (const k of Object.keys(fields)) if (JSON.stringify(kept[k]) !== JSON.stringify(fields[k])) delete fields[k];
   }
   const statusId = payload.statusId || payload.status_id || null;
   const files = await storeStepFiles(req, environmentCode, key, collectFiles(payload, key));
