@@ -615,6 +615,7 @@ test('pad-sync : la file réutilise la clé et le POST unique déduplique', asyn
         const key = decodeURIComponent((href.match(/idempotency_key=eq\.([^&]+)/) || [])[1] || '');
         return jsonResponse(200, submissions.has(key) ? [submissions.get(key)] : []);
       }
+      if (href.includes('/rest/v1/forms?')) return jsonResponse(200, [GENERIC_FORM('form-1')]);
       if (href.includes('/rpc/app_roles_for_actor') || href.includes('/services') || href.includes('/forms')) {
         return jsonResponse(200, []);
       }
@@ -697,6 +698,13 @@ test('une étape attend sa saisie refusée, une saisie indépendante part', asyn
   assert.equal(engine.list().some(action => action.payload && action.payload.values && action.payload.values.nom === 'libre'), false);
 });
 
+function GENERIC_FORM(id) {
+  return {
+    id, nom: 'Générique', environment_code: 'EFC', permissions: {},
+    fields: ['nom', 'client', 'deja', 'etape', 'lot', 'note', 'password'].map((k) => ({ id: k, nom: k, type: 'text' }))
+  };
+}
+
 function padBackend({ instances, services, submissions, patches, files }) {
   const fileRows = files || new Map();
   let fileSeq = fileRows.size;
@@ -724,7 +732,11 @@ function padBackend({ instances, services, submissions, patches, files }) {
     if (href.includes('/services') && method === 'GET') {
       const id = decodeURIComponent((href.match(/id=eq\.([^&]+)/) || [])[1] || '');
       const service = services.get(id);
-      return jsonResponse(200, service ? [service] : []);
+      return jsonResponse(200, service ? [{ form_id: 'form-1', ...service }] : []);
+    }
+    if (href.includes('/rest/v1/forms?') && method === 'GET') {
+      const id = decodeURIComponent((href.match(/id=eq\.([^&]+)/) || [])[1] || '');
+      return jsonResponse(200, id ? [GENERIC_FORM(id)] : []);
     }
     if (href.includes('/service_instances') && method === 'GET') {
       const id = decodeURIComponent((href.match(/id=eq\.([^&]+)/) || [])[1] || '');

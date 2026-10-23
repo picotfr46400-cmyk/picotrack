@@ -185,6 +185,14 @@ async function loadById(req, table, environmentCode, id, select) {
   return rows[0] || null;
 }
 
+// Formulaire relu par id (sans filtre d'environnement, contrôlé ensuite) : 404 inconnu,
+// 400 autre environnement ou illisible, 503 si la base ne répond pas (loadRows).
+async function validatePadValues(req, environmentCode, formId, values, previous, channel, loaded) {
+  const rows = loaded && String(loaded.id) === String(formId) ? [Object.assign({ environment_code: environmentCode }, loaded)] : formId ? await loadRows(req, `forms?id=eq.${encodeURIComponent(formId)}&select=id,environment_code,fields&limit=1`) : [];
+  const fields = fieldValidation.formFieldsOrThrow(rows[0] || null, environmentCode, formId);
+  return fieldValidation.assertValidSubmission({ fields, values, previous, channel: channel || 'pad' });
+}
+
 function padProfile(license, environmentCode) {
   return {
     id: license.id,
@@ -438,6 +446,14 @@ async function applyWorkflowStep(req, environmentCode, payload, key, actor) {
   if (!opened) throw refusalError(404);
   const content = stepContent(payload);
   const fields = plainFields(content.formData);
+  if (Object.keys(fields).length) {
+    // Champs d'étape validés sur le formulaire du service relu en base, ancien form_data en previous.
+    const stepService = await loadById(req, 'services', environmentCode, opened.service_id, 'id,form_id');
+    if (!stepService) throw refusalError(404, 'Service introuvable.');
+    const previous = opened.form_data && typeof opened.form_data === 'object' ? opened.form_data : {};
+    await validatePadValues(req, environmentCode, stepService.form_id, Object.assign({}, previous, fields), previous,
+      String(actor && actor.license_type || '').toLowerCase() === 'pad' ? 'pad' : 'sup');
+  }
   const statusId = payload.statusId || payload.status_id || null;
   const files = await storeStepFiles(req, environmentCode, key, collectFiles(payload, key));
   const incoming = { files, fields, comment: content.comment, statusId: statusId || '' };
@@ -697,9 +713,15 @@ async function handler(req, res) {
           serviceId ? loadById(req, 'services', environmentCode, serviceId, 'id,form_id,permissions') : null
         ]);
         await assertPadWrite(profile, catalog, serviceIndex, form, formId, service, serviceId, statusId);
-        if (form && (item.type === 'form_submission' || item.type === 'service_instance')) {
-          // Même validation que /api/records, sur la définition relue en base.
-          payload.values = fieldValidation.assertValidSubmission({ fields: form.fields, values: payload.values || {}, previous: null, channel: 'pad' });
+        if (item.type === 'form_submission' || item.type === 'service_instance') {
+          // Même validation que /api/records, sur la définition relue en base. Échec fermé.
+          if (item.type === 'form_submission' || fieldValidation.hasValues(payload.values)) {
+            payload.values = await validatePadValues(req, environmentCode, formId, payload.values || {}, null, 'pad', form);
+          }
+          if (item.type === 'service_instance' && fieldValidation.hasValues(inst.form_data)) {
+            if (!service) throw refusalError(404, 'Service introuvable.');
+            inst.form_data = await validatePadValues(req, environmentCode, service.form_id, inst.form_data, null);
+          }
         }
         if (item.type === 'form_submission') {
           const written = await insertSubmission(req, environmentCode, payload, resolved.key);

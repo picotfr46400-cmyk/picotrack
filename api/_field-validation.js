@@ -293,7 +293,11 @@
       if (lower(f.type) === 'signature' || lower(f.type) === 'sign') {
         if (!isEmpty(v)) { var se = signatureError(v); if (se) { errors.push({ field: k, label: label(f), code: 'invalid', message: se }); return; } }
       }
-      if (!visible) return;
+      if (!visible) {
+        // Visibilité recalculée ici (conditions + canal + groupe) : une valeur sur un champ masqué est refusée.
+        if (!isEmpty(v)) errors.push({ field: k, label: label(f), code: 'hidden', message: 'valeur envoyée sur un champ masqué' });
+        return;
+      }
       if (f.obligatoire && isMissing(v)) {
         errors.push({ field: k, label: label(f), code: 'required', message: 'champ obligatoire' });
         return;
@@ -321,7 +325,46 @@
     throw err;
   }
 
+  /* Lit form.fields (tableau ou JSON) ; lève 404 si le formulaire est absent, 400 s'il vient
+     d'un autre environnement ou est illisible. */
+  function formFieldsOrThrow(form, env, formId) {
+    if (arguments.length > 2 && (formId == null || formId === '')) throw Object.assign(new Error('Formulaire manquant.'), { status: 400 });
+    if (!form) throw Object.assign(new Error('Formulaire introuvable.'), { status: 404 });
+    var e = String(env || '');
+    if (e && e !== 'GLOBAL' && e !== '*' && String(form.environment_code || '') !== e) {
+      throw Object.assign(new Error('Formulaire d’un autre environnement.'), { status: 400 });
+    }
+    var fields = form.fields;
+    if (typeof fields === 'string') { try { fields = JSON.parse(fields); } catch (_) { fields = null; } }
+    if (!Array.isArray(fields)) throw Object.assign(new Error('Formulaire illisible.'), { status: 400 });
+    return fields;
+  }
+
+  /* Supprime les valeurs des champs masqués (navigateur, avant l'envoi), jusqu'à stabilité. */
+  function stripHidden(fieldsIn, values, channel) {
+    var fields = flattenFields(fieldsIn);
+    var out = {};
+    Object.keys(values || {}).forEach(function (k) { out[k] = values[k]; });
+    for (var pass = 0; pass < 20; pass++) {
+      var removed = false;
+      fields.forEach(function (f) {
+        if (!f || f.id == null || isLayout(f.type)) return;
+        var k = String(f.id);
+        if (own(out, k) && !isEmpty(out[k]) && !isVisible(f, fields, out, channel === 'pad' ? 'pad' : 'sup')) { delete out[k]; removed = true; }
+      });
+      if (!removed) break;
+    }
+    return out;
+  }
+
+  function hasValues(v) {
+    return !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > 0;
+  }
+
   var api = {
+    formFieldsOrThrow: formFieldsOrThrow,
+    stripHidden: stripHidden,
+    hasValues: hasValues,
     SYSTEM_KEYS: SYSTEM_KEYS,
     SIGNATURE_MAX_BYTES: SIGNATURE_MAX_BYTES,
     isLayout: isLayout,
