@@ -1241,8 +1241,9 @@ grant select, insert, delete on table public.database_rows_trash to service_role
 
 -- Première version (jamais promue) remplacée par picotrack_apply_database_row_action.
 drop function if exists public.picotrack_update_database_row(text, text, text, text, text[], text, text, jsonb, text, uuid, text, jsonb);
+drop function if exists public.picotrack_apply_database_row_action(text, text, text, text, text, text[], jsonb, jsonb, text, text, text, uuid, text, jsonb);
 
--- Résultat : {status: updated|created|deleted|none|multiple, count, row_ids, row_id, old_values, new_values}.
+-- Résultat : {status: updated|created|deleted|none|multiple|too_many|forbidden, count, row_ids, row_id, old_values, new_values}.
 -- p_on_multiple : stop (rien n'est écrit, défaut), oldest (la plus ancienne ligne), all (toutes les lignes).
 -- p_delete_mode : archive (copie dans database_rows_trash + journal), purge (journal seul avec l'ancienne valeur).
 create or replace function public.picotrack_apply_database_row_action(
@@ -1259,7 +1260,9 @@ create or replace function public.picotrack_apply_database_row_action(
   p_delete_mode text,
   p_actor_id uuid,
   p_actor_label text,
-  p_context jsonb
+  p_context jsonb,
+  p_denied_form_ids text[] default array[]::text[],
+  p_max_rows integer default 500
 )
 returns jsonb
 language plpgsql
@@ -1286,6 +1289,8 @@ declare
   done_ids bigint[] := array[]::bigint[];
   first_old jsonb;
   first_new jsonb;
+  max_rows integer := least(greatest(coalesce(p_max_rows, 500), 1), 500);
+  denied text[] := coalesce(p_denied_form_ids, array[]::text[]);
 begin
   if env = '' or env = 'GLOBAL' or db = '' then
     raise exception 'Environnement ou base manquant' using errcode = '22023';
@@ -1339,6 +1344,15 @@ begin
         where btrim(coalesce(r."values" ->> (k ->> 'column'), '')) <> btrim(k ->> 'value')
       ))
     );
+
+  -- Droits de la base cible : une ligne issue d'un formulaire que l'utilisateur ne peut pas saisir bloque tout.
+  if cardinality(denied) > 0 and exists (select 1 from public.database_rows r where r.id = any(ids) and r.form_id = any(denied)) then
+    return jsonb_build_object('status', 'forbidden', 'count', cardinality(ids));
+  end if;
+  -- Plafond : au-delà de max_rows lignes trouvées, rien n'est écrit.
+  if coalesce(cardinality(ids), 0) > max_rows then
+    return jsonb_build_object('status', 'too_many', 'count', cardinality(ids), 'max', max_rows);
+  end if;
 
   if coalesce(cardinality(ids), 0) > 1 then
     if on_multiple = 'stop' then
@@ -1401,5 +1415,5 @@ begin
 end;
 $$;
 
-revoke all on function public.picotrack_apply_database_row_action(text, text, text, text, text, text[], jsonb, jsonb, text, text, text, uuid, text, jsonb) from public, anon, authenticated;
-grant execute on function public.picotrack_apply_database_row_action(text, text, text, text, text, text[], jsonb, jsonb, text, text, text, uuid, text, jsonb) to service_role;
+revoke all on function public.picotrack_apply_database_row_action(text, text, text, text, text, text[], jsonb, jsonb, text, text, text, uuid, text, jsonb, text[], integer) from public, anon, authenticated;
+grant execute on function public.picotrack_apply_database_row_action(text, text, text, text, text, text[], jsonb, jsonb, text, text, text, uuid, text, jsonb, text[], integer) to service_role;

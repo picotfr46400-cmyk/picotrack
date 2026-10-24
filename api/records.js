@@ -1432,6 +1432,7 @@ async function handleSave(req, body) {
       const existing = await mustRead(req, 'submissions', id, env);
       if (!existing) throw Object.assign(new Error('Introuvable.'), { status: 404 });
       existingSubmission = existing;
+      req.picoDbRulePrevious = existing.values && typeof existing.values === 'object' ? existing.values : {};
       await assertSubmissionWritable(req, profile, catalog, services, existing, env);
       const nextForm = record.form_id || source?.formId;
       if (nextForm && String(nextForm) !== String(existing.form_id || '')) {
@@ -1920,8 +1921,30 @@ async function serviceRead(req, path) {
   return await serviceRest(path, { method: 'GET', prefer: '', req });
 }
 
-// Action « Modifier une ligne dans une base » : droits du dossier (ou de la saisie), base relue
-// dans l'environnement du profil, puis fonction SQL transactionnelle (verrou, unicité, journal).
+// Formulaires dont l'utilisateur ne peut pas saisir (droits de la base cible : lignes issues de ces formulaires protégées).
+function dbRuleDeniedForms(req, profile, env) {
+  let cached = null;
+  return () => {
+    if (cached) return cached;
+    cached = (async () => {
+      if (!profile || access.isPlatform(profile)) return [];
+      const catalog = await catalogFor(req, profile);
+      const services = await loadServicesIndex(req, profile, env);
+      return dbRowUpdate.deniedFormIds({
+        rest: (path, opts) => serviceRest(path, Object.assign({ req }, opts)),
+        env,
+        canWrite: (form) => {
+          const level = access.formLevel(profile, catalog, form.id, services);
+          access.assertLevel(level, 'write');
+          if (level === 'normal') assertRecordAllowed('forms', form, 'submit', profile, 'refus');
+          return true;
+        }
+      });
+    })();
+    return cached;
+  };
+}
+
 // Règles « Modifier / Supprimer une ligne dans une base » d'un formulaire, après écriture d'une saisie (PC / service).
 async function runSubmissionDbRules(req, { env, profile, form, saved, rawRecord, isCreate }) {
   try {
@@ -1932,7 +1955,7 @@ async function runSubmissionDbRules(req, { env, profile, form, saved, rawRecord,
     if (instanceId) {
       const instance = await readOneById(req, 'service_instances', instanceId, scopeEnv).catch(() => null);
       const catalog = instance ? await catalogFor(req, profile) : null;
-            if (instance) {
+      if (instance) {
         try { access.assertLevel(access.instanceLevel(profile, catalog, instance), 'write'); } catch (_) { instanceId = ''; }
       } else instanceId = '';
     }
@@ -1945,7 +1968,9 @@ async function runSubmissionDbRules(req, { env, profile, form, saved, rawRecord,
       origin: dbRowUpdate.submissionOrigin(raw, saved),
       instanceId,
       actorId: profile && profile.id,
-      actorLabel: submissionAuthorStamp(profile).name
+      actorLabel: submissionAuthorStamp(profile).name,
+      previous: isCreate ? null : (req.picoDbRulePrevious || null),
+      deniedForms: dbRuleDeniedForms(req, profile, scopeEnv)
     });
   } catch (err) {
     console.warn('[PicoTrack] règles base de données', err && err.message);
@@ -1953,6 +1978,28 @@ async function runSubmissionDbRules(req, { env, profile, form, saved, rawRecord,
   }
 }
 
+// Valeurs d'un dossier relues par le serveur : saisie d'origine + données du dossier, formulaires liés par formulaire.
+async function dbRuleInstanceContext(req, env, instance) {
+  const ids = dbRowUpdate.linkedSubmissionIds(instance);
+  let subs = [];
+  if (ids.length) {
+    subs = await readStrictRows(req, `submissions?id=in.(${ids.map(encodeURIComponent).join(',')})&environment_code=eq.${encodeURIComponent(env)}&select=id,form_id,values&limit=200`);
+  }
+  let main = instance.form_data && typeof instance.form_data === 'object' ? Object.assign({}, instance.form_data) : {};
+  if (main.values && typeof main.values === 'object') main = Object.assign({}, main.values);
+  const linked = {};
+  for (const sub of subs) {
+    const vals = sub.values && typeof sub.values === 'object' ? sub.values : {};
+    if (String(sub.id) === String(instance.submission_id || '')) main = Object.assign({}, vals, main);
+    else if (sub.form_id != null) linked[String(sub.form_id)] = Object.assign({}, linked[String(sub.form_id)], vals);
+  }
+  return { ctx: { main, linked }, submissionIds: ids };
+}
+
+// Bouton de service « Modifier / Supprimer une ligne dans une base » : le client n'envoie que le dossier,
+// l'action et la position de l'opération. Le serveur relit la configuration dans services.actions,
+// vérifie que l'action appartient au service du dossier, puis contrôle les droits (dossier + base cible).
+// Rejouer une règle de formulaire : submission_id + rule_id, configuration relue dans forms.triggers.
 async function handleDbRowUpdate(req, body) {
   const user = await requireAuth(req);
   const profile = await getUserProfile(user.id, req);
@@ -1960,71 +2007,69 @@ async function handleDbRowUpdate(req, body) {
   access.assertWritableLicense(profile);
   const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, body.environment_code), 'DEMO');
   if (!env || env === 'GLOBAL' || env === '*') throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
-  const databaseId = String(body.database_id || '').replace(/^sdb_/, '').trim().slice(0, 80);
   const instanceId = String(body.instance_id || '').trim().slice(0, 80);
   const submissionId = String(body.submission_id || '').trim().slice(0, 80);
-  if (!databaseId) throw Object.assign(new Error('Base cible manquante.'), { status: 400 });
+  const actionId = String(body.action_id || '').trim().slice(0, 120);
+  const ruleId = String(body.rule_id || '').trim().slice(0, 120);
   if (!instanceId && !submissionId) throw Object.assign(new Error('Dossier ou saisie d’origine manquant.'), { status: 400 });
-
   const catalog = await catalogFor(req, profile);
   const services = await loadServicesIndex(req, profile, env);
-  let instance = null;
+  const actorLabel = submissionAuthorStamp(profile).name;
+  let rule;
+  let ctx;
+  let submissionIds;
+  let context;
+  let linkInstance = null;
   if (instanceId) {
-    instance = await mustRead(req, 'service_instances', instanceId, env);
+    if (!actionId) throw Object.assign(new Error('Action manquante.'), { status: 400 });
+    const instance = await mustRead(req, 'service_instances', instanceId, env);
     if (!instance) throw Object.assign(new Error('Dossier introuvable.'), { status: 404 });
     access.assertLevel(access.instanceLevel(profile, catalog, instance), 'write');
-  }
-  let submission = null;
-  if (submissionId) {
-    submission = await mustRead(req, 'submissions', submissionId, env);
+    const service = await mustRead(req, 'services', instance.service_id, env);
+    if (!service) throw Object.assign(new Error('Service introuvable.'), { status: 404 });
+    let actions = service.actions;
+    if (typeof actions === 'string') { try { actions = JSON.parse(actions); } catch (_) { actions = []; } }
+    const action = (Array.isArray(actions) ? actions : []).find(a => a && String(a.id) === actionId);
+    if (!action) throw Object.assign(new Error('Cette action n’appartient pas au service du dossier (enregistrez le service si elle vient d’être ajoutée).'), { status: 403 });
+    const effects = Array.isArray(action.effects) ? action.effects : [];
+    const idx = Number.isInteger(Number(body.effect_index)) ? Number(body.effect_index) : -1;
+    const effect = effects[idx];
+    if (!effect || (effect.type !== 'update_db_row' && effect.type !== 'delete_db_row')) {
+      throw Object.assign(new Error('Opération introuvable dans l’action enregistrée.'), { status: 403 });
+    }
+    rule = dbRowUpdate.storedRule(effect.config, effect.type);
+    const loaded = await dbRuleInstanceContext(req, env, instance);
+    ctx = loaded.ctx;
+    submissionIds = loaded.submissionIds;
+    linkInstance = String(instance.id);
+    context = { service_id: String(service.id), action_id: actionId, effect_index: idx, action_label: String(action.nom || action.label || '').slice(0, 120), origin: 'service' };
+  } else {
+    if (!ruleId) throw Object.assign(new Error('Règle manquante.'), { status: 400 });
+    const submission = await mustRead(req, 'submissions', submissionId, env);
     if (!submission) throw Object.assign(new Error('Saisie introuvable.'), { status: 404 });
     await assertSubmissionWritable(req, profile, catalog, services, submission, env);
+    const form = await readFormForSubmission(req, submission.form_id, env);
+    const found = form && dbRowUpdate.formRules(form).find(r => String(r.id || '') === ruleId);
+    if (!found) throw Object.assign(new Error('Cette règle n’appartient pas au formulaire de la saisie.'), { status: 403 });
+    rule = dbRowUpdate.storedRule(found);
+    ctx = { main: submission.values && typeof submission.values === 'object' ? submission.values : {}, linked: {} };
+    submissionIds = [String(submission.id)];
+    context = { form_id: String(form.id), rule_id: ruleId, submission_id: String(submission.id), action_label: 'Formulaire ' + String(form.nom || form.id).slice(0, 100), origin: 'pc' };
   }
-  const database = await mustRead(req, 'databases', databaseId, env);
-  if (!database || String(database.nom || '') === INTEGRATIONS_NAME) throw Object.assign(new Error('Base introuvable.'), { status: 404 });
-
-  const actorLabel = submissionAuthorStamp(profile).name;
-  const request = dbRowUpdate.normalizeRequest(body, database, { actorLabel, today: dbRowUpdate.parisToday() });
-  const submissionIds = request.mode === 'linked' ? dbRowUpdate.linkedSubmissionIds(instance, submission && submission.id) : (submission ? [String(submission.id)] : []);
-  if (request.mode === 'linked' && !instance && !submissionIds.length) throw Object.assign(new Error('Dossier lié manquant.'), { status: 400 });
-  const context = {
-    action_label: String(body.action_label || '').trim().slice(0, 120),
-    service_id: instance ? String(instance.service_id || '') : '',
-    form_id: submission ? String(submission.form_id || '') : '',
-    mode: request.mode,
-    operation: request.operation,
-    on_multiple: request.onMultiple,
-    origin: String(body.origin || '').trim().slice(0, 40)
-  };
-  let rows;
+  const deniedForms = await dbRuleDeniedForms(req, profile, env)();
+  let out;
   try {
-    rows = await serviceRest(dbRowUpdate.RPC, {
-      method: 'POST',
-      prefer: '',
-      req,
-      body: {
-        p_environment_code: env,
-        p_database_id: String(database.id),
-        p_operation: request.operation,
-        p_mode: request.mode,
-        p_instance_id: instance ? String(instance.id) : null,
-        p_submission_ids: submissionIds,
-        p_criteria: request.criteria,
-        p_updates: request.updates,
-        p_if_none: request.ifNone,
-        p_on_multiple: request.onMultiple,
-        p_delete_mode: request.deleteMode,
-        p_actor_id: /^[0-9a-f-]{36}$/i.test(String(profile && profile.id || '')) ? String(profile.id) : null,
-        p_actor_label: actorLabel,
-        p_context: context
-      }
+    out = await dbRowUpdate.applyRule({
+      rest: (path, opts) => serviceRest(path, Object.assign({ req }, opts)),
+      env, rule, ctx, instanceId: linkInstance, submissionIds,
+      actorId: profile && profile.id, actorLabel, deniedForms, context
     });
   } catch (err) {
+    if (err && err.status && err.status < 500) throw err;
     throw Object.assign(new Error('Modification de ligne indisponible pour le moment.'), { status: 503 });
   }
-  const result = Array.isArray(rows) ? rows[0] : rows;
-  const payload = result && typeof result === 'object' && result.picotrack_apply_database_row_action ? result.picotrack_apply_database_row_action : result;
-  if (!payload || !['updated', 'created', 'deleted', 'none', 'multiple'].includes(payload.status)) {
+  const { payload, database, request } = out;
+  if (!['updated', 'created', 'deleted', 'none', 'multiple', 'too_many', 'forbidden'].includes(payload.status)) {
     throw Object.assign(new Error('Modification de ligne indisponible pour le moment.'), { status: 503 });
   }
   return {

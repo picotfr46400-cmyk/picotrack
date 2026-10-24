@@ -117,23 +117,12 @@
     return { source: 'fixed', value: S(item.value) };
   }
 
+  // Le navigateur n'envoie que des identifiants : le serveur relit la configuration enregistrée
+  // (services.actions ou formulaire) et les valeurs du dossier. Toute configuration envoyée est ignorée.
   function buildRequest(cfg, ctx, ids){
-    cfg = normalizeConfig(cfg);
-    var body = {
-      action: 'db_row_update',
-      operation: cfg.operation,
-      database_id: cfg.databaseId,
-      mode: cfg.mode,
-      if_none: cfg.ifNone,
-      on_multiple: cfg.onMultiple,
-      delete_mode: cfg.deleteMode,
-      updates: cfg.operation === 'update' ? cfg.updates.filter(function(u){ return u.column; }).map(function(u){ var w = wireItem(u, ctx); w.column = u.column; return w; }) : [],
-      instance_id: ids.instanceId ? S(ids.instanceId) : undefined,
-      submission_id: ids.submissionId ? S(ids.submissionId) : undefined,
-      action_label: S(ids.label || ''),
-      origin: S(ids.origin || '')
-    };
-    if (cfg.mode === 'key') body.criteria = cfg.criteria.map(function(c){ var w = wireItem(c, ctx); w.column = c.column; return w; });
+    var body = { action: 'db_row_update' };
+    if (ids.instanceId) { body.instance_id = S(ids.instanceId); body.action_id = S(ids.actionId); body.effect_index = Number(ids.effectIndex); }
+    else { body.submission_id = S(ids.submissionId); body.rule_id = S(ids.ruleId); }
     return body;
   }
 
@@ -184,7 +173,7 @@
     var issues = problems(cfg);
     if (issues.length) { toastSafe('e', '⚠️ ' + opLabel(cfg) + ' : ' + issues[0]); return { ok: false, stop: true }; }
     var body = buildRequest(cfg, ctx, ids);
-    if (body.mode === 'key' && A(body.criteria).some(function(c){ return !S(c.value).trim(); })) {
+    if (cfg.mode === 'key' && cfg.criteria.some(function(c){ var w = wireItem(c, ctx); return !S(w.value).trim(); })) {
       toastSafe('e', '⚠️ ' + opLabel(cfg) + ' : une valeur recherchée est vide, rien n’a été fait.');
       return { ok: false, stop: true };
     }
@@ -197,16 +186,17 @@
       return { ok: false, stop: true };
     }
     res = O(res);
-    if (res.status === 'multiple') { toastSafe('e', '⚠️ ' + S(res.message)); return { ok: false, stop: true, result: res }; }
+    if (res.status === 'multiple' || res.status === 'too_many' || res.status === 'forbidden') { toastSafe('e', '⚠️ ' + S(res.message)); return { ok: false, stop: true, result: res }; }
     if (res.status === 'none') { toastSafe('w', 'ℹ️ ' + S(res.message)); return { ok: true, stop: false, result: res }; }
-    applyLocal(body.database_id, res);
+    applyLocal(cfg.databaseId, res);
     toastSafe('s', '🗃 ' + S(res.message));
     return { ok: true, stop: false, result: res };
   }
 
-  async function runForInstance(inst, service, action, effect){
+  async function runForInstance(inst, service, action, effect, index){
     var cfg = normalizeConfig(O(effect).config, O(effect).type);
-    var r = await execute(cfg, instanceContext(inst), { instanceId: inst && inst.id, label: S(action && (action.nom || action.label)), origin: 'service' });
+    var idx = Number.isInteger(index) ? index : A(O(action).effects).indexOf(effect);
+    var r = await execute(cfg, instanceContext(inst), { instanceId: inst && inst.id, actionId: O(action).id, effectIndex: idx });
     if (r.result && inst) {
       inst.events = A(inst.events);
       inst.events.push({ id: Date.now(), type: cfg.operation === 'delete' ? 'db_deleted' : 'db_updated', actor: S(window.PT_CURRENT_USER && (PT_CURRENT_USER.name || PT_CURRENT_USER.email)) || 'PicoTrack', at: new Date().toLocaleString('fr-FR'), payload: { databaseId: r.result.database_id, rowId: r.result.row_id, rowIds: r.result.row_ids, status: r.result.status, actionId: action && action.id } });
@@ -379,12 +369,12 @@
   var ACADEMY_HTML = '<div class="pt-ac-section" id="pt-ac-dbrow"><h2>🗃 Modifier ou supprimer une ligne dans une base</h2>' +
     '<p><b>À quoi ça sert</b> : une base autonome (Données) se remplit avec « Ajouter une ligne dans une base ». « Modifier une ligne dans une base » met ensuite à jour une ligne existante (passer un stock à « Sorti », noter une date de contrôle, le nom du technicien). « Supprimer une ligne dans une base » retire une ligne devenue inutile.</p>' +
     '<p><b>Où les régler</b> : dans un service (Workflow Builder), sur un bouton d’action, ajoutez l’opération « Modifier une ligne dans une base » ou « Supprimer une ligne dans une base » : elle s’exécute dans l’ordre avec les autres opérations du bouton. Dans un formulaire (Form Builder), dans les actions après validation, ajoutez une ou plusieurs règles avec « ＋ Modifier une ligne dans une base » ou « ＋ Supprimer une ligne dans une base ».</p>' +
-    '<p><b>Quand, et pour quelles saisies</b> (formulaires) : cochez « À la création d’une saisie » et/ou « À la modification d’une saisie », puis les origines : PC, PAD (appliquée par le serveur à la synchronisation de la tablette) ou formulaire rempli depuis un dossier de service.</p>' +
+    '<p><b>Quand, et pour quelles saisies</b> (formulaires) : cochez « À la création d’une saisie » et/ou « À la modification d’une saisie » (à la modification, la règle ne repart que si un champ qu’elle utilise a changé), puis les origines : PC, PAD (appliquée par le serveur à la synchronisation de la tablette) ou formulaire rempli depuis un dossier de service.</p>' +
     '<p><b>Choisir la bonne ligne</b> : « La ligne liée » reprend la ligne ajoutée par ce dossier ou cette saisie. « Les lignes trouvées par des critères de recherche » retient les lignes où tous les critères sont vrais (ET), par exemple N° de lot = champ « Lot » ET Site = « Lyon ». Chaque critère prend un champ ou une valeur fixe. Une valeur recherchée vide arrête l’opération sans rien toucher.</p>' +
     '<p><b>Valeurs écrites</b> (modification) : pour chaque colonne, un champ, une valeur fixe, la date du jour (heure de Paris) ou l’utilisateur connecté (nom posé par le serveur). Les autres colonnes ne changent pas.</p>' +
-    '<p><b>Plusieurs lignes trouvées</b> : par défaut, rien n’est fait, un message l’indique et les opérations suivantes du bouton ne sont pas exécutées (le plus sûr). Vous pouvez choisir à la place de traiter la plus ancienne ligne, ou toutes les lignes trouvées. <b>Aucune ligne</b> : la modification ne fait rien et continue, ou crée la ligne selon le réglage ; la suppression ne fait rien.</p>' +
+    '<p><b>Plusieurs lignes trouvées</b> : par défaut, rien n’est fait, un message l’indique et les opérations suivantes du bouton ne sont pas exécutées (le plus sûr). Vous pouvez choisir à la place de traiter la plus ancienne ligne, ou toutes les lignes trouvées (500 lignes au plus : au-delà, rien n’est fait et un message demande de préciser les critères). <b>Aucune ligne</b> : la modification ne fait rien et continue, ou crée la ligne selon le réglage ; la suppression ne fait rien.</p>' +
     '<p><b>Suppression</b> : « Mettre à la corbeille » garde une copie complète de la ligne (récupérable sur demande) ; « Supprimer définitivement » ne garde que le journal. Dans les deux cas, le journal conserve l’ancienne valeur.</p>' +
-    '<p><b>Sécurité et traçabilité</b> : tout est fait par le serveur en une seule opération, uniquement dans votre environnement et si votre rôle peut modifier le dossier ou la saisie. Chaque modification, création ou suppression est enregistrée dans un journal avec l’ancienne et la nouvelle valeur, l’auteur et la date.</p></div>';
+    '<p><b>Sécurité et traçabilité</b> : tout est fait par le serveur en une seule opération, uniquement dans votre environnement et si votre rôle peut modifier le dossier ou la saisie. Le serveur relit le réglage enregistré du service ou du formulaire (jamais celui envoyé par le navigateur) et refuse toute l’opération si une ligne visée vient d’un formulaire que vous ne pouvez pas saisir. Chaque modification, création ou suppression est enregistrée dans un journal avec l’ancienne et la nouvelle valeur, l’auteur et la date.</p></div>';
   function injectAcademy(){
     var w = document.getElementById('academy-wrap');
     if (!w || document.getElementById('pt-ac-dbrow')) return;
