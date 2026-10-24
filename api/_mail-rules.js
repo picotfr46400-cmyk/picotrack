@@ -114,6 +114,9 @@ function redactValues(fields, values) {
   for (const field of Array.isArray(fields) ? fields : []) {
     if (isSensitiveField(field) && field.id != null) hidden.add(String(field.id));
   }
+  // Correctif lot 3 (prod) : recherches et calculs dépendant des droits de l'auteur jamais lus par un mail
+  // (conditions, destinataires, empreinte) ; voir _field-roles.authorDependentKeys.
+  for (const k of require('./_field-roles').authorDependentKeys(Array.isArray(fields) ? fields : [])) hidden.add(k);
   const out = {};
   for (const [key, value] of Object.entries(values && typeof values === 'object' ? values : {})) {
     if (hidden.has(String(key)) || isSensitiveName(key)) continue;
@@ -199,10 +202,22 @@ function parisHourStart(now = new Date()) {
   return new Date(Date.UTC(pick('year'), Number(pick('month')) - 1, pick('day'), pick('hour'), 0, 0) - offset);
 }
 
+function fieldValidationFlat(fields) { return require('./_field-validation').flattenFields(fields || []); }
+
 function buildLookup(ctx) {
   const fields = Array.isArray(ctx.fields) ? ctx.fields : [];
   const values = ctx.values && typeof ctx.values === 'object' ? ctx.values : {};
   const lookup = {};
+  // Masquage par rôle : un mail part sans lecteur identifié → lecteur sans rôle par défaut
+  // (règle des envois automatiques, _field-roles) ; un champ réservé est rendu vide.
+  const fieldRoles = require('./_field-roles');
+  const hidden = fieldRoles.hiddenKeys(fields, ctx.viewer || fieldRoles.AUTOMATED_VIEWER);
+  for (const k of fieldRoles.authorDependentKeys(fields)) hidden.add(k); // jamais avec les droits de l'auteur
+  const hiddenNames = new Set();
+  for (const field of fieldValidationFlat(fields)) {
+    if (!field || field.id == null || !hidden.has(String(field.id))) continue;
+    [field.id, field.key, field.field_key, field.nom, field.label, field.name].forEach(k => { const n = String(k || '').trim().toLowerCase(); if (n) { hiddenNames.add(n); lookup[n] = ''; } });
+  }
   const put = (key, value) => {
     const name = String(key || '').trim().toLowerCase();
     if (!name || isSensitiveName(name)) return;
@@ -217,10 +232,12 @@ function buildLookup(ctx) {
       });
       continue;
     }
+    if (field && field.id != null && hidden.has(String(field.id))) continue;
     const text = fieldValue(fields, values, field.id || field.key || field.nom || '');
     names.forEach(key => put(key, text));
   }
   for (const [key, value] of Object.entries(values)) {
+    if (hidden.has(String(key)) || hiddenNames.has(String(key).trim().toLowerCase())) continue;
     if (isSensitiveName(key)) lookup[String(key).trim().toLowerCase()] = 'masqué';
     else put(key, maskSecretText(plainValue(value)));
   }
@@ -1775,8 +1792,9 @@ async function sendOutboxRow(row, deps, deadline) {
     environmentName: env,
     environmentCode: env,
     formName: ctx.formName,
-    fields,
-    values,
+    // PDF joint : même règle que les {{champ}} (lecteur sans rôle, champs réservés retirés).
+    fields: require('./_field-roles').visibleFields(fields, require('./_field-roles').AUTOMATED_VIEWER),
+    values: require('./_field-roles').redactValues(fields, values, require('./_field-roles').AUTOMATED_VIEWER),
     createdAt: ctx.date,
     author: ctx.authorName,
     status: ctx.status,

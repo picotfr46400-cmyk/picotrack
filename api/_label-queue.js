@@ -103,11 +103,14 @@ function templateSnapshot(row) {
   return { name: row.name, width_mm: row.width_mm, height_mm: row.height_mm, elements: Array.isArray(row.elements) ? row.elements : [] };
 }
 // On ne fige que les valeurs utiles à l'étiquette : pas de copie du dossier entier.
-function contextFor(template, values, meta, allowed) {
+// Masquage par rôle : une étiquette (file d'impression partagée, papier) n'a pas de lecteur identifié →
+// règle des envois automatiques (_field-roles) : lecteur sans rôle, un champ réservé n'est jamais figé.
+function contextFor(template, values, meta, allowed, hidden) {
   const v = values && typeof values === 'object' ? values : {};
   const keep = {};
   (template.elements || []).forEach(e => {
     if (!e || e.field_id == null || v[e.field_id] === undefined) return;
+    if (!hidden || hidden.all || hidden.has(String(e.field_id))) return;
     if (allowed instanceof Set && !allowed.has(String(e.field_id))) return;
     keep[e.field_id] = v[e.field_id];
   });
@@ -239,7 +242,7 @@ async function enqueueFromWrite(input) {
           template_id: tpl.id,
           template_name: str(tpl.name, 120),
           template: snap,
-          context: contextFor(snap, values, { submissionId: occ.submissionId, createdAt: saved.created_at, reference: saved.reference || saved.ref || '' }),
+          context: contextFor(snap, values, { submissionId: occ.submissionId, createdAt: saved.created_at, reference: saved.reference || saved.ref || '' }, null, await labelHidden(req, env, occ.serviceId, cache.hidden || (cache.hidden = {}))),
           copies,
           status: 'pending',
           source: 'rule',
@@ -334,6 +337,20 @@ async function readVisibleJob(req, env, opts, id, cols) {
 
 // Champs de données du formulaire d'un workflow (sans séparateurs ni titres).
 const LAYOUT_TYPES = new Set(['separator', 'image', 'titre', 'section', 'title', 'heading']);
+// Champs réservés par rôle du formulaire du workflow (lecteur sans rôle) ; illisible → tout masqué.
+async function labelHidden(req, env, serviceId, cache) {
+  const key = env + ':' + serviceId;
+  if (cache && cache[key]) return cache[key];
+  const fieldRoles = require('./_field-roles');
+  let out;
+  try {
+    const svc = await rest(req, `services?id=eq.${enc(serviceId)}&environment_code=eq.${enc(env)}&select=id,form_id&limit=1`);
+    const formId = Array.isArray(svc) && svc[0] ? svc[0].form_id : null;
+    out = formId == null || formId === '' ? new Set() : await fieldRoles.hiddenForForms(path => rest(req, path), env, [formId], fieldRoles.AUTOMATED_VIEWER);
+  } catch (_) { out = fieldRoles.HIDE_ALL; }
+  if (cache) cache[key] = out;
+  return out;
+}
 async function workflowFields(req, env, serviceId) {
   const svc = await rest(req, `services?id=eq.${enc(serviceId)}&environment_code=eq.${enc(env)}&select=id,form_id&limit=1`);
   const formId = Array.isArray(svc) && svc[0] ? svc[0].form_id : null;
@@ -484,10 +501,18 @@ async function handleQueue(req, body, profile, opts) {
     const allowed = await assertFieldMap(req, env, opts, inst.service_id, fieldMap);
     const snap = applyFieldMap(templateSnapshot(tpl), fieldMap);
     const fd = inst.form_data && typeof inst.form_data === 'object' ? inst.form_data : {};
-    const values = fd.values && typeof fd.values === 'object' ? fd.values : fd;
+    let values = fd.values && typeof fd.values === 'object' ? fd.values : fd;
+    // Correctif lot 3 (prod) : impression demandée par un utilisateur → recherches et calculs dépendants
+    // recalculés avec SES droits ; seules ces valeurs recalculées sont rendues imprimables.
+    // Sans recalcul possible : elles restent masquées (règle des envois automatiques).
+    let hidden = await labelHidden(req, env, inst.service_id);
+    if (hidden && !hidden.all && typeof opts.readerValues === 'function') {
+      const r = await opts.readerValues(inst.service_id, values, inst.created_at).catch(() => null);
+      if (r && r.values) { values = r.values; hidden = new Set([...hidden].filter(k => !r.recomputed.has(k))); }
+    }
     const job = {
       environment_code: env, printer_id: printerId, template_id: tpl.id, template_name: str(tpl.name, 120), template: snap,
-      context: contextFor(snap, values, { submissionId: inst.submission_id, createdAt: inst.created_at, reference: inst.reference || inst.ref || '' }, allowed),
+      context: contextFor(snap, values, { submissionId: inst.submission_id, createdAt: inst.created_at, reference: inst.reference || inst.ref || '' }, allowed, hidden),
       copies: copiesOf(body.copies, 1), status: 'pending', source: 'manual', service_id: String(inst.service_id || ''), instance_id: String(inst.id),
       submission_id: String(inst.submission_id || ''), reference: str(inst.reference || inst.ref || '', 80),
       created_by: /^[0-9a-f-]{36}$/i.test(String(profile.id || '')) ? profile.id : null, created_by_name: personName(profile),
@@ -587,4 +612,4 @@ async function purgeOldJobs(req, now) {
   return { deleted: Array.isArray(rows) ? rows.length : 0, before: limit };
 }
 
-module.exports = { purgeOldJobs, PURGE_DAYS, handleQueue, QUEUE_ACTIONS, enqueueFromWrite, safeEnqueue, cleanRule, ruleMatches, applyFieldMap, variableZones, contextFor, copiesOf, resolvePrinter, stationOf, hashToken, canPrint };
+module.exports = { labelHidden, purgeOldJobs, PURGE_DAYS, handleQueue, QUEUE_ACTIONS, enqueueFromWrite, safeEnqueue, cleanRule, ruleMatches, applyFieldMap, variableZones, contextFor, copiesOf, resolvePrinter, stationOf, hashToken, canPrint };
