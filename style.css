@@ -1134,3 +1134,65 @@ body.pt-help-on .pt-help-target{outline:1.5px dashed rgba(37,99,235,.22);outline
 .v4-page-head:after,.v4-hero:after{pointer-events:none}
 .v4-page-head>*{position:relative;z-index:1}
 .v4-page-head h1{line-height:1.15;overflow-wrap:anywhere}
+
+/* ===== Ergonomie 2026-10-24 : gains rapides (bureau 1440 / tablette 1024) ===== */
+/* Accessibilité : focus clavier toujours visible */
+:focus-visible{outline:3px solid #16c7ea!important;outline-offset:2px!important;border-radius:8px}
+.sb-i:focus-visible{outline-color:#fff!important}
+/* Menu latéral plus compact sur les écrans peu hauts : Déconnexion visible sans défiler */
+@media (max-height:940px){
+  .sb-logo{height:92px!important;padding:12px 16px!important}
+  .sb-logo-img{max-height:60px!important}
+  .sb-s{padding:12px 20px 4px!important}
+  .sb-i{margin:2px 14px!important;padding:8px 13px!important}
+}
+/* Tablette : menu plus étroit, plus de place pour le contenu */
+@media (max-width:1180px){
+  #sb{width:214px!important}
+  #main{left:214px!important}
+  .sb-i{margin:2px 10px!important;padding:8px 10px!important;font-size:13px!important}
+  .sb-s{padding-left:16px!important}
+  .exec-kpi-row,.pt-exec-kpis{grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:10px!important}
+  .exec-kpi-card{flex-direction:column;align-items:flex-start;gap:8px;padding:12px}
+  .exec-kpi-icon{width:34px;height:34px;font-size:17px}
+}
+/* Planning : « Aucun RDV » plus discret pour ne pas surcharger la semaine */
+.pt-plan-empty{color:var(--ts);font-size:11px;text-align:center;margin-top:20px;opacity:.55}
+
+/* ===== Épuration 2026-10-24-5 : composants génériques (accordéon, résumé, info-bulle) ===== */
+.pt-dup-title{display:none!important}
+.pt-bc-sec,.pt-bc-arrow{color:var(--tl)}
+.pt-acc{border:1px solid var(--bd);border-radius:10px;background:#fff;margin:0 0 10px}
+.pt-acc>summary,.pt-acc-head{list-style:none;display:flex;align-items:center;gap:10px;width:100%;padding:11px 14px;cursor:pointer;background:none;border:0;font:inherit;text-align:left;color:var(--tx)}
+.pt-acc>summary::-webkit-details-marker{display:none}
+.pt-acc-t{font-weight:700;font-size:13px;white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+.pt-acc-s{flex:1;min-width:0;font-size:12px;color:var(--ts);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pt-acc-chev{color:var(--tl);transition:transform .15s}
+.pt-acc[open]>summary .pt-acc-chev,.pt-acc.is-open>.pt-acc-head .pt-acc-chev{transform:rotate(180deg)}
+.pt-acc-b{padding:4px 14px 14px}
+.pt-acc[open]>summary .pt-acc-s{display:none}
+.pt-acc-adv>summary .pt-acc-t{color:var(--ts);font-weight:600}
+.pt-tip{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--bd);color:var(--ts);font:600 10px/1 Georgia,serif;font-style:italic;cursor:help;position:relative;vertical-align:middle}
+.pt-tip:hover::after,.pt-tip:focus::after{content:attr(data-tip);position:absolute;left:50%;top:calc(100% + 6px);transform:translateX(-50%);z-index:60;width:max-content;max-width:280px;padding:8px 10px;border-radius:8px;background:#0f172a;color:#fff;font:400 12px/1.4 var(--font,system-ui);font-style:normal;white-space:normal;box-shadow:0 6px 18px rgba(15,23,42,.18)}
+/* Éditeur de service : actions repliées en résumé d'une ligne */
+.pt-svc-card{padding:0!important;overflow:visible}
+.pt-svc-card>:not(.pt-svc-sum){display:none!important}
+.pt-svc-card.is-open>:not(.pt-svc-sum){display:revert!important}
+.pt-svc-card.is-open>div[style*="display:flex"]{display:flex!important}
+.pt-svc-card.is-open>*:not(.pt-svc-sum){margin-left:14px;margin-right:14px}
+.pt-svc-card.is-open>*:last-child{margin-bottom:14px}
+.pt-svc-sum{display:flex;align-items:center;gap:10px;width:100%;padding:12px 14px;background:none;border:0;font:inherit;text-align:left;cursor:pointer;color:var(--tx)}
+.pt-svc-sum b{font-size:13px;white-space:nowrap}
+.pt-svc-dot{width:10px;height:10px;border-radius:50%;flex:none}
+/* Moins de bordures et d'ombres, plus d'air */
+.b-sec{box-shadow:none}
+.b-sec+.b-sec{margin-top:14px}
+.v4-panel,.pt-exec-kpis>*,.exec-kpi-row>*{box-shadow:none!important}
+.pt-week-empty{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;margin:0 0 12px;border:1px dashed var(--bd);border-radius:12px;background:#f8fafc;color:var(--ts);font-size:13px}
+.pt-week-empty b{color:var(--tx);font-size:14px}
+.pt-week-empty .sp{flex:1}
+.pt-fb-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pt-fb-chip{font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;background:#ecfdf5;color:#047857}
+.pt-fb-none{font-size:12px;color:var(--ts)}
+/* Une seule action principale par zone */
+.v4-hero-actions .btn+.btn{background:transparent!important;border:1px solid rgba(255,255,255,.35)!important;color:#fff!important;box-shadow:none!important}
