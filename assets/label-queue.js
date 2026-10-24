@@ -6,6 +6,7 @@
   'use strict';
   var STATION_KEY = 'pt_label_station';
   var AUTO_KEY = 'pt_label_station_auto';
+  var TOKEN_KEY = 'pt_label_station_token';
   var POLL_MS = 15000;
   var EVENT_LABEL = { 'workflow.action': 'Action déclarée', 'workflow.status': 'Changement de statut', 'workflow.created': 'Création du dossier' };
   var MODE_LABEL = { auto: 'Automatique (poste, puis utilisateur, puis modèle, puis défaut)', fixed: 'Imprimante fixe', station: 'Celle du poste qui fait l’action', user: 'Celle de l’utilisateur qui fait l’action' };
@@ -76,22 +77,24 @@
 
   /* ---------- poste ---------- */
   function station() { try { return localStorage.getItem(STATION_KEY) || ''; } catch (_) { return ''; } }
+  function token() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (_) { return ''; } }
+  function setToken(v) { try { if (v) localStorage.setItem(TOKEN_KEY, v); else localStorage.removeItem(TOKEN_KEY); } catch (_) {} }
   function setStation(v) { try { if (v) localStorage.setItem(STATION_KEY, v); else localStorage.removeItem(STATION_KEY); } catch (_) {} }
   function autoOn() { try { return localStorage.getItem(AUTO_KEY) === '1'; } catch (_) { return false; } }
   function setAuto(on) { try { if (on) localStorage.setItem(AUTO_KEY, '1'); else localStorage.removeItem(AUTO_KEY); } catch (_) {} }
-  // Le serveur choisit « l'imprimante du poste » grâce à cet en-tête, envoyé seulement vers l'API PicoTrack.
+  // Le serveur reconnaît le poste à son jeton (donné à l'enregistrement par un administrateur), envoyé seulement vers l'API PicoTrack.
   (function stationHeader() {
     if (typeof window.fetch !== 'function' || window.fetch.__ptStation) return;
     var orig = window.fetch;
     var wrapped = function (input, init) {
       try {
-        var st = station();
+        var st = token();
         var url = typeof input === 'string' ? input : (input && input.url) || '';
         var same = url.indexOf('/api/') === 0 || url.indexOf(location.origin + '/api/') === 0;
         if (st && same && typeof input === 'string') {
           init = Object.assign({}, init || {});
           var h = new Headers(init.headers || {});
-          h.set('X-PT-Station', encodeURIComponent(st));
+          h.set('X-PT-Station-Token', st);
           init.headers = h;
         }
       } catch (_) {}
@@ -101,9 +104,7 @@
     window.fetch = wrapped;
   })();
   function stationPrinter() {
-    var st = station(); if (!st) return '';
-    var d = q.defaults.filter(function (x) { return x.scope === 'station' && x.scope_key === st; })[0];
-    return d ? String(d.printer_id) : '';
+    return q.station && q.station.printer_id ? String(q.station.printer_id) : '';
   }
   function myPrinter() {
     var d = q.defaults.filter(function (x) { return x.scope === 'user' && String(x.scope_key) === String(q.me); })[0];
@@ -115,7 +116,7 @@
     var ui = U();
     if (!ui) return Promise.reject(new Error('Étiquettes indisponibles'));
     q.busy[job.id] = true;
-    return api('labels_queue_claim', { job_id: job.id, station: station(), takeover: !!(opts && opts.takeover) }).then(function (res) {
+    return api('labels_queue_claim', { job_id: job.id, station_token: token(), takeover: !!(opts && opts.takeover) }).then(function (res) {
       if (!res || !res.claimed) { toast('w', 'Cette étiquette est déjà prise par un autre poste.'); return 'taken'; }
       var j = res.job;
       var ctx = Object.assign({ origin: location.origin }, j.context || {});
@@ -170,7 +171,7 @@
     var release = function () { jobs.forEach(function (j) { delete q.busy[j.id]; }); };
     return jobs.reduce(function (p, job) {
       return p.then(function () {
-        return api('labels_queue_claim', { job_id: job.id, station: station(), takeover: !!(opts && opts.takeover) }).then(function (res) {
+        return api('labels_queue_claim', { job_id: job.id, station_token: token(), takeover: !!(opts && opts.takeover) }).then(function (res) {
           if (!res || !res.claimed) { result.taken++; return; }
           var j = res.job, pr = ui.printerById(j.printer_id) || null;
           var ctx = Object.assign({ origin: location.origin }, j.context || {});
@@ -227,7 +228,8 @@
   }
   function loadDefaults() {
     return api('labels_defaults_list').then(function (res) {
-      q.defaults = (res && res.defaults) || []; q.me = (res && res.me) || ''; q.canManage = !!(res && res.can_manage);
+      q.defaults = (res && res.defaults) || []; q.me = (res && res.me) || ''; q.canManage = !!(res && res.can_manage); q.station = (res && res.station) || null;
+      if (q.station && q.station.name) setStation(q.station.name);
     }).catch(function (e) { q.error = (e && e.message) || 'Réglages indisponibles.'; });
   }
   function loadQueue() {
@@ -254,11 +256,11 @@
     var prOpts = function (cur, empty) { return opt('', empty, cur) + printers().map(function (p) { return opt(p.id, p.name, cur); }).join(''); };
     var noPrinter = !printers().length;
     var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px">' +
-      '<div style="' + card + '"><b style="font-size:14px">Ce poste</b><div style="' + hint + ';margin:4px 0 10px">Le nom du poste permet d’envoyer les étiquettes à « l’imprimante du poste ». Il reste sur cet appareil.</div>' +
-      '<label style="font-size:12px;display:block;margin-bottom:8px">Nom du poste<span style="display:flex;gap:6px;margin-top:3px"><input data-st-name list="pt-q-stations" value="' + esc(st) + '" placeholder="ex. Accueil, Quai 2, Tablette atelier" style="' + inp + ';flex:1"><button type="button" class="btn" data-st-save>Enregistrer</button></span>' +
+      '<div style="' + card + '"><b style="font-size:14px">Ce poste</b><div style="' + hint + ';margin:4px 0 10px">Un administrateur enregistre ce poste et choisit son imprimante. Le poste reçoit une clé gardée sur cet appareil.</div>' +
+      '<label style="font-size:12px;display:block;margin-bottom:8px">Nom du poste<span style="display:flex;gap:6px;margin-top:3px"><input data-st-name list="pt-q-stations" value="' + esc(st) + '" placeholder="ex. Accueil, Quai 2, Tablette atelier" style="' + inp + ';flex:1">' + (q.canManage && !noPrinter ? '<select data-st-pr style="' + inp + '">' + printers().map(function (p) { return opt(p.id, p.name, stationPrinter()); }).join('') + '</select><button type="button" class="btn" data-st-save>Enregistrer ce poste</button>' : '') + '</span>' +
       '<datalist id="pt-q-stations">' + stations.map(function (s) { return '<option value="' + esc(s.scope_key) + '">'; }).join('') + '</datalist></label>' +
-      (st ? '<div style="font-size:12.5px;margin-bottom:8px">Imprimante de ce poste : <b>' + esc(stationPrinter() ? printerName(stationPrinter()) : 'aucune') + '</b>' + (!stationPrinter() && q.canManage ? ' (à régler dans « Postes »)' : '') + '</div>' : '') +
-      '<label style="font-size:12.5px;display:flex;gap:6px;align-items:center"><input type="checkbox" data-st-auto' + (autoOn() ? ' checked' : '') + (st && stationPrinter() ? '' : ' disabled') + '> Ce poste imprime sa file automatiquement</label>' +
+      (st ? '<div style="font-size:12.5px;margin-bottom:8px">Imprimante de ce poste : <b>' + esc(stationPrinter() ? printerName(stationPrinter()) : 'aucune') + '</b>' + (!stationPrinter() ? ' (poste non enregistré : demandez à un administrateur)' : '') + '</div>' : '') +
+      '<label style="font-size:12.5px;display:flex;gap:6px;align-items:center"><input type="checkbox" data-st-auto' + (autoOn() ? ' checked' : '') + (stationPrinter() ? '' : ' disabled') + '> Ce poste imprime sa file automatiquement</label>' +
       '<div style="' + hint + ';margin-top:4px">Toutes les 15 secondes, tant que PicoTrack est ouvert sur ce poste (ordinateur ou tablette).</div></div>' +
       '<div style="' + card + '"><b style="font-size:14px">Mon imprimante par défaut</b><div style="' + hint + ';margin:4px 0 10px">Utilisée quand une règle demande « l’imprimante de l’utilisateur », sur tous vos appareils.</div>' +
       (noPrinter ? '<div style="' + hint + '">Aucune imprimante enregistrée dans cet environnement.</div>' : '<select data-my-printer style="' + inp + ';width:100%">' + prOpts(myPrinter(), 'Aucune') + '</select>') + '</div>';
@@ -270,10 +272,15 @@
         (noPrinter ? '' : '<div style="display:flex;gap:6px;margin-top:8px"><input data-stn-name placeholder="Nouveau poste" value="' + esc(st && !stations.some(function (s) { return s.scope_key === st; }) ? st : '') + '" style="' + inp + ';flex:1"><select data-stn-pr style="' + inp + '">' + printers().map(function (p) { return opt(p.id, p.name, ''); }).join('') + '</select><button type="button" class="btn" data-stn-add>Ajouter</button></div>') + '</div>';
     }
     box.innerHTML = html + '</div>';
-    box.querySelector('[data-st-save]').onclick = function () {
+    var sv = box.querySelector('[data-st-save]');
+    if (sv) sv.onclick = function () {
       var v = box.querySelector('[data-st-name]').value.trim().slice(0, 80);
-      setStation(v); if (!v) setAuto(false);
-      toast('s', v ? 'Ce poste s’appelle maintenant « ' + v + ' ».' : 'Nom du poste retiré.'); paintStation();
+      if (!v) return toast('e', 'Indiquez le nom du poste.');
+      api('labels_defaults_save', { scope: 'station', scope_key: v, printer_id: box.querySelector('[data-st-pr]').value, register: true }).then(function (res) {
+        if (res && res.token) { setToken(res.token); setStation(v); }
+        toast('s', 'Ce poste est enregistré sous « ' + v + ' ».');
+        return loadDefaults();
+      }).catch(function (e) { toast('e', (e && e.message) || 'Enregistrement impossible.'); }).then(paintStation);
     };
     var au = box.querySelector('[data-st-auto]'); au.onchange = function () { setAuto(au.checked); if (au.checked) { toast('s', 'Impression automatique activée sur ce poste.'); autoTick(); } };
     var mp = box.querySelector('[data-my-printer]');
@@ -398,7 +405,7 @@
         var dm = box.querySelector('[data-dm]');
         if (dm) dm.onclick = function () {
           dm.disabled = true;
-          api('labels_queue_manual', { instance_id: String(inst.id), template_id: box.querySelector('[data-dm-t]').value, printer_id: box.querySelector('[data-dm-p]').value, copies: box.querySelector('[data-dm-c]').value, station: station() })
+          api('labels_queue_manual', { instance_id: String(inst.id), template_id: box.querySelector('[data-dm-t]').value, printer_id: box.querySelector('[data-dm-p]').value, copies: box.querySelector('[data-dm-c]').value, station_token: token() })
             .then(function (res) { close(); toast('s', 'Étiquette ajoutée à la file' + (res && res.job ? ' (' + printerName(res.job.printer_id) + ').' : '.')); })
             .catch(function (e) { dm.disabled = false; toast('e', e.message); });
         };
@@ -606,7 +613,7 @@
   var tries = 0;
   var iv = setInterval(function () { boot(); if (++tries > 40) clearInterval(iv); }, 500);
   // Le poste en impression automatique doit connaître son imprimante dès l'ouverture.
-  setTimeout(function () { if (autoOn() && station() && envCode()) loadDefaults().then(autoTick); }, 3000);
+  setTimeout(function () { if (autoOn() && token() && envCode()) loadDefaults().then(autoTick); }, 3000);
 
   window.PTLabelQueue = { ACADEMY: ACADEMY, zonesOf: zonesOf, mappedTemplate: mappedTemplate, printJob: printJob, printBatch: printBatch, fieldName: fieldName, batchDocument: batchDocument, station: station, openQueue: openQueue, paintWorkflowRules: paintWorkflowRules, dossierDialog: dossierDialog };
 })();

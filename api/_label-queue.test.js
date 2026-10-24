@@ -15,6 +15,15 @@ let responder = () => [];
 function mock() { calls.length = 0; ss.serviceRest = async (p, o) => { calls.push({ path: p, opts: o || {} }); return responder(p, o || {}); }; }
 test.after(() => { ss.serviceRest = realRest; });
 
+// Jetons de poste (générés par le serveur en vrai) ; la base ne connaît que leur haché.
+const TOK = { 'Quai 2': 'q2'.repeat(22), 'Bureau': 'bu'.repeat(22), 'Accueil': 'ac'.repeat(22) };
+const tokReq = name => ({ headers: { 'x-pt-station-token': TOK[name] || name } });
+function stationByHash(p, map) {
+  const h = (p.match(/token_hash=eq\.([0-9a-f]+)/) || [])[1];
+  if (!h) return [];
+  const name = Object.keys(map).find(n => TOK[n] && Q.hashToken(TOK[n]) === h);
+  return name ? [{ scope_key: name, printer_id: map[name] }] : [];
+}
 const VIS = { instanceVisible: async () => true, formVisible: async () => true };
 const UID = '11111111-1111-1111-1111-111111111111';
 const admin = { id: UID, role: 'admin', environment_code: 'GIT', active: true, email: 'a@x.fr' };
@@ -77,7 +86,7 @@ test('exemplaires : nombre fixe ou champ numérique borné', () => {
 
 function writeInput(extra) {
   return Object.assign({
-    req: { headers: { 'x-pt-station': encodeURIComponent('Quai 2') } },
+    req: tokReq('Quai 2'),
     entity: 'service_instances', isCreate: false, id: '77', environmentCode: 'GIT', profile: operator,
     previous: { id: 77, service_id: 4, current_status_id: 's1', events: [] },
     saved: { id: 77, service_id: 4, current_status_id: 's1', reference: 'SVC-2026-0007', submission_id: 12, form_data: { a: 'A1', nb: '3' },
@@ -92,7 +101,7 @@ test('mise en file : action déclarée → étiquette figée, imprimante du post
     if (p.startsWith('label_print_rules')) return [{ id: 31, service_id: '4', event: 'workflow.action', action_key: 'valider', template_id: 5, printer_mode: 'station', copies: 1, copies_field_id: 'nb', field_map: { 2: 'a' }, active: true }];
     if (p.startsWith('label_templates')) return [TEMPLATE];
     if (p.startsWith('printer_profiles')) return [{ id: 9, is_default: true }, { id: 12, is_default: false }];
-    if (p.startsWith('label_printer_defaults') && p.includes('scope=eq.station') && p.includes('Quai%202')) return [{ printer_id: 12 }];
+    if (p.startsWith('label_printer_defaults') && p.includes('scope=eq.station')) return stationByHash(p, { 'Quai 2': 12 });
     if (p.startsWith('label_print_jobs') && o.method === 'POST') { posted.push(o.body); return [{ id: 100 }]; }
     return [];
   };
@@ -140,17 +149,18 @@ test('choix de l’imprimante : fixe, utilisateur, poste, modèle, défaut', asy
   responder = (p) => {
     if (p.startsWith('printer_profiles')) return printers;
     if (p.includes('scope=eq.user')) return [{ printer_id: 3 }];
-    if (p.includes('scope=eq.station')) return [{ printer_id: 4 }];
+    if (p.includes('scope=eq.station')) return stationByHash(p, { Accueil: 4 });
     return [];
   };
-  const ctx = { station: 'Accueil', userId: 'u' };
+  const ctx = { station: TOK.Accueil, userId: 'u' };
   assert.equal(await Q.resolvePrinter({}, 'GIT', { printer_mode: 'fixed', printer_id: 2 }, {}, ctx, { defaults: {} }), '2');
   assert.equal(await Q.resolvePrinter({}, 'GIT', { printer_mode: 'user' }, {}, ctx, { defaults: {} }), '3');
   assert.equal(await Q.resolvePrinter({}, 'GIT', { printer_mode: 'station' }, {}, ctx, { defaults: {} }), '4');
   assert.equal(await Q.resolvePrinter({}, 'GIT', { printer_mode: 'auto' }, {}, ctx, { defaults: {} }), '4');
   assert.equal(await Q.resolvePrinter({}, 'GIT', { printer_mode: 'fixed', printer_id: 99 }, { printer_profile_id: 2 }, { }, { defaults: {} }), '2', 'imprimante supprimée → modèle');
   assert.equal(await Q.resolvePrinter({}, 'GIT', { printer_mode: 'auto' }, {}, {}, { defaults: {} }), '1');
-  assert.equal(Q.stationOf({ headers: { 'x-pt-station': encodeURIComponent('Quai é') } }), 'Quai é');
+  assert.equal(Q.stationOf({ headers: { 'x-pt-station-token': TOK.Accueil } }), TOK.Accueil);
+  assert.equal(Q.stationOf({ headers: { 'x-pt-station': 'Accueil', 'x-pt-station-token': 'Accueil' } }), '', 'un nom n’est jamais un jeton');
 });
 
 test('droits : environnement imposé, lecture seule sans impression, règles et postes réservés aux admins', async () => {
@@ -194,10 +204,10 @@ test('file : prise atomique, fin, annulation par l’auteur seulement, réimpres
     if (p.startsWith('label_print_jobs') && o.method === 'POST') return [Object.assign({ id: 9 }, o.body)];
     if (p.startsWith('label_print_jobs')) return [job];
     if (p.startsWith('printer_profiles')) return [{ id: 4 }];
-    if (p.startsWith('label_printer_defaults') && p.includes('Quai%202')) return [{ printer_id: 4 }];
+    if (p.startsWith('label_printer_defaults')) return stationByHash(p, { 'Quai 2': 4 });
     return [];
   };
-  const c = await Q.handleQueue({}, { action: 'labels_queue_claim', job_id: '8', station: 'Quai 2' }, operator, VIS);
+  const c = await Q.handleQueue({}, { action: 'labels_queue_claim', job_id: '8', station_token: TOK['Quai 2'] }, operator, VIS);
   assert.equal(c.claimed, true);
   assert.equal(c.job.claimed_by, 'Quai 2');
   assert.ok(calls.some(x => x.opts.method === 'PATCH' && x.path.includes('&status=eq.pending') && x.path.includes('environment_code=eq.GIT')));
@@ -285,7 +295,7 @@ test('navigateur : en-tête du poste envoyé seulement vers l’API PicoTrack', 
   const { win, store } = bootBrowser(() => ({}));
   const seen = [];
   // On remplace la fonction d'origine capturée : on relit via un fetch espion monté avant le chargement.
-  store.pt_label_station = 'Quai 2';
+  store.pt_label_station_token = 'q2'.repeat(22);
   const root = path.join(__dirname, '..');
   const ctx = Object.assign({}, win, { fetch: async (u, init) => { seen.push([u, init && init.headers]); return { ok: true, json: async () => ({}) }; } });
   ctx.window = ctx; ctx.globalThis = ctx;
@@ -293,7 +303,7 @@ test('navigateur : en-tête du poste envoyé seulement vers l’API PicoTrack', 
   vm.runInContext(fs.readFileSync(path.join(root, 'assets/label-queue.js'), 'utf8'), ctx);
   await ctx.fetch('/api/records', { headers: { a: 1 } });
   await ctx.fetch('https://cdn.example.com/x.js', {});
-  assert.equal(seen[0][1].m['X-PT-Station'], 'Quai%202');
+  assert.equal(seen[0][1].m['X-PT-Station-Token'], 'q2'.repeat(22));
   assert.equal(seen[1][1] && seen[1][1].m, undefined);
 });
 
@@ -413,9 +423,13 @@ function attackDb(over) {
       return ids.map(i => db.instances[i]).filter(Boolean);
     }
     if (p.startsWith('label_printer_defaults')) {
-      const k = decodeURIComponent((p.match(/scope_key=eq\.([^&]+)/) || [])[1] || '');
-      return db.stations[k] ? [{ printer_id: db.stations[k] }] : [];
+      if (o.method === 'POST') { db.posted = o.body; return [Object.assign({}, o.body)]; }
+      if (o.method) return [];
+      if (p.includes('scope_key=eq.')) { const k = decodeURIComponent(p.match(/scope_key=eq\.([^&]+)/)[1]); return db.stations[k] ? [{ printer_id: db.stations[k] }] : []; }
+      if (p.includes('token_hash=eq.')) return stationByHash(p, db.stations);
+      return Object.keys(db.stations).map(n => ({ scope: 'station', scope_key: n, printer_id: db.stations[n], updated_at: 'x', token_hash: Q.hashToken(TOK[n]) }));
     }
+    if (p.startsWith('printer_profiles')) return [{ id: 4 }, { id: 5 }];
     if (p.startsWith('label_print_jobs')) {
       const id = (p.match(/id=eq\.(\d+)/) || [])[1];
       if (o.method === 'PATCH') { const j = db.jobs.find(x => String(x.id) === id); if (!j || (p.includes('status=eq.pending') && j.status !== 'pending')) return []; Object.assign(j, o.body); return [j]; }
@@ -458,7 +472,7 @@ test('attaque : prise d’une étiquette de dossier masqué = 404, contexte jama
 });
 
 test('attaque : un poste ne prend que les étiquettes de son imprimante, un admin prend la main explicitement', async () => {
-  const req = st => ({ headers: { 'x-pt-station': encodeURIComponent(st) } });
+  const req = tokReq;
   attackDb();
   // Poste « Bureau » (imprimante 5) sur une étiquette de l'imprimante 4.
   await assert.rejects(Q.handleQueue(req('Bureau'), { action: 'labels_queue_claim', job_id: '2' }, operator, ROLE), e => e.status === 403);
@@ -481,6 +495,39 @@ test('attaque : un poste ne prend que les étiquettes de son imprimante, un admi
   // Réponses d'action (hors prise) : jamais le contenu de l'étiquette.
   const patches = calls.filter(c => c.opts.method === 'PATCH');
   assert.ok(patches.every(c => /select=[^&]*template,|select=[^&]*context/.test(c.path) === (c.path.includes('status=eq.pending') || c.path.includes('status=eq.claimed&claimed_at'))));
+});
+
+test('attaque : poste = jeton serveur ; nom forgé, jeton d’une autre imprimante ou absent refusés', async () => {
+  attackDb();
+  const claim = (r, b) => Q.handleQueue(r, Object.assign({ action: 'labels_queue_claim', job_id: '2' }, b || {}), operator, ROLE);
+  // Nom forgé (ancien en-tête, corps, ou nom envoyé comme jeton).
+  await assert.rejects(claim({ headers: { 'x-pt-station': encodeURIComponent('Quai 2') } }), e => e.status === 403);
+  await assert.rejects(claim({ headers: {} }, { station: 'Quai 2' }), e => e.status === 403);
+  await assert.rejects(claim({ headers: { 'x-pt-station-token': 'Quai 2' } }), e => e.status === 403);
+  // Jeton valide mais d'une autre imprimante (Bureau → 5, étiquette → 4).
+  await assert.rejects(claim(tokReq('Bureau')), e => e.status === 403);
+  await assert.rejects(claim({ headers: {} }, { station_token: TOK.Bureau }), e => e.status === 403);
+  // Jeton inventé, ou aucun jeton.
+  await assert.rejects(claim({ headers: { 'x-pt-station-token': 'zz'.repeat(22) } }), e => e.status === 403);
+  await assert.rejects(claim({ headers: {} }), e => e.status === 403);
+  assert.equal(calls.filter(c => c.opts.method === 'PATCH').length, 0);
+  assert.ok(!calls.some(c => c.path.includes('scope_key=eq.Quai')), 'le nom n’est jamais cherché');
+  // La liste n'expose ni jeton ni haché, ni les postes à un non-admin.
+  const op = await Q.handleQueue(tokReq('Bureau'), { action: 'labels_defaults_list' }, operator);
+  assert.deepEqual(op.defaults, []);
+  assert.deepEqual(op.station, { name: 'Bureau', printer_id: '5' });
+  const ad = await Q.handleQueue({ headers: {} }, { action: 'labels_defaults_list' }, admin);
+  assert.equal(ad.defaults.length, 2);
+  const dump = JSON.stringify([op, ad]);
+  assert.ok(!dump.includes('token') && !Object.values(TOK).some(t => dump.includes(t) || dump.includes(Q.hashToken(t))));
+  // Enregistrement : admin seulement, jeton aléatoire rendu une fois, seul le haché est stocké.
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_defaults_save', scope: 'station', scope_key: 'Quai 9', printer_id: '4', register: true }, operator), e => e.status === 403);
+  const db = attackDb();
+  const reg = await Q.handleQueue({}, { action: 'labels_defaults_save', scope: 'station', scope_key: 'Quai 9', printer_id: '4', register: true }, admin);
+  assert.match(reg.token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(db.posted.token_hash, Q.hashToken(reg.token));
+  assert.ok(!JSON.stringify(db.posted).includes(reg.token));
+  assert.equal(reg.default.token_hash, undefined);
 });
 
 test('attaque : association manuelle vers un champ hors formulaire ou formulaire masqué refusée', async () => {

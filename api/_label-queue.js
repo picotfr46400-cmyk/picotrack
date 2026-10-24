@@ -26,11 +26,24 @@ function copiesOf(value, fallback) {
   if (!Number.isFinite(n) || n < 1) return fallback;
   return Math.min(MAX_COPIES, n);
 }
-function stationOf(req) {
-  const h = req && req.headers ? (req.headers['x-pt-station'] || req.headers['X-PT-Station']) : '';
-  let v = String(Array.isArray(h) ? h[0] : h || '');
-  try { v = decodeURIComponent(v); } catch (_) {}
-  return keyOf(v);
+// Poste = jeton généré par le serveur (jamais un nom envoyé par le client). Seul son haché est stocké.
+const TOKEN_RE = /^[A-Za-z0-9_-]{32,128}$/;
+function stationOf(req, body) {
+  const h = req && req.headers ? (req.headers['x-pt-station-token'] || req.headers['X-PT-Station-Token']) : '';
+  const v = String((body && body.station_token) || (Array.isArray(h) ? h[0] : h) || '').trim();
+  return TOKEN_RE.test(v) ? v : '';
+}
+function hashToken(token) { return require('crypto').createHash('sha256').update(String(token)).digest('hex'); }
+function newToken() { return require('crypto').randomBytes(32).toString('base64url'); }
+// Poste enregistré pour ce jeton : { name, printer_id } ou null.
+async function stationRow(req, env, token, cache) {
+  if (!token) return null;
+  const k = 'tok:' + hashToken(token);
+  if (cache && k in cache) return cache[k];
+  const rows = await rest(req, `label_printer_defaults?environment_code=eq.${enc(env)}&scope=eq.station&token_hash=eq.${hashToken(token)}&select=scope_key,printer_id&limit=1`);
+  const r = Array.isArray(rows) && rows[0] && rows[0].printer_id != null ? { name: String(rows[0].scope_key || ''), printer_id: String(rows[0].printer_id) } : null;
+  if (cache) cache[k] = r;
+  return r;
 }
 function personName(profile) {
   if (!profile) return '';
@@ -149,6 +162,7 @@ async function resolvePrinter(req, env, rule, template, ctx, cache) {
   const exists = id => id && printers.some(p => String(p.id) === String(id));
   async function def(scope, key) {
     if (!key) return null;
+    if (scope === 'station') { const st = await stationRow(req, env, key, cache.defaults); return st ? st.printer_id : null; }
     const k = scope + ':' + key;
     if (!(k in cache.defaults)) {
       const rows = await rest(req, `label_printer_defaults?environment_code=eq.${enc(env)}&scope=eq.${scope}&scope_key=eq.${enc(key)}&select=printer_id&limit=1`);
@@ -217,7 +231,7 @@ async function enqueueFromWrite(input) {
         const values = occ.values || {};
         const copies = rule.copies_field_id ? copiesOf(values[rule.copies_field_id], rule.copies || 1) : (rule.copies || 1);
         const profile = w.profile || input.profile || null;
-        const printerId = await resolvePrinter(req, env, rule, tpl, { station: stationOf(req), userId: profile && profile.id }, cache);
+        const printerId = await resolvePrinter(req, env, rule, tpl, { station: stationOf(req, input), userId: profile && profile.id }, cache);
         const saved = occ.saved || {};
         const job = {
           environment_code: env,
@@ -317,11 +331,6 @@ async function readVisibleJob(req, env, opts, id, cols) {
   if (!ok.length) throw deny(404, 'Étiquette introuvable dans cette file.');
   return job;
 }
-async function stationPrinterOf(req, env, stationKey) {
-  if (!stationKey) return null;
-  const rows = await rest(req, `label_printer_defaults?environment_code=eq.${enc(env)}&scope=eq.station&scope_key=eq.${enc(stationKey)}&select=printer_id&limit=1`);
-  return Array.isArray(rows) && rows[0] && rows[0].printer_id != null ? String(rows[0].printer_id) : null;
-}
 
 // Champs de données du formulaire d'un workflow (sans séparateurs ni titres).
 const LAYOUT_TYPES = new Set(['separator', 'image', 'titre', 'section', 'title', 'heading']);
@@ -331,7 +340,7 @@ async function workflowFields(req, env, serviceId) {
   if (formId == null || formId === '') return { formId: null, ids: new Set() };
   const forms = await rest(req, `forms?id=eq.${enc(formId)}&environment_code=eq.${enc(env)}&select=id,fields&limit=1`);
   const fields = Array.isArray(forms) && forms[0] && Array.isArray(forms[0].fields) ? forms[0].fields : [];
-  return { formId: String(formId), ids: new Set(fields.filter(f => f && f.id != null && !LAYOUT_TYPES.has(String(f.type || ''))).map(f => String(f.id))) };
+  return { formId: String(formId), ids: new Set(fields.filter(f => f && f.id != null && !LAYOUT_TYPES.has(String(f.type || '')) && f.vis_sup !== false && !(Array.isArray(f.conditions) && f.conditions.length)).map(f => String(f.id))) };
 }
 // Une association ne vise que des champs du formulaire du workflow, visible pour le rôle.
 async function assertFieldMap(req, env, opts, serviceId, fieldMap) {
@@ -371,22 +380,23 @@ async function handleQueue(req, body, profile, opts) {
     else if (!inst) q += `&status=in.(${ACTIVE.join(',')})&order=created_at.asc`;
     else q += '&order=created_at.desc';
     const limit = Math.min(MAX_ROWS, Math.max(1, Number(body.limit) || 100));
-    const jobs = await visibleJobs(req, env, opts, await rest(req, `${q}&select=${JOB_LIST_COLS}&limit=${limit}`));
+    // Filtrer d'abord, limiter ensuite : une page n'est jamais amputée par des dossiers masqués.
+    const jobs = (await visibleJobs(req, env, opts, await rest(req, `${q}&select=${JOB_LIST_COLS}&limit=${MAX_ROWS}`))).slice(0, limit);
     return { environment_code: env, can_manage: manage, can_print: printer, jobs };
   }
   if (action === 'labels_queue_claim') {
     needPrint();
     const id = idOf(body.job_id);
     if (!id) throw deny(400, 'Étiquette requise.');
-    const stationKey = keyOf(body.station) || stationOf(req);
-    const station = stationKey || personName(profile) || 'Poste';
+    const st = await stationRow(req, env, stationOf(req, body));
+    const station = (st && st.name) || personName(profile) || 'Poste';
     const before = await readVisibleJob(req, env, opts, id, 'id,status,claimed_at,history,instance_id,service_id,printer_id,created_by');
     // Un poste ne prend que les étiquettes de son imprimante ; une étiquette sans imprimante revient à son auteur.
     // Un administrateur peut prendre la main explicitement (tracé dans l'historique).
     const takeover = !!body.takeover && manage;
     if (!takeover) {
       if (before.printer_id != null) {
-        const mine = await stationPrinterOf(req, env, stationKey);
+        const mine = st && st.printer_id;
         if (!mine || mine !== String(before.printer_id)) throw deny(403, 'Cette étiquette est destinée à l’imprimante d’un autre poste.');
       } else if (String(before.created_by || '') !== String(profile.id || '')) {
         throw deny(403, 'Étiquette sans imprimante : seul son auteur ou un administrateur peut l’imprimer.');
@@ -469,7 +479,7 @@ async function handleQueue(req, body, profile, opts) {
     if (!tpl) throw deny(404, 'Modèle introuvable dans cet environnement.');
     let printerId = body.printer_id === undefined || body.printer_id === '' ? null : idOf(body.printer_id);
     if (printerId) await assertPrinter(req, env, printerId);
-    else printerId = await resolvePrinter(req, env, { printer_mode: 'auto' }, tpl, { station: keyOf(body.station) || stationOf(req), userId: profile.id }, { defaults: {} });
+    else printerId = await resolvePrinter(req, env, { printer_mode: 'auto' }, tpl, { station: stationOf(req, body), userId: profile.id }, { defaults: {} });
     const fieldMap = cleanFieldMap(body.field_map);
     const allowed = await assertFieldMap(req, env, opts, inst.service_id, fieldMap);
     const snap = applyFieldMap(templateSnapshot(tpl), fieldMap);
@@ -525,8 +535,10 @@ async function handleQueue(req, body, profile, opts) {
   if (action === 'labels_defaults_list') {
     const rows = await rest(req, `label_printer_defaults?environment_code=eq.${enc(env)}&select=scope,scope_key,printer_id,updated_at&order=scope.asc,scope_key.asc&limit=${MAX_ROWS}`);
     // Un non-admin ne voit que son propre réglage et les postes.
-    const list = (rows || []).filter(r => manage || r.scope === 'station' || String(r.scope_key) === String(profile.id));
-    return { can_manage: manage, me: String(profile.id || ''), defaults: list };
+    // Un non-admin ne voit que son propre réglage ; aucun jeton (ni haché) ne sort jamais.
+    const list = (rows || []).filter(r => manage || (r.scope === 'user' && String(r.scope_key) === String(profile.id))).map(r => ({ scope: r.scope, scope_key: r.scope_key, printer_id: r.printer_id, updated_at: r.updated_at }));
+    const st = await stationRow(req, env, stationOf(req, body));
+    return { can_manage: manage, me: String(profile.id || ''), defaults: list, station: st };
   }
   if (action === 'labels_defaults_save') {
     const scope = body.scope === 'station' ? 'station' : body.scope === 'user' ? 'user' : '';
@@ -541,11 +553,25 @@ async function handleQueue(req, body, profile, opts) {
       return { removed: true, scope, scope_key: scopeKey };
     }
     await assertPrinter(req, env, printerId);
+    const by = /^[0-9a-f-]{36}$/i.test(String(profile.id || '')) ? profile.id : null;
+    const now = new Date().toISOString();
+    const cols = 'scope,scope_key,printer_id,updated_at';
+    if (scope === 'station' && !body.register) {
+      // Changer l'imprimante d'un poste garde son jeton.
+      const rows = await rest(req, `${base}&select=${cols}`, { method: 'PATCH', body: { printer_id: printerId, updated_by: by, updated_at: now }, prefer: 'return=representation' });
+      if (Array.isArray(rows) && rows.length) return { default: rows[0] };
+    }
+    // Enregistrement (ou réenregistrement) d'un poste : nouveau jeton, l'ancien ne vaut plus rien.
+    const token = scope === 'station' ? newToken() : '';
     await rest(req, base, { method: 'DELETE', prefer: 'return=minimal' });
-    const rows = await rest(req, 'label_printer_defaults?select=scope,scope_key,printer_id,updated_at', {
-      method: 'POST', body: { environment_code: env, scope, scope_key: scopeKey, printer_id: printerId, updated_by: /^[0-9a-f-]{36}$/i.test(String(profile.id || '')) ? profile.id : null, updated_at: new Date().toISOString() }, prefer: 'return=representation'
-    });
-    return { default: Array.isArray(rows) ? rows[0] : rows };
+    const row = { environment_code: env, scope, scope_key: scopeKey, printer_id: printerId, updated_by: by, updated_at: now };
+    if (token) row.token_hash = hashToken(token);
+    const rows = await rest(req, `label_printer_defaults?select=${cols}`, { method: 'POST', body: row, prefer: 'return=representation' });
+    const out = { default: Array.isArray(rows) ? rows[0] : rows };
+    if (out.default) delete out.default.token_hash;
+    // Le jeton n'est rendu qu'au poste qui s'enregistre (une seule fois, jamais relisible).
+    if (token && body.register) out.token = token;
+    return out;
   }
   throw deny(400, 'Action non autorisée');
 }
@@ -561,4 +587,4 @@ async function purgeOldJobs(req, now) {
   return { deleted: Array.isArray(rows) ? rows.length : 0, before: limit };
 }
 
-module.exports = { purgeOldJobs, PURGE_DAYS, handleQueue, QUEUE_ACTIONS, enqueueFromWrite, safeEnqueue, cleanRule, ruleMatches, applyFieldMap, variableZones, contextFor, copiesOf, resolvePrinter, stationOf, canPrint };
+module.exports = { purgeOldJobs, PURGE_DAYS, handleQueue, QUEUE_ACTIONS, enqueueFromWrite, safeEnqueue, cleanRule, ruleMatches, applyFieldMap, variableZones, contextFor, copiesOf, resolvePrinter, stationOf, hashToken, canPrint };
