@@ -41,6 +41,21 @@
     return printerById(tpl && tpl.printer_profile_id) || printerById(posteDefault()) ||
       state.printers.filter(function (p) { return p.is_default; })[0] || null;
   }
+  // Réglage « Imprimer une étiquette » d'un formulaire → modèle et imprimante réels.
+  // Ancien format (texte libre « Etiquette arrivage ») : on retrouve le modèle par son nom.
+  function triggerTemplate(cfg, templates) {
+    if (!cfg) return null;
+    var list = templates || state.templates;
+    if (cfg.templateId != null && cfg.templateId !== '') {
+      return list.filter(function (t) { return String(t.id) === String(cfg.templateId); })[0] || null;
+    }
+    var name = String(cfg.template || '').trim().toLowerCase();
+    return name ? list.filter(function (t) { return String(t.name || '').trim().toLowerCase() === name; })[0] || null : null;
+  }
+  function triggerPrinter(cfg, printers) {
+    if (!cfg || cfg.printerId == null || cfg.printerId === '') return null;
+    return (printers || state.printers).filter(function (p) { return String(p.id) === String(cfg.printerId); })[0] || null;
+  }
   function numIn(v) { var n = Number(v); return isFinite(n) ? n : 0; }
 
   /* ---------- chargement ---------- */
@@ -53,7 +68,7 @@
       state.loaded = true; state.error = ''; state.env = envCode();
     }).catch(function (err) {
       state.error = (err && err.message) || 'Chargement impossible.';
-    }).then(function () { state.loading = null; });
+    }).then(function () { state.loading = null; notify(); });
     return state.loading;
   }
   window.ptLabelsPrefetch = function () { return ensureLoaded(); };
@@ -63,7 +78,12 @@
     var i = list.findIndex(function (x) { return String(x.id) === String(row.id); });
     if (i >= 0) list[i] = row; else list.push(row);
     list.sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || '')); });
+    notify();
     return true;
+  }
+  // Prévient les écrans abonnés (sélecteur du Form Builder) que modèles ou imprimantes ont changé.
+  function notify() {
+    try { window.dispatchEvent(new CustomEvent('pt-labels-changed')); } catch (_) {}
   }
   function ensureLoaded() {
     if (state.loaded && state.env === envCode()) return Promise.resolve();
@@ -148,9 +168,9 @@
     return Promise.resolve('native');
   }
 
-  function doPrint(tpl, contexts, mode) {
+  function doPrint(tpl, contexts, mode, printer) {
     if (!contexts.length) { toast('e', 'Aucune saisie à imprimer.'); return; }
-    var pr = printerFor(tpl);
+    var pr = printer || printerFor(tpl);
     var opts = pr ? { margin_mm: pr.margin_mm, dpi: pr.dpi, rotation: pr.rotation } : {};
     if (!mode && pr && connOf(pr) !== 'system') {
       sendDirect(pr, tpl, contexts, function () { printHtml(L.printDocument(tpl, contexts, opts)); });
@@ -230,6 +250,67 @@
       });
   }
   window.ptPrintLabelForSubmission = printForSubmission;
+
+  // Action automatique après validation d'une saisie (Form Builder > Imprimer une étiquette).
+  async function runPrintTrigger(form, sub, reference) {
+    var cfg = form && form.triggers && form.triggers.printLabel;
+    if (!cfg || !cfg.enabled) return 'off';
+    await ensureLoaded();
+    if (state.error) { toast('e', 'Étiquette non imprimée : ' + state.error); return 'error'; }
+    var tpl = triggerTemplate(cfg);
+    if (!tpl) { toast('w', 'Étiquette non imprimée : choisissez un modèle dans le paramétrage du formulaire.'); return 'no-template'; }
+    var full = await fullSubmission(sub).catch(function () { return sub; });
+    doPrint(tpl, [ctxFor(full, reference)], null, triggerPrinter(cfg));
+    return 'printed';
+  }
+  window.ptRunPrintLabelTrigger = function (form, sub, reference) {
+    return runPrintTrigger(form, sub, reference).catch(function (e) { console.warn('[PicoTrack Étiquettes] impression auto :', e && e.message); return 'error'; });
+  };
+
+  // Sélecteurs modèle + imprimante du Form Builder, alimentés par label_templates / printer_profiles
+  // de l'environnement et mis à jour sans recharger la page.
+  function TriggerPicker(props) {
+    var R = window.React;
+    var cfg = props.value || {};
+    var setTick = R.useState(0)[1];
+    R.useEffect(function () {
+      var on = function () { setTick(function (n) { return n + 1; }); };
+      var refresh = function () { load(true); };
+      window.addEventListener('pt-labels-changed', on);
+      window.addEventListener('focus', refresh);
+      load(true);
+      return function () { window.removeEventListener('pt-labels-changed', on); window.removeEventListener('focus', refresh); };
+    }, []);
+    var h = R.createElement;
+    var box = { flex: 1, border: '1px solid #cbd5e1', borderRadius: 7, padding: 7, fontSize: 12, background: '#fff', minWidth: 0 };
+    if (!state.loaded && state.error) return h('div', { style: { fontSize: 12, color: '#b91c1c' } }, 'Modèles indisponibles : ' + state.error);
+    if (!state.loaded) return h('div', { style: { fontSize: 12, color: '#64748b' } }, 'Chargement des modèles d’étiquettes…');
+    if (!state.templates.length) {
+      return h('div', { 'data-empty': '1', style: { fontSize: 12, color: '#475569', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+        'Aucun modèle d’étiquette dans cet environnement.',
+        h('button', { type: 'button', onClick: function () { if (window.goLabels) window.goLabels(); }, style: { border: '1px solid #cbd5e1', borderRadius: 7, padding: '4px 8px', fontSize: 12, background: '#fff', cursor: 'pointer' } }, 'Créer un modèle'));
+    }
+    var tpl = triggerTemplate(cfg);
+    var missing = !tpl && ((cfg.templateId != null && cfg.templateId !== '') || !!String(cfg.template || '').trim());
+    var prVal = cfg.printerId != null && cfg.printerId !== '' ? String(cfg.printerId) : '';
+    return h('div', { style: { display: 'grid', gap: 4 } },
+      h('div', { style: { display: 'flex', gap: 6 } },
+        h('select', { 'aria-label': 'Modèle d’étiquette', value: tpl ? String(tpl.id) : '', style: box, onChange: function (e) {
+          var t = state.templates.filter(function (x) { return String(x.id) === e.target.value; })[0];
+          props.onChange({ templateId: t ? t.id : '', template: t ? t.name : '' });
+        } },
+          h('option', { value: '' }, 'Choisir un modèle…'),
+          state.templates.map(function (t) { return h('option', { key: t.id, value: String(t.id) }, t.name + ' (' + t.width_mm + ' × ' + t.height_mm + ' mm)'); })),
+        h('select', { 'aria-label': 'Imprimante', value: printerById(prVal) ? prVal : '', style: box, onChange: function (e) {
+          var p = printerById(e.target.value);
+          props.onChange({ printerId: p ? p.id : '', printer: p ? p.name : '' });
+        } },
+          h('option', { value: '' }, 'Imprimante du modèle ou du poste'),
+          state.printers.map(function (p) { return h('option', { key: p.id, value: String(p.id) }, p.name); }))),
+      missing ? h('div', { style: { fontSize: 11.5, color: '#b45309' } }, 'Aucun modèle choisi pour l’instant : sélectionnez-en un.') : null,
+      !state.printers.length ? h('div', { style: { fontSize: 11.5, color: '#64748b' } }, 'Aucune imprimante enregistrée : la fenêtre d’impression du navigateur sera utilisée.') : null);
+  }
+  window.PtLabelTriggerPicker = TriggerPicker;
 
   function previewHtml(tpl, ctx, maxPx) {
     var pxPerMm = 96 / 25.4;
@@ -713,5 +794,5 @@
   // L'app peut reconstruire la barre latérale après connexion.
   var tries = 0;
   var iv = setInterval(function () { boot(); if (++tries > 40) clearInterval(iv); }, 500);
-  window.PTLabelsUI = { load: load, state: state, ACADEMY: ACADEMY, capability: capability, nativeUrl: nativeUrl };
+  window.PTLabelsUI = { load: load, state: state, triggerTemplate: triggerTemplate, triggerPrinter: triggerPrinter, runPrintTrigger: runPrintTrigger, TriggerPicker: TriggerPicker, ACADEMY: ACADEMY, capability: capability, nativeUrl: nativeUrl };
 })();
