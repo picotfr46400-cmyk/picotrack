@@ -13,6 +13,7 @@ const { handleLabels } = require('./_labels');
 const { handleQueue } = require('./_label-queue');
 const fieldValidation = require('./_field-validation');
 const fieldChoices = require('./_field-choices');
+const fieldLookup = require('./_field-lookup');
 const dbRowUpdate = require('./_db-row-update');
 const fieldRoles = require('./_field-roles');
 
@@ -1178,6 +1179,25 @@ async function redactFieldRolesInResult(req, result) {
   return fieldRoles.redactResultRows({ read: path => readStrictRows(req, path), env, viewer: fieldChoices.viewerFor(profile, catalog) }, result);
 }
 
+// Lot 3 — aperçu des calculs et recherches pendant la saisie : formulaire relu en base,
+// configuration du navigateur ignorée, valeurs limitées à ce que le lecteur voit.
+async function handleFieldCompute(req, body) {
+  const user = await requireAuth(req);
+  const profile = await getUserProfile(user.id, req);
+  req.picoReaderProfile = profile;
+  const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
+  if (!env || env === 'GLOBAL' || env === '*') throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+  const formId = String(body.form_id || '').trim().slice(0, 80);
+  if (!formId) throw Object.assign(new Error('Formulaire manquant.'), { status: 400 });
+  const [catalog, services] = await Promise.all([catalogFor(req, profile), loadServicesIndex(req, profile, env)]);
+  if (access.formLevel(profile, catalog, formId, services) === 'hidden') throw Object.assign(new Error('Introuvable.'), { status: 404 });
+  const forms = await readStrictRows(req, `forms?id=eq.${encodeURIComponent(formId)}&environment_code=eq.${encodeURIComponent(env)}&select=id,fields&limit=1`);
+  const form = forms[0] || null;
+  if (!form) throw Object.assign(new Error('Introuvable.'), { status: 404 });
+  const values = body.values && typeof body.values === 'object' && !Array.isArray(body.values) ? body.values : {};
+  return fieldLookup.previewDerived({ read: path => readStrictRows(req, path), env, profile, catalog, services }, form, values);
+}
+
 // Lot 1 — options d'un champ « choix depuis une base » : configuration relue dans le formulaire,
 // filtres envoyés par le navigateur ignorés, seules les valeurs saisies (cascade) sont lues.
 async function handleFieldOptions(req, body) {
@@ -1500,6 +1520,8 @@ async function handleSave(req, body) {
         choices: await fieldChoices.choicesFor(choiceCtx, fields, mergedForChoices),
         defaultsCtx: fieldChoices.defaultsCtx(profile, targetEnv)
       });
+      // Lot 3 : calculs et recherches recalculés par le serveur (valeur du client ignorée).
+      record.values = await fieldLookup.applyDerived(choiceCtx, fields, record.values, sameForm ? (existingSubmission.values || {}) : null);
       if (!existingSubmission) record.values._author = submissionAuthorStamp(profile);
       else if (!sameForm) delete record.values._author;
     }
@@ -1591,7 +1613,8 @@ async function handleSave(req, body) {
           fields, Object.assign({}, prevData || {}, incoming || {})),
         defaultsCtx: fieldChoices.defaultsCtx(profile, targetEnv)
       });
-      if (Object.prototype.hasOwnProperty.call(record, 'form_data')) record.form_data = checked;
+      const derivedData = await fieldLookup.applyDerived({ read: path => readStrictRows(req, path), env: targetEnv, profile, catalog, services }, fields, checked, prevData);
+      if (Object.prototype.hasOwnProperty.call(record, 'form_data')) record.form_data = derivedData;
     }
   }
 
@@ -2482,6 +2505,9 @@ async function handler(req, res) {
       case 'field_options':
         result = await handleFieldOptions(req, body);
         break;
+      case 'field_compute':
+        result = await handleFieldCompute(req, body);
+        break;
       case 'save':
         result = await handleSave(req, body);
         break;
@@ -2557,7 +2583,7 @@ async function handler(req, res) {
         return json(res, 400, { error: 'Action non autorisée' });
     }
 
-    if (action !== 'field_options') result = await redactFieldRolesInResult(req, result);
+    if (action !== 'field_options' && action !== 'field_compute') result = await redactFieldRolesInResult(req, result);
     result = projectClientResult(action, body, result, req.picoReaderProfile);
     const payload = redactRecordsPayload(result, req.picoReaderProfile);
     json(res, 200, payload);

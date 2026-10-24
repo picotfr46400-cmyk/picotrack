@@ -49,7 +49,7 @@ async function sourceRows(ctx, source) {
     const forms = await read(`forms?id=eq.${enc(src.ref)}&environment_code=eq.${enc(env)}&select=id,fields&limit=1`);
     const form = Array.isArray(forms) ? forms[0] : null;
     if (!form) return [];
-    const viewer = viewerFor(profile, catalog);
+    const viewer = ctx.viewer || viewerFor(profile, catalog); // Lot 3 : la recherche impose un lecteur sans rôle
     const fields = fieldsOf(form);
     let rows = await read(`submissions?form_id=eq.${enc(src.ref)}&environment_code=eq.${enc(env)}&select=id,form_id,values&order=created_at.desc&limit=${MAX_ROWS}`);
     rows = Array.isArray(rows) ? rows : [];
@@ -76,7 +76,7 @@ async function sourceRows(ctx, source) {
     .filter(r => r && !(r.form_id && access.formLevel(profile, catalog, r.form_id, services) === 'hidden'));
   // Lignes alimentées par un formulaire : les cellules des champs masqués par rôle ne servent ni à filtrer
   // ni à afficher (sinon on devinerait la valeur en jouant avec les filtres). Formulaire illisible : cellules retirées.
-  const viewer = viewerFor(profile, catalog);
+  const viewer = ctx.viewer || viewerFor(profile, catalog); // Lot 3 : la recherche impose un lecteur sans rôle
   const formIds = [...new Set(rows.map(r => r.form_id).filter(x => x != null && x !== '').map(String))];
   const formFields = new Map();
   if (formIds.length && !viewer.all) {

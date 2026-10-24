@@ -14,7 +14,8 @@
 (function (root) {
   'use strict';
 
-  var LAYOUT = ['separator', 'separateur', 'sep', 'titre', 'title', 'soustitre', 'paragraphe', 'image', 'son', 'sound', 'video', 'groupe', 'group', 'html'];
+  var LAYOUT = ['separator', 'separateur', 'sep', 'titre', 'title', 'soustitre', 'paragraphe', 'image', 'son', 'sound', 'video', 'groupe', 'group', 'html', 'document', 'note_interne'];
+  var DERIVED = ['calcul', 'requete'];
   var SYSTEM_KEYS = ['_geo'];
   var SIGNATURE_MAX_BYTES = 200 * 1024;
   var REGEX_MAX_PATTERN = 500;
@@ -230,6 +231,15 @@
     if (need.length && !need.some(function (r) { return viewer.roles[r] || viewer.roles[normRole(viewer.aliases[r])]; })) return false;
     var gid = groupOf(f);
     seen = seen || {};
+    // Lot 3 : une valeur dérivée (calcul, recherche) d'un champ réservé est elle-même réservée.
+    if (isDerived(f) && !seen['d:' + f.id]) {
+      seen['d:' + f.id] = 1;
+      var deps = derivedDeps(f);
+      for (var di = 0; di < deps.length; di++) {
+        var dep = condSource(fields || [], { field: deps[di] });
+        if (dep && dep !== f && !roleAllowed(dep, fields, viewer, seen)) return false;
+      }
+    }
     if (gid != null && gid !== '' && !seen[String(gid)]) {
       seen[String(gid)] = 1;
       var g = (fields || []).find(function (t) { return isGroup(t) && String(t.id) === String(gid); });
@@ -415,6 +425,198 @@
     opts.forEach(function (o) { if (!seen[o.id]) { seen[o.id] = 1; out.push({ id: o.id, label: o.label }); } });
     return out.slice(0, MAX_OPTIONS);
   }
+
+  /* ---------- Lot 3 : valeurs dérivées (calcul enrichi, recherche) ----------
+     Moteur pur, partagé navigateur / serveur. Aucune évaluation de code : uniquement une
+     liste d'éléments et d'opérations connues. Le serveur recalcule et écrase toute valeur
+     envoyée par le client (api/_field-lookup.js). */
+  function isDerived(f) { return DERIVED.indexOf(lower(f && f.type)) >= 0; }
+  var CALC_OPS = ['+', '-', '*', '/', 'min', 'max', '&'];
+  var CALC_KINDS = ['number', 'text', 'date', 'gap'];
+  var CALC_UNITS = { min: 60000, h: 3600000, d: 86400000 };
+  var DATE_FORMATS = ['jj/mm/aaaa', 'aaaa-mm-jj', 'jj/mm/aaaa hh:mm', 'hh:mm', 'mm/aaaa', 'j mois aaaa'];
+  var MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+  var MAX_STEPS = 20;
+  function calcSpec(f) {
+    var steps = (Array.isArray(f && f.calculSteps) ? f.calculSteps : []).slice(0, MAX_STEPS).map(function (s, i) {
+      s = s || {};
+      var type = ['field', 'fixed', 'today', 'now'].indexOf(s.type) >= 0 ? s.type : 'fixed';
+      return {
+        type: type, fieldId: String(s.fieldId == null ? '' : s.fieldId).slice(0, 120),
+        value: String(s.value == null ? '' : s.value).slice(0, 200),
+        op: i === 0 ? '' : (CALC_OPS.indexOf(s.op) >= 0 ? s.op : '+'),
+        unit: CALC_UNITS[s.unit] ? s.unit : 'd'
+      };
+    });
+    var kind = CALC_KINDS.indexOf(f && f.calculKind) >= 0 ? f.calculKind : 'number';
+    var p = parseInt(f && f.calculPrecision, 10);
+    return {
+      steps: steps, kind: kind,
+      precision: isFinite(p) ? Math.min(6, Math.max(0, p)) : 2,
+      format: DATE_FORMATS.indexOf(f && f.calculFormat) >= 0 ? f.calculFormat : 'jj/mm/aaaa',
+      unit: CALC_UNITS[f && f.calculUnit] ? f.calculUnit : 'd',
+      sep: f && typeof f.calculSep === 'string' ? f.calculSep.slice(0, 10) : ' ',
+      ifEmpty: f && f.calculIfEmpty != null && f.calculIfEmpty !== '' ? String(f.calculIfEmpty).slice(0, 200) : null
+    };
+  }
+  /* 'AAAA-MM-JJ', 'AAAA-MM-JJTHH:MM', 'AAAA-MM-JJ HH:MM', 'JJ/MM/AAAA' → ms (horloge murale, sans fuseau). */
+  function wallMs(v) {
+    var s = String(v == null ? '' : v).trim(), m;
+    if ((m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(s))) return Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0));
+    if ((m = /^(\d{2})\/(\d{2})\/(\d{4})(?: (\d{2}):(\d{2}))?$/.exec(s))) return Date.UTC(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0));
+    if ((m = /^(\d{2}):(\d{2})$/.exec(s))) return Date.UTC(1970, 0, 1, +m[1], +m[2]);
+    return NaN;
+  }
+  function formatWall(ms, fmt) {
+    if (!isFinite(ms)) return '';
+    var d = new Date(ms), y = d.getUTCFullYear(), mo = d.getUTCMonth() + 1, da = d.getUTCDate(), h = d.getUTCHours(), mi = d.getUTCMinutes();
+    switch (fmt) {
+      case 'aaaa-mm-jj': return y + '-' + pad2(mo) + '-' + pad2(da);
+      case 'jj/mm/aaaa hh:mm': return pad2(da) + '/' + pad2(mo) + '/' + y + ' ' + pad2(h) + ':' + pad2(mi);
+      case 'hh:mm': return pad2(h) + ':' + pad2(mi);
+      case 'mm/aaaa': return pad2(mo) + '/' + y;
+      case 'j mois aaaa': return da + ' ' + MONTHS[mo - 1] + ' ' + y;
+      default: return pad2(da) + '/' + pad2(mo) + '/' + y;
+    }
+  }
+  function nowWall(now, withTime) {
+    var p = parisParts(now ? new Date(now) : new Date());
+    return Date.UTC(p.y, p.m - 1, p.d, withTime ? p.h : 0, withTime ? p.mi : 0);
+  }
+  function numOf(v) {
+    if (typeof v === 'number') return v;
+    var s = txt(v).replace(/\s/g, '').replace(',', '.');
+    return s === '' ? NaN : Number(s);
+  }
+  /* values : saisie (déjà limitée à ce que le lecteur voit). opts : { fields, now }. Renvoie '' ou une valeur. */
+  function computeCalc(f, values, opts) {
+    var sp = calcSpec(f), vals = values || {}, fields = flattenFields((opts && opts.fields) || []);
+    if (!sp.steps.length) return '';
+    var raw = function (s) {
+      if (s.type === 'fixed') return s.value;
+      if (s.type === 'today') return formatWall(nowWall(opts && opts.now, false), 'aaaa-mm-jj');
+      if (s.type === 'now') return formatWall(nowWall(opts && opts.now, true), 'aaaa-mm-jj') + 'T' + formatWall(nowWall(opts && opts.now, true), 'hh:mm');
+      var dep = condSource(fields, { field: s.fieldId });
+      return vals[dep ? String(dep.id) : s.fieldId];
+    };
+    var anyEmpty = sp.steps.some(function (s) { return s.type === 'field' && isEmpty(raw(s)); });
+    if (anyEmpty && sp.ifEmpty !== null) return sp.ifEmpty;
+    if (sp.kind === 'text') {
+      return sp.steps.map(function (s) { return txt(raw(s)); }).filter(function (x) { return x !== ''; }).join(sp.sep).slice(0, 2000);
+    }
+    if (sp.kind === 'date') {
+      var base = wallMs(raw(sp.steps[0]));
+      if (!isFinite(base)) return sp.ifEmpty !== null ? sp.ifEmpty : '';
+      for (var i = 1; i < sp.steps.length; i++) {
+        var n = numOf(raw(sp.steps[i])); if (!isFinite(n)) n = 0;
+        var ms = n * CALC_UNITS[sp.steps[i].unit];
+        if (sp.steps[i].op === '-') base -= ms; else base += ms;
+      }
+      return formatWall(base, sp.format);
+    }
+    if (sp.kind === 'gap') {
+      var a = wallMs(raw(sp.steps[0])), b = sp.steps[1] ? wallMs(raw(sp.steps[1])) : NaN;
+      if (!isFinite(a) || !isFinite(b)) return sp.ifEmpty !== null ? sp.ifEmpty : '';
+      var g = (b - a) / CALC_UNITS[sp.unit];
+      return +g.toFixed(sp.precision);
+    }
+    var acc = numOf(raw(sp.steps[0])); if (!isFinite(acc)) acc = 0;
+    for (var j = 1; j < sp.steps.length; j++) {
+      var x = numOf(raw(sp.steps[j])); if (!isFinite(x)) x = 0;
+      switch (sp.steps[j].op) {
+        case '-': acc -= x; break;
+        case '*': acc *= x; break;
+        case '/': acc = x !== 0 ? acc / x : 0; break;
+        case 'min': acc = Math.min(acc, x); break;
+        case 'max': acc = Math.max(acc, x); break;
+        default: acc += x;
+      }
+    }
+    return +acc.toFixed(sp.precision);
+  }
+
+  /* Recherche : f.lookup = { source: { kind, ref, sortCol, sortDir, match, filters }, mode: 'value'|'count',
+     col, many: 'first'|'last'|'list'|'sum'|'min'|'max'|'avg'|'none', ifNone } */
+  var LOOKUP_KINDS = ['database', 'form', 'case', 'me'];
+  var LOOKUP_MANY = ['first', 'last', 'list', 'sum', 'min', 'max', 'avg', 'none'];
+  function cleanLookup(cfg) {
+    var c = cfg && typeof cfg === 'object' ? cfg : {};
+    var s = c.source && typeof c.source === 'object' ? c.source : {};
+    var base = cleanSource({ kind: s.kind === 'users' ? 'users' : 'database', ref: s.ref, sortCol: s.sortCol, sortDir: s.sortDir, match: s.match, filters: s.filters });
+    base.kind = LOOKUP_KINDS.indexOf(s.kind) >= 0 ? s.kind : 'database';
+    return {
+      source: base,
+      mode: c.mode === 'count' ? 'count' : 'value',
+      col: String(c.col || '').slice(0, 120),
+      many: LOOKUP_MANY.indexOf(c.many) >= 0 ? c.many : 'first',
+      ifNone: c.ifNone == null ? '' : String(c.ifNone).slice(0, 200)
+    };
+  }
+  /* Filtrage des lignes candidates (mêmes règles que les listes « choix depuis une base »). */
+  function rowsMatching(src, rows, ctx) {
+    ctx = ctx || {};
+    var values = ctx.values || {}, fields = flattenFields(ctx.fields || []), me = ctx.me || {};
+    var tests = (src.filters || []).map(function (c) {
+      return function (row) {
+        var cell = txt(row.cells[c.col]);
+        if (c.op === 'empty' || c.op === 'filled') return opMatch(c.op, cell, '');
+        if (c.from === 'me') {
+          return [me.id, me.email, me.label].filter(function (x) { return x != null && x !== ''; })
+            .some(function (x) { return opMatch(c.op, cell, String(x)); });
+        }
+        if (c.from === 'field') {
+          var dep = condSource(fields, { field: c.field });
+          var raw = dep ? values[String(dep.id)] : values[c.field];
+          if (isEmpty(raw)) return false;
+          var want = Array.isArray(raw) ? raw.map(txt) : [txt(raw)];
+          return want.some(function (w) { return opMatch(c.op, cell, w); });
+        }
+        return opMatch(c.op, cell, c.val);
+      };
+    });
+    return (Array.isArray(rows) ? rows : []).filter(function (row) {
+      if (!row || !row.cells) return false;
+      if (!tests.length) return true;
+      return src.match === 'any' ? tests.some(function (t) { return t(row); }) : tests.every(function (t) { return t(row); });
+    });
+  }
+  /* rows : [{ id, cells }] déjà limités (environnement, droits, rôles). Renvoie { value, count }. */
+  function lookupResult(f, rows, ctx) {
+    var lk = cleanLookup(f && f.lookup), src = lk.source;
+    var kept = rowsMatching(src, rows, ctx);
+    if (src.sortCol) {
+      kept = kept.slice().sort(function (a, b) {
+        var x = txt(a.cells[src.sortCol]), y = txt(b.cells[src.sortCol]), nx = Number(x), ny = Number(y);
+        var r = (x !== '' && y !== '' && isFinite(nx) && isFinite(ny)) ? nx - ny : String(x).localeCompare(String(y), 'fr', { sensitivity: 'base', numeric: true });
+        return src.sortDir === 'desc' ? -r : r;
+      });
+    }
+    if (lk.mode === 'count') return { value: kept.length, count: kept.length };
+    if (!kept.length) return { value: lk.ifNone, count: 0 };
+    var cell = function (r) { return lk.col === '' || lk.col === '_id' ? String(r.id) : txt(r.cells[lk.col]); };
+    var list = kept.map(cell);
+    var nums = list.map(numOf).filter(function (n) { return isFinite(n); });
+    var round = function (n) { return +n.toFixed(4); };
+    if (kept.length === 1) return { value: list[0], count: 1 };
+    switch (lk.many) {
+      case 'last': return { value: list[list.length - 1], count: kept.length };
+      case 'list': return { value: list.filter(function (x) { return x !== ''; }).slice(0, 50).join(', '), count: kept.length };
+      case 'sum': return { value: round(nums.reduce(function (a, b) { return a + b; }, 0)), count: kept.length };
+      case 'min': return { value: nums.length ? Math.min.apply(null, nums) : '', count: kept.length };
+      case 'max': return { value: nums.length ? Math.max.apply(null, nums) : '', count: kept.length };
+      case 'avg': return { value: nums.length ? round(nums.reduce(function (a, b) { return a + b; }, 0) / nums.length) : '', count: kept.length };
+      case 'none': return { value: lk.ifNone, count: kept.length };
+      default: return { value: list[0], count: kept.length };
+    }
+  }
+  /* Champs dont dépend une valeur dérivée (clés de champ, telles qu'écrites dans la configuration). */
+  function derivedDeps(f) {
+    var t = lower(f && f.type);
+    if (t === 'calcul') return calcSpec(f).steps.filter(function (s) { return s.type === 'field' && s.fieldId; }).map(function (s) { return s.fieldId; });
+    if (t === 'requete') return cleanLookup(f.lookup).source.filters.filter(function (c) { return c.from === 'field' && c.field; }).map(function (c) { return c.field; });
+    return [];
+  }
+
   /* Serveur : la valeur choisie doit faire partie des options recalculées ; le libellé est celui du serveur. */
   function checkChoice(f, v, options) {
     var ids = choiceIds(v);
@@ -668,7 +870,15 @@
     var gl = label(g);
     if (rows === undefined || rows === null || rows === '') rows = [];
     if (!Array.isArray(rows)) return { rows: null, errors: [{ field: gk, label: gl, code: 'invalid', message: 'lignes du groupe illisibles' }] };
-    if (rows.length > lim.max) return { rows: null, errors: [{ field: gk, label: gl, code: 'invalid', message: 'au plus ' + lim.max + ' ligne' + (lim.max > 1 ? 's' : '') }] };
+    // Lot 3 : si le maximum a été abaissé sous le nombre de lignes réservées déjà enregistrées,
+    // ces lignes restent acceptées (un rôle restreint ne peut pas les retirer) ; message explicite sinon.
+    var kids0 = fields.filter(function (c) { return String(groupOf(c)) === gk && !isLayout(c.type); });
+    var lockedCount = prevRows.filter(function (pr) { return pr && typeof pr === 'object' && kids0.some(function (c) { return !roleAllowed(c, fields, viewer) && own(pr, String(c.id)) && !isEmpty(pr[String(c.id)]); }); }).length;
+    var maxOk = Math.min(REPEAT_HARD_MAX, Math.max(lim.max, lockedCount));
+    if (rows.length > maxOk) {
+      var why = lockedCount > lim.max ? ' (le maximum a été abaissé à ' + lim.max + ', mais ' + lockedCount + ' lignes réservées à un autre rôle sont conservées : retirez seulement les lignes que vous avez ajoutées)' : '';
+      return { rows: null, errors: [{ field: gk, label: gl, code: 'invalid', message: 'au plus ' + maxOk + ' ligne' + (maxOk > 1 ? 's' : '') + why }] };
+    }
     if (rows.length < lim.min) errors.push({ field: gk, label: gl, code: lim.min && !rows.length && g.obligatoire ? 'required' : 'invalid', message: 'au moins ' + lim.min + ' ligne' + (lim.min > 1 ? 's' : '') });
     else if (g.obligatoire && !rows.length) errors.push({ field: gk, label: gl, code: 'required', message: 'au moins une ligne' });
     var kids = fields.filter(function (c) { return String(groupOf(c)) === gk && !isLayout(c.type); });
@@ -828,7 +1038,7 @@
         return;
       }
       if (!changed(k)) return; // pas de revalidation rétroactive
-      if (lower(f.type) === 'calcul') return; // calcul : valeur dérivée
+      if (isDerived(f)) return; // calcul, recherche : valeur dérivée, recalculée par le serveur (api/_field-lookup.js)
       var visible = isVisible(f, fields, clean, channel);
       if (!visible) {
         // Visibilité recalculée ici (conditions + canal de l'endpoint + groupe) : la valeur d'un champ masqué est retirée, sans rejet.
@@ -955,7 +1165,10 @@
     choiceOptions: choiceOptions,
     checkChoice: checkChoice,
     choiceIds: choiceIds,
-    MAX_OPTIONS: MAX_OPTIONS
+    MAX_OPTIONS: MAX_OPTIONS,
+    isDerived: isDerived, calcSpec: calcSpec, computeCalc: computeCalc, wallMs: wallMs, formatWall: formatWall,
+    DATE_FORMATS: DATE_FORMATS, CALC_OPS: CALC_OPS, cleanLookup: cleanLookup, rowsMatching: rowsMatching,
+    lookupResult: lookupResult, derivedDeps: derivedDeps, LOOKUP_MANY: LOOKUP_MANY
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.PtFieldValidation = api;
