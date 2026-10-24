@@ -206,7 +206,7 @@ test('file : prise atomique, fin, annulation par l’auteur seulement, réimpres
   assert.deepEqual(d.job.history.map(h => h.kind), ['claimed', 'printed']);
   await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_cancel', job_id: '8' }, Object.assign({}, operator, { id: '44444444-4444-4444-4444-444444444444' })), e => e.status === 403);
   await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_cancel', job_id: '8' }, operator), e => e.status === 409, 'déjà imprimée');
-  const r = await Q.handleQueue({}, { action: 'labels_queue_reprint', job_id: '8', copies: 1 }, operator);
+  const r = await Q.handleQueue({}, { action: 'labels_queue_reprint', job_id: '8', copies: 1 }, operator, { instanceVisible: async () => true });
   const posted = calls.filter(x => x.opts.method === 'POST').pop().opts.body;
   assert.equal(posted.source, 'reprint');
   assert.equal(posted.reprint_of, 8);
@@ -313,4 +313,76 @@ test('navigateur : imprimer une étiquette de la file = prise, impression, fin',
   const b2 = bootBrowser(() => ({ claimed: false }));
   b2.win.PTLabelsUI.doPrint = () => { throw new Error('ne doit pas imprimer'); };
   assert.equal(await b2.win.PTLabelQueue.printJob({ id: 8 }), 'taken');
+});
+
+test('réimpression : mêmes droits que la lecture du dossier (workflow et statut du rôle)', async () => {
+  mock();
+  const job = { id: 8, status: 'printed', history: [], created_by: operator.id, template: { name: 'Colis', elements: [] }, context: {}, copies: 1, printer_id: null, template_id: 5, template_name: 'Colis', service_id: '4', instance_id: '77', reference: 'SVC-7' };
+  let instanceRow = { id: 77, service_id: 4, current_status_id: 's-secret' };
+  responder = (p, o) => {
+    if (p.startsWith('service_instances')) return instanceRow ? [instanceRow] : [];
+    if (p.startsWith('label_print_jobs') && o.method === 'POST') return [Object.assign({ id: 9 }, o.body)];
+    if (p.startsWith('label_print_jobs')) return [job];
+    return [];
+  };
+  const seen = [];
+  // Règle du rôle : statut « s-secret » masqué (comme access.instanceLevel === 'hidden').
+  const opts = { instanceVisible: async row => { seen.push(row); return String(row.current_status_id || '') !== 's-secret' && String(row.service_id) !== '99'; } };
+  const posts = () => calls.filter(c => c.opts.method === 'POST').length;
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_reprint', job_id: '8' }, operator, opts), e => e.status === 404);
+  assert.equal(seen[0].current_status_id, 's-secret', 'le statut actuel du dossier est vérifié');
+  assert.ok(calls.some(c => c.path.startsWith('service_instances') && c.path.includes('environment_code=eq.GIT')));
+  assert.equal(posts(), 0, 'rien n’est mis en file');
+  // Sans vérification fournie : refus par défaut.
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_reprint', job_id: '8' }, operator), e => e.status === 404);
+  // Dossier visible : réimpression acceptée.
+  instanceRow = { id: 77, service_id: 4, current_status_id: 's1' };
+  assert.ok((await Q.handleQueue({}, { action: 'labels_queue_reprint', job_id: '8' }, operator, opts)).job);
+  // Dossier supprimé : règle du workflow.
+  instanceRow = null; job.service_id = '99';
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_reprint', job_id: '8' }, operator, opts), e => e.status === 404);
+  assert.deepEqual(seen.at(-1), { service_id: '99' });
+  // Étiquettes d'un dossier masqué : liste et demande depuis le dossier refusées aussi.
+  instanceRow = { id: 77, service_id: 4, current_status_id: 's-secret' };
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_list', instance_id: '77' }, operator, opts), e => e.status === 404);
+  responder = (p) => p.startsWith('service_instances') ? [instanceRow] : p.startsWith('label_templates') ? [TEMPLATE] : [];
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_manual', instance_id: '77', template_id: '5' }, operator, opts), e => e.status === 404);
+  assert.equal(posts(), 1, 'seule la réimpression autorisée a été mise en file');
+});
+
+test('records.js branche la règle de lecture des dossiers', () => {
+  const rec = fs.readFileSync(path.join(__dirname, 'records.js'), 'utf8');
+  assert.match(rec, /handleQueue\(req, body, profile, \{[\s\S]{0,200}instanceVisible: async row => access\.instanceLevel\(profile, await catalogFor\(req, profile\), row\) !== 'hidden'/);
+});
+
+test('navigateur : imprimante Système = une seule fenêtre pour toutes les étiquettes', async () => {
+  const jobs = {
+    1: { id: 1, printer_id: null, copies: 2, template: { name: 'A', width_mm: 100, height_mm: 50, elements: [] }, context: { reference: 'R1' } },
+    2: { id: 2, printer_id: null, copies: 1, template: { name: 'B', width_mm: 60, height_mm: 40, elements: [] }, context: { reference: 'R2' } }
+  };
+  const { win, calls } = bootBrowser(b => {
+    if (b.action === 'labels_queue_claim') return b.job_id === 3 ? { claimed: false } : { claimed: true, job: jobs[b.job_id] };
+    if (b.action === 'labels_queue_done') return { job: {} };
+    return {};
+  });
+  win.PTLabelsUI.doPrint = () => { throw new Error('pas de fenêtre par étiquette'); };
+  const windows = [];
+  win.document.createElement = () => ({ style: {}, setAttribute() {}, remove() {}, contentWindow: { document: { open() {}, write(d) { windows.push(d); }, close() {} }, focus() {}, print() {} } });
+  win.document.body = { appendChild() {} };
+  const r = await win.PTLabelQueue.printBatch([{ id: 1 }, { id: 2 }, { id: 3 }]);
+  assert.equal(windows.length, 1);
+  assert.equal((windows[0].match(/class="pt-page /g) || []).length, 3, '2 exemplaires + 1');
+  assert.match(windows[0], /@page s100x50\{size:100mm 50mm/);
+  assert.match(windows[0], /@page s60x40\{size:60mm 40mm/);
+  assert.deepEqual([r.printed, r.taken, r.windows], [2, 1, 1]);
+  assert.deepEqual(calls.filter(c => c.action === 'labels_queue_done').map(c => [c.job_id, c.mode]), [[1, 'system'], [2, 'system']]);
+});
+
+test('navigateur : association des zones = nom du champ, jamais l’identifiant', () => {
+  const { win } = bootBrowser(() => ({}));
+  vm.runInContext("FORMS_DATA = [{ id: 'f1', fields: [{ id: '1792742022097', label: 'N° de lot', type: 'text' }, { id: 'x2', nom: 'Poids', type: 'number' }] }];", win);
+  const QB = win.PTLabelQueue;
+  assert.equal(QB.fieldName('1792742022097'), 'N° de lot');
+  assert.equal(QB.fieldName('x2'), 'Poids');
+  assert.equal(QB.fieldName('disparu'), 'champ supprimé');
 });

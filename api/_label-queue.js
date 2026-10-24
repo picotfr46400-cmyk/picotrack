@@ -274,7 +274,14 @@ async function assertPrinter(req, env, id) {
   if (!Array.isArray(rows) || !rows.length) throw deny(400, 'Imprimante introuvable dans cet environnement.');
 }
 
-async function handleQueue(req, body, profile) {
+// Droit de voir un dossier : fourni par records.js (mêmes règles que la lecture des dossiers).
+// Sans cette vérification, aucune impression liée à un dossier n'est autorisée.
+async function assertInstanceVisible(opts, row) {
+  const check = opts && typeof opts.instanceVisible === 'function' ? opts.instanceVisible : null;
+  if (!check || !(await check(row))) throw deny(404, 'Dossier introuvable.');
+}
+
+async function handleQueue(req, body, profile, opts) {
   const action = String(body.action || '');
   if (!canRead(profile)) throw deny(403, 'Accès refusé.');
   const env = envFrom(profile, body.environment_code);
@@ -289,7 +296,12 @@ async function handleQueue(req, body, profile) {
     if (pid === 'none') q += '&printer_id=is.null';
     else if (pid) q += `&printer_id=eq.${enc(pid)}`;
     const inst = str(body.instance_id, 64);
-    if (inst) q += `&instance_id=eq.${enc(inst)}`;
+    if (inst) {
+      const rows = await rest(req, `service_instances?id=eq.${enc(inst)}&environment_code=eq.${enc(env)}&select=id,service_id,current_status_id&limit=1`);
+      if (!Array.isArray(rows) || !rows[0]) throw deny(404, 'Dossier introuvable.');
+      await assertInstanceVisible(opts, rows[0]);
+      q += `&instance_id=eq.${enc(inst)}`;
+    }
     if (body.scope === 'history') q += '&status=in.(printed,cancelled)&order=updated_at.desc';
     else if (!inst) q += `&status=in.(${ACTIVE.join(',')})&order=created_at.asc`;
     else q += '&order=created_at.desc';
@@ -347,6 +359,11 @@ async function handleQueue(req, body, profile) {
     const id = idOf(body.job_id);
     if (!id) throw deny(400, 'Étiquette requise.');
     const src = await readJob(req, env, id);
+    if (src.instance_id || src.service_id) {
+      // Dossier encore présent : ses règles (workflow + statut) ; sinon celles du workflow.
+      const rows = src.instance_id ? await rest(req, `service_instances?id=eq.${enc(src.instance_id)}&environment_code=eq.${enc(env)}&select=id,service_id,current_status_id&limit=1`) : [];
+      await assertInstanceVisible(opts, (Array.isArray(rows) && rows[0]) || { service_id: src.service_id });
+    }
     const printerId = body.printer_id === undefined ? src.printer_id : (idOf(body.printer_id) || null);
     await assertPrinter(req, env, printerId);
     const job = {
@@ -365,12 +382,13 @@ async function handleQueue(req, body, profile) {
     const templateId = idOf(body.template_id);
     if (!instanceId || !templateId) throw deny(400, 'Dossier et modèle requis.');
     const [insts, tpls] = await Promise.all([
-      rest(req, `service_instances?id=eq.${enc(instanceId)}&environment_code=eq.${enc(env)}&select=id,service_id,submission_id,reference,ref,form_data,created_at&limit=1`),
+      rest(req, `service_instances?id=eq.${enc(instanceId)}&environment_code=eq.${enc(env)}&select=id,service_id,current_status_id,submission_id,reference,ref,form_data,created_at&limit=1`),
       rest(req, `label_templates?id=eq.${enc(templateId)}&environment_code=eq.${enc(env)}&select=${TEMPLATE_COLS}&limit=1`)
     ]);
     const inst = Array.isArray(insts) ? insts[0] : null;
     const tpl = Array.isArray(tpls) ? tpls[0] : null;
     if (!inst) throw deny(404, 'Dossier introuvable dans cet environnement.');
+    await assertInstanceVisible(opts, inst);
     if (!tpl) throw deny(404, 'Modèle introuvable dans cet environnement.');
     let printerId = body.printer_id === undefined || body.printer_id === '' ? null : idOf(body.printer_id);
     if (printerId) await assertPrinter(req, env, printerId);

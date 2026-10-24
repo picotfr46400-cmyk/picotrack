@@ -49,6 +49,17 @@
   function formById(id) { return forms().filter(function (f) { return String(f.id) === String(id); })[0] || null; }
   function dataFields(form) { return ((form && form.fields) || []).filter(function (f) { return f && f.id != null && ['separator', 'image', 'titre', 'section'].indexOf(f.type) < 0; }); }
   function numericFields(form) { return dataFields(form).filter(function (f) { return /^(number|nombre|numeric|integer|quantite|quantity|decimal)$/i.test(String(f.type || '')); }); }
+  function fieldLabel(f) { return String((f && (f.label || f.nom || f.name || f.title)) || '').trim(); }
+  // Nom lisible d'un champ : formulaire du workflow d'abord, puis tous les formulaires (modèle lié à un autre formulaire).
+  function fieldName(id, form) {
+    if (id == null || id === '') return '';
+    var key = String(id), pools = [dataFields(form)].concat(forms().map(dataFields));
+    for (var i = 0; i < pools.length; i++) {
+      var f = pools[i].filter(function (x) { return String(x.id) === key; })[0];
+      if (f && fieldLabel(f)) return fieldLabel(f);
+    }
+    return 'champ supprimé';
+  }
   function printers() { return (U() && U().state.printers) || []; }
   function templates() { return (U() && U().state.templates) || []; }
   function printerName(id) { var p = U() && U().printerById(id); return p ? p.name : (id ? 'Imprimante supprimée' : 'Sans imprimante'); }
@@ -118,6 +129,77 @@
       .then(function (r) { delete q.busy[job.id]; return r; });
   }
 
+  // Imprimante « Système » (ou aucune) : toutes les étiquettes partent dans UNE seule fenêtre d'impression.
+  function isSystem(pr) { var ui = U(); return !pr || (ui && ui.connOf(pr) === 'system' && pr.kind !== 'zpl'); }
+  function sizeKey(t) { return 's' + String(Number(t.width_mm) || 0).replace('.', '_') + 'x' + String(Number(t.height_mm) || 0).replace('.', '_'); }
+  // items : [{ template, ctx, margin_mm }] ; tailles différentes = pages nommées au bon format.
+  function batchDocument(items) {
+    var sizes = {};
+    items.forEach(function (it) { sizes[sizeKey(it.template)] = it.template; });
+    var css = Object.keys(sizes).map(function (k) {
+      var t = sizes[k];
+      return '@page ' + k + '{size:' + t.width_mm + 'mm ' + t.height_mm + 'mm;margin:0}.pt-page.' + k + '{page:' + k + ';width:' + t.width_mm + 'mm;height:' + t.height_mm + 'mm}';
+    }).join('');
+    var first = items[0].template;
+    var pages = items.map(function (it) { return '<div class="pt-page ' + sizeKey(it.template) + '">' + L().labelHtml(it.template, it.ctx, { margin_mm: it.margin_mm }) + '</div>'; }).join('');
+    return '<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Étiquettes (' + items.length + ')</title><style>' +
+      '@page{size:' + first.width_mm + 'mm ' + first.height_mm + 'mm;margin:0}html,body{margin:0;padding:0;background:#fff}' + css +
+      '.pt-page{overflow:hidden;page-break-after:always;break-after:page}.pt-page:last-child{page-break-after:auto;break-after:auto}' +
+      '*{-webkit-print-color-adjust:exact;print-color-adjust:exact}</style></head><body>' + pages + '</body></html>';
+  }
+  function openPrintWindow(doc) {
+    var frame = document.createElement('iframe');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+    document.body.appendChild(frame);
+    var w = frame.contentWindow;
+    w.document.open(); w.document.write(doc); w.document.close();
+    setTimeout(function () {
+      try { w.focus(); w.print(); } catch (e) { toast('e', 'Impression impossible : ' + e.message); }
+      setTimeout(function () { frame.remove(); }, 60000);
+    }, 250);
+  }
+  // Plusieurs étiquettes : prise une par une (un seul poste par étiquette), puis une seule fenêtre
+  // pour toutes celles en « Système » ; les autres connexions gardent leur envoi direct.
+  function printBatch(jobs) {
+    var ui = U();
+    if (!ui) return Promise.reject(new Error('Étiquettes indisponibles'));
+    jobs = (jobs || []).filter(function (j) { return j && !q.busy[j.id]; });
+    jobs.forEach(function (j) { q.busy[j.id] = true; });
+    var batch = [], result = { printed: 0, taken: 0, failed: 0, windows: 0 };
+    var release = function () { jobs.forEach(function (j) { delete q.busy[j.id]; }); };
+    return jobs.reduce(function (p, job) {
+      return p.then(function () {
+        return api('labels_queue_claim', { job_id: job.id, station: station() }).then(function (res) {
+          if (!res || !res.claimed) { result.taken++; return; }
+          var j = res.job, pr = ui.printerById(j.printer_id) || null;
+          var ctx = Object.assign({ origin: location.origin }, j.context || {});
+          var n = Number(j.copies) || 1;
+          if (isSystem(pr)) { batch.push({ job: j, items: Array.apply(null, Array(n)).map(function () { return { template: j.template, ctx: ctx, margin_mm: pr ? pr.margin_mm : 0 }; }) }); return; }
+          var list = []; for (var i = 0; i < n; i++) list.push(ctx);
+          return Promise.resolve(ui.doPrint(j.template, list, null, pr)).then(function (mode) {
+            var ok = mode !== 'error'; result[ok ? 'printed' : 'failed']++;
+            return api('labels_queue_done', { job_id: j.id, ok: ok, mode: String(mode || ''), error: ok ? '' : 'Envoi à l’imprimante impossible.' });
+          });
+        }).catch(function () { result.failed++; });
+      });
+    }, Promise.resolve()).then(function () {
+      if (!batch.length) return;
+      var items = [];
+      batch.forEach(function (b) { items = items.concat(b.items); });
+      openPrintWindow(batchDocument(items));
+      result.windows = 1;
+      return batch.reduce(function (p, b) {
+        return p.then(function () { return api('labels_queue_done', { job_id: b.job.id, ok: true, mode: 'system' }).then(function () { result.printed++; }, function () { result.failed++; }); });
+      }, Promise.resolve());
+    }).then(function () {
+      release();
+      if (result.taken) toast('w', result.taken + ' étiquette(s) déjà prise(s) par un autre poste.');
+      if (result.printed) toast('s', result.printed + ' étiquette(s) imprimée(s)' + (result.windows ? ' (une seule fenêtre d’impression).' : '.'));
+      return result;
+    }, function (e) { release(); throw e; });
+  }
+
   // Poste en impression automatique : il récupère les étiquettes de son imprimante.
   var autoRunning = false;
   function autoTick() {
@@ -127,7 +209,7 @@
     autoRunning = true;
     api('labels_queue_list', { printer_id: pid, limit: 20 }).then(function (res) {
       var jobs = ((res && res.jobs) || []).filter(function (j) { return j.status === 'pending' && !q.busy[j.id]; });
-      return jobs.reduce(function (p, j) { return p.then(function () { return printJob(j); }); }, Promise.resolve()).then(function () {
+      return (jobs.length ? printBatch(jobs) : Promise.resolve()).then(function () {
         if (jobs.length && isQueueVisible()) loadQueue();
       });
     }).catch(function () {}).then(function () { autoRunning = false; });
@@ -215,6 +297,7 @@
       return '<div>' + esc(frDateTime(h.at)) + ' · ' + esc(HIST_LABEL[h.kind] || h.kind) + (h.kind === 'claimed' && h.station ? ' ' + esc(h.station) : '') + (h.by ? ' · ' + esc(h.by) : '') + (h.error ? ' · ' + esc(h.error) : '') + '</div>';
     }).join('');
   }
+  function pendingJobs() { return q.jobs.filter(function (j) { return j.status === 'pending' && !q.busy[j.id]; }); }
   function jobRow(j) {
     var actions = [];
     if (q.canPrint && j.status === 'pending') actions.push('<button type="button" class="btn btn-p" data-qprint="' + j.id + '">Imprimer ici</button>');
@@ -243,10 +326,12 @@
     box.innerHTML = '<div style="' + card + '"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:14px">File d’impression</b><div style="' + hint + '">Mise à jour toutes les 15 secondes.</div></div>' +
       '<div style="display:flex;gap:6px;flex-wrap:wrap"><select data-qprinter style="' + inp + '">' + tabs.map(function (t) { return opt(t[0], t[1], q.printer); }).join('') + '</select>' +
       '<select data-qscope style="' + inp + '">' + opt('active', 'À imprimer', q.scope) + opt('history', 'Historique', q.scope) + '</select>' +
+      (q.canPrint && q.scope !== 'history' && pendingJobs().length > 1 ? '<button type="button" class="btn btn-p" data-qall>Imprimer tout ici (' + pendingJobs().length + ')</button>' : '') +
       '<button type="button" class="btn" data-qrefresh>Actualiser</button></div></div>' + body + '</div>';
     box.querySelector('[data-qprinter]').onchange = function () { q.printer = this.value; q.jobs = []; loadQueue(); };
     box.querySelector('[data-qscope]').onchange = function () { q.scope = this.value; q.jobs = []; loadQueue(); };
     box.querySelector('[data-qrefresh]').onclick = function () { loadQueue(); };
+    var all = box.querySelector('[data-qall]'); if (all) all.onclick = function () { all.disabled = true; printBatch(pendingJobs()).catch(function (e) { toast('e', e.message); }).then(loadQueue); };
     var rt = box.querySelector('[data-qretry]'); if (rt) rt.onclick = function () { loadQueue(); };
     var byId = function (id) { return q.jobs.filter(function (j) { return String(j.id) === String(id); })[0]; };
     box.querySelectorAll('[data-qprint]').forEach(function (b) { b.onclick = function () { b.disabled = true; printJob(byId(b.getAttribute('data-qprint'))).then(loadQueue); }; });
@@ -362,7 +447,7 @@
     var inst = instances().filter(function (i) { return String(i.serviceId || i.service_id) === String(svcId); })[0];
     var values = {};
     if (inst) { var fd = inst.formData || inst.form_data || {}; values = fd.values && typeof fd.values === 'object' ? fd.values : fd; }
-    else dataFields(form).forEach(function (f) { values[f.id] = '[' + (f.nom || f.label || f.id) + ']'; });
+    else dataFields(form).forEach(function (f) { values[f.id] = '[' + (fieldLabel(f) || 'champ') + ']'; });
     return { submission: { id: inst ? inst.submissionId || inst.submission_id : null, created_at: inst ? inst.createdAt || inst.created_at : new Date().toISOString(), values: values }, reference: inst ? inst.ref || inst.reference || '' : 'SVC-0000-0001', origin: location.origin };
   }
   function loadRules(svcId) {
@@ -434,8 +519,8 @@
     var mapRows = zones.length ? zones.map(function (i) {
       var e = tpl.elements[i], cur = (r.field_map || {})[String(i)] || '';
       return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:5px;font-size:12px"><span style="flex:1">' + esc(zoneName(e, i)) + '</span><select data-map="' + i + '" style="' + inp + ';max-width:55%">' +
-        opt('', 'Champ du modèle' + (e.field_id ? ' (' + ((fields.filter(function (x) { return String(x.id) === String(e.field_id); })[0] || {}).nom || e.field_id) + ')' : ''), cur) +
-        fields.map(function (x) { return opt(x.id, x.nom || x.label || x.id, cur); }).join('') + '</select></div>';
+        opt('', 'Champ du modèle' + (e.field_id ? ' (' + fieldName(e.field_id, form) + ')' : ''), cur) +
+        fields.map(function (x) { return opt(x.id, fieldLabel(x) || 'Champ sans nom', cur); }).join('') + '</select></div>';
     }).join('') : '<div class="f-hint">Ce modèle n’a pas de zone variable : il s’imprime tel quel.</div>';
     f.innerHTML = '<div style="margin-top:10px;padding:12px;border:1.5px solid #059669;border-radius:10px;background:#fff">' +
       '<b style="font-size:13px">' + (r.id ? 'Modifier l’impression automatique' : 'Nouvelle impression automatique') + '</b>' +
@@ -444,7 +529,7 @@
       lab('Modèle d’étiquette', '<select data-rf="template_id" style="' + inp + full + '">' + templates().map(function (t) { return opt(t.id, t.name + ' (' + t.width_mm + ' × ' + t.height_mm + ' mm)', r.template_id); }).join('') + '</select>') +
       lab('Imprimante', '<select data-rf="printer_mode" style="' + inp + full + '">' + ['auto', 'fixed', 'station', 'user'].map(function (m) { return opt(m, MODE_LABEL[m], r.printer_mode); }).join('') + '</select>') +
       (r.printer_mode === 'fixed' ? lab('Imprimante fixe', '<select data-rf="printer_id" style="' + inp + full + '">' + opt('', printers().length ? 'Choisir…' : 'Aucune imprimante enregistrée', r.printer_id) + printers().map(function (p) { return opt(p.id, p.name, r.printer_id); }).join('') + '</select>') : '') +
-      lab('Nombre d’exemplaires', '<span style="display:flex;gap:6px;margin-top:3px"><input data-rf="copies" type="number" min="1" max="50" value="' + esc(r.copies || 1) + '" style="' + inp + ';width:70px"><select data-rf="copies_field_id" style="' + inp + ';flex:1">' + opt('', 'Nombre fixe', r.copies_field_id) + nums.map(function (x) { return opt(x.id, 'Selon le champ « ' + (x.nom || x.id) + ' »', r.copies_field_id); }).join('') + '</select></span>') +
+      lab('Nombre d’exemplaires', '<span style="display:flex;gap:6px;margin-top:3px"><input data-rf="copies" type="number" min="1" max="50" value="' + esc(r.copies || 1) + '" style="' + inp + ';width:70px"><select data-rf="copies_field_id" style="' + inp + ';flex:1">' + opt('', 'Nombre fixe', r.copies_field_id) + nums.map(function (x) { return opt(x.id, 'Selon le champ « ' + (fieldLabel(x) || 'sans nom') + ' »', r.copies_field_id); }).join('') + '</select></span>') +
       (r.copies_field_id ? '<div class="f-hint" style="margin:-4px 0 8px">Le nombre fixe sert si le champ est vide. Maximum 50.</div>' : (nums.length ? '' : '<div class="f-hint" style="margin:-4px 0 8px">Ajoutez un champ numérique au formulaire pour régler les exemplaires selon le dossier.</div>')) +
       '<label style="font-size:12.5px;display:flex;gap:6px;align-items:center"><input type="checkbox" data-rf="active"' + (r.active !== false ? ' checked' : '') + '> Active</label></div>' +
       '<div><div style="font-size:12px;font-weight:700;margin-bottom:6px">Zones de l’étiquette ← champs du dossier</div>' + mapRows +
@@ -521,5 +606,5 @@
   // Le poste en impression automatique doit connaître son imprimante dès l'ouverture.
   setTimeout(function () { if (autoOn() && station() && envCode()) loadDefaults().then(autoTick); }, 3000);
 
-  window.PTLabelQueue = { ACADEMY: ACADEMY, zonesOf: zonesOf, mappedTemplate: mappedTemplate, printJob: printJob, station: station, openQueue: openQueue, paintWorkflowRules: paintWorkflowRules, dossierDialog: dossierDialog };
+  window.PTLabelQueue = { ACADEMY: ACADEMY, zonesOf: zonesOf, mappedTemplate: mappedTemplate, printJob: printJob, printBatch: printBatch, fieldName: fieldName, batchDocument: batchDocument, station: station, openQueue: openQueue, paintWorkflowRules: paintWorkflowRules, dossierDialog: dossierDialog };
 })();

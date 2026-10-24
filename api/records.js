@@ -2286,7 +2286,10 @@ async function handler(req, res) {
         const user = await requireAuth(req);
         const profile = await getUserProfile(user.id, req);
         req.picoReaderProfile = profile;
-        result = await handleQueue(req, body, profile);
+        result = await handleQueue(req, body, profile, {
+          // Même règle que la lecture d'un dossier : workflow et statut masqués pour le rôle = refus.
+          instanceVisible: async row => access.instanceLevel(profile, await catalogFor(req, profile), row) !== 'hidden'
+        });
         break;
       }
       case 'mail_rules_list':
