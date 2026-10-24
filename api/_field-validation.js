@@ -247,6 +247,22 @@
     return redactRepeatRows(fields, out, function (id) { return !!hidden[id]; });
   }
   /* Groupes répétables : retire, dans chaque ligne, les champs enfants masqués. isHidden(idEnfant) → bool. */
+  /* Identifiant de ligne stable (_rid) : posé par le serveur, jamais choisi par le client.
+     Les lignes stockées avant le lot 2 n'en ont pas : elles reçoivent à la lecture un repère
+     de position « p<i> », reconnu à l'enregistrement suivant puis conservé tel quel. */
+  var RID_RE = /^(r[0-9a-f]{16}|p\d{1,3})$/;
+  function newRid() {
+    var b = new Uint8Array(8);
+    if (typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function') crypto.getRandomValues(b);
+    else if (typeof require === 'function') { var nb = require('crypto').randomBytes(8); for (var j = 0; j < 8; j++) b[j] = nb[j]; }
+    else throw new Error('aléa indisponible');
+    var h = ''; for (var i = 0; i < 8; i++) h += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+    return 'r' + h;
+  }
+  function ridOf(row, i) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+    return typeof row._rid === 'string' && RID_RE.test(row._rid) ? row._rid : 'p' + i;
+  }
   function redactRepeatRows(fieldsFlat, values, isHidden) {
     if (!values || typeof values !== 'object') return values;
     var out = values, copied = false;
@@ -256,9 +272,10 @@
       var drop = kids.filter(function (c) { return isHidden(String(c.id)); }).map(function (c) { return String(c.id); });
       if (!drop.length) return;
       if (!copied) { out = {}; Object.keys(values).forEach(function (k) { out[k] = values[k]; }); copied = true; }
-      out[String(g.id)] = values[String(g.id)].map(function (row) {
+      out[String(g.id)] = values[String(g.id)].map(function (row, i) {
         if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
-        var r = {}; Object.keys(row).forEach(function (k) { if (drop.indexOf(k) < 0) r[k] = row[k]; }); return r;
+        var r = {}; Object.keys(row).forEach(function (k) { if (drop.indexOf(k) < 0 && k !== '_rid') r[k] = row[k]; });
+        r._rid = ridOf(row, i); return r;
       });
     });
     return out;
@@ -657,12 +674,33 @@
     var kids = fields.filter(function (c) { return String(groupOf(c)) === gk && !isLayout(c.type); });
     var byKid = {}; kids.forEach(function (c) { byKid[String(c.id)] = c; });
     var out = [];
+    // Lignes déjà stockées, retrouvées par _rid (jamais par position, sauf ligne ancienne non protégée).
+    var prevByRid = {}, protectedAt = {};
+    prevRows.forEach(function (pr, j) {
+      var rid = ridOf(pr, j); if (!rid) return;
+      prevByRid[rid] = { row: pr, at: j };
+      if (kids.some(function (c) { return !roleAllowed(c, fields, viewer) && own(pr, String(c.id)) && !isEmpty(pr[String(c.id)]); })) protectedAt[rid] = j;
+    });
+    var seenRid = {};
     rows.forEach(function (row, i) {
       var tag = gk + '[' + (i + 1) + ']';
       if (!row || typeof row !== 'object' || Array.isArray(row)) { errors.push({ field: tag, label: gl + ' — ligne ' + (i + 1), code: 'invalid', message: 'ligne illisible' }); return; }
-      var prev = prevRows[i] && typeof prevRows[i] === 'object' && !Array.isArray(prevRows[i]) ? prevRows[i] : null;
+      var prev = null, rid = null;
+      if (own(row, '_rid')) {
+        var sent = row._rid;
+        if (typeof sent !== 'string' || !own(prevByRid, sent)) { errors.push({ field: tag, label: gl + ' — ligne ' + (i + 1), code: 'invalid', message: 'identifiant de ligne inconnu' }); return; }
+        if (seenRid[sent]) { errors.push({ field: tag, label: gl + ' — ligne ' + (i + 1), code: 'invalid', message: 'identifiant de ligne en double' }); return; }
+        seenRid[sent] = 1; rid = sent; prev = prevByRid[sent].row;
+        if (own(protectedAt, sent) && protectedAt[sent] !== i) errors.push({ field: tag, label: gl + ' — ligne ' + (i + 1), code: 'forbidden', message: 'ligne contenant des champs réservés à un autre rôle : elle ne peut pas être déplacée' });
+      } else {
+        // Ligne ancienne sans _rid, non protégée : reprise par position (compatibilité).
+        var lp = prevRows[i], lrid = ridOf(lp, i);
+        if (lp && typeof lp === 'object' && !Array.isArray(lp) && typeof lp._rid !== 'string' && !own(protectedAt, lrid) && !seenRid[lrid]) { prev = lp; rid = lrid; seenRid[lrid] = 1; }
+        else rid = newRid();
+      }
       var r = {};
       Object.keys(row).forEach(function (ck) {
+        if (ck === '_rid') return;
         if (!byKid[ck]) { errors.push({ field: tag + '.' + ck, label: gl + ' — ligne ' + (i + 1), code: 'unknown', message: 'champ inconnu du groupe' }); return; }
         r[ck] = row[ck];
       });
@@ -689,7 +727,11 @@
         if (c.obligatoire && isMissing(v)) { errors.push({ field: fk, label: lab, code: 'required', message: 'champ obligatoire' }); return; }
         fieldErrors(c, v).forEach(function (m) { errors.push({ field: fk, label: lab, code: 'invalid', message: m }); });
       });
+      r._rid = rid;
       out.push(r);
+    });
+    Object.keys(protectedAt).forEach(function (rid) {
+      if (!seenRid[rid]) errors.push({ field: gk + '[' + (protectedAt[rid] + 1) + ']', label: gl + ' — ligne ' + (protectedAt[rid] + 1), code: 'forbidden', message: 'ligne contenant des champs réservés à un autre rôle : elle ne peut pas être supprimée' });
     });
     return { rows: out, errors: errors };
   }
@@ -892,7 +934,7 @@
     spanOf: spanOf,
     compareCond: compareCond,
     relativeTarget: relativeTarget,
-    redactRepeatRows: redactRepeatRows,
+    redactRepeatRows: redactRepeatRows, ridOf: ridOf,
     assertValidSubmission: assertValidSubmission,
     errorMessage: errorMessage,
     RULE_LABELS: RULE_LABELS,

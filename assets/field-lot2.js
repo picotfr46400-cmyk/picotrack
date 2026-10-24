@@ -280,7 +280,7 @@
   }
 
   /* ---------- Groupe répétable ---------- */
-  function rowEmpty(row) { return !row || !Object.keys(row).some(function (k) { var v = row[k]; return !(v === '' || v == null || v === false || (Array.isArray(v) && !v.length)); }); }
+  function rowEmpty(row) { return !row || !Object.keys(row).some(function (k) { if (k === '_rid') return false; var v = row[k]; return !(v === '' || v == null || v === false || (Array.isArray(v) && !v.length)); }); }
   function rowsOf(g) {
     var lim = FV() ? FV().repeatLimits(g) : { min: 0, max: 10 };
     var rows = Array.isArray(saisieValues[g.id]) ? saisieValues[g.id] : [];
@@ -332,7 +332,7 @@
     ((form && form.fields) || []).filter(isRepeat).forEach(function (g) {
       var rows = Array.isArray(saisieValues[g.id]) ? saisieValues[g.id] : null; if (!rows) return;
       var lim = FV() ? FV().repeatLimits(g) : { min: 0 };
-      var kept = rows.filter(function (r) { return !rowEmpty(r); });
+      var kept = rows.filter(function (r) { return !rowEmpty(r) || (r && typeof r._rid === 'string'); }); // une ligne déjà enregistrée (_rid) n'est jamais retirée en douce
       while (kept.length < lim.min && kept.length < rows.length) kept.push({});
       saisieValues[g.id] = kept;
     });
@@ -390,8 +390,35 @@
     try { if (!u && typeof CURRENT_USER !== 'undefined' && CURRENT_USER) u = CURRENT_USER.id || CURRENT_USER.email || ''; } catch (e) {}
     return String(cfg.code || cfg.environment_code || '') + '|' + String(u || 'pad');
   }
+  /* Purge : à la déconnexion (PC ou tablette) et au changement d'utilisateur, les brouillons
+     et la clé qui les chiffre sont effacés. Un reste éventuel (rechargement immédiat) est purgé
+     au chargement suivant grâce au propriétaire noté à côté des brouillons. */
+  var OWNER = 'pt.drafts.owner';
+  function purgeDrafts() {
+    try { localStorage.removeItem(DRAFTS); localStorage.removeItem(OWNER); } catch (e) {}
+    keyP = null;
+    try { if (window.indexedDB) indexedDB.deleteDatabase('pt-lot2'); } catch (e) {}
+  }
+  function ownerCheck() {
+    if (!isPad()) return;
+    var me = who(), o = null;
+    try { o = localStorage.getItem(OWNER); } catch (e) {}
+    if (o && o !== me) purgeDrafts();
+    try { if (localStorage.getItem(DRAFTS)) localStorage.setItem(OWNER, me); } catch (e) {}
+  }
+  function hookLogout(name, done) {
+    var orig = window[name]; if (typeof orig !== 'function' || orig.__ptLot2) return;
+    var w = function () {
+      var r = orig.apply(this, arguments);
+      var after = function () { if (done()) purgeDrafts(); };
+      if (r && typeof r.then === 'function') r.then(after, function () {}); else after();
+      return r;
+    };
+    w.__ptLot2 = 1; window[name] = w;
+  }
   function store() { try { var o = JSON.parse(localStorage.getItem(DRAFTS) || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; } }
   function storePut(o) {
+    try { localStorage.setItem(OWNER, who()); } catch (e) {}
     var keys = Object.keys(o), lim = Date.now() - DRAFT_DAYS * 86400000;
     keys.forEach(function (k) { if (!o[k] || o[k].at < lim) delete o[k]; });
     keys = Object.keys(o); if (keys.length > DRAFT_MAX) keys.sort(function (a, b) { return o[a].at - o[b].at; }).slice(0, keys.length - DRAFT_MAX).forEach(function (k) { delete o[k]; });
@@ -421,6 +448,7 @@
     storePut(o);
   }
   async function readDraft(formId) {
+    ownerCheck();
     var d = store()[dKey(formId)]; if (!d || !cryptoOk()) return null;
     try {
       var key = await draftKeyCrypto();
@@ -429,7 +457,7 @@
     } catch (e) { return null; }
   }
   function dropDraft(formId) { var o = store(); if (o[dKey(formId)]) { delete o[dKey(formId)]; storePut(o); } }
-  window.ptLot2Drafts = { list: function () { var me = who() + '|'; var o = store(); return Object.keys(o).filter(function (k) { return k.indexOf(me) === 0; }).map(function (k) { return { formId: o[k].formId, nom: o[k].nom, at: o[k].at }; }).sort(function (a, b) { return b.at - a.at; }); }, drop: dropDraft };
+  window.ptLot2Drafts = { list: function () { ownerCheck(); var me = who() + '|'; var o = store(); return Object.keys(o).filter(function (k) { return k.indexOf(me) === 0; }).map(function (k) { return { formId: o[k].formId, nom: o[k].nom, at: o[k].at }; }).sort(function (a, b) { return b.at - a.at; }); }, drop: dropDraft };
   var saveTimer = null;
   function scheduleSave() {
     var form = curForm(); if (!draftsOn(form)) return;
@@ -599,5 +627,9 @@
     window.goAcademy = function () { var r = ga.apply(this, arguments); try { academy(); } catch (e) {} return r; };
   }
   document.addEventListener('click', function () { setTimeout(function () { try { academy(); } catch (e) {} }, 0); }, true);
-  window.__ptLot2Test = { evalConds: evalConds, rowEmpty: rowEmpty, snap: snap, cleanRepeat: cleanRepeat, cleanScale: cleanScale };
+  // Déconnexion tablette : seulement si la configuration a bien été retirée (l'utilisateur a pu annuler).
+  hookLogout('clearPadConfig', function () { try { return !localStorage.getItem('pt_pad'); } catch (e) { return true; } });
+  hookLogout('logoutPc', function () { return true; });
+  try { ownerCheck(); } catch (e) {}
+  window.__ptLot2Test = { purgeDrafts: purgeDrafts, ownerCheck: ownerCheck, evalConds: evalConds, rowEmpty: rowEmpty, snap: snap, cleanRepeat: cleanRepeat, cleanScale: cleanScale };
 })();

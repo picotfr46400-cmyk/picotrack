@@ -74,7 +74,7 @@ test('rôles : enfant masqué interdit en écriture, retiré ligne par ligne, gr
   assert.equal(w.ok, false);
   assert.equal(w.status, 403);
   const red = roles.redactValues(fields, { g: [{ qte: 1, prix: 10 }, { qte: 2, prix: 20 }] }, viewer);
-  assert.deepEqual(red, { g: [{ qte: 1 }, { qte: 2 }] });
+  assert.deepEqual(red, { g: [{ _rid: 'p0', qte: 1 }, { _rid: 'p1', qte: 2 }] });
   const keys = roles.hiddenKeys(fields, viewer);
   assert.ok(keys.has('prix') && keys.has('g'));
   const mgr = fv.makeViewer(['manager']);
@@ -117,4 +117,86 @@ test('vocabulaire : aucun libellé ni nom repris de KeepTracking', () => {
   for (const w of ['KeepTracking', 'keeptracking', 'Keep Tracking', 'kt-', 'Boutons radio', 'Gros boutons', 'Liste déroulante', 'Rediriger vers', 'Nombre de lignes min', 'Nombre de lignes max', 'Ajout automatique']) {
     assert.equal(src.includes(w), false, w);
   }
+});
+
+/* ---------- Identifiant de ligne stable (_rid) ---------- */
+const RF = [GROUP, QTE, PRIX];
+const OP = fv.makeViewer(['operateur']);
+const STORED = { g: [{ _rid: 'r00000000000000aa', qte: 1, prix: 10 }, { _rid: 'r00000000000000bb', qte: 2 }, { _rid: 'r00000000000000cc', qte: 3, prix: 30 }] };
+const seen = () => roles.redactValues(RF, STORED, OP).g; // ce que voit l'opérateur
+const save = (rows, viewer = OP, previous = STORED) => fv.validateSubmission({ fields: RF, values: { g: rows }, previous, viewer });
+
+test('_rid : posé par le serveur, valeur masquée reprise par _rid et non par position', () => {
+  const fresh = fv.validateSubmission({ fields: RF, values: { g: [{ qte: 1 }, { qte: 2 }] }, viewer: OP });
+  assert.equal(fresh.ok, true);
+  const rids = fresh.values.g.map((r) => r._rid);
+  assert.ok(rids.every((x) => /^r[0-9a-f]{16}$/.test(x)) && rids[0] !== rids[1]);
+  const v = seen();
+  assert.ok(v.every((r) => !('prix' in r) && r._rid));
+  v[1].qte = 5; // modification d'une ligne libre
+  const r = save(v);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  assert.deepEqual(r.values.g.map((x) => x.prix), [10, undefined, 30]);
+  // Retirer une ligne libre placée avant une ligne protégée la décalerait : refusé aussi.
+  assert.equal(save([v[0], v[2]]).status, 403);
+  // Ligne libre en fin de groupe : retirable, les valeurs masquées restent sur leurs lignes.
+  const tail = { g: [STORED.g[0], STORED.g[2], STORED.g[1]] };
+  const tv = roles.redactValues(RF, tail, OP).g;
+  const r2 = save([tv[0], tv[1]], OP, tail);
+  assert.equal(r2.ok, true, JSON.stringify(r2.errors));
+  assert.deepEqual(r2.values.g.map((x) => [x._rid, x.prix]), [['r00000000000000aa', 10], ['r00000000000000cc', 30]]);
+});
+
+test('attaque _rid : suppression d’une ligne protégée → 403', () => {
+  const v = seen();
+  const r = save([v[1], v[2]]);
+  assert.equal(r.ok, false); assert.equal(r.status, 403);
+  assert.equal(save([]).status, 403);
+});
+
+test('attaque _rid : réordonnancement et insertion avant → 403', () => {
+  const v = seen();
+  assert.equal(save([v[2], v[1], v[0]]).status, 403);
+  assert.equal(save([{ qte: 9 }, v[0], v[1], v[2]].slice(0, 3)).status, 403);
+  const ins = fv.validateSubmission({ fields: [Object.assign({}, GROUP, { repeat: { on: true, max: 5 } }), QTE, PRIX], values: { g: [{ qte: 9 }, ...v] }, previous: STORED, viewer: OP });
+  assert.equal(ins.ok, false); assert.equal(ins.status, 403);
+  // Ajout à la fin : autorisé.
+  const end = fv.validateSubmission({ fields: [Object.assign({}, GROUP, { repeat: { on: true, max: 5 } }), QTE, PRIX], values: { g: [...v, { qte: 9 }] }, previous: STORED, viewer: OP });
+  assert.equal(end.ok, true, JSON.stringify(end.errors));
+  assert.deepEqual(end.values.g.map((x) => x.prix), [10, undefined, 30, undefined]);
+});
+
+test('attaque _rid : identifiant forgé, inconnu, mal formé ou en double → refusé', () => {
+  const v = seen();
+  for (const bad of ['r00000000000000ff', 'p0', 'x', 42, null]) {
+    const rows = v.map((r) => Object.assign({}, r)); rows[1]._rid = bad;
+    assert.equal(save(rows).ok, false, String(bad));
+  }
+  const dup = v.map((r) => Object.assign({}, r)); dup[1]._rid = dup[0]._rid;
+  assert.equal(save(dup).ok, false);
+  // Création : aucun _rid ne peut être imposé.
+  assert.equal(fv.validateSubmission({ fields: RF, values: { g: [{ _rid: 'r0123456789abcdef', qte: 1 }] }, viewer: OP }).ok, false);
+});
+
+test('_rid : lignes anciennes sans identifiant toujours compatibles', () => {
+  const legacy = { g: [{ qte: 1, prix: 10 }, { qte: 2 }] };
+  const v = roles.redactValues(RF, legacy, OP).g;
+  assert.deepEqual(v.map((r) => r._rid), ['p0', 'p1']);
+  const ok1 = save(v, OP, legacy);
+  assert.equal(ok1.ok, true, JSON.stringify(ok1.errors));
+  assert.deepEqual(ok1.values.g.map((x) => [x._rid, x.prix]), [['p0', 10], ['p1', undefined]]);
+  assert.equal(save([v[1]], OP, legacy).status, 403, 'ligne ancienne protégée supprimée');
+  assert.equal(save([v[1], v[0]], OP, legacy).status, 403, 'ligne ancienne protégée déplacée');
+  // Client ancien (sans _rid), rien de masqué : reprise par position.
+  const mgr = fv.makeViewer(['manager']);
+  const old = save([{ qte: 1, prix: 11 }, { qte: 2 }], mgr, legacy);
+  assert.equal(old.ok, true, JSON.stringify(old.errors));
+  assert.deepEqual(old.values.g.map((x) => x._rid), ['p0', 'p1']);
+});
+
+test('brouillons : purge à la déconnexion et au changement d’utilisateur', () => {
+  const ui = read('assets/field-lot2.js');
+  assert.ok(ui.includes("deleteDatabase('pt-lot2')"));
+  assert.ok(ui.includes("hookLogout('clearPadConfig'") && ui.includes("hookLogout('logoutPc'"));
+  assert.match(ui, /if \(o && o !== me\) purgeDrafts\(\)/);
 });
