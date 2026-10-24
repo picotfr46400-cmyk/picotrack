@@ -14,6 +14,7 @@ const { handleQueue } = require('./_label-queue');
 const fieldValidation = require('./_field-validation');
 const fieldChoices = require('./_field-choices');
 const dbRowUpdate = require('./_db-row-update');
+const fieldRoles = require('./_field-roles');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -1163,17 +1164,9 @@ async function userRest(req, path, { method='GET', body, prefer='return=represen
 
 // Lot 1 — visibilité par rôle au niveau du champ, appliquée à toute réponse :
 // les valeurs d'un champ que le lecteur ne voit pas sont retirées des saisies et des dossiers.
-function collectFieldRows(value, out, depth = 0) {
-  if (!value || typeof value !== 'object' || depth > 4) return;
-  if (Array.isArray(value)) { for (const v of value) collectFieldRows(v, out, depth + 1); return; }
-  if (value.form_id != null && value.values && typeof value.values === 'object' && !Array.isArray(value.values)) out.subs.push(value);
-  if (value.service_id != null && value.form_data && typeof value.form_data === 'object' && !Array.isArray(value.form_data)) out.insts.push(value);
-  for (const k of Object.keys(value)) {
-    const v = value[k];
-    if (v && typeof v === 'object' && k !== 'values' && k !== 'form_data' && k !== 'fields') collectFieldRows(v, out, depth + 1);
-  }
-}
+const collectFieldRows = fieldRoles.collectFieldRows;
 
+// Masquage par rôle de toute réponse : fonction centrale (_field-roles.redactResultRows).
 async function redactFieldRolesInResult(req, result) {
   const profile = req.picoReaderProfile;
   if (!profile || !result || typeof result !== 'object') return result;
@@ -1181,30 +1174,8 @@ async function redactFieldRolesInResult(req, result) {
   collectFieldRows(result, rows);
   if (!rows.subs.length && !rows.insts.length) return result;
   const catalog = await catalogFor(req, profile);
-  const viewer = fieldChoices.viewerFor(profile, catalog);
-  if (viewer.all) return result;
   const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
-  const serviceForm = new Map();
-  const serviceIds = [...new Set(rows.insts.map(r => String(r.service_id)))];
-  for (const chunk of idChunks(serviceIds)) {
-    const svc = await readStrictRows(req, `services?id=in.(${chunk})&environment_code=eq.${encodeURIComponent(env)}&select=id,form_id&limit=500`);
-    for (const s of svc) serviceForm.set(String(s.id), String(s.form_id || ''));
-  }
-  const formIds = [...new Set(rows.subs.map(r => String(r.form_id)).concat([...serviceForm.values()]).filter(Boolean))];
-  const formFields = new Map();
-  for (const chunk of idChunks(formIds)) {
-    const forms = await readStrictRows(req, `forms?id=in.(${chunk})&environment_code=eq.${encodeURIComponent(env)}&select=id,fields&limit=500`);
-    for (const f of forms) formFields.set(String(f.id), fieldChoices.fieldsOf(f));
-  }
-  for (const r of rows.subs) {
-    const fields = formFields.get(String(r.form_id));
-    if (fields) r.values = fieldValidation.redactValues(fields, r.values, viewer);
-  }
-  for (const r of rows.insts) {
-    const fields = formFields.get(serviceForm.get(String(r.service_id)) || '');
-    if (fields) r.form_data = fieldValidation.redactValues(fields, r.form_data, viewer);
-  }
-  return result;
+  return fieldRoles.redactResultRows({ read: path => readStrictRows(req, path), env, viewer: fieldChoices.viewerFor(profile, catalog) }, result);
 }
 
 // Lot 1 — options d'un champ « choix depuis une base » : configuration relue dans le formulaire,
@@ -2072,7 +2043,21 @@ async function dbRuleInstanceContext(req, env, instance) {
     if (String(sub.id) === String(instance.submission_id || '')) main = Object.assign({}, vals, main);
     else if (sub.form_id != null) linked[String(sub.form_id)] = Object.assign({}, linked[String(sub.form_id)], vals);
   }
-  return { ctx: { main, linked }, submissionIds: ids };
+  // Champs réservés par rôle : jamais recopiés dans une base (lecteur sans rôle, cf. _field-roles).
+  const formIds = [...new Set(subs.map(s => String(s.form_id || '')).filter(Boolean))];
+  let hidden;
+  try {
+    const svc = await readStrictRows(req, `services?id=eq.${encodeURIComponent(instance.service_id)}&environment_code=eq.${encodeURIComponent(env)}&select=id,form_id&limit=1`);
+    const mainFormId = svc[0] && svc[0].form_id ? String(svc[0].form_id) : '';
+    const mainSubForm = (subs.find(s => String(s.id) === String(instance.submission_id || '')) || {}).form_id;
+    const all = [...new Set(formIds.concat([mainFormId]).filter(Boolean))];
+    const forms = all.length ? await readStrictRows(req, `forms?id=in.(${all.map(encodeURIComponent).join(',')})&environment_code=eq.${encodeURIComponent(env)}&select=id,fields&limit=200`) : [];
+    const mainFields = forms.filter(f => String(f.id) === mainFormId || String(f.id) === String(mainSubForm || '')).flatMap(f => fieldRoles.fieldsOf(f));
+    hidden = dbRowUpdate.hiddenContext(mainFields, forms);
+  } catch (_) {
+    hidden = fieldRoles.HIDE_ALL;
+  }
+  return { ctx: { main, linked, hidden }, submissionIds: ids };
 }
 
 // Bouton de service « Modifier / Supprimer une ligne dans une base » : le client n'envoie que le dossier,
@@ -2131,7 +2116,7 @@ async function handleDbRowUpdate(req, body) {
     const found = form && dbRowUpdate.formRules(form).find(r => String(r.id || '') === ruleId);
     if (!found) throw Object.assign(new Error('Cette règle n’appartient pas au formulaire de la saisie.'), { status: 403 });
     rule = dbRowUpdate.storedRule(found);
-    ctx = { main: submission.values && typeof submission.values === 'object' ? submission.values : {}, linked: {} };
+    ctx = { main: submission.values && typeof submission.values === 'object' ? submission.values : {}, linked: {}, hidden: dbRowUpdate.hiddenContext(fieldRoles.fieldsOf(form), []) };
     submissionIds = [String(submission.id)];
     context = { form_id: String(form.id), rule_id: ruleId, submission_id: String(submission.id), action_label: 'Formulaire ' + String(form.nom || form.id).slice(0, 100), origin: 'pc' };
   }
@@ -2389,7 +2374,8 @@ async function handleExportSubmissionPdf(req, body) {
   let lineSets = [[]];
   try {
     const packed = await submissionAudit.prepareExportTrace(req, {
-      serviceRest, user, profile, env, submissionId: id, submission
+      serviceRest, user, profile, env, submissionId: id, submission,
+      hidden: fieldRoles.hiddenKeys(safeForm ? fieldRoles.fieldsOf(safeForm) : [], fieldRoles.viewerFor(profile, catalog))
     });
     exportRow = packed.row;
     lineSets = packed.lineSets || [packed.lines || []];
@@ -2484,6 +2470,9 @@ async function handler(req, res) {
           cleanSubmissionId,
           readFormForSubmission,
           assertRecordAllowed,
+          hiddenFields: async (request, profile, env, formIds) => fieldRoles.hiddenForForms(
+            (path) => serviceRest(path, { method: 'GET', prefer: '', req: request }), env, formIds,
+            fieldRoles.viewerFor(profile, await catalogFor(request, profile))),
           assertInstanceVisible: async (request, profile, row) => {
             const catalog = await catalogFor(request, profile);
             access.assertLevel(access.instanceLevel(profile, catalog, row), 'read');

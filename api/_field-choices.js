@@ -10,28 +10,14 @@ const fv = require('./_field-validation');
 
 const MAX_ROWS = 2000;
 const INTEGRATIONS_NAME = 'INTEGRATIONS';
-const USER_COLUMNS = ['nom', 'email', 'role'];
+// Source « utilisateurs » : nom affiché seulement (ni e-mail ni rôle).
+const USER_COLUMNS = ['nom'];
 
 function enc(v) { return encodeURIComponent(String(v == null ? '' : v)); }
 
-/* Rôles du lecteur pour la visibilité des champs : rôle, rôles attribués, et leurs id/nom au catalogue. */
-function viewerFor(profile, catalog) {
-  if (!profile) return fv.makeViewer([]);
-  const tokens = [];
-  const add = v => { const t = access.normalizeRoleToken(v); if (t) tokens.push(t); };
-  add(profile.role);
-  add(profile.license_type);
-  for (const r of access.roleTokens(profile.roles).concat(access.roleTokens(profile.license_roles))) add(r);
-  for (const row of access.assignedCatalogRoles(profile, catalog || [])) { add(row && row.id); add(row && (row.name || row.nom)); }
-  if (access.isPlatform(profile) || access.isEnvironmentAdmin(profile)) tokens.push('administrateur');
-  return fv.makeViewer(tokens);
-}
-
-function fieldsOf(form) {
-  let fields = form && form.fields;
-  if (typeof fields === 'string') { try { fields = JSON.parse(fields); } catch (_) { fields = []; } }
-  return Array.isArray(fields) ? fields : [];
-}
+const fieldRoles = require('./_field-roles');
+const viewerFor = fieldRoles.viewerFor;
+const fieldsOf = fieldRoles.fieldsOf;
 
 function meOf(profile) {
   const p = profile || {};
@@ -54,7 +40,7 @@ async function sourceRows(ctx, source) {
       .filter(r => r && String(r.scope || '').toLowerCase() !== 'platform' && !['super_admin', 'platform_admin'].includes(access.normalizeRoleToken(r.role)))
       .map(r => {
         const name = [r.firstname || r.first_name, r.lastname || r.last_name].filter(Boolean).join(' ');
-        return { id: String(r.id), cells: { nom: r.label || name || r.email || '', email: r.email || '', role: r.role || '' } };
+        return { id: String(r.id), cells: { nom: String(r.label || name || '').trim() } };
       });
   }
   if (!src.ref) return [];
@@ -86,10 +72,23 @@ async function sourceRows(ctx, source) {
   const dbs = await read(`databases?id=eq.${enc(src.ref)}&environment_code=eq.${enc(env)}&select=id,nom&limit=1`);
   const db = Array.isArray(dbs) ? dbs[0] : null;
   if (!db || String(db.nom || '') === INTEGRATIONS_NAME) return [];
-  const rows = await read(`database_rows?database_id=eq.${enc(db.id)}&environment_code=eq.${enc(env)}&select=id,form_id,values&order=id.asc&limit=${MAX_ROWS}`);
-  return (Array.isArray(rows) ? rows : [])
-    .filter(r => !(r && r.form_id && access.formLevel(profile, catalog, r.form_id, services) === 'hidden'))
-    .map(r => ({ id: String(r.id), cells: r.values && typeof r.values === 'object' ? r.values : {} }));
+  const rows = (await read(`database_rows?database_id=eq.${enc(db.id)}&environment_code=eq.${enc(env)}&select=id,form_id,values&order=id.asc&limit=${MAX_ROWS}`) || [])
+    .filter(r => r && !(r.form_id && access.formLevel(profile, catalog, r.form_id, services) === 'hidden'));
+  // Lignes alimentées par un formulaire : les cellules des champs masqués par rôle ne servent ni à filtrer
+  // ni à afficher (sinon on devinerait la valeur en jouant avec les filtres). Formulaire illisible : cellules retirées.
+  const viewer = viewerFor(profile, catalog);
+  const formIds = [...new Set(rows.map(r => r.form_id).filter(x => x != null && x !== '').map(String))];
+  const formFields = new Map();
+  if (formIds.length && !viewer.all) {
+    const forms = await read(`forms?id=in.(${formIds.map(enc).join(',')})&environment_code=eq.${enc(env)}&select=id,fields&limit=200`);
+    for (const f of Array.isArray(forms) ? forms : []) formFields.set(String(f.id), fieldsOf(f));
+  }
+  return rows.map(r => {
+    const cells = r.values && typeof r.values === 'object' && !Array.isArray(r.values) ? r.values : {};
+    if (viewer.all || r.form_id == null || r.form_id === '') return { id: String(r.id), cells };
+    const fields = formFields.get(String(r.form_id));
+    return { id: String(r.id), cells: fields ? fv.redactValues(fields, cells, viewer) || {} : {} };
+  });
 }
 
 async function optionsFor(ctx, field, fields, values) {

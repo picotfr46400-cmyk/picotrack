@@ -171,9 +171,28 @@ function contextValue(ctx, fieldId) {
   if (m) return readField(c.linked && c.linked[m[1]], m[2]);
   return readField(c.main, id);
 }
-function wire(item, ctx) {
+// Masquage par rôle des valeurs recopiées dans une base (la ligne est lue par d'autres utilisateurs) :
+// règle des envois automatiques (_field-roles) : lecteur sans rôle → un champ réservé est recopié vide.
+// ctx.hidden : Set d'ids masqués (saisie principale) et « formId::id » (formulaires liés).
+function fieldHidden(ctx, fieldId) {
+  const h = ctx && ctx.hidden;
+  if (!h) return false;
+  if (h.all) return true;
+  const id = text(fieldId, 200);
+  const m = /^linked:([^:]+):(.+)$/.exec(id) || /^([^:]+)::(.+)$/.exec(id);
+  return m ? h.has(m[1] + '::' + m[2]) : h.has(id);
+}
+function hiddenContext(mainFields, linkedForms) {
+  const fieldRoles = require('./_field-roles');
+  const out = new Set(fieldRoles.hiddenKeys(mainFields || [], fieldRoles.AUTOMATED_VIEWER));
+  for (const f of Array.isArray(linkedForms) ? linkedForms : []) {
+    for (const k of fieldRoles.hiddenKeys(fieldRoles.fieldsOf(f), fieldRoles.AUTOMATED_VIEWER)) out.add(String(f.id) + '::' + k);
+  }
+  return out;
+}
+function wire(item, ctx, isUpdate) {
   const source = text(item && item.source, 20) || 'fixed';
-  if (source === 'field') return { column: item.column, source: 'field', value: contextValue(ctx, item.fieldId) };
+  if (source === 'field') return { column: item.column, source: 'field', value: isUpdate && fieldHidden(ctx, item.fieldId) ? '' : contextValue(ctx, item.fieldId) };
   if (source === 'today' || source === 'current_user') return { column: item.column, source };
   return { column: item.column, source: 'fixed', value: item.value };
 }
@@ -216,7 +235,7 @@ function ruleBody(rule, ctx) {
     on_multiple: rule.onMultiple || 'stop',
     delete_mode: rule.deleteMode || 'archive',
     criteria: ruleCriteria(rule).map(c => wire(Object.assign({ source: 'field' }, c), ctx)),
-    updates: (Array.isArray(rule.updates) ? rule.updates : []).filter(u => u && u.column).map(u => wire(u, ctx))
+    updates: (Array.isArray(rule.updates) ? rule.updates : []).filter(u => u && u.column).map(u => wire(u, ctx, true))
   };
 }
 // Champs de la saisie utilisés par une règle (critères et valeurs « champ »).
@@ -291,7 +310,7 @@ async function runFormRules({ rest, env, form, submission, event, origin, instan
     if (event === 'update' && !fieldsChanged(rule, previous, values)) continue;
     try {
       if (denied === null) denied = typeof deniedForms === 'function' ? await deniedForms() : (deniedForms || []);
-      const { payload, database } = await applyRule({ rest, env, rule, ctx: { main: values, linked: {} }, instanceId, submissionIds: [String(submission.id)], actorId, actorLabel, deniedForms: denied,
+      const { payload, database } = await applyRule({ rest, env, rule, ctx: { main: values, linked: {}, hidden: hiddenContext(require('./_field-roles').fieldsOf(form), []) }, instanceId, submissionIds: [String(submission.id)], actorId, actorLabel, deniedForms: denied,
         context: { form_id: String(form.id || ''), submission_id: String(submission.id), rule_id: rule.id, event, origin, action_label: 'Formulaire ' + text(form.nom || form.id, 100) } });
       out.push({ status: payload.status || 'error', database_id: String(database.id), message: resultMessage(payload, database.nom) });
       if (payload.status === 'multiple' || payload.status === 'too_many' || payload.status === 'forbidden') break;
@@ -309,4 +328,4 @@ function submissionOrigin(rawRecord, savedRow) {
   return device === 'pad' ? 'pad' : 'pc';
 }
 
-module.exports = { storedRule, contextValue, usedFieldIds, fieldsChanged, deniedFormIds, applyRule, MAX_ROWS, formRules, ruleApplies, ruleBody, runFormRules, submissionOrigin, rpcPayload, normalizeRequest, linkedSubmissionIds, resultMessage, columnIds, parisToday, cleanValue, RPC, MAX_UPDATES };
+module.exports = { fieldHidden, hiddenContext, storedRule, contextValue, usedFieldIds, fieldsChanged, deniedFormIds, applyRule, MAX_ROWS, formRules, ruleApplies, ruleBody, runFormRules, submissionOrigin, rpcPayload, normalizeRequest, linkedSubmissionIds, resultMessage, columnIds, parisToday, cleanValue, RPC, MAX_UPDATES };

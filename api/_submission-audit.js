@@ -1,4 +1,5 @@
 'use strict';
+const fieldRoles = require('./_field-roles');
 
 const crypto = require('crypto');
 const { interpretedLicenseType, normalizeLicenseType } = require('./_license-type');
@@ -961,7 +962,13 @@ async function recordFormCascade(req, ctx) {
   }
 }
 
-async function loadTimeline(req, serviceRest, env, submissionId, submission, instance) {
+// Clés masquées pour ce lecteur ; dépendance absente ou en échec : tout est masqué (échec fermé).
+async function hiddenFor(deps, req, profile, env, formIds) {
+  if (typeof deps.hiddenFields !== 'function') return fieldRoles.HIDE_ALL;
+  try { return (await deps.hiddenFields(req, profile, env, formIds)) || fieldRoles.HIDE_ALL; } catch (_) { return fieldRoles.HIDE_ALL; }
+}
+
+async function loadTimeline(req, serviceRest, env, submissionId, submission, instance, hidden) {
   const stored = await readLog(serviceRest, req, env, submissionId);
   let linked = instance;
   if (!linked) {
@@ -974,7 +981,7 @@ async function loadTimeline(req, serviceRest, env, submissionId, submission, ins
       if (row && String(row.environment_code || '') === env) linked = row;
     } catch (_) {}
   }
-  return composeTimeline(stored, submission, linked);
+  return fieldRoles.redactTimeline(composeTimeline(stored, submission, linked), hidden);
 }
 
 async function prepareExportTrace(req, ctx) {
@@ -989,7 +996,8 @@ async function prepareExportTrace(req, ctx) {
     detail: { action: 'export_submission_pdf', filename: `saisie-${ctx.submissionId}.pdf` },
     now: new Date()
   });
-  const timeline = await loadTimeline(req, ctx.serviceRest, ctx.env, ctx.submissionId, ctx.submission, null);
+  // Masquage par rôle (avant/après, signatures) ; sans masque fourni : on n'expose aucune valeur de champ.
+  const timeline = await loadTimeline(req, ctx.serviceRest, ctx.env, ctx.submissionId, ctx.submission, null, ctx.hidden || fieldRoles.HIDE_ALL);
   const merged = prependEvent(timeline, row);
   if (timeline.legacy && !timeline.events.some((event) => event.event_type === 'created' && !event.legacy)) {
     merged.notice = LEGACY_NOTICE;
@@ -1110,7 +1118,12 @@ async function handleInstanceTrace(req, body, deps, ctx) {
       if (!ids.has(String(row.id))) stored.push(row);
     }
   }
-  const timeline = composeTimeline(stored, null, instance);
+  const formIds = [submissionId ? await formIdOf(deps, req, env, submissionId) : ''];
+  try {
+    const svc = await deps.serviceRest(`services?id=eq.${enc(instance.service_id)}&environment_code=eq.${enc(env)}&select=id,form_id&limit=1`, { method: 'GET', prefer: '', req });
+    if (Array.isArray(svc) && svc[0]) formIds.push(svc[0].form_id);
+  } catch (_) {}
+  const timeline = fieldRoles.redactTimeline(composeTimeline(stored, null, instance), await hiddenFor(deps, req, profile, env, formIds));
   return {
     service_instance_id: instanceId,
     submission_id: submissionId || null,
@@ -1178,7 +1191,7 @@ async function handleTrace(req, body, deps) {
       console.error('[submission-audit] écriture journal impossible', err && (err.message || err));
     }
   }
-  const timeline = composeTimeline(stored, submission, null);
+  const timeline = fieldRoles.redactTimeline(composeTimeline(stored, submission, null), await hiddenFor(deps, req, profile, env, [submission.form_id]));
   return {
     submission_id: id,
     environment_code: env,

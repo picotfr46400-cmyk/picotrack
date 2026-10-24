@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { sendJson, setCors, verifyToken, sbRest } = require('./_pad-security');
+const fieldRoles = require('./_field-roles');
 const submissionAudit = require('./_submission-audit');
 const { notifyAfterWrite, processMailQueue, continueAfterResponse, invocationDeadline, OPPORTUNISTIC_LIMIT, requestOrigin } = require('./_mail-rules');
 const access = require('./_access');
@@ -587,6 +588,23 @@ async function insertPadRecord(req, spec) {
   return written.row;
 }
 
+// Toute valeur renvoyée au PAD passe par le masquage par rôle (fonction centrale _field-roles).
+// Lecteur = licence PAD (req.picoFieldRights) ; sans droits connus : lecteur sans rôle.
+// Échec de lecture des formulaires : les valeurs sont retirées des lignes (échec fermé).
+async function redactPadResults(req, environmentCode, results, read) {
+  const rights = req.picoFieldRights || {};
+  const viewer = rights.profile ? fieldRoles.viewerFor(rights.profile, rights.catalog || []) : fieldRoles.AUTOMATED_VIEWER;
+  try {
+    await fieldRoles.redactResultRows({ read: read || (path => loadRows(req, path)), env: environmentCode, viewer }, results);
+  } catch (_) {
+    const rows = { subs: [], insts: [] };
+    fieldRoles.collectFieldRows(results, rows);
+    for (const r of rows.subs) r.values = {};
+    for (const r of rows.insts) r.form_data = {};
+  }
+  return results;
+}
+
 function appliedResult(item, extra) {
   return Object.assign({
     actionId: item.id,
@@ -955,6 +973,7 @@ async function handler(req, res) {
         const reason = req.picoAuditDeferred ? 'journal non confirmé' : (interrupted ? 'action interrompue' : 'actions non commencées');
         console.warn('[pad-sync] délai de requête, ' + reason, requestId, retry.join(','));
       }
+      await redactPadResults(req, environmentCode, results);
       sendJson(res, 503, {
         ok: false,
         error: 'Synchronisation momentanément indisponible.',
@@ -967,6 +986,7 @@ async function handler(req, res) {
       if (seenTimeout) {
         await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}`, { method: 'PATCH', body: { last_seen: new Date().toISOString() }, timeoutMs: seenTimeout }).catch(() => null);
       }
+      await redactPadResults(req, environmentCode, results);
       sendJson(res, 200, { ok: true, synced: results.length, results });
     }
     await continueAfterResponse(drainPadMail(req, session, license, enqueued, req.picoMailDeadline));
@@ -997,4 +1017,5 @@ handler.armRequestClock = armRequestClock;
 handler.normalizeSyncError = normalizeSyncError;
 handler.GENERIC_SYNC_ERROR = GENERIC_SYNC_ERROR;
 handler.DERIVED_KEY_WARN = DERIVED_KEY_WARN;
+handler.redactPadResults = redactPadResults;
 module.exports = handler;

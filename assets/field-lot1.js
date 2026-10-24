@@ -81,7 +81,7 @@
   function columnsFor(src) {
     src = src || {};
     try {
-      if (src.kind === 'users') return [{ id: 'nom', l: 'Nom' }, { id: 'email', l: 'E-mail' }, { id: 'role', l: 'Rôle' }];
+      if (src.kind === 'users') return [{ id: 'nom', l: 'Nom' }];
       if (src.kind === 'form') {
         var f = (FORMS_DATA || []).find(function (x) { return String(x.id) === String(src.ref); });
         return flat(f).filter(function (x) { return x && x.id != null && !(typeof ptIsLayout === 'function' && ptIsLayout(x.type)); }).map(function (x) { return { id: String(x.id), l: x.nom || x.label || String(x.id) }; });
