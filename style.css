@@ -1233,3 +1233,6 @@ body.pt-help-on .pt-help-target{outline:1.5px dashed rgba(37,99,235,.22);outline
 .pt-l2-detail table{border-collapse:collapse;font-size:12.5px;min-width:100%}
 .pt-l2-detail th,.pt-l2-detail td{border:1px solid var(--bd,#e2e8f0);padding:6px 8px;text-align:left}
 .pt-l2-detail th{background:#f8fafc;font-weight:700}
+/* Paramétrage du formulaire : le panneau défile lui-même (#v-builder est en overflow:hidden) */
+.pt-fb-settings-body{max-height:calc(100vh - 200px);max-height:calc(100dvh - 200px);min-height:0;overflow-y:auto!important;-webkit-overflow-scrolling:touch}
+@media (max-height:600px){.pt-fb-settings-body{max-height:60vh;max-height:60dvh}}
