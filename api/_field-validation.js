@@ -29,6 +29,296 @@
   function isMissing(v) { return isEmpty(v) || v === false; }
   function label(f) { return String((f && (f.nom || f.label || f.name)) || (f && f.id) || 'Champ'); }
 
+
+  /* ---------- Lot 1 : vocabulaire PicoTrack (codes internes + libellés à nous) ----------
+     Les règles sont identifiées par un code stable. Les anciens noms enregistrés dans les
+     formulaires existants restent lus (ALIASES), mais ne sont plus jamais affichés. */
+  var RULE_LABELS = {
+    len_min: 'Longueur au moins', len_max: 'Longueur au plus',
+    letters: 'Texte alphabétique', digits: 'Suite de chiffres', email: 'Format e-mail valide',
+    regex: 'Motif personnalisé (regex)',
+    sel_min: 'Choix cochés : au moins', sel_max: 'Choix cochés : au plus',
+    date_min: 'Pas avant le', date_max: 'Pas après le',
+    time_min: 'Pas avant (heure)', time_max: 'Pas après (heure)',
+    files_min: 'Pièces jointes : au moins', files_max: 'Pièces jointes : au plus',
+    script: 'Contrôle scripté (navigateur seulement)'
+  };
+  var RULE_ALIASES = {
+    'Min caractères': 'len_min', 'Nb de caractères minimum': 'len_min',
+    'Max caractères': 'len_max', 'Nb de caractères maximum': 'len_max',
+    'Lettres uniquement': 'letters', 'Chiffres uniquement': 'digits',
+    'Email': 'email', 'Adresse email': 'email', 'Expression régulière': 'regex',
+    'Nb sélections min': 'sel_min', 'Nb de sélections minimum': 'sel_min',
+    'Nb sélections max': 'sel_max', 'Nb de sélections maximum': 'sel_max',
+    'Date min': 'date_min', 'Date minimum': 'date_min', 'Date/heure minimum': 'date_min',
+    'Date max': 'date_max', 'Date maximum': 'date_max', 'Date/heure maximum': 'date_max',
+    'Heure min': 'time_min', 'Heure minimum': 'time_min', 'Heure max': 'time_max', 'Heure maximum': 'time_max',
+    'Nb fichiers min': 'files_min', 'Nb fichiers minimum': 'files_min',
+    'Nb fichiers max': 'files_max', 'Nb fichiers maximum': 'files_max',
+    'Validateur avancé': 'script'
+  };
+  var RULE_PARAM = { letters: false, digits: false, email: false, script: false };
+  var RULES_BY_TYPE = {
+    text: ['len_min', 'len_max', 'letters', 'digits', 'email', 'regex'],
+    textarea: ['len_min', 'len_max', 'regex'],
+    multi: ['sel_min', 'sel_max'], multiselect: ['sel_min', 'sel_max'], table_multiple: ['sel_min', 'sel_max'],
+    date: ['date_min', 'date_max'], datetime: ['date_min', 'date_max'],
+    time: ['time_min', 'time_max'], heure: ['time_min', 'time_max'],
+    file: ['files_min', 'files_max'], photo: ['files_min', 'files_max']
+  };
+  function ruleCode(r) {
+    if (!r) return '';
+    var c = r.code || r.k;
+    if (c && RULE_LABELS[c]) return c;
+    var n = String(r.n || r.nom || '');
+    if (RULE_ALIASES[n]) return RULE_ALIASES[n];
+    for (var k in RULE_LABELS) if (own(RULE_LABELS, k) && RULE_LABELS[k] === n) return k;
+    return '';
+  }
+  function rulesFor(type) {
+    return (RULES_BY_TYPE[lower(type)] || []).map(function (c) { return { code: c, n: RULE_LABELS[c], v: RULE_PARAM[c] !== false }; });
+  }
+
+  var TRANSFORM_LABELS = {
+    cap_first: 'Initiale en capitale', upper: 'Écrire en capitales', lower: 'Écrire en minuscules',
+    prefix: 'Texte placé avant', suffix: 'Texte placé après', trim: 'Nettoyer les espaces aux bords',
+    keep_start: 'Garder le début (N caractères)', keep_end: 'Garder la fin (N caractères)',
+    slice: 'Découper un extrait (position, longueur)'
+  };
+  var TRANSFORM_ALIASES = {
+    'Mettre le 1er caractère en majuscule': 'cap_first', 'Majuscules': 'upper', 'Tout en majuscule': 'upper',
+    'Tout en minuscule': 'lower', 'Ajouter un préfixe': 'prefix', 'Ajouter un suffixe': 'suffix',
+    'Retirer les espaces en début/fin': 'trim', 'Ne conserver que les x premiers caractères': 'keep_start',
+    'Ne conserver que les x derniers caractères': 'keep_end', 'Extraire une sous-chaîne': 'slice'
+  };
+  var TRANSFORM_PARAM = { prefix: 1, suffix: 1, keep_start: 1, keep_end: 1, slice: 1 };
+  function transformCode(t) {
+    if (!t) return '';
+    var c = t.code || t.k;
+    if (c && TRANSFORM_LABELS[c]) return c;
+    var n = String(t.nom || t.n || '');
+    if (TRANSFORM_ALIASES[n]) return TRANSFORM_ALIASES[n];
+    for (var k in TRANSFORM_LABELS) if (own(TRANSFORM_LABELS, k) && TRANSFORM_LABELS[k] === n) return k;
+    return '';
+  }
+  function transformOne(code, param, s) {
+    var p = String(param == null ? '' : param);
+    switch (code) {
+      case 'cap_first': return s.charAt(0).toUpperCase() + s.slice(1);
+      case 'upper': return s.toUpperCase();
+      case 'lower': return s.toLowerCase();
+      case 'prefix': return s && s.indexOf(p) === 0 ? s : p + s;
+      case 'suffix': return p && s.slice(-p.length) === p ? s : s + p;
+      case 'trim': return s.trim();
+      case 'keep_start': { var a = Math.max(0, parseInt(p, 10) || 0); return a ? s.slice(0, a) : s; }
+      case 'keep_end': { var b = Math.max(0, parseInt(p, 10) || 0); return b ? s.slice(-b) : s; }
+      case 'slice': {
+        var parts = p.split(/[,;]/), from = Math.max(0, parseInt(parts[0], 10) || 0);
+        var len = parts.length > 1 && String(parts[1]).trim() !== '' ? Math.max(0, parseInt(parts[1], 10) || 0) : undefined;
+        return len === undefined ? s.slice(from) : s.substr(from, len);
+      }
+      default: return s;
+    }
+  }
+  /* Applique les transformations du champ (texte seulement). Idempotent pour préfixe/suffixe :
+     rejouer la transformation côté serveur ne double pas le texte déjà transformé par le navigateur. */
+  function applyTransforms(f, v) {
+    var list = f && Array.isArray(f.transformateurs) ? f.transformateurs : [];
+    if (!list.length) return v;
+    var t = lower(f.type);
+    if (t !== 'text' && t !== 'textarea') return v;
+    var one = function (x) {
+      if (typeof x !== 'string') return x;
+      var s = x;
+      list.forEach(function (tr) { var c = transformCode(tr); if (c) s = transformOne(c, tr.param, s); });
+      return s;
+    };
+    return Array.isArray(v) ? v.map(one) : one(v);
+  }
+
+  /* ---------- Visibilité par rôle (au niveau du champ) ----------
+     viewer = { roles: [jetons normalisés], all: bool } ; sans viewer, aucun filtrage (outils internes). */
+  var ROLE_ALL = ['administrateur', 'admin', 'super_admin', 'platform_admin'];
+  function normRole(v) { return lower(v).normalize ? lower(v).normalize('NFKC').trim() : lower(v).trim(); }
+  function fieldRoles(f) {
+    var r = f && (Array.isArray(f.roles) ? f.roles : Array.isArray(f.visible_roles) ? f.visible_roles : []);
+    return (r || []).map(normRole).filter(Boolean);
+  }
+  function makeViewer(roleTokens, aliases) {
+    var set = {};
+    (roleTokens || []).forEach(function (t) { var n = normRole(t); if (n) set[n] = 1; });
+    var all = ROLE_ALL.some(function (r) { return set[r]; });
+    return { roles: set, all: all, aliases: aliases || {} };
+  }
+  function roleAllowed(f, fields, viewer, seen) {
+    if (!viewer || viewer.all) return true;
+    var need = fieldRoles(f);
+    if (need.length && !need.some(function (r) { return viewer.roles[r] || viewer.roles[normRole(viewer.aliases[r])]; })) return false;
+    var gid = groupOf(f);
+    seen = seen || {};
+    if (gid != null && gid !== '' && !seen[String(gid)]) {
+      seen[String(gid)] = 1;
+      var g = (fields || []).find(function (t) { return isGroup(t) && String(t.id) === String(gid); });
+      if (g && !roleAllowed(g, fields, viewer, seen)) return false;
+    }
+    return true;
+  }
+  /* Lecture : retire les valeurs des champs que ce rôle ne voit pas. */
+  function redactValues(fieldsIn, values, viewer) {
+    if (!values || typeof values !== 'object' || Array.isArray(values) || !viewer || viewer.all) return values;
+    var fields = flattenFields(fieldsIn), out = {};
+    var hidden = {};
+    fields.forEach(function (f) { if (f && f.id != null && !roleAllowed(f, fields, viewer)) hidden[String(f.id)] = 1; });
+    Object.keys(values).forEach(function (k) { if (!hidden[k]) out[k] = values[k]; });
+    return out;
+  }
+
+  /* ---------- Valeurs par défaut dynamiques ----------
+     f.defaultDyn = { kind: 'today'|'now'|'me'|'site', offset: N } (jours pour une date, minutes pour une heure). */
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function parisParts(d) {
+    try {
+      var parts = new Intl.DateTimeFormat('fr-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d);
+      var o = {}; parts.forEach(function (p) { o[p.type] = p.value; });
+      return { y: +o.year, m: +o.month, d: +o.day, h: +o.hour, mi: +o.minute };
+    } catch (e) { return { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes() }; }
+  }
+  function resolveDefault(f, ctx) {
+    var dyn = f && f.defaultDyn;
+    if (!dyn || !dyn.kind) return undefined;
+    ctx = ctx || {};
+    var t = lower(f.type), off = parseInt(dyn.offset, 10) || 0;
+    var now = ctx.now ? new Date(ctx.now) : new Date();
+    if (dyn.kind === 'me') { var u = ctx.user || {}; return String(u.label || u.email || u.id || ''); }
+    if (dyn.kind === 'site') return String(ctx.site || '');
+    if (dyn.kind === 'today' || dyn.kind === 'now') {
+      var shifted;
+      if (t === 'heure' || t === 'time') shifted = new Date(now.getTime() + off * 60000);
+      else if (t === 'datetime') shifted = new Date(now.getTime() + (dyn.kind === 'today' ? off * 86400000 : off * 60000));
+      else shifted = new Date(now.getTime() + off * 86400000);
+      var p = parisParts(shifted);
+      var date = p.y + '-' + pad2(p.m) + '-' + pad2(p.d), time = pad2(p.h) + ':' + pad2(p.mi);
+      if (t === 'heure' || t === 'time') return time;
+      if (t === 'datetime') return date + 'T' + time;
+      if (t === 'date') return date;
+      return dyn.kind === 'now' ? date + ' ' + time : date;
+    }
+    return undefined;
+  }
+  function serverOwnedDefault(f) { var k = f && f.defaultDyn && f.defaultDyn.kind; return k === 'me' || k === 'site'; }
+
+  /* ---------- Choix depuis une base ----------
+     Configuration (f.source) relue en base, jamais envoyée par le client :
+     { kind: 'database'|'form'|'users', ref, valueCol, labelCol, sortCol, sortDir, match: 'all'|'any',
+       filters: [{ col, op, from: 'fixed'|'field'|'me', val, field }], autoSingle } */
+  var CHOICE_TYPES = ['table_unique', 'table_multiple', 'tableunique', 'tablemultiple'];
+  var FILTER_OPS = ['eq', 'ne', 'contains', 'starts', 'ends', 'empty', 'filled'];
+  var MAX_FILTERS = 10;
+  var MAX_OPTIONS = 500;
+  function isChoice(f) { return CHOICE_TYPES.indexOf(lower(f && f.type)) >= 0; }
+  function isMultiChoice(f) { var t = lower(f && f.type); return t === 'table_multiple' || t === 'tablemultiple'; }
+  function txt(v) {
+    if (v == null) return '';
+    if (Array.isArray(v)) return v.map(txt).join(', ');
+    if (typeof v === 'object') return String(v.label != null ? v.label : v.id != null ? v.id : '');
+    return String(v);
+  }
+  function choiceIds(v) {
+    if (isEmpty(v)) return [];
+    var list = Array.isArray(v) ? v : [v];
+    return list.map(function (x) { return x && typeof x === 'object' ? String(x.id == null ? '' : x.id) : String(x); });
+  }
+  function cleanSource(src) {
+    var s = src && typeof src === 'object' ? src : {};
+    var kind = ['database', 'form', 'users'].indexOf(s.kind) >= 0 ? s.kind : 'database';
+    var filters = (Array.isArray(s.filters) ? s.filters : []).slice(0, MAX_FILTERS).map(function (c) {
+      c = c || {};
+      return {
+        col: String(c.col || '').slice(0, 120),
+        op: FILTER_OPS.indexOf(c.op) >= 0 ? c.op : 'eq',
+        from: ['fixed', 'field', 'me'].indexOf(c.from) >= 0 ? c.from : 'fixed',
+        val: String(c.val == null ? '' : c.val).slice(0, 500),
+        field: String(c.field == null ? '' : c.field).slice(0, 120)
+      };
+    }).filter(function (c) { return c.col; });
+    return {
+      kind: kind, ref: String(s.ref == null ? '' : s.ref).slice(0, 120),
+      valueCol: String(s.valueCol || '').slice(0, 120), labelCol: String(s.labelCol || '').slice(0, 120),
+      sortCol: String(s.sortCol || '').slice(0, 120), sortDir: s.sortDir === 'desc' ? 'desc' : 'asc',
+      match: s.match === 'any' ? 'any' : 'all', filters: filters, autoSingle: s.autoSingle !== false
+    };
+  }
+  /* Champs du formulaire dont dépend la liste (recalcul quand ils changent). */
+  function choiceDeps(f) {
+    return cleanSource(f && f.source).filters.filter(function (c) { return c.from === 'field' && c.field; }).map(function (c) { return c.field; });
+  }
+  function opMatch(op, cell, want) {
+    var a = lower(cell).trim(), b = lower(want).trim();
+    switch (op) {
+      case 'eq': return a === b;
+      case 'ne': return a !== b;
+      case 'contains': return a.indexOf(b) >= 0;
+      case 'starts': return a.indexOf(b) === 0;
+      case 'ends': return b === '' || a.slice(-b.length) === b;
+      case 'empty': return a === '';
+      case 'filled': return a !== '';
+      default: return false;
+    }
+  }
+  /* rows : [{ id, cells:{col:valeur} }] déjà limités à l'environnement et aux droits du lecteur.
+     ctx : { values (saisie en cours), fields, me: { id, email, label } }. */
+  function choiceOptions(fieldDef, rows, ctx) {
+    var src = cleanSource(fieldDef && fieldDef.source);
+    ctx = ctx || {};
+    var values = ctx.values || {}, fields = flattenFields(ctx.fields || []), me = ctx.me || {};
+    var tests = src.filters.map(function (c) {
+      return function (row) {
+        var cell = txt(row.cells[c.col]);
+        if (c.op === 'empty' || c.op === 'filled') return opMatch(c.op, cell, '');
+        if (c.from === 'me') {
+          return [me.id, me.email, me.label].filter(function (x) { return x != null && x !== ''; })
+            .some(function (x) { return opMatch(c.op, cell, String(x)); });
+        }
+        var want = c.val;
+        if (c.from === 'field') {
+          var dep = condSource(fields, { field: c.field });
+          var raw = dep ? values[String(dep.id)] : values[c.field];
+          if (isEmpty(raw)) return false; // liste en cascade : rien tant que le champ parent est vide
+          want = Array.isArray(raw) ? raw.map(txt) : [txt(raw)];
+          return want.some(function (w) { return opMatch(c.op, cell, w); });
+        }
+        return opMatch(c.op, cell, want);
+      };
+    });
+    var kept = (Array.isArray(rows) ? rows : []).filter(function (row) {
+      if (!row || !row.cells) return false;
+      if (!tests.length) return true;
+      return src.match === 'any' ? tests.some(function (t) { return t(row); }) : tests.every(function (t) { return t(row); });
+    });
+    var valueOf = function (row) { return src.valueCol && row.cells[src.valueCol] != null && row.cells[src.valueCol] !== '' ? txt(row.cells[src.valueCol]) : String(row.id); };
+    var labelOf = function (row) { var l = src.labelCol ? txt(row.cells[src.labelCol]) : ''; return l || valueOf(row); };
+    var opts = kept.map(function (row) { return { id: valueOf(row), label: labelOf(row), sort: src.sortCol ? txt(row.cells[src.sortCol]) : labelOf(row) }; });
+    opts.sort(function (a, b) {
+      var x = a.sort, y = b.sort, nx = Number(x), ny = Number(y);
+      var r = (x !== '' && y !== '' && isFinite(nx) && isFinite(ny)) ? nx - ny : String(x).localeCompare(String(y), 'fr', { sensitivity: 'base', numeric: true });
+      return src.sortDir === 'desc' ? -r : r;
+    });
+    var seen = {}, out = [];
+    opts.forEach(function (o) { if (!seen[o.id]) { seen[o.id] = 1; out.push({ id: o.id, label: o.label }); } });
+    return out.slice(0, MAX_OPTIONS);
+  }
+  /* Serveur : la valeur choisie doit faire partie des options recalculées ; le libellé est celui du serveur. */
+  function checkChoice(f, v, options) {
+    var ids = choiceIds(v);
+    if (!ids.length) return { ok: true, value: v };
+    if (!isMultiChoice(f) && ids.length > 1) return { ok: false, message: 'un seul choix attendu' };
+    var byId = {};
+    (options || []).forEach(function (o) { byId[o.id] = o; });
+    for (var i = 0; i < ids.length; i++) if (!byId[ids[i]]) return { ok: false, message: 'choix absent de la liste autorisée' };
+    var picked = ids.map(function (id) { return { id: id, label: byId[id].label }; });
+    return { ok: true, value: isMultiChoice(f) ? picked : picked[0] };
+  }
+
   function canonical(v) {
     if (v === undefined) return 'undefined';
     if (v === null || typeof v !== 'object') return JSON.stringify(v);
@@ -176,6 +466,11 @@
         return signatureError(v);
       case 'photo': case 'file':
         return typeof v === 'object' ? '' : 'fichier attendu';
+      case 'table_unique': case 'tableunique': case 'table_multiple': case 'tablemultiple': {
+        var list2 = Array.isArray(v) ? v : [v];
+        if (!isMultiChoice(f) && Array.isArray(v) && v.length > 1) return 'un seul choix attendu';
+        return list2.every(function (x) { return typeof x === 'string' || typeof x === 'number' || (x && typeof x === 'object' && !Array.isArray(x) && x.id != null && typeof x.id !== 'object'); }) ? '' : 'choix illisible';
+      }
       default:
         return '';
     }
@@ -202,30 +497,31 @@
     }
     (Array.isArray(f.validateurs) ? f.validateurs : []).forEach(function (r) {
       if (!r) return;
-      var n = r.n || r.nom; if (!n) return;
+      var code = ruleCode(r); if (!code) return;
       var p = r.val !== undefined ? r.val : r.value, bad = false;
-      switch (n) {
-        case 'Min caractères': case 'Nb de caractères minimum': bad = !empty && s.length < +p; break;
-        case 'Max caractères': case 'Nb de caractères maximum': bad = !empty && s.length > +p; break;
-        case 'Lettres uniquement': bad = !empty && !/^[A-Za-z\u00c0-\u00ff\s'’-]*$/.test(s); break;
-        case 'Chiffres uniquement': bad = !empty && !/^\d*$/.test(s); break;
-        case 'Email': case 'Adresse email': bad = !empty && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); break;
-        case 'Expression régulière':
+      var count = Array.isArray(v) ? v.length : (isEmpty(v) ? 0 : 1);
+      switch (code) {
+        case 'len_min': bad = !empty && s.length < +p; break;
+        case 'len_max': bad = !empty && s.length > +p; break;
+        case 'letters': bad = !empty && !/^[A-Za-z\u00c0-\u00ff\s'’-]*$/.test(s); break;
+        case 'digits': bad = !empty && !/^\d*$/.test(s); break;
+        case 'email': bad = !empty && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); break;
+        case 'regex':
           if (!empty && p && String(p).length <= REGEX_MAX_PATTERN) {
             try { bad = !new RegExp(String(p)).test(s.slice(0, REGEX_MAX_INPUT)); } catch (e) { bad = false; }
           }
           break;
-        case 'Nb sélections min': bad = (Array.isArray(v) ? v.length : 0) < +p; break;
-        case 'Nb sélections max': bad = (Array.isArray(v) ? v.length : 0) > +p; break;
-        case 'Date min': case 'Date minimum': case 'Date/heure minimum': bad = !empty && !!p && s.slice(0, 10) < String(p).slice(0, 10); break;
-        case 'Date max': case 'Date maximum': case 'Date/heure maximum': bad = !empty && !!p && s.slice(0, 10) > String(p).slice(0, 10); break;
-        case 'Heure min': case 'Heure minimum': bad = !empty && !!p && s < p; break;
-        case 'Heure max': case 'Heure maximum': bad = !empty && !!p && s > p; break;
-        case 'Nb fichiers min': case 'Nb fichiers minimum': bad = files.length < +p; break;
-        case 'Nb fichiers max': case 'Nb fichiers maximum': bad = files.length > +p; break;
-        default: break; // « Validateur avancé » (code) : jamais exécuté côté serveur.
+        case 'sel_min': bad = count < +p; break;
+        case 'sel_max': bad = count > +p; break;
+        case 'date_min': bad = !empty && !!p && s.slice(0, 10) < String(p).slice(0, 10); break;
+        case 'date_max': bad = !empty && !!p && s.slice(0, 10) > String(p).slice(0, 10); break;
+        case 'time_min': bad = !empty && !!p && s < p; break;
+        case 'time_max': bad = !empty && !!p && s > p; break;
+        case 'files_min': bad = files.length < +p; break;
+        case 'files_max': bad = files.length > +p; break;
+        default: break; // contrôle scripté : jamais exécuté côté serveur.
       }
-      if (bad) errs.push(r.msg || r.message || (n + (p !== undefined && p !== '' ? ' ' + p : '')));
+      if (bad) errs.push(r.msg || r.message || (RULE_LABELS[code] + (p !== undefined && p !== '' ? ' ' + p : '')));
     });
     return errs;
   }
@@ -275,6 +571,20 @@
       Object.keys(previous).forEach(function (k) { if (!own(clean, k)) clean[k] = previous[k]; });
     }
     var changed = function (k) { return !previous || !same(clean[k], previous[k]); };
+    var viewer = src.viewer || null;
+    var choices = src.choices || null;
+    var incoming = values;
+
+    // Rôle : un champ que ce rôle ne voit pas n'est jamais écrit (403), sa valeur stockée reste.
+    fields.forEach(function (f) {
+      if (!f || f.id == null || isLayout(f.type)) return;
+      var k = String(f.id);
+      if (roleAllowed(f, fields, viewer)) return;
+      var sent = own(incoming, k);
+      var tamper = previous ? (sent && !same(incoming[k], previous[k])) : (sent && !isEmpty(incoming[k]));
+      if (tamper) errors.push({ field: k, label: label(f), code: 'forbidden', message: 'champ non autorisé pour votre rôle' });
+      if (previous && own(previous, k)) clean[k] = previous[k]; else delete clean[k];
+    });
 
     Object.keys(clean).forEach(function (k) {
       if (byId[k]) return;
@@ -287,6 +597,12 @@
       if (!f || f.id == null || isLayout(f.type)) return;
       var k = String(f.id);
       var v = clean[k];
+      if (!roleAllowed(f, fields, viewer)) return; // déjà traité ci-dessus
+      // Défaut dynamique « utilisateur connecté » / « site » en lecture seule : posé par le serveur à la création.
+      if (f.lectureSeule && !previous && serverOwnedDefault(f) && src.defaultsCtx) {
+        clean[k] = resolveDefault(f, src.defaultsCtx);
+        return;
+      }
       if (f.lectureSeule) {
         var allowed = previous ? same(v, previous[k]) : (isEmpty(v) || same(v, readOnlyDefault(f)) || String(v) === String(readOnlyDefault(f)));
         if (!allowed) errors.push({ field: k, label: label(f), code: 'readonly', message: 'champ en lecture seule' });
@@ -302,6 +618,14 @@
         else if (own(clean, k)) { delete clean[k]; removed.push(k); }
         return;
       }
+      // Transformations rejouées côté serveur (le navigateur peut être contourné).
+      if (own(clean, k)) { var tv = applyTransforms(f, v); if (tv !== v) { clean[k] = tv; v = tv; } }
+      if (isChoice(f) && !isEmpty(v)) {
+        if (!choices || !own(choices, k)) { errors.push({ field: k, label: label(f), code: 'invalid', message: 'liste de choix non vérifiée' }); return; }
+        var cc = checkChoice(f, v, choices[k]);
+        if (!cc.ok) { errors.push({ field: k, label: label(f), code: 'invalid', message: cc.message }); return; }
+        clean[k] = cc.value; v = cc.value;
+      }
       if (lower(f.type) === 'signature' || lower(f.type) === 'sign') {
         if (!isEmpty(v)) { var se = signatureError(v); if (se) { errors.push({ field: k, label: label(f), code: 'invalid', message: se }); return; } }
       }
@@ -312,7 +636,7 @@
       fieldErrors(f, v).forEach(function (m) { errors.push({ field: k, label: label(f), code: 'invalid', message: m }); });
     });
 
-    var readonly = errors.some(function (e) { return e.code === 'readonly'; });
+    var readonly = errors.some(function (e) { return e.code === 'readonly' || e.code === 'forbidden'; });
     return { ok: !errors.length, status: errors.length ? (readonly ? 403 : 400) : 200, errors: errors, values: clean, removed: removed };
   }
 
@@ -384,7 +708,26 @@
     fieldErrors: fieldErrors,
     validateSubmission: validateSubmission,
     assertValidSubmission: assertValidSubmission,
-    errorMessage: errorMessage
+    errorMessage: errorMessage,
+    RULE_LABELS: RULE_LABELS,
+    TRANSFORM_LABELS: TRANSFORM_LABELS,
+    TRANSFORM_PARAM: TRANSFORM_PARAM,
+    ruleCode: ruleCode,
+    rulesFor: rulesFor,
+    transformCode: transformCode,
+    applyTransforms: applyTransforms,
+    makeViewer: makeViewer,
+    roleAllowed: roleAllowed,
+    redactValues: redactValues,
+    resolveDefault: resolveDefault,
+    isChoice: isChoice,
+    isMultiChoice: isMultiChoice,
+    cleanSource: cleanSource,
+    choiceDeps: choiceDeps,
+    choiceOptions: choiceOptions,
+    checkChoice: checkChoice,
+    choiceIds: choiceIds,
+    MAX_OPTIONS: MAX_OPTIONS
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.PtFieldValidation = api;

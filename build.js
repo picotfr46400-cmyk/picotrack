@@ -24,7 +24,7 @@ const offlineAsset = 'offline-sync.js';
 const offlinePath = path.join('assets', offlineAsset);
 if (!fs.existsSync(offlinePath)) throw new Error(`${offlineAsset} manquant`);
 fs.copyFileSync(offlinePath, path.join(out, 'assets', offlineAsset));
-for (const extra of ['qrcode.js', 'labels-core.js', 'labels.js', 'label-queue.js', 'db-row-update.js', 'ergo-shell.js']) {
+for (const extra of ['qrcode.js', 'labels-core.js', 'labels.js', 'label-queue.js', 'db-row-update.js', 'ergo-shell.js', 'field-lot1.js']) {
   const extraPath = path.join('assets', extra);
   if (!fs.existsSync(extraPath)) throw new Error(`${extra} manquant`);
   fs.copyFileSync(extraPath, path.join(out, 'assets', extra));

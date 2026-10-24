@@ -12,7 +12,9 @@ const access = require('./_access');
 const { handleLabels } = require('./_labels');
 const { handleQueue } = require('./_label-queue');
 const fieldValidation = require('./_field-validation');
+const fieldChoices = require('./_field-choices');
 const dbRowUpdate = require('./_db-row-update');
+const fieldRoles = require('./_field-roles');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -1160,6 +1162,42 @@ async function userRest(req, path, { method='GET', body, prefer='return=represen
   return payload || [];
 }
 
+// Lot 1 — visibilité par rôle au niveau du champ, appliquée à toute réponse :
+// les valeurs d'un champ que le lecteur ne voit pas sont retirées des saisies et des dossiers.
+const collectFieldRows = fieldRoles.collectFieldRows;
+
+// Masquage par rôle de toute réponse : fonction centrale (_field-roles.redactResultRows).
+async function redactFieldRolesInResult(req, result) {
+  const profile = req.picoReaderProfile;
+  if (!profile || !result || typeof result !== 'object') return result;
+  const rows = { subs: [], insts: [] };
+  collectFieldRows(result, rows);
+  if (!rows.subs.length && !rows.insts.length) return result;
+  const catalog = await catalogFor(req, profile);
+  const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
+  return fieldRoles.redactResultRows({ read: path => readStrictRows(req, path), env, viewer: fieldChoices.viewerFor(profile, catalog) }, result);
+}
+
+// Lot 1 — options d'un champ « choix depuis une base » : configuration relue dans le formulaire,
+// filtres envoyés par le navigateur ignorés, seules les valeurs saisies (cascade) sont lues.
+async function handleFieldOptions(req, body) {
+  const user = await requireAuth(req);
+  const profile = await getUserProfile(user.id, req);
+  req.picoReaderProfile = profile;
+  const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
+  if (!env || env === 'GLOBAL' || env === '*') throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+  const formId = String(body.form_id || '').trim().slice(0, 80);
+  const fieldId = String(body.field_id || '').trim().slice(0, 80);
+  if (!formId || !fieldId) throw Object.assign(new Error('Formulaire ou champ manquant.'), { status: 400 });
+  const [catalog, services] = await Promise.all([catalogFor(req, profile), loadServicesIndex(req, profile, env)]);
+  if (access.formLevel(profile, catalog, formId, services) === 'hidden') throw Object.assign(new Error('Introuvable.'), { status: 404 });
+  const forms = await readStrictRows(req, `forms?id=eq.${encodeURIComponent(formId)}&environment_code=eq.${encodeURIComponent(env)}&select=id,fields,permissions,visible_roles&limit=1`);
+  const form = forms[0] || null;
+  if (!form) throw Object.assign(new Error('Introuvable.'), { status: 404 });
+  const values = body.values && typeof body.values === 'object' && !Array.isArray(body.values) ? body.values : {};
+  return fieldChoices.listOptions({ read: path => readStrictRows(req, path), env, profile, catalog, services }, form, fieldId, values);
+}
+
 async function handleList(req, body) {
   const entity = cleanEntity(body.entity);
   if (!entity) throw Object.assign(new Error('Ressource non autorisée'), { status: 403 });
@@ -1451,11 +1489,16 @@ async function handleSave(req, body) {
       const sameForm = existingSubmission && String(formId) === String(existingSubmission.form_id || '');
       // Auteur : clé système posée par le serveur uniquement (jamais celle envoyée par le client).
       if (record.values && typeof record.values === 'object' && !Array.isArray(record.values)) delete record.values._author;
+      const choiceCtx = { read: path => readStrictRows(req, path), env: targetEnv, profile, catalog, services };
+      const mergedForChoices = Object.assign({}, sameForm ? (existingSubmission.values || {}) : {}, record.values || {});
       record.values = fieldValidation.assertValidSubmission({
         fields,
         values: record.values,
         previous: sameForm ? (existingSubmission.values || {}) : null,
-        channel: 'sup'
+        channel: 'sup',
+        viewer: fieldChoices.viewerFor(profile, catalog),
+        choices: await fieldChoices.choicesFor(choiceCtx, fields, mergedForChoices),
+        defaultsCtx: fieldChoices.defaultsCtx(profile, targetEnv)
       });
       if (!existingSubmission) record.values._author = submissionAuthorStamp(profile);
       else if (!sameForm) delete record.values._author;
@@ -1537,11 +1580,16 @@ async function handleSave(req, body) {
       const service = auditService || await readServiceForInstance(req, record.service_id || previousInstance?.service_id, targetEnv);
       if (!service) throw Object.assign(new Error('Service introuvable.'), { status: 404 });
       const fields = fieldValidation.formFieldsOrThrow(await readFormStrict(req, service.form_id), targetEnv, service.form_id);
+      const prevData = previousInstance ? (previousInstance.form_data || {}) : null;
       const checked = fieldValidation.assertValidSubmission({
         fields,
         values: incoming,
-        previous: previousInstance ? (previousInstance.form_data || {}) : null,
-        channel: 'sup'
+        previous: prevData,
+        channel: 'sup',
+        viewer: fieldChoices.viewerFor(profile, catalog),
+        choices: await fieldChoices.choicesFor({ read: path => readStrictRows(req, path), env: targetEnv, profile, catalog, services },
+          fields, Object.assign({}, prevData || {}, incoming || {})),
+        defaultsCtx: fieldChoices.defaultsCtx(profile, targetEnv)
       });
       if (Object.prototype.hasOwnProperty.call(record, 'form_data')) record.form_data = checked;
     }
@@ -1671,6 +1719,7 @@ async function handleSave(req, body) {
   if (entity === 'service_instances' && id && suppliedKey) {
     const padSync = require('./pad-sync');
     padSync.armRequestClock(req);
+    req.picoFieldRights = { profile, catalog, services };
     let written;
     try {
       written = await padSync.applyWorkflowStep(req, record.environment_code || env, {
@@ -1994,7 +2043,21 @@ async function dbRuleInstanceContext(req, env, instance) {
     if (String(sub.id) === String(instance.submission_id || '')) main = Object.assign({}, vals, main);
     else if (sub.form_id != null) linked[String(sub.form_id)] = Object.assign({}, linked[String(sub.form_id)], vals);
   }
-  return { ctx: { main, linked }, submissionIds: ids };
+  // Champs réservés par rôle : jamais recopiés dans une base (lecteur sans rôle, cf. _field-roles).
+  const formIds = [...new Set(subs.map(s => String(s.form_id || '')).filter(Boolean))];
+  let hidden;
+  try {
+    const svc = await readStrictRows(req, `services?id=eq.${encodeURIComponent(instance.service_id)}&environment_code=eq.${encodeURIComponent(env)}&select=id,form_id&limit=1`);
+    const mainFormId = svc[0] && svc[0].form_id ? String(svc[0].form_id) : '';
+    const mainSubForm = (subs.find(s => String(s.id) === String(instance.submission_id || '')) || {}).form_id;
+    const all = [...new Set(formIds.concat([mainFormId]).filter(Boolean))];
+    const forms = all.length ? await readStrictRows(req, `forms?id=in.(${all.map(encodeURIComponent).join(',')})&environment_code=eq.${encodeURIComponent(env)}&select=id,fields&limit=200`) : [];
+    const mainFields = forms.filter(f => String(f.id) === mainFormId || String(f.id) === String(mainSubForm || '')).flatMap(f => fieldRoles.fieldsOf(f));
+    hidden = dbRowUpdate.hiddenContext(mainFields, forms);
+  } catch (_) {
+    hidden = fieldRoles.HIDE_ALL;
+  }
+  return { ctx: { main, linked, hidden }, submissionIds: ids };
 }
 
 // Bouton de service « Modifier / Supprimer une ligne dans une base » : le client n'envoie que le dossier,
@@ -2053,7 +2116,7 @@ async function handleDbRowUpdate(req, body) {
     const found = form && dbRowUpdate.formRules(form).find(r => String(r.id || '') === ruleId);
     if (!found) throw Object.assign(new Error('Cette règle n’appartient pas au formulaire de la saisie.'), { status: 403 });
     rule = dbRowUpdate.storedRule(found);
-    ctx = { main: submission.values && typeof submission.values === 'object' ? submission.values : {}, linked: {} };
+    ctx = { main: submission.values && typeof submission.values === 'object' ? submission.values : {}, linked: {}, hidden: dbRowUpdate.hiddenContext(fieldRoles.fieldsOf(form), []) };
     submissionIds = [String(submission.id)];
     context = { form_id: String(form.id), rule_id: ruleId, submission_id: String(submission.id), action_label: 'Formulaire ' + String(form.nom || form.id).slice(0, 100), origin: 'pc' };
   }
@@ -2311,7 +2374,8 @@ async function handleExportSubmissionPdf(req, body) {
   let lineSets = [[]];
   try {
     const packed = await submissionAudit.prepareExportTrace(req, {
-      serviceRest, user, profile, env, submissionId: id, submission
+      serviceRest, user, profile, env, submissionId: id, submission,
+      hidden: fieldRoles.hiddenKeys(safeForm ? fieldRoles.fieldsOf(safeForm) : [], fieldRoles.viewerFor(profile, catalog))
     });
     exportRow = packed.row;
     lineSets = packed.lineSets || [packed.lines || []];
@@ -2323,7 +2387,7 @@ async function handleExportSubmissionPdf(req, body) {
     environmentCode: env,
     formName: safeForm?.nom || safeForm?.name || 'Formulaire',
     fields: Array.isArray(safeForm?.fields) ? safeForm.fields : [],
-    values: submission.values,
+    values: fieldValidation.redactValues(Array.isArray(safeForm?.fields) ? safeForm.fields : [], submission.values, fieldChoices.viewerFor(profile, catalog)),
     createdAt: submission.created_at,
     device: submission.device,
     author: workflow.author,
@@ -2406,11 +2470,17 @@ async function handler(req, res) {
           cleanSubmissionId,
           readFormForSubmission,
           assertRecordAllowed,
+          hiddenFields: async (request, profile, env, formIds) => fieldRoles.hiddenForForms(
+            (path) => serviceRest(path, { method: 'GET', prefer: '', req: request }), env, formIds,
+            fieldRoles.viewerFor(profile, await catalogFor(request, profile))),
           assertInstanceVisible: async (request, profile, row) => {
             const catalog = await catalogFor(request, profile);
             access.assertLevel(access.instanceLevel(profile, catalog, row), 'read');
           }
         });
+        break;
+      case 'field_options':
+        result = await handleFieldOptions(req, body);
         break;
       case 'save':
         result = await handleSave(req, body);
@@ -2487,6 +2557,7 @@ async function handler(req, res) {
         return json(res, 400, { error: 'Action non autorisée' });
     }
 
+    if (action !== 'field_options') result = await redactFieldRolesInResult(req, result);
     result = projectClientResult(action, body, result, req.picoReaderProfile);
     const payload = redactRecordsPayload(result, req.picoReaderProfile);
     json(res, 200, payload);
@@ -2518,5 +2589,6 @@ handler.assertEntityWrite = assertEntityWrite;
 handler.effectiveEnvironmentCode = effectiveEnvironmentCode;
 handler.redactRecordsPayload = redactRecordsPayload;
 handler.READ_COLUMNS = READ_COLUMNS;
+handler.redactFieldRolesInResult = redactFieldRolesInResult;
 handler.WRITE_COLUMNS = WRITE_COLUMNS;
 module.exports = handler;
