@@ -537,7 +537,7 @@
 
   /* Recherche : f.lookup = { source: { kind, ref, sortCol, sortDir, match, filters }, mode: 'value'|'count',
      col, many: 'first'|'last'|'list'|'sum'|'min'|'max'|'avg'|'none', ifNone } */
-  var LOOKUP_KINDS = ['database', 'form', 'case', 'me'];
+  var LOOKUP_KINDS = ['database', 'form', 'case', 'me', 'users'];
   var LOOKUP_MANY = ['first', 'last', 'list', 'sum', 'min', 'max', 'avg', 'none'];
   function cleanLookup(cfg) {
     var c = cfg && typeof cfg === 'object' ? cfg : {};
@@ -609,6 +609,39 @@
       default: return { value: list[0], count: kept.length };
     }
   }
+  /* Document joint (élément fixe) : lien https, ou data: PDF / PNG / JPEG / WEBP de 1,5 Mo décodés au plus.
+     Contrôle partagé : le navigateur prévient, le serveur refuse l'enregistrement du formulaire. */
+  var DOC_MAX_BYTES = 1500000;
+  function base64Bytes(b64) {
+    var s = String(b64 || '').replace(/\s+/g, '');
+    if (!s) return 0;
+    var pad = s.slice(-2) === '==' ? 2 : s.slice(-1) === '=' ? 1 : 0;
+    return Math.floor(s.length * 3 / 4) - pad;
+  }
+  function checkDocLink(u) {
+    if (u == null || u === '') return null;
+    if (typeof u !== 'string' || u.length >= 2000 || !/^https:\/\/[^\s"'<>]+$/i.test(u)) return 'lien du document : https uniquement';
+    return null;
+  }
+  function checkDocData(u) {
+    if (u == null || u === '') return null;
+    var m = typeof u === 'string' ? /^data:(application\/pdf|image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(u) : null;
+    if (!m) return 'document joint : PDF ou image (PNG, JPEG, WEBP) uniquement';
+    if (m[2].length % 4 !== 0) return 'document joint illisible';
+    if (base64Bytes(m[2]) > DOC_MAX_BYTES) return 'document trop lourd (1,5 Mo au plus)';
+    return null;
+  }
+  /* Erreurs des éléments « document » d'une définition de formulaire : [{ id, message }]. */
+  function documentErrors(fields) {
+    var out = [];
+    flattenFields(Array.isArray(fields) ? fields : []).forEach(function (f) {
+      if (!f || lower(f.type) !== 'document') return;
+      var e = checkDocLink(f.docLink) || checkDocData(f.docData);
+      if (e) out.push({ id: f.id == null ? '' : String(f.id), message: e });
+    });
+    return out;
+  }
+
   /* Champs dont dépend une valeur dérivée (clés de champ, telles qu'écrites dans la configuration). */
   function derivedDeps(f) {
     var t = lower(f && f.type);
@@ -1168,7 +1201,8 @@
     MAX_OPTIONS: MAX_OPTIONS,
     isDerived: isDerived, calcSpec: calcSpec, computeCalc: computeCalc, wallMs: wallMs, formatWall: formatWall,
     DATE_FORMATS: DATE_FORMATS, CALC_OPS: CALC_OPS, cleanLookup: cleanLookup, rowsMatching: rowsMatching,
-    lookupResult: lookupResult, derivedDeps: derivedDeps, LOOKUP_MANY: LOOKUP_MANY
+    lookupResult: lookupResult, derivedDeps: derivedDeps, LOOKUP_MANY: LOOKUP_MANY,
+    DOC_MAX_BYTES: DOC_MAX_BYTES, base64Bytes: base64Bytes, checkDocLink: checkDocLink, checkDocData: checkDocData, documentErrors: documentErrors
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.PtFieldValidation = api;

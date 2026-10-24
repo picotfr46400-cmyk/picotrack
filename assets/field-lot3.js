@@ -54,12 +54,13 @@
     };
   }
   function safeLink(u) { return typeof u === 'string' && /^https:\/\/[^\s"'<>]+$/i.test(u) && u.length < 2000; }
-  function safeData(u) { return typeof u === 'string' && /^data:(application\/pdf|image\/(png|jpeg|webp));base64,[A-Za-z0-9+/=]+$/.test(u) && u.length < 2200000; }
+  // Même contrôle que le serveur (taille décodée de 1,5 Mo au plus, PDF ou image).
+  function safeData(u) { var fv = FV(); if (fv && fv.checkDocData) return !!u && !fv.checkDocData(u); return typeof u === 'string' && /^data:(application\/pdf|image\/(png|jpeg|webp));base64,[A-Za-z0-9+/=]+$/.test(u) && u.length < 2000000; }
 
   /* ---------- Réglages (Form Builder) ---------- */
   var MANY = { first: 'la première', last: 'la dernière', list: 'toutes, séparées par des virgules', sum: 'leur somme', min: 'la plus petite', max: 'la plus grande', avg: 'leur moyenne', none: 'aucune (laisser vide)' };
   var OPS = { eq: 'est égal à', ne: 'est différent de', contains: 'contient', starts: 'commence par', ends: 'finit par', empty: 'est vide', filled: 'est rempli' };
-  var KINDS = { database: 'Une base', form: 'Les réponses d’un formulaire', 'case': 'Les dossiers d’un service', me: 'La personne connectée' };
+  var KINDS = { database: 'Une base', form: 'Les réponses d’un formulaire', 'case': 'Les dossiers d’un service', me: 'La personne connectée', users: 'Les utilisateurs de l’environnement' };
   var CALC_OPS = { '+': '+', '-': '−', '*': '×', '/': '÷', min: 'plus petit', max: 'plus grand', '&': 'accoler (texte)' };
   var CALC_KINDS = { number: 'Nombre', text: 'Texte assemblé', date: 'Date (départ + durée)', gap: 'Écart entre deux dates' };
   var FORMATS = ['jj/mm/aaaa', 'aaaa-mm-jj', 'jj/mm/aaaa hh:mm', 'hh:mm', 'mm/aaaa', 'j mois aaaa'];
@@ -130,7 +131,7 @@
     return wrap('lk', 'Recherche', KINDS[src.kind] + ' · ' + summary, [
       lab('l1', 'Où chercher'),
       sel('k', src.kind, KINDS, function (v) { setSrc({ kind: v, ref: '', filters: [] }); }, 'Où chercher'),
-      src.kind !== 'me' ? sel('r', src.ref, refMap, function (v) { setSrc({ ref: v }); }, 'Source') : null,
+      src.kind !== 'me' && src.kind !== 'users' ? sel('r', src.ref, refMap, function (v) { setSrc({ ref: v }); }, 'Source') : null,
       lab('l2', 'Lignes retenues'),
       filters.length > 1 ? sel('m', src.match, { all: 'Toutes les conditions (ET)', any: 'Au moins une condition (OU)' }, function (v) { setSrc({ match: v }); }, 'Combinaison des conditions') : null,
       h('div', { key: 'fl', style: { display: 'flex', flexDirection: 'column', gap: 6 } }, filters.map(function (c, i) {
@@ -146,7 +147,7 @@
       filters.length < 8 ? h('button', { key: 'add', type: 'button', className: 'btn btn-sm', onClick: function () { setSrc({ filters: filters.concat([{ col: '', op: 'eq', from: 'fixed', val: '' }]) }); } }, '＋ Ajouter une condition') : null,
       lab('l3', 'Résultat'),
       sel('md', lk.mode, { value: 'Lire une valeur', count: 'Compter les lignes trouvées' }, function (v) { set({ mode: v }); }, 'Résultat'),
-      lk.mode === 'value' ? txt('col', lk.col, function (v) { set({ col: v }); }, src.kind === 'case' ? 'Champ du dossier (ou _reference, _statut)' : src.kind === 'me' ? 'nom, email, role ou site' : 'Colonne à lire') : null,
+      lk.mode === 'value' ? txt('col', lk.col, function (v) { set({ col: v }); }, src.kind === 'case' ? 'Champ du dossier (ou _reference, _statut)' : src.kind === 'me' ? 'nom (identité de la personne), role ou site' : src.kind === 'users' ? 'nom' : 'Colonne à lire') : null,
       lk.mode === 'value' ? lab('l4', 'Si plusieurs lignes correspondent, garder') : null,
       lk.mode === 'value' ? sel('mn', lk.many, MANY, function (v) { set({ many: v }); }, 'Si plusieurs lignes') : null,
       lk.mode === 'value' ? txt('in', lk.ifNone, function (v) { set({ ifNone: v }); }, 'Texte si rien n’est trouvé (facultatif)') : null,
@@ -249,6 +250,7 @@
   function hasLookups(form) { return fieldsOf(form).some(function (f) { return lower(f.type) === 'requete'; }); }
   function show(id, v) {
     var el = document.getElementById('pt-lk-' + id) || document.getElementById('calcul-result-' + id);
+    if (v && typeof v === 'object') v = v.label != null ? v.label : (v.id != null ? v.id : ''); // identité { id, label }
     if (el) el.textContent = v === '' || v == null ? '—' : String(v);
   }
   async function compute(form) {
