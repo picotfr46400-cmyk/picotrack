@@ -2101,6 +2101,10 @@ async function runDailyMailQueue(input) {
 }
 
 async function notifyAfterWrite(input) {
+  // Étiquettes automatiques (règles d'action / de statut) : mises en file, jamais bloquantes.
+  if (input && (Array.isArray(input.writes) || input.entity === 'service_instances')) {
+    await require('./_label-queue').safeEnqueue(input);
+  }
   try {
     if (!input || (!Array.isArray(input.writes) && input.entity !== 'submissions' && input.entity !== 'service_instances')) {
       return { ok: true, skipped: true };

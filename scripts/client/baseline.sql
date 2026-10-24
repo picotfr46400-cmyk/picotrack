@@ -1,6 +1,6 @@
 -- PicoTrack : schéma de base complet (structure seule, aucune donnée) pour un NOUVEAU projet Supabase client.
 -- Relevé en lecture seule le 19/10/2026 sur DEMO (ukucbfxyvyvtlglujoht), état = toutes les migrations
--- de supabase/migrations/ jusqu'à 20261023120000 incluse (printer_profiles complété à la main d'après la migration 20261023120000). Tables, contraintes, index, fonctions,
+-- de supabase/migrations/ jusqu'à 20261024160000 incluse (printer_profiles complété à la main d'après la migration 20261023120000 ; modification de ligne de base ajoutée d'après la migration 20261024120000, appliquée sur DEMO le 24/10/2026 ; file d'impression ajoutée en fin de fichier d'après la migration 20261024160000). Tables, contraintes, index, fonctions,
 -- triggers, RLS, policies et droits anon/authenticated.
 -- Ne jamais lancer sur une base existante (EFC, DEMO) : scripts/client/new-client.js refuse toute base non vierge.
 -- Régénérer après chaque nouvelle migration (voir docs/NOUVEAU-CLIENT.md).
@@ -1163,3 +1163,349 @@ revoke all on table public.submissions from anon, authenticated; grant INSERT, S
 revoke all on table public.tenants from anon, authenticated; grant INSERT, SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER on table public.tenants to anon; grant INSERT, SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER on table public.tenants to authenticated;
 revoke all on table public.user_profiles from anon, authenticated; grant INSERT, SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER on table public.user_profiles to anon; grant INSERT, SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER on table public.user_profiles to authenticated;
 revoke all on table public.workflow_step_files from anon, authenticated;
+-- Migration 20261024120000_database_row_update (idempotente)
+set lock_timeout = '5s';
+
+-- Actions « Modifier une ligne dans une base » et « Supprimer une ligne dans une base » (bases autonomes de Données).
+-- Postérieure à 20261023120000_printer_connections.sql.
+-- Idempotente : add column if not exists, create ... if not exists, create or replace. Aucune ligne n'est réécrite.
+-- À appliquer à la main, d'abord sur la démo (ukucbfxyvyvtlglujoht). EFC : voir CHECKLIST-PASSAGE-PROD-EFC.md.
+--
+-- 1. Lien ligne -> dossier : database_rows.instance_id (le lien ligne -> saisie existe déjà : submission_id).
+-- 2. Journal database_row_audit : ancienne et nouvelle valeur de chaque modification ou création.
+-- 3. Corbeille database_rows_trash : copie complète d'une ligne supprimée en mode « corbeille » (restaurable).
+-- 4. picotrack_apply_database_row_action : recherche (ligne liée ou critères ET), verrou, règle « plusieurs lignes »,
+--    modification / création / suppression et journal dans une seule transaction.
+--    Appelée uniquement par le serveur (service_role) après contrôle des droits dans /api/records (action db_row_update).
+
+alter table public.database_rows add column if not exists instance_id text;
+alter table public.database_rows add column if not exists updated_at timestamptz;
+create index if not exists idx_database_rows_env_db_instance
+  on public.database_rows (environment_code, database_id, instance_id)
+  where instance_id is not null;
+create index if not exists idx_database_rows_env_db_submission
+  on public.database_rows (environment_code, database_id, submission_id)
+  where submission_id is not null;
+
+create table if not exists public.database_row_audit (
+  id bigserial primary key,
+  environment_code text not null,
+  database_id text not null,
+  row_id bigint,
+  operation text not null,
+  instance_id text,
+  submission_id text,
+  context jsonb not null default '{}'::jsonb,
+  actor_id uuid,
+  actor_label text,
+  old_values jsonb,
+  new_values jsonb,
+  created_at timestamptz not null default now()
+);
+alter table public.database_row_audit drop constraint if exists database_row_audit_operation_check;
+alter table public.database_row_audit add constraint database_row_audit_operation_check
+  check (operation in ('update', 'create', 'delete', 'archive'));
+create index if not exists idx_database_row_audit_env_row
+  on public.database_row_audit (environment_code, database_id, row_id, created_at desc);
+alter table public.database_row_audit enable row level security;
+revoke all on table public.database_row_audit from public, anon, authenticated;
+grant select, insert on table public.database_row_audit to service_role;
+do $$
+begin
+  if exists (select 1 from pg_class where relname = 'database_row_audit_id_seq') then
+    execute 'grant usage on sequence public.database_row_audit_id_seq to service_role';
+  end if;
+end $$;
+
+create table if not exists public.database_rows_trash (
+  id bigint primary key,
+  environment_code text not null,
+  database_id text not null,
+  source text,
+  form_id text,
+  submission_id text,
+  instance_id text,
+  "values" jsonb,
+  created_at timestamptz,
+  tenant_id uuid,
+  deleted_at timestamptz not null default now(),
+  deleted_by uuid,
+  deleted_by_label text
+);
+alter table public.database_rows_trash add column if not exists tenant_id uuid;
+create index if not exists idx_database_rows_trash_env_db
+  on public.database_rows_trash (environment_code, database_id, deleted_at desc);
+alter table public.database_rows_trash enable row level security;
+revoke all on table public.database_rows_trash from public, anon, authenticated;
+grant select, insert, delete on table public.database_rows_trash to service_role;
+
+-- Première version (jamais promue) remplacée par picotrack_apply_database_row_action.
+drop function if exists public.picotrack_update_database_row(text, text, text, text, text[], text, text, jsonb, text, uuid, text, jsonb);
+drop function if exists public.picotrack_apply_database_row_action(text, text, text, text, text, text[], jsonb, jsonb, text, text, text, uuid, text, jsonb);
+
+-- Résultat : {status: updated|created|deleted|none|multiple|too_many|forbidden, count, row_ids, row_id, old_values, new_values}.
+-- p_on_multiple : stop (rien n'est écrit, défaut), oldest (la plus ancienne ligne), all (toutes les lignes).
+-- p_delete_mode : archive (copie dans database_rows_trash + journal), purge (journal seul avec l'ancienne valeur).
+create or replace function public.picotrack_apply_database_row_action(
+  p_environment_code text,
+  p_database_id text,
+  p_operation text,
+  p_mode text,
+  p_instance_id text,
+  p_submission_ids text[],
+  p_criteria jsonb,
+  p_updates jsonb,
+  p_if_none text,
+  p_on_multiple text,
+  p_delete_mode text,
+  p_actor_id uuid,
+  p_actor_label text,
+  p_context jsonb,
+  p_denied_form_ids text[] default array[]::text[],
+  p_max_rows integer default 500
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  env text := upper(btrim(coalesce(p_environment_code, '')));
+  db text := btrim(coalesce(p_database_id, ''));
+  op text := lower(btrim(coalesce(p_operation, '')));
+  mode text := lower(btrim(coalesce(p_mode, '')));
+  on_multiple text := lower(btrim(coalesce(p_on_multiple, 'stop')));
+  delete_mode text := lower(btrim(coalesce(p_delete_mode, 'archive')));
+  updates jsonb := coalesce(p_updates, '{}'::jsonb);
+  criteria jsonb := coalesce(p_criteria, '[]'::jsonb);
+  inst text := nullif(btrim(coalesce(p_instance_id, '')), '');
+  sub_ids text[] := coalesce(p_submission_ids, array[]::text[]);
+  ctx jsonb := coalesce(p_context, '{}'::jsonb);
+  ids bigint[];
+  target public.database_rows%rowtype;
+  next_values jsonb;
+  created_id bigint;
+  c jsonb;
+  done_ids bigint[] := array[]::bigint[];
+  first_old jsonb;
+  first_new jsonb;
+  max_rows integer := least(greatest(coalesce(p_max_rows, 500), 1), 500);
+  denied text[] := coalesce(p_denied_form_ids, array[]::text[]);
+begin
+  if env = '' or env = 'GLOBAL' or db = '' then
+    raise exception 'Environnement ou base manquant' using errcode = '22023';
+  end if;
+  if op not in ('update', 'delete') then
+    raise exception 'Opération inconnue' using errcode = '22023';
+  end if;
+  if mode not in ('linked', 'key') then
+    raise exception 'Mode de recherche inconnu' using errcode = '22023';
+  end if;
+  if on_multiple not in ('stop', 'oldest', 'all') then
+    raise exception 'Règle « plusieurs lignes » inconnue' using errcode = '22023';
+  end if;
+  if delete_mode not in ('archive', 'purge') then
+    raise exception 'Mode de suppression inconnu' using errcode = '22023';
+  end if;
+  if jsonb_typeof(updates) <> 'object' or jsonb_typeof(criteria) <> 'array' then
+    raise exception 'Paramètres invalides' using errcode = '22023';
+  end if;
+  if op = 'update' and updates = '{}'::jsonb then
+    raise exception 'Aucune colonne à modifier' using errcode = '22023';
+  end if;
+  if mode = 'linked' and inst is null and cardinality(sub_ids) = 0 then
+    raise exception 'Dossier lié manquant' using errcode = '22023';
+  end if;
+  if mode = 'key' then
+    if jsonb_array_length(criteria) = 0 or jsonb_array_length(criteria) > 10 then
+      raise exception 'Critères de recherche manquants' using errcode = '22023';
+    end if;
+    for c in select * from jsonb_array_elements(criteria) loop
+      if jsonb_typeof(c) <> 'object' or coalesce(btrim(c ->> 'column'), '') = '' or coalesce(btrim(c ->> 'value'), '') = '' then
+        raise exception 'Clé de recherche vide' using errcode = '22023';
+      end if;
+    end loop;
+  end if;
+
+  -- Sérialise les actions concurrentes sur la même base (évite deux créations « si absente »).
+  perform pg_advisory_xact_lock(hashtextextended(concat_ws('|', 'pt-dbrow', env, db), 0));
+
+  select array_agg(r.id order by r.created_at nulls last, r.id) into ids
+  from public.database_rows r
+  where upper(r.environment_code) = env
+    and r.database_id = db
+    and (
+      (mode = 'linked' and (
+        (inst is not null and r.instance_id = inst)
+        or (r.instance_id is null and r.submission_id = any(sub_ids))
+      ))
+      or (mode = 'key' and not exists (
+        select 1 from jsonb_array_elements(criteria) k
+        where btrim(coalesce(r."values" ->> (k ->> 'column'), '')) <> btrim(k ->> 'value')
+      ))
+    );
+
+  -- Droits de la base cible : une ligne issue d'un formulaire que l'utilisateur ne peut pas saisir bloque tout.
+  if cardinality(denied) > 0 and exists (select 1 from public.database_rows r where r.id = any(ids) and r.form_id = any(denied)) then
+    return jsonb_build_object('status', 'forbidden', 'count', cardinality(ids));
+  end if;
+  -- Plafond : au-delà de max_rows lignes trouvées, rien n'est écrit.
+  if coalesce(cardinality(ids), 0) > max_rows then
+    return jsonb_build_object('status', 'too_many', 'count', cardinality(ids), 'max', max_rows);
+  end if;
+
+  if coalesce(cardinality(ids), 0) > 1 then
+    if on_multiple = 'stop' then
+      return jsonb_build_object('status', 'multiple', 'count', cardinality(ids));
+    elsif on_multiple = 'oldest' then
+      ids := ids[1:1];
+    end if;
+  end if;
+
+  if coalesce(cardinality(ids), 0) = 0 then
+    if op = 'delete' or lower(coalesce(p_if_none, '')) <> 'create' then
+      return jsonb_build_object('status', 'none', 'count', 0);
+    end if;
+    next_values := '{}'::jsonb;
+    if mode = 'key' then
+      select coalesce(jsonb_object_agg(k ->> 'column', btrim(k ->> 'value')), '{}'::jsonb) into next_values
+      from jsonb_array_elements(criteria) k;
+    end if;
+    next_values := next_values || updates;
+    insert into public.database_rows (database_id, environment_code, source, instance_id, submission_id, "values")
+    values (db, env, 'action:' || left(coalesce(ctx ->> 'action_label', 'modifier une ligne'), 120),
+            inst, case when cardinality(sub_ids) > 0 then sub_ids[1] else null end, next_values)
+    returning id into created_id;
+    insert into public.database_row_audit (environment_code, database_id, row_id, operation, instance_id, submission_id, context, actor_id, actor_label, old_values, new_values)
+    values (env, db, created_id, 'create', inst, case when cardinality(sub_ids) > 0 then sub_ids[1] else null end,
+            ctx, p_actor_id, p_actor_label, null, next_values);
+    return jsonb_build_object('status', 'created', 'count', 1, 'row_id', created_id, 'row_ids', jsonb_build_array(created_id),
+                              'old_values', null, 'new_values', next_values);
+  end if;
+
+  for target in select * from public.database_rows where id = any(ids) order by created_at nulls last, id for update loop
+    if op = 'update' then
+      next_values := coalesce(target."values", '{}'::jsonb) || updates;
+      update public.database_rows
+         set "values" = next_values,
+             updated_at = now(),
+             instance_id = case when mode = 'linked' then coalesce(instance_id, inst) else instance_id end
+       where id = target.id;
+      insert into public.database_row_audit (environment_code, database_id, row_id, operation, instance_id, submission_id, context, actor_id, actor_label, old_values, new_values)
+      values (env, db, target.id, 'update', inst, target.submission_id, ctx, p_actor_id, p_actor_label, coalesce(target."values", '{}'::jsonb), next_values);
+    else
+      next_values := null;
+      if delete_mode = 'archive' then
+        insert into public.database_rows_trash (id, environment_code, database_id, source, form_id, submission_id, instance_id, "values", created_at, tenant_id, deleted_by, deleted_by_label)
+        values (target.id, target.environment_code, target.database_id, target.source, target.form_id, target.submission_id, target.instance_id,
+                target."values", target.created_at, target.tenant_id, p_actor_id, p_actor_label)
+        on conflict (id) do update set "values" = excluded."values", deleted_at = now(), deleted_by = excluded.deleted_by, deleted_by_label = excluded.deleted_by_label;
+      end if;
+      delete from public.database_rows where id = target.id;
+      insert into public.database_row_audit (environment_code, database_id, row_id, operation, instance_id, submission_id, context, actor_id, actor_label, old_values, new_values)
+      values (env, db, target.id, case when delete_mode = 'archive' then 'archive' else 'delete' end, inst, target.submission_id, ctx, p_actor_id, p_actor_label, coalesce(target."values", '{}'::jsonb), null);
+    end if;
+    if first_old is null then first_old := coalesce(target."values", '{}'::jsonb); first_new := next_values; end if;
+    done_ids := done_ids || target.id;
+  end loop;
+
+  return jsonb_build_object('status', case when op = 'update' then 'updated' else 'deleted' end,
+                            'count', cardinality(done_ids), 'row_id', done_ids[1], 'row_ids', to_jsonb(done_ids),
+                            'old_values', first_old, 'new_values', first_new);
+end;
+$$;
+
+revoke all on function public.picotrack_apply_database_row_action(text, text, text, text, text, text[], jsonb, jsonb, text, text, text, uuid, text, jsonb, text[], integer) from public, anon, authenticated;
+grant execute on function public.picotrack_apply_database_row_action(text, text, text, text, text, text[], jsonb, jsonb, text, text, text, uuid, text, jsonb, text[], integer) to service_role;
+-- File d'impression des étiquettes (migration 20261024160000_label_print_queue, idempotente).
+-- File d'impression des étiquettes, règles automatiques (action / statut de workflow) et imprimantes par défaut.
+-- À appliquer à la main, une base client à la fois. Idempotent.
+-- Accès uniquement par l'API (service_role) : RLS active, aucune policy, aucun droit anon/authenticated.
+
+-- Règle : « quand cette action est déclarée / ce statut est atteint, imprimer ce modèle ».
+create table if not exists public.label_print_rules (
+  id bigint generated by default as identity primary key,
+  environment_code text not null,
+  service_id text not null,
+  event text not null,
+  action_key text not null default '',
+  status_id text not null default '',
+  template_id bigint not null references public.label_templates (id) on delete cascade,
+  printer_mode text not null default 'auto',
+  printer_id bigint references public.printer_profiles (id) on delete set null,
+  copies integer not null default 1,
+  copies_field_id text not null default '',
+  field_map jsonb not null default '{}'::jsonb,
+  active boolean not null default true,
+  created_by uuid,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint label_print_rules_event_check check (event in ('workflow.action', 'workflow.status', 'workflow.created')),
+  constraint label_print_rules_mode_check check (printer_mode in ('auto', 'fixed', 'station', 'user')),
+  constraint label_print_rules_copies_check check (copies between 1 and 50),
+  constraint label_print_rules_map_check check (jsonb_typeof(field_map) = 'object')
+);
+create index if not exists label_print_rules_env_svc_idx on public.label_print_rules (environment_code, service_id);
+
+-- Imprimante par défaut d'un utilisateur (scope_key = id du compte) ou d'un poste (scope_key = nom du poste).
+create table if not exists public.label_printer_defaults (
+  id bigint generated by default as identity primary key,
+  environment_code text not null,
+  scope text not null,
+  scope_key text not null,
+  printer_id bigint not null references public.printer_profiles (id) on delete cascade,
+  updated_by uuid,
+  updated_at timestamptz not null default now(),
+  constraint label_printer_defaults_scope_check check (scope in ('user', 'station')),
+  constraint label_printer_defaults_key_check check (length(scope_key) between 1 and 80),
+  constraint label_printer_defaults_unique unique (environment_code, scope, scope_key)
+);
+
+-- Poste : jeton généré par le serveur, seul son haché SHA-256 est stocké. Le nom du poste n'est qu'un libellé.
+alter table public.label_printer_defaults add column if not exists token_hash text;
+create unique index if not exists label_printer_defaults_token_uq on public.label_printer_defaults (token_hash) where token_hash is not null;
+
+-- File : une ligne par étiquette à imprimer (modèle et valeurs figés au moment de la demande).
+create table if not exists public.label_print_jobs (
+  id bigint generated by default as identity primary key,
+  environment_code text not null,
+  printer_id bigint references public.printer_profiles (id) on delete set null,
+  template_id bigint references public.label_templates (id) on delete set null,
+  template_name text not null default '',
+  template jsonb not null,
+  context jsonb not null default '{}'::jsonb,
+  copies integer not null default 1,
+  status text not null default 'pending',
+  source text not null default 'rule',
+  rule_id bigint references public.label_print_rules (id) on delete set null,
+  service_id text not null default '',
+  instance_id text not null default '',
+  submission_id text not null default '',
+  reference text not null default '',
+  reprint_of bigint,
+  idempotency_key text,
+  error text not null default '',
+  history jsonb not null default '[]'::jsonb,
+  created_by uuid,
+  created_by_name text not null default '',
+  claimed_by text not null default '',
+  claimed_at timestamptz,
+  printed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint label_print_jobs_status_check check (status in ('pending', 'claimed', 'printed', 'cancelled', 'failed')),
+  constraint label_print_jobs_source_check check (source in ('rule', 'manual', 'reprint')),
+  constraint label_print_jobs_copies_check check (copies between 1 and 50),
+  constraint label_print_jobs_template_check check (jsonb_typeof(template) = 'object'),
+  constraint label_print_jobs_history_check check (jsonb_typeof(history) = 'array')
+);
+create unique index if not exists label_print_jobs_idem_idx on public.label_print_jobs (environment_code, idempotency_key) where idempotency_key is not null;
+create index if not exists label_print_jobs_queue_idx on public.label_print_jobs (environment_code, status, printer_id, created_at);
+create index if not exists label_print_jobs_instance_idx on public.label_print_jobs (environment_code, instance_id);
+
+alter table public.label_print_rules enable row level security;
+alter table public.label_printer_defaults enable row level security;
+alter table public.label_print_jobs enable row level security;
+revoke all on public.label_print_rules from anon, authenticated;
+revoke all on public.label_printer_defaults from anon, authenticated;
+revoke all on public.label_print_jobs from anon, authenticated;
