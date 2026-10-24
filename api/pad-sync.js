@@ -4,6 +4,7 @@ const submissionAudit = require('./_submission-audit');
 const { notifyAfterWrite, processMailQueue, continueAfterResponse, invocationDeadline, OPPORTUNISTIC_LIMIT, requestOrigin } = require('./_mail-rules');
 const access = require('./_access');
 const fieldValidation = require('./_field-validation');
+const fieldChoices = require('./_field-choices');
 const dbRowUpdate = require('./_db-row-update');
 
 const REQUEST_DEADLINE_MS = 10000;
@@ -200,7 +201,18 @@ async function loadById(req, table, environmentCode, id, select) {
 async function validatePadValues(req, environmentCode, formId, values, previous, channel, loaded) {
   const rows = loaded && String(loaded.id) === String(formId) ? [Object.assign({ environment_code: environmentCode }, loaded)] : formId ? await loadRows(req, `forms?id=eq.${encodeURIComponent(formId)}&select=id,environment_code,fields&limit=1`) : [];
   const fields = fieldValidation.formFieldsOrThrow(rows[0] || null, environmentCode, formId);
-  return fieldValidation.assertValidSubmission({ fields, values, previous, channel: channel || 'pad' });
+  // Droits du lecteur (posés par l'appelant) : champs masqués par rôle, listes « choix depuis une base ».
+  const rights = req.picoFieldRights || {};
+  const merged = Object.assign({}, previous || {}, values || {});
+  const choices = rights.profile
+    ? await fieldChoices.choicesFor({ read: path => loadRows(req, path), env: environmentCode, profile: rights.profile, catalog: rights.catalog || [], services: rights.services || [] }, fields, merged)
+    : {};
+  return fieldValidation.assertValidSubmission({
+    fields, values, previous, channel: channel || 'pad',
+    viewer: rights.profile ? fieldChoices.viewerFor(rights.profile, rights.catalog || []) : fieldValidation.makeViewer([]),
+    choices,
+    defaultsCtx: rights.profile ? fieldChoices.defaultsCtx(rights.profile, environmentCode) : null
+  });
 }
 
 function padProfile(license, environmentCode) {
@@ -743,6 +755,23 @@ async function handler(req, res) {
     }
 
     const profile = padProfile(license, environmentCode);
+    req.picoFieldRights = { profile: Object.assign({ email: license.email, label: license.label }, profile), catalog, services: serviceIndex };
+    if (body.op === 'field_options') {
+      // Lot 1 : liste d'un champ « choix depuis une base » pour la tablette. Configuration relue en base.
+      const formId = String(body.form_id || '').trim().slice(0, 80);
+      const fieldId = String(body.field_id || '').trim().slice(0, 80);
+      if (!formId || !fieldId) return sendJson(res, 400, { ok: false, error: 'Formulaire ou champ manquant.' });
+      if (access.formLevel(profile, catalog, formId, serviceIndex) === 'hidden') return sendJson(res, 404, { ok: false, error: 'Introuvable.' });
+      const form = await loadById(req, 'forms', environmentCode, formId, 'id,fields');
+      if (!form) return sendJson(res, 404, { ok: false, error: 'Introuvable.' });
+      const values = body.values && typeof body.values === 'object' && !Array.isArray(body.values) ? body.values : {};
+      try {
+        const out = await fieldChoices.listOptions({ read: path => loadRows(req, path), env: environmentCode, profile: req.picoFieldRights.profile, catalog, services: serviceIndex }, form, fieldId, values);
+        return sendJson(res, 200, Object.assign({ ok: true }, out));
+      } catch (err) {
+        return sendJson(res, err && err.status === 404 ? 404 : 503, { ok: false, error: err && err.status === 404 ? 'Introuvable.' : 'Liste momentanément indisponible.' });
+      }
+    }
     for (let index = 0; index < prepared.length; index++) {
       const { item, payload } = prepared[index];
       if (prepared[index].held) continue;
