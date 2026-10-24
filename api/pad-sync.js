@@ -1,9 +1,12 @@
 const crypto = require('crypto');
 const { sendJson, setCors, verifyToken, sbRest } = require('./_pad-security');
+const fieldRoles = require('./_field-roles');
 const submissionAudit = require('./_submission-audit');
 const { notifyAfterWrite, processMailQueue, continueAfterResponse, invocationDeadline, OPPORTUNISTIC_LIMIT, requestOrigin } = require('./_mail-rules');
 const access = require('./_access');
 const fieldValidation = require('./_field-validation');
+const fieldChoices = require('./_field-choices');
+const fieldLookup = require('./_field-lookup');
 const dbRowUpdate = require('./_db-row-update');
 
 const REQUEST_DEADLINE_MS = 10000;
@@ -200,7 +203,22 @@ async function loadById(req, table, environmentCode, id, select) {
 async function validatePadValues(req, environmentCode, formId, values, previous, channel, loaded) {
   const rows = loaded && String(loaded.id) === String(formId) ? [Object.assign({ environment_code: environmentCode }, loaded)] : formId ? await loadRows(req, `forms?id=eq.${encodeURIComponent(formId)}&select=id,environment_code,fields&limit=1`) : [];
   const fields = fieldValidation.formFieldsOrThrow(rows[0] || null, environmentCode, formId);
-  return fieldValidation.assertValidSubmission({ fields, values, previous, channel: channel || 'pad' });
+  // Droits du lecteur (posés par l'appelant) : champs masqués par rôle, listes « choix depuis une base ».
+  const rights = req.picoFieldRights || {};
+  const merged = Object.assign({}, previous || {}, values || {});
+  const choices = rights.profile
+    ? await fieldChoices.choicesFor({ read: path => loadRows(req, path), env: environmentCode, profile: rights.profile, catalog: rights.catalog || [], services: rights.services || [] }, fields, merged)
+    : {};
+  const checked = fieldValidation.assertValidSubmission({
+    fields, values, previous, channel: channel || 'pad',
+    viewer: rights.profile ? fieldChoices.viewerFor(rights.profile, rights.catalog || []) : fieldValidation.makeViewer([]),
+    choices,
+    defaultsCtx: rights.profile ? fieldChoices.defaultsCtx(rights.profile, environmentCode) : null
+  });
+  // Lot 3 : calculs et recherches recalculés par le serveur (sans droits connus : aucune ligne lue).
+  return fieldLookup.applyDerived(rights.profile
+    ? { read: path => loadRows(req, path), env: environmentCode, profile: rights.profile, catalog: rights.catalog || [], services: rights.services || [] }
+    : { read: async () => [], env: '', profile: null, catalog: [], services: [], viewerOverride: fieldValidation.makeViewer([]) }, fields, checked, previous);
 }
 
 function padProfile(license, environmentCode) {
@@ -575,6 +593,27 @@ async function insertPadRecord(req, spec) {
   return written.row;
 }
 
+// Toute valeur renvoyée au PAD passe par le masquage par rôle (fonction centrale _field-roles).
+// Lecteur = licence PAD (req.picoFieldRights) ; sans droits connus : lecteur sans rôle.
+// Échec de lecture des formulaires : les valeurs sont retirées des lignes (échec fermé).
+async function redactPadResults(req, environmentCode, results, read) {
+  const rights = req.picoFieldRights || {};
+  const viewer = rights.profile ? fieldRoles.viewerFor(rights.profile, rights.catalog || []) : fieldRoles.AUTOMATED_VIEWER;
+  try {
+    await fieldRoles.redactResultRows({ read: read || (path => loadRows(req, path)), env: environmentCode, viewer }, results);
+    // Correctif lot 3 : recherches recalculées avec les droits de la licence PAD (sans droits : aucune ligne).
+    await fieldLookup.refreshForReader(rights.profile
+      ? { read: read || (path => loadRows(req, path)), env: environmentCode, profile: rights.profile, catalog: rights.catalog || [], services: rights.services || [], viewer }
+      : { read: read || (path => loadRows(req, path)), env: environmentCode, profile: null, catalog: [], services: [], viewer, noRows: true }, results);
+  } catch (_) {
+    const rows = { subs: [], insts: [] };
+    fieldRoles.collectFieldRows(results, rows);
+    for (const r of rows.subs) r.values = {};
+    for (const r of rows.insts) r.form_data = {};
+  }
+  return results;
+}
+
 function appliedResult(item, extra) {
   return Object.assign({
     actionId: item.id,
@@ -743,6 +782,38 @@ async function handler(req, res) {
     }
 
     const profile = padProfile(license, environmentCode);
+    req.picoFieldRights = { profile: Object.assign({ email: license.email, label: license.label }, profile), catalog, services: serviceIndex };
+    if (body.op === 'field_options') {
+      // Lot 1 : liste d'un champ « choix depuis une base » pour la tablette. Configuration relue en base.
+      const formId = String(body.form_id || '').trim().slice(0, 80);
+      const fieldId = String(body.field_id || '').trim().slice(0, 80);
+      if (!formId || !fieldId) return sendJson(res, 400, { ok: false, error: 'Formulaire ou champ manquant.' });
+      if (access.formLevel(profile, catalog, formId, serviceIndex) === 'hidden') return sendJson(res, 404, { ok: false, error: 'Introuvable.' });
+      const form = await loadById(req, 'forms', environmentCode, formId, 'id,fields');
+      if (!form) return sendJson(res, 404, { ok: false, error: 'Introuvable.' });
+      const values = body.values && typeof body.values === 'object' && !Array.isArray(body.values) ? body.values : {};
+      try {
+        const out = await fieldChoices.listOptions({ read: path => loadRows(req, path), env: environmentCode, profile: req.picoFieldRights.profile, catalog, services: serviceIndex }, form, fieldId, values);
+        return sendJson(res, 200, Object.assign({ ok: true }, out));
+      } catch (err) {
+        return sendJson(res, err && err.status === 404 ? 404 : 503, { ok: false, error: err && err.status === 404 ? 'Introuvable.' : 'Liste momentanément indisponible.' });
+      }
+    }
+    if (body.op === 'field_compute') {
+      // Lot 3 : aperçu des calculs et recherches sur la tablette. Configuration relue en base.
+      const formId = String(body.form_id || '').trim().slice(0, 80);
+      if (!formId) return sendJson(res, 400, { ok: false, error: 'Formulaire manquant.' });
+      if (access.formLevel(profile, catalog, formId, serviceIndex) === 'hidden') return sendJson(res, 404, { ok: false, error: 'Introuvable.' });
+      const form = await loadById(req, 'forms', environmentCode, formId, 'id,fields');
+      if (!form) return sendJson(res, 404, { ok: false, error: 'Introuvable.' });
+      const values = body.values && typeof body.values === 'object' && !Array.isArray(body.values) ? body.values : {};
+      try {
+        const out = await fieldLookup.previewDerived({ read: path => loadRows(req, path), env: environmentCode, profile: req.picoFieldRights.profile, catalog, services: serviceIndex }, form, values);
+        return sendJson(res, 200, Object.assign({ ok: true }, out));
+      } catch (err) {
+        return sendJson(res, err && err.status === 404 ? 404 : 503, { ok: false, error: err && err.status === 404 ? 'Introuvable.' : 'Calcul momentanément indisponible.' });
+      }
+    }
     for (let index = 0; index < prepared.length; index++) {
       const { item, payload } = prepared[index];
       if (prepared[index].held) continue;
@@ -926,6 +997,7 @@ async function handler(req, res) {
         const reason = req.picoAuditDeferred ? 'journal non confirmé' : (interrupted ? 'action interrompue' : 'actions non commencées');
         console.warn('[pad-sync] délai de requête, ' + reason, requestId, retry.join(','));
       }
+      await redactPadResults(req, environmentCode, results);
       sendJson(res, 503, {
         ok: false,
         error: 'Synchronisation momentanément indisponible.',
@@ -938,6 +1010,7 @@ async function handler(req, res) {
       if (seenTimeout) {
         await sbRest(req, `licenses?id=eq.${encodeURIComponent(session.licenseId)}`, { method: 'PATCH', body: { last_seen: new Date().toISOString() }, timeoutMs: seenTimeout }).catch(() => null);
       }
+      await redactPadResults(req, environmentCode, results);
       sendJson(res, 200, { ok: true, synced: results.length, results });
     }
     await continueAfterResponse(drainPadMail(req, session, license, enqueued, req.picoMailDeadline));
@@ -968,4 +1041,5 @@ handler.armRequestClock = armRequestClock;
 handler.normalizeSyncError = normalizeSyncError;
 handler.GENERIC_SYNC_ERROR = GENERIC_SYNC_ERROR;
 handler.DERIVED_KEY_WARN = DERIVED_KEY_WARN;
+handler.redactPadResults = redactPadResults;
 module.exports = handler;

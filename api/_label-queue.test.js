@@ -70,7 +70,7 @@ test('zones : association explicite des champs, sans toucher aux éléments fixe
   assert.equal(t.elements[2].field_id, 'serie');
   assert.equal(t.elements[3].field_id, undefined);
   assert.equal(TEMPLATE.elements[0].field_id, 'a', 'modèle d’origine intact');
-  const ctx = Q.contextFor(t, { lot: 'L1', serie: 'S9', secret: 'ne pas copier' }, { reference: 'SVC-1', submissionId: '3' });
+  const ctx = Q.contextFor(t, { lot: 'L1', serie: 'S9', secret: 'ne pas copier' }, { reference: 'SVC-1', submissionId: '3' }, null, new Set());
   assert.deepEqual(ctx.submission.values, { lot: 'L1', serie: 'S9' });
   assert.equal(ctx.reference, 'SVC-1');
 });
