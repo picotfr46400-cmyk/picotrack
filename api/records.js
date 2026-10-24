@@ -10,6 +10,7 @@ const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChang
 const { assertWritableEmail } = require('./_email');
 const access = require('./_access');
 const { handleLabels } = require('./_labels');
+const { handleQueue } = require('./_label-queue');
 const fieldValidation = require('./_field-validation');
 
 const ENTITIES = new Set([
@@ -2268,6 +2269,24 @@ async function handler(req, res) {
         const profile = await getUserProfile(user.id, req);
         req.picoReaderProfile = profile;
         result = await handleLabels(req, body, profile);
+        break;
+      }
+      case 'labels_queue_list':
+      case 'labels_queue_claim':
+      case 'labels_queue_done':
+      case 'labels_queue_cancel':
+      case 'labels_queue_requeue':
+      case 'labels_queue_reprint':
+      case 'labels_queue_manual':
+      case 'labels_rules_list':
+      case 'labels_rules_save':
+      case 'labels_rules_delete':
+      case 'labels_defaults_list':
+      case 'labels_defaults_save': {
+        const user = await requireAuth(req);
+        const profile = await getUserProfile(user.id, req);
+        req.picoReaderProfile = profile;
+        result = await handleQueue(req, body, profile);
         break;
       }
       case 'mail_rules_list':

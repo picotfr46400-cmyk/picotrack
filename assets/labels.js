@@ -173,18 +173,18 @@
     var pr = printer || printerFor(tpl);
     var opts = pr ? { margin_mm: pr.margin_mm, dpi: pr.dpi, rotation: pr.rotation } : {};
     if (!mode && pr && connOf(pr) !== 'system') {
-      sendDirect(pr, tpl, contexts, function () { printHtml(L.printDocument(tpl, contexts, opts)); });
-      return;
+      return sendDirect(pr, tpl, contexts, function () { printHtml(L.printDocument(tpl, contexts, opts)); });
     }
     if (mode === 'zpl' || (!mode && pr && pr.kind === 'zpl')) {
       download(L.zplDocument(tpl, contexts, opts), fileSafe(tpl.name) + '.zpl', 'text/plain');
       toast('s', contexts.length + ' étiquette(s) en ZPL téléchargée(s). Envoyez le fichier à l’imprimante Zebra (voir Académie).');
-      return;
+      return Promise.resolve('zpl');
     }
     if (pr && (Math.abs(numIn(pr.width_mm) - numIn(tpl.width_mm)) > 0.5 || Math.abs(numIn(pr.height_mm) - numIn(tpl.height_mm)) > 0.5)) {
       toast('w', 'Attention : l’imprimante « ' + pr.name + ' » est réglée en ' + pr.width_mm + ' × ' + pr.height_mm + ' mm, le modèle fait ' + tpl.width_mm + ' × ' + tpl.height_mm + ' mm.');
     }
     printHtml(L.printDocument(tpl, contexts, opts));
+    return Promise.resolve('system');
   }
 
   async function fullSubmission(sub) {
@@ -794,5 +794,5 @@
   // L'app peut reconstruire la barre latérale après connexion.
   var tries = 0;
   var iv = setInterval(function () { boot(); if (++tries > 40) clearInterval(iv); }, 500);
-  window.PTLabelsUI = { load: load, state: state, triggerTemplate: triggerTemplate, triggerPrinter: triggerPrinter, runPrintTrigger: runPrintTrigger, TriggerPicker: TriggerPicker, ACADEMY: ACADEMY, capability: capability, nativeUrl: nativeUrl };
+  window.PTLabelsUI = { load: load, ensureLoaded: ensureLoaded, doPrint: doPrint, printerById: printerById, previewHtml: previewHtml, modal: modal, connOf: connOf, CONN_LABEL: CONN_LABEL, posteDefault: posteDefault, state: state, triggerTemplate: triggerTemplate, triggerPrinter: triggerPrinter, runPrintTrigger: runPrintTrigger, TriggerPicker: TriggerPicker, ACADEMY: ACADEMY, capability: capability, nativeUrl: nativeUrl };
 })();
