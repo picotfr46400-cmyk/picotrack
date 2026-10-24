@@ -6,6 +6,7 @@ const { notifyAfterWrite, processMailQueue, continueAfterResponse, invocationDea
 const access = require('./_access');
 const fieldValidation = require('./_field-validation');
 const fieldChoices = require('./_field-choices');
+const fieldLookup = require('./_field-lookup');
 const dbRowUpdate = require('./_db-row-update');
 
 const REQUEST_DEADLINE_MS = 10000;
@@ -208,12 +209,16 @@ async function validatePadValues(req, environmentCode, formId, values, previous,
   const choices = rights.profile
     ? await fieldChoices.choicesFor({ read: path => loadRows(req, path), env: environmentCode, profile: rights.profile, catalog: rights.catalog || [], services: rights.services || [] }, fields, merged)
     : {};
-  return fieldValidation.assertValidSubmission({
+  const checked = fieldValidation.assertValidSubmission({
     fields, values, previous, channel: channel || 'pad',
     viewer: rights.profile ? fieldChoices.viewerFor(rights.profile, rights.catalog || []) : fieldValidation.makeViewer([]),
     choices,
     defaultsCtx: rights.profile ? fieldChoices.defaultsCtx(rights.profile, environmentCode) : null
   });
+  // Lot 3 : calculs et recherches recalculés par le serveur (sans droits connus : aucune ligne lue).
+  return fieldLookup.applyDerived(rights.profile
+    ? { read: path => loadRows(req, path), env: environmentCode, profile: rights.profile, catalog: rights.catalog || [], services: rights.services || [] }
+    : { read: async () => [], env: '', profile: null, catalog: [], services: [], viewerOverride: fieldValidation.makeViewer([]) }, fields, checked, previous);
 }
 
 function padProfile(license, environmentCode) {
@@ -788,6 +793,21 @@ async function handler(req, res) {
         return sendJson(res, 200, Object.assign({ ok: true }, out));
       } catch (err) {
         return sendJson(res, err && err.status === 404 ? 404 : 503, { ok: false, error: err && err.status === 404 ? 'Introuvable.' : 'Liste momentanément indisponible.' });
+      }
+    }
+    if (body.op === 'field_compute') {
+      // Lot 3 : aperçu des calculs et recherches sur la tablette. Configuration relue en base.
+      const formId = String(body.form_id || '').trim().slice(0, 80);
+      if (!formId) return sendJson(res, 400, { ok: false, error: 'Formulaire manquant.' });
+      if (access.formLevel(profile, catalog, formId, serviceIndex) === 'hidden') return sendJson(res, 404, { ok: false, error: 'Introuvable.' });
+      const form = await loadById(req, 'forms', environmentCode, formId, 'id,fields');
+      if (!form) return sendJson(res, 404, { ok: false, error: 'Introuvable.' });
+      const values = body.values && typeof body.values === 'object' && !Array.isArray(body.values) ? body.values : {};
+      try {
+        const out = await fieldLookup.previewDerived({ read: path => loadRows(req, path), env: environmentCode, profile: req.picoFieldRights.profile, catalog, services: serviceIndex }, form, values);
+        return sendJson(res, 200, Object.assign({ ok: true }, out));
+      } catch (err) {
+        return sendJson(res, err && err.status === 404 ? 404 : 503, { ok: false, error: err && err.status === 404 ? 'Introuvable.' : 'Calcul momentanément indisponible.' });
       }
     }
     for (let index = 0; index < prepared.length; index++) {
