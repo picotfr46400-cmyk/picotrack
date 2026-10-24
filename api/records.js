@@ -11,6 +11,7 @@ const { assertWritableEmail } = require('./_email');
 const access = require('./_access');
 const { handleLabels } = require('./_labels');
 const fieldValidation = require('./_field-validation');
+const dbRowUpdate = require('./_db-row-update');
 
 const ENTITIES = new Set([
   'appointments', 'database_rows', 'databases', 'environment_license_limits', 'forms',
@@ -1701,6 +1702,7 @@ async function handleSave(req, body) {
         origin: requestOrigin(req),
         form: auditForm
       });
+      if (entity === 'submissions') await runSubmissionDbRules(req, { env, profile, form: auditForm, saved: written && written.row, rawRecord: body.record, isCreate: false });
     }
     return saved;
   }
@@ -1737,6 +1739,7 @@ async function handleSave(req, body) {
       origin: requestOrigin(req),
       form: auditForm
     });
+    if (entity === 'submissions') await runSubmissionDbRules(req, { env, profile, form: auditForm, saved: savedRow, rawRecord: body.record, isCreate: true });
     return saved;
   }
 
@@ -1778,6 +1781,7 @@ async function handleSave(req, body) {
       form: auditForm,
       deadline: req.picoMailDeadline
     });
+    if (entity === 'submissions') await runSubmissionDbRules(req, { env, profile, form: auditForm, saved: savedRow, rawRecord: body.record, isCreate: !id });
   } else if (entity === 'forms') {
     await syncFormMailRules({
       req,
@@ -1914,6 +1918,125 @@ async function handleDelete(req, body) {
 
 async function serviceRead(req, path) {
   return await serviceRest(path, { method: 'GET', prefer: '', req });
+}
+
+// Action « Modifier une ligne dans une base » : droits du dossier (ou de la saisie), base relue
+// dans l'environnement du profil, puis fonction SQL transactionnelle (verrou, unicité, journal).
+// Règles « Modifier / Supprimer une ligne dans une base » d'un formulaire, après écriture d'une saisie (PC / service).
+async function runSubmissionDbRules(req, { env, profile, form, saved, rawRecord, isCreate }) {
+  try {
+    if (!form || !saved || saved.id == null || !dbRowUpdate.formRules(form).length) return [];
+    const scopeEnv = normalizeEnvRecordValue(saved.environment_code || env, 'DEMO');
+    const raw = rawRecord && typeof rawRecord === 'object' ? rawRecord : {};
+    let instanceId = String(raw.linked_instance_id || raw.service_instance_id || '').trim().slice(0, 80);
+    if (instanceId) {
+      const instance = await readOneById(req, 'service_instances', instanceId, scopeEnv).catch(() => null);
+      const catalog = instance ? await catalogFor(req, profile) : null;
+            if (instance) {
+        try { access.assertLevel(access.instanceLevel(profile, catalog, instance), 'write'); } catch (_) { instanceId = ''; }
+      } else instanceId = '';
+    }
+    return await dbRowUpdate.runFormRules({
+      rest: (path, opts) => serviceRest(path, Object.assign({ req }, opts)),
+      env: scopeEnv,
+      form,
+      submission: saved,
+      event: isCreate ? 'create' : 'update',
+      origin: dbRowUpdate.submissionOrigin(raw, saved),
+      instanceId,
+      actorId: profile && profile.id,
+      actorLabel: submissionAuthorStamp(profile).name
+    });
+  } catch (err) {
+    console.warn('[PicoTrack] règles base de données', err && err.message);
+    return [];
+  }
+}
+
+async function handleDbRowUpdate(req, body) {
+  const user = await requireAuth(req);
+  const profile = await getUserProfile(user.id, req);
+  req.picoReaderProfile = profile;
+  access.assertWritableLicense(profile);
+  const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, body.environment_code), 'DEMO');
+  if (!env || env === 'GLOBAL' || env === '*') throw Object.assign(new Error('Environnement actif manquant.'), { status: 400 });
+  const databaseId = String(body.database_id || '').replace(/^sdb_/, '').trim().slice(0, 80);
+  const instanceId = String(body.instance_id || '').trim().slice(0, 80);
+  const submissionId = String(body.submission_id || '').trim().slice(0, 80);
+  if (!databaseId) throw Object.assign(new Error('Base cible manquante.'), { status: 400 });
+  if (!instanceId && !submissionId) throw Object.assign(new Error('Dossier ou saisie d’origine manquant.'), { status: 400 });
+
+  const catalog = await catalogFor(req, profile);
+  const services = await loadServicesIndex(req, profile, env);
+  let instance = null;
+  if (instanceId) {
+    instance = await mustRead(req, 'service_instances', instanceId, env);
+    if (!instance) throw Object.assign(new Error('Dossier introuvable.'), { status: 404 });
+    access.assertLevel(access.instanceLevel(profile, catalog, instance), 'write');
+  }
+  let submission = null;
+  if (submissionId) {
+    submission = await mustRead(req, 'submissions', submissionId, env);
+    if (!submission) throw Object.assign(new Error('Saisie introuvable.'), { status: 404 });
+    await assertSubmissionWritable(req, profile, catalog, services, submission, env);
+  }
+  const database = await mustRead(req, 'databases', databaseId, env);
+  if (!database || String(database.nom || '') === INTEGRATIONS_NAME) throw Object.assign(new Error('Base introuvable.'), { status: 404 });
+
+  const actorLabel = submissionAuthorStamp(profile).name;
+  const request = dbRowUpdate.normalizeRequest(body, database, { actorLabel, today: dbRowUpdate.parisToday() });
+  const submissionIds = request.mode === 'linked' ? dbRowUpdate.linkedSubmissionIds(instance, submission && submission.id) : (submission ? [String(submission.id)] : []);
+  if (request.mode === 'linked' && !instance && !submissionIds.length) throw Object.assign(new Error('Dossier lié manquant.'), { status: 400 });
+  const context = {
+    action_label: String(body.action_label || '').trim().slice(0, 120),
+    service_id: instance ? String(instance.service_id || '') : '',
+    form_id: submission ? String(submission.form_id || '') : '',
+    mode: request.mode,
+    operation: request.operation,
+    on_multiple: request.onMultiple,
+    origin: String(body.origin || '').trim().slice(0, 40)
+  };
+  let rows;
+  try {
+    rows = await serviceRest(dbRowUpdate.RPC, {
+      method: 'POST',
+      prefer: '',
+      req,
+      body: {
+        p_environment_code: env,
+        p_database_id: String(database.id),
+        p_operation: request.operation,
+        p_mode: request.mode,
+        p_instance_id: instance ? String(instance.id) : null,
+        p_submission_ids: submissionIds,
+        p_criteria: request.criteria,
+        p_updates: request.updates,
+        p_if_none: request.ifNone,
+        p_on_multiple: request.onMultiple,
+        p_delete_mode: request.deleteMode,
+        p_actor_id: /^[0-9a-f-]{36}$/i.test(String(profile && profile.id || '')) ? String(profile.id) : null,
+        p_actor_label: actorLabel,
+        p_context: context
+      }
+    });
+  } catch (err) {
+    throw Object.assign(new Error('Modification de ligne indisponible pour le moment.'), { status: 503 });
+  }
+  const result = Array.isArray(rows) ? rows[0] : rows;
+  const payload = result && typeof result === 'object' && result.picotrack_apply_database_row_action ? result.picotrack_apply_database_row_action : result;
+  if (!payload || !['updated', 'created', 'deleted', 'none', 'multiple'].includes(payload.status)) {
+    throw Object.assign(new Error('Modification de ligne indisponible pour le moment.'), { status: 503 });
+  }
+  return {
+    status: payload.status,
+    count: Number(payload.count || 0),
+    row_id: payload.row_id == null ? null : String(payload.row_id),
+    row_ids: Array.isArray(payload.row_ids) ? payload.row_ids.map(String) : [],
+    operation: request.operation,
+    database_id: String(database.id),
+    values: payload.new_values || null,
+    message: dbRowUpdate.resultMessage(payload, database.nom)
+  };
 }
 
 async function handleInitialLoad(req, body) {
@@ -2246,6 +2369,9 @@ async function handler(req, res) {
         break;
       case 'delete':
         result = await handleDelete(req, body);
+        break;
+      case 'db_row_update':
+        result = await handleDbRowUpdate(req, body);
         break;
       case 'integrations_load':
       case 'integrations_save':

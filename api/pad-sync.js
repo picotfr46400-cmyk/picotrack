@@ -4,6 +4,7 @@ const submissionAudit = require('./_submission-audit');
 const { notifyAfterWrite, processMailQueue, continueAfterResponse, invocationDeadline, OPPORTUNISTIC_LIMIT, requestOrigin } = require('./_mail-rules');
 const access = require('./_access');
 const fieldValidation = require('./_field-validation');
+const dbRowUpdate = require('./_db-row-update');
 
 const REQUEST_DEADLINE_MS = 10000;
 const MIN_CALL_MS = 50;
@@ -615,6 +616,22 @@ async function notifyPadMail(req, mailWrites, session, license) {
   }
 }
 
+// Règles « Modifier / Supprimer une ligne dans une base » du formulaire, origine PAD, à la création.
+async function runPadDbRules(req, environmentCode, form, submission, instanceId, license) {
+  try {
+    if (!form || !dbRowUpdate.formRules(form).length) return [];
+    if (!nextTimeout(req)) return [];
+    return await dbRowUpdate.runFormRules({
+      rest: (path, opts) => sbRest(req, path, Object.assign({ timeoutMs: nextTimeout(req) || 2000 }, opts)),
+      env: environmentCode, form, submission, event: 'create', origin: 'pad', instanceId,
+      actorId: null, actorLabel: padAuthorStamp(license).name
+    });
+  } catch (err) {
+    console.warn('[pad-sync] règles base de données', err && err.message);
+    return [];
+  }
+}
+
 // Auteur réel d'une saisie tablette : le compte PAD connecté (jamais une valeur du client).
 function padAuthorStamp(license) {
   const l = license || {};
@@ -731,7 +748,7 @@ async function handler(req, res) {
         const serviceId = item.type === 'service_instance' ? String(inst.service_id || payload.serviceId || payload.service_id || '') : '';
         const statusId = serviceId ? String(inst.current_status_id || inst.status_id || payload.statusId || payload.status_id || '') : '';
         const [form, service] = await Promise.all([
-          formId ? loadById(req, 'forms', environmentCode, formId, 'id,permissions,fields') : null,
+          formId ? loadById(req, 'forms', environmentCode, formId, 'id,nom,permissions,fields,triggers') : null,
           serviceId ? loadById(req, 'services', environmentCode, serviceId, 'id,form_id,permissions') : null
         ]);
         await assertPadWrite(profile, catalog, serviceIndex, form, formId, service, serviceId, statusId);
@@ -764,6 +781,7 @@ async function handler(req, res) {
             rest, environmentCode, licenseId: session.licenseId, license,
             deviceCapturedAt: item.created_at, submission: row, actionId: item.id
           });
+          if (!written.duplicate) await runPadDbRules(req, environmentCode, form, row, null, license);
           results.push(appliedResult(item, { row, duplicate: written.duplicate, already_applied: written.duplicate }));
         } else if (item.type === 'service_instance') {
           const submission = await insertSubmission(req, environmentCode, payload, resolved.key);
@@ -791,6 +809,7 @@ async function handler(req, res) {
             rest, environmentCode, licenseId: session.licenseId, license,
             deviceCapturedAt: item.created_at, submission: submission.row, instance: instance.row, actionId: item.id
           });
+          if (!submission.duplicate) await runPadDbRules(req, environmentCode, form, submission.row, instance.row && instance.row.id, license);
           results.push(appliedResult(item, {
             row: instance.row,
             submission: submission.row,
