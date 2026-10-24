@@ -14,6 +14,7 @@ const { handleQueue } = require('./_label-queue');
 const fieldValidation = require('./_field-validation');
 const fieldChoices = require('./_field-choices');
 const fieldLookup = require('./_field-lookup');
+const fieldStatic = require('./_field-static');
 const dbRowUpdate = require('./_db-row-update');
 const fieldRoles = require('./_field-roles');
 
@@ -1176,7 +1177,42 @@ async function redactFieldRolesInResult(req, result) {
   if (!rows.subs.length && !rows.insts.length) return result;
   const catalog = await catalogFor(req, profile);
   const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
-  return fieldRoles.redactResultRows({ read: path => readStrictRows(req, path), env, viewer: fieldChoices.viewerFor(profile, catalog) }, result);
+  const viewer = fieldChoices.viewerFor(profile, catalog);
+  const read = path => readStrictRows(req, path);
+  await fieldRoles.redactResultRows({ read, env, viewer }, result);
+  // Correctif lot 3 : recherches (et calculs qui en dépendent) recalculées avec les droits du lecteur.
+  return fieldLookup.refreshForReader({ read, env, profile, catalog, viewer, loadServices: () => loadServicesIndex(req, profile, env) }, result);
+}
+
+// Correctif lot 3 : la note interne n'est lisible que par qui peut modifier le formulaire
+// (administrateur, ou concepteur autorisé par les rôles). Tablette, lecture seule, opérateur : jamais.
+function canSeeInternalNotes(profile, catalog, services, form) {
+  if (!profile || profile.active === false) return false;
+  if (access.isPadLicense(profile) || access.isReadOnlyLicense(profile)) return false;
+  if (access.isEnvironmentAdmin(profile)) return true;
+  const role = access.normalizeRoleToken(profile.role);
+  if (role === 'operateur' || role === 'operator') return false;
+  if (!form || form.id == null || form.id === '') return false;
+  const level = access.formLevel(profile, catalog, form.id, services);
+  if (level === 'hidden' || level === 'read') return false;
+  return recordAllowedForProfile('forms', form, 'edit', profile);
+}
+
+async function stripInternalNotesInResult(req, result) {
+  if (!result || typeof result !== 'object' || !fieldStatic.anyNoteForm(result)) return result;
+  const profile = req.picoReaderProfile;
+  if (!profile) return fieldStatic.stripInternalNotes(result, null);
+  if (access.isEnvironmentAdmin(profile)) return result;
+  let catalog = [];
+  let services = [];
+  try {
+    catalog = await catalogFor(req, profile);
+    const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
+    services = await loadServicesIndex(req, profile, env);
+  } catch (_) {
+    return fieldStatic.stripInternalNotes(result, null);
+  }
+  return fieldStatic.stripInternalNotes(result, form => canSeeInternalNotes(profile, catalog, services, form));
 }
 
 // Lot 3 — aperçu des calculs et recherches pendant la saisie : formulaire relu en base,
@@ -1413,6 +1449,8 @@ async function handleSave(req, body) {
     }
   }
   const record = normalizeRecord(source, entity);
+  // Correctif lot 3 : document joint contrôlé côté serveur (https, ou PDF / image de 1,5 Mo décodés).
+  if (entity === 'forms' && Object.prototype.hasOwnProperty.call(record, 'fields')) fieldStatic.assertFormDocuments(record.fields);
   if (!isPlatformLicenseManagerProfile(profile)) applyWriteWhitelist(record, entity);
 
   if (entity === 'databases' && String(record.nom || '') === INTEGRATIONS_NAME) {
@@ -1475,6 +1513,8 @@ async function handleSave(req, body) {
       const level = access.formLevel(profile, catalog, existing.id, services);
       access.assertLevel(level, 'write');
       if (level === 'normal') assertRecordAllowed('forms', existing, 'edit', profile, 'Modification du formulaire refusée par les rôles.');
+      // Note interne absente de la définition reçue (lecteur à qui elle a été retirée) : texte conservé.
+      if (Object.prototype.hasOwnProperty.call(record, 'fields')) record.fields = fieldStatic.keepNotes(record.fields, existing.fields);
     }
   }
   if (entity === 'services' && id) {
@@ -2584,6 +2624,7 @@ async function handler(req, res) {
     }
 
     if (action !== 'field_options' && action !== 'field_compute') result = await redactFieldRolesInResult(req, result);
+    result = await stripInternalNotesInResult(req, result);
     result = projectClientResult(action, body, result, req.picoReaderProfile);
     const payload = redactRecordsPayload(result, req.picoReaderProfile);
     json(res, 200, payload);

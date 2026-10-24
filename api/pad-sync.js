@@ -601,6 +601,10 @@ async function redactPadResults(req, environmentCode, results, read) {
   const viewer = rights.profile ? fieldRoles.viewerFor(rights.profile, rights.catalog || []) : fieldRoles.AUTOMATED_VIEWER;
   try {
     await fieldRoles.redactResultRows({ read: read || (path => loadRows(req, path)), env: environmentCode, viewer }, results);
+    // Correctif lot 3 : recherches recalculées avec les droits de la licence PAD (sans droits : aucune ligne).
+    await fieldLookup.refreshForReader(rights.profile
+      ? { read: read || (path => loadRows(req, path)), env: environmentCode, profile: rights.profile, catalog: rights.catalog || [], services: rights.services || [], viewer }
+      : { read: read || (path => loadRows(req, path)), env: environmentCode, profile: null, catalog: [], services: [], viewer, noRows: true }, results);
   } catch (_) {
     const rows = { subs: [], insts: [] };
     fieldRoles.collectFieldRows(results, rows);
