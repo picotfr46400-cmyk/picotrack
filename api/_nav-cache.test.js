@@ -112,6 +112,7 @@ test('cache-buster : clé AAAAMMJJ-N absente du registre des clés servies', () 
   assertFreshCache(revs, 'qrcode.js', 'assets/qrcode.js');
   assertFreshCache(revs, 'labels-core.js', 'assets/labels-core.js');
   assertFreshCache(revs, 'labels.js', 'assets/labels.js');
+  assertFreshCache(revs, 'label-queue.js', 'assets/label-queue.js');
   assertFreshCache(revs, 'field-validation.js', 'api/_field-validation.js');
   assertFreshCache(revs, 'pad-device.js', 'pad-device.js');
 });

@@ -356,3 +356,20 @@ test('production : clé PRINTER_SECRET_KEY dédiée obligatoire (pas de repli su
     if (saved.k === undefined) delete process.env.PRINTER_SECRET_KEY; else process.env.PRINTER_SECRET_KEY = saved.k;
   }
 });
+
+test('ZPL : aucune injection de commande par une valeur de champ', () => {
+  const tpl = { name: 'Z', width_mm: 50, height_mm: 30, elements: [{ type: 'field', field_id: 'x', x: 1, y: 1, w: 40, h: 6, size: 10 }, { type: 'qr', source: 'field', field_id: 'x', x: 1, y: 10, w: 15, h: 15 }, { type: 'barcode', source: 'field', field_id: 'x', x: 20, y: 10, w: 25, h: 10 }] };
+  const evil = 'A^XZ^XA^FO0,0^GB800,800,800^FS~JA\\\\5F\r\n^PQ999\u0000\u2028fin';
+  const zpl = L.zplDocument(tpl, [{ submission: { values: { x: evil } } }], { dpi: 203 });
+  const datas = [...zpl.matchAll(/\^FD(.*?)\^FS/gs)].map(m => m[1]);
+  assert.equal(datas.length, 3);
+  for (const d of datas) {
+    assert.doesNotMatch(d, /[\^~\\\r\n\u0000\u2028]/);
+    assert.match(d, /fin$/);
+  }
+  assert.equal((zpl.match(/\^XA/g) || []).length, 1);
+  assert.equal((zpl.match(/\^XZ/g) || []).length, 1);
+  assert.doesNotMatch(zpl, /\^PQ999|~JA/);
+  const long = L.zplDocument({ name: 'Z', width_mm: 50, height_mm: 30, elements: [tpl.elements[0]] }, [{ submission: { values: { x: 'y'.repeat(10000) } } }], { dpi: 203 });
+  assert.ok(Math.max(...[...long.matchAll(/\^FD(.*?)\^FS/gs)].map(m => m[1].length)) <= 3003);
+});
