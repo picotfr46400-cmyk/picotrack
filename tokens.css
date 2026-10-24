@@ -1,0 +1,78 @@
+/* ═══════════════════════════════════════════════════════════════
+   PICOTRACK — TOKENS (voir DESIGN.md)
+   Chargé AVANT style.css. Seul fichier où vivent les valeurs hex.
+   Niveaux : primitifs → sémantiques → zones / composants.
+   ═══════════════════════════════════════════════════════════════ */
+:root{
+  /* ── Primitifs ─────────────────────────────────────────────── */
+  --pt-blue-50:#eef7ff;  --pt-blue-100:#dbeeff; --pt-blue-500:#1488ff; --pt-blue-600:#086ad8; --pt-blue-700:#0756b0;
+  --pt-teal-50:#e9fbf8;  --pt-teal-100:#cdefea; --pt-teal-500:#22c7b8; --pt-teal-700:#0f766e;
+  --pt-red-50:#fff1f1;   --pt-red-500:#ff6b6b;  --pt-red-700:#b91c1c;
+  --pt-amber-50:#fffbeb; --pt-amber-100:#fdecc8; --pt-amber-500:#f59e0b; --pt-amber-700:#b45309;
+  --pt-violet-50:#f5f3ff;--pt-violet-100:#e4ddfb;--pt-violet-500:#7c3aed;
+  --pt-navy-950:#08172d; --pt-navy-900:#0d2440; --pt-navy-800:#14294a;
+  --pt-slate-0:#ffffff;  --pt-slate-50:#f5f8fc; --pt-slate-100:#eef2f7; --pt-slate-200:#dce6f2;
+  --pt-slate-300:#cbd5e1;--pt-slate-400:#7a8798; --pt-slate-500:#64748b; --pt-slate-600:#516173; --pt-slate-900:#0b1730;
+
+  /* ── Sémantiques ───────────────────────────────────────────── */
+  --color-bg:var(--pt-slate-50);
+  --color-surface:var(--pt-slate-0);
+  --color-surface-muted:var(--pt-slate-100);
+  --color-border:var(--pt-slate-200);
+  --color-border-strong:var(--pt-slate-300);
+  --color-text:var(--pt-slate-900);
+  --color-text-muted:var(--pt-slate-600);
+  --color-text-subtle:var(--pt-slate-400);
+  --color-action:var(--pt-blue-500);
+  --color-action-hover:var(--pt-blue-600);
+  --color-action-soft:var(--pt-blue-50);
+  --color-on-action:var(--pt-slate-0);
+  --color-success:var(--pt-teal-500);  --color-success-soft:var(--pt-teal-50);  --color-success-text:var(--pt-teal-700);
+  --color-danger:var(--pt-red-500);    --color-danger-soft:var(--pt-red-50);    --color-danger-text:var(--pt-red-700);
+  --color-warning:var(--pt-amber-500); --color-warning-soft:var(--pt-amber-50); --color-warning-text:var(--pt-amber-700);
+  --color-info:var(--pt-violet-500);   --color-info-soft:var(--pt-violet-50);
+  --color-nav-bg:var(--pt-navy-950);
+  --color-focus:var(--pt-blue-500);
+
+  /* ── Zones (repères pâles) ─────────────────────────────────── */
+  --zone-fb-settings-bg:var(--pt-blue-50);   --zone-fb-settings-edge:var(--pt-blue-100);   /* Paramétrage du formulaire */
+  --zone-fb-library-bg:var(--pt-teal-50);    --zone-fb-library-edge:var(--pt-teal-100);    /* Bibliothèque de blocs */
+  --zone-fb-field-bg:var(--pt-violet-50);    --zone-fb-field-edge:var(--pt-violet-100);    /* Paramètres du champ */
+  --zone-fb-canvas-bg:var(--color-bg);       --zone-fb-canvas-edge:var(--color-border);
+
+  /* ── Échelles ──────────────────────────────────────────────── */
+  --font-sans:'DM Sans',system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --text-xs:12px; --text-sm:14px; --text-md:15px; --text-lg:18px; --text-xl:22px; --text-2xl:28px; --text-3xl:34px;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px; --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px;
+  --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-xl:24px; --radius-pill:999px; --radius-round:50%;
+  --shadow-0:none;
+  --shadow-1:0 1px 2px rgba(11,23,48,.06);
+  --shadow-2:0 8px 24px rgba(11,23,48,.08);
+  --shadow-3:0 18px 48px rgba(11,23,48,.12);
+  --ring-focus:0 0 0 3px rgba(20,136,255,.35);
+  --touch-min:44px;
+  --control-h:36px;
+
+  /* ── Barre de défilement ───────────────────────────────────── */
+  --scrollbar-size:8px;
+  --scrollbar-thumb:var(--color-border-strong);
+  --scrollbar-thumb-active:var(--pt-slate-500);
+  --scrollbar-thumb-grab:var(--color-action);
+
+  /* ── Alias de compatibilité (à retirer progressivement) ────── */
+  --p:var(--color-action); --pd:var(--color-action-hover); --pl:var(--color-action-soft);
+  --s:var(--color-success); --sl:var(--color-success-soft);
+  --d:var(--color-danger);  --dl:var(--color-danger-soft);
+  --w:var(--color-warning); --wl:var(--color-warning-soft);
+  --v:var(--color-info);    --vl:var(--color-info-soft);
+  --navy:var(--pt-navy-950); --navy2:var(--pt-navy-900); --steel:var(--pt-navy-800);
+  --bd:var(--color-border); --bg:var(--color-bg); --card:var(--color-surface);
+  --tx:var(--color-text); --tm:var(--color-text-muted); --tl:var(--color-text-subtle);
+  --ts:var(--color-text-muted); /* était utilisé sans être défini */
+  --radius:18px;
+  --shadow:0 18px 48px rgba(15,23,42,.075);
+  --shadow-soft:0 10px 28px rgba(15,23,42,.055);
+}
+body.pad-mode{--scrollbar-size:10px;--scrollbar-thumb:var(--pt-slate-400);--control-h:var(--touch-min)}
+@media (hover:none){:root{--scrollbar-thumb:var(--pt-slate-400)}}
+@media (prefers-contrast:more){:root{--scrollbar-thumb:var(--color-text-muted)}}
