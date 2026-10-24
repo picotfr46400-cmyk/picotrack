@@ -85,7 +85,7 @@ test('bloquant 1 : PDF (prepareExportTrace) — masque transmis par records.js, 
   const def = await audit.prepareExportTrace({ headers: {} }, base);
   assert.ok(!(JSON.stringify(def.lineSets) + JSON.stringify(def.timeline)).includes('9000'));
   const src = fs.readFileSync(path.join(__dirname, 'records.js'), 'utf8');
-  assert.match(src, /prepareExportTrace\(req, \{[\s\S]{0,200}hidden: fieldRoles\.hiddenKeys/);
+  assert.match(src, /prepareExportTrace\(req, \{[\s\S]{0,200}hidden: new Set\(\[\.\.\.fieldRoles\.hiddenKeys/);
   assert.match(src, /hiddenFields: async/);
 });
 

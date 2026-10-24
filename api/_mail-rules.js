@@ -114,6 +114,9 @@ function redactValues(fields, values) {
   for (const field of Array.isArray(fields) ? fields : []) {
     if (isSensitiveField(field) && field.id != null) hidden.add(String(field.id));
   }
+  // Correctif lot 3 (prod) : recherches et calculs dépendant des droits de l'auteur jamais lus par un mail
+  // (conditions, destinataires, empreinte) ; voir _field-roles.authorDependentKeys.
+  for (const k of require('./_field-roles').authorDependentKeys(Array.isArray(fields) ? fields : [])) hidden.add(k);
   const out = {};
   for (const [key, value] of Object.entries(values && typeof values === 'object' ? values : {})) {
     if (hidden.has(String(key)) || isSensitiveName(key)) continue;
@@ -209,6 +212,7 @@ function buildLookup(ctx) {
   // (règle des envois automatiques, _field-roles) ; un champ réservé est rendu vide.
   const fieldRoles = require('./_field-roles');
   const hidden = fieldRoles.hiddenKeys(fields, ctx.viewer || fieldRoles.AUTOMATED_VIEWER);
+  for (const k of fieldRoles.authorDependentKeys(fields)) hidden.add(k); // jamais avec les droits de l'auteur
   const hiddenNames = new Set();
   for (const field of fieldValidationFlat(fields)) {
     if (!field || field.id == null || !hidden.has(String(field.id))) continue;

@@ -42,11 +42,50 @@ function viewerFor(profile, catalog) {
 }
 
 /* Clés (id, field_key) des champs que ce lecteur ne voit pas. */
+/* Correctif lot 3 (prod) : valeurs dérivées qui dépendent des droits de leur auteur.
+ * Une recherche sur une base, des réponses ou des dossiers (et tout calcul qui en dépend, même indirectement)
+ * est calculée avec les droits de la personne qui a saisi. Les envois sans lecteur identifié (mails,
+ * étiquettes automatiques, actions « Modifier une ligne » #59, historique) ne doivent jamais la reprendre :
+ * ces clés sont masquées pour AUTOMATED_VIEWER (échec fermé). Les lectures par un utilisateur, elles, la
+ * recalculent avec les droits du lecteur (api/_field-lookup.js). */
+const AUTHOR_KINDS = new Set(['database', 'form', 'case']);
+function authorDependentKeys(fieldsIn) {
+  const fields = fv.flattenFields(fieldsIn || []);
+  const ids = new Set();
+  const lowerType = f => String(f && f.type || '').toLowerCase();
+  for (const f of fields) {
+    if (f && f.id != null && lowerType(f) === 'requete' && AUTHOR_KINDS.has(fv.cleanLookup(f.lookup).source.kind)) ids.add(String(f.id));
+  }
+  if (!ids.size) return new Set();
+  const refOf = d => { const src = fields.find(x => x && (String(x.id) === String(d) || x.key === d || x.field_key === d || x.nom === d)); return String(src ? src.id : d); };
+  for (let pass = 0; pass < 20; pass++) {
+    let moved = false;
+    for (const f of fields) {
+      if (!f || f.id == null || ids.has(String(f.id)) || !fv.isDerived(f)) continue;
+      if (fv.derivedDeps(f).some(d => ids.has(refOf(d)))) { ids.add(String(f.id)); moved = true; }
+    }
+    if (!moved) break;
+  }
+  const out = new Set();
+  for (const f of fields) {
+    if (!f || f.id == null || !ids.has(String(f.id))) continue;
+    out.add(String(f.id));
+    if (f.field_key) out.add(String(f.field_key));
+    if (f.key) out.add(String(f.key));
+    // Enfant de groupe répétable : le groupe entier est retiré (mêmes règles que le lot 2).
+    const gid = f.gid !== undefined ? f.gid : f.groupId;
+    const g = gid != null && gid !== '' ? fields.find(x => x && String(x.id) === String(gid) && fv.isRepeatGroup(x)) : null;
+    if (g) { out.add(String(g.id)); if (g.field_key) out.add(String(g.field_key)); if (g.key) out.add(String(g.key)); }
+  }
+  return out;
+}
+
 function hiddenKeys(fieldsIn, viewer) {
   const fields = fv.flattenFields(fieldsIn || []);
   const out = new Set();
   const v = viewer || AUTOMATED_VIEWER;
   if (v.all) return out;
+  if (v === AUTOMATED_VIEWER) for (const k of authorDependentKeys(fields)) out.add(k);
   for (const f of fields) {
     if (!f || f.id == null) continue;
     if (fv.roleAllowed(f, fields, v)) continue;
@@ -73,7 +112,8 @@ function visibleFields(fieldsIn, viewer) {
   const v = viewer || AUTOMATED_VIEWER;
   if (v.all) return fieldsIn;
   const flat = fv.flattenFields(fieldsIn || []);
-  const keep = (f) => !f || f.id == null || fv.roleAllowed(f, flat, v);
+  const auto = v === AUTOMATED_VIEWER ? authorDependentKeys(flat) : null;
+  const keep = (f) => !f || f.id == null || (fv.roleAllowed(f, flat, v) && !(auto && auto.has(String(f.id))));
   return (Array.isArray(fieldsIn) ? fieldsIn : []).filter(keep).map(f => f && Array.isArray(f.children) ? Object.assign({}, f, { children: f.children.filter(keep) }) : f);
 }
 
@@ -81,7 +121,8 @@ function visibleFields(fieldsIn, viewer) {
 function redactValues(fieldsIn, values, viewer) {
   if (!values || typeof values !== 'object' || Array.isArray(values)) return values;
   const hidden = viewer === HIDE_ALL ? null : hiddenKeys(fieldsIn, viewer);
-  if (hidden) for (const g of partialRepeatGroups(fv.flattenFields(fieldsIn || []), viewer || AUTOMATED_VIEWER)) { hidden.delete(String(g.id)); if (g.field_key) hidden.delete(String(g.field_key)); if (g.key) hidden.delete(String(g.key)); }
+  const autoKeys = (viewer || AUTOMATED_VIEWER) === AUTOMATED_VIEWER ? authorDependentKeys(fieldsIn) : new Set();
+  if (hidden) for (const g of partialRepeatGroups(fv.flattenFields(fieldsIn || []), viewer || AUTOMATED_VIEWER)) { if (autoKeys.has(String(g.id))) continue; hidden.delete(String(g.id)); if (g.field_key) hidden.delete(String(g.field_key)); if (g.key) hidden.delete(String(g.key)); }
   if (hidden && !hidden.size) return values;
   const out = {};
   const known = new Set(fv.flattenFields(fieldsIn || []).map(f => f && f.id != null ? String(f.id) : '').filter(Boolean));
@@ -118,13 +159,17 @@ function redactTimeline(timeline, hidden) {
 
 /* Masques de plusieurs formulaires (lecture service_role déjà autorisée par l'appelant).
    read(path) → rows. Renvoie Set des clés masquées ; HIDE_ALL si la définition est illisible. */
-async function hiddenForForms(read, env, formIds, viewer) {
+async function hiddenForForms(read, env, formIds, viewer, opts = {}) {
   const ids = [...new Set((formIds || []).map(x => String(x == null ? '' : x)).filter(Boolean))];
   const out = new Set();
   if (!ids.length || (viewer && viewer.all)) return out;
   try {
     const rows = await read(`forms?id=in.(${ids.map(encodeURIComponent).join(',')})&environment_code=eq.${encodeURIComponent(env)}&select=id,fields&limit=200`);
-    for (const f of Array.isArray(rows) ? rows : []) for (const k of hiddenKeys(fieldsOf(f), viewer)) out.add(k);
+    for (const f of Array.isArray(rows) ? rows : []) {
+      for (const k of hiddenKeys(fieldsOf(f), viewer)) out.add(k);
+      // Historique : les anciennes valeurs dérivées ont été calculées avec les droits de leur auteur.
+      if (opts.authorDependent) for (const k of authorDependentKeys(fieldsOf(f))) out.add(k);
+    }
     return out;
   } catch (_) {
     return HIDE_ALL;
@@ -185,4 +230,4 @@ async function redactResultRows({ read, env, viewer }, result) {
   return result;
 }
 
-module.exports = { visibleFields, collectFieldRows, redactResultRows, AUTOMATED_VIEWER, HIDE_ALL, fieldsOf, viewerFor, hiddenKeys, redactValues, redactTimeline, hiddenForForms };
+module.exports = { authorDependentKeys, visibleFields, collectFieldRows, redactResultRows, AUTOMATED_VIEWER, HIDE_ALL, fieldsOf, viewerFor, hiddenKeys, redactValues, redactTimeline, hiddenForForms };

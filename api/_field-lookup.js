@@ -248,6 +248,12 @@ async function refreshValues(ctx, fields, values, opts) {
       if (!moved) break;
     }
   }
+  // Valeur dépendant des droits de l'auteur qui n'a pas pu être recalculée pour ce lecteur
+  // (recherche réservée à un rôle, enfant de groupe…) : retirée, jamais renvoyée telle quelle.
+  for (const k of fieldRoles.authorDependentKeys(fields)) {
+    if (has(k) && !recomputed.has(k) && derived.some(f => String(f.id) === k)) delete out[k];
+  }
+  if (opts.recomputed) for (const k of recomputed) opts.recomputed.add(k);
   return out;
 }
 
@@ -309,4 +315,26 @@ async function refreshForReader(ctx, result) {
   return result;
 }
 
-module.exports = { lookupRows, applyDerived, previewDerived, refreshForReader, refreshValues, displayName, meValue, READER_KINDS, NO_ROLE_VIEWER };
+/* Une seule ligne (export PDF, étiquette manuelle) : valeurs déjà masquées par rôle pour ce lecteur →
+ * recherches et calculs dépendants recalculés avec ses droits. Renvoie { values, recomputed } :
+ * recomputed = clés dépendant des droits de l'auteur réellement recalculées pour ce lecteur. */
+async function refreshRowForReader(ctx, fieldsIn, values, opts = {}) {
+  const fields = fv.flattenFields(fieldsIn || []);
+  const src = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
+  const authorKeys = fieldRoles.authorDependentKeys(fields);
+  if (!authorKeys.size) return { values: src, recomputed: new Set() };
+  if (!ctx.services && typeof ctx.loadServices === 'function') ctx = Object.assign({}, ctx, { services: await ctx.loadServices() });
+  const users = makeUserResolver(ctx.read, String(ctx.env || ''));
+  const authorId = src._author && src._author.id != null ? String(src._author.id) : '';
+  const meIds = authorId ? [authorId] : [];
+  for (const f of topLevelDerived(fields)) { const v = src[String(f.id)]; if (lookupKind(f) === 'me' && v && typeof v === 'object' && v.id != null) meIds.push(String(v.id)); }
+  await users.loadIds(meIds);
+  const author = users.get(authorId);
+  const me = author ? { id: String(author.id), email: author.email || '', label: displayName(author) } : { id: authorId, email: '', label: '' };
+  const done = new Set();
+  const out = await refreshValues(ctx, fields, src, { cache: new Map(), users, me, now: opts.now, recomputed: done });
+  const recomputed = new Set([...authorKeys].filter(k => done.has(k) && Object.prototype.hasOwnProperty.call(out, k)));
+  return { values: out, recomputed };
+}
+
+module.exports = { refreshRowForReader, lookupRows, applyDerived, previewDerived, refreshForReader, refreshValues, displayName, meValue, READER_KINDS, NO_ROLE_VIEWER };

@@ -262,7 +262,10 @@
       if (!f || !f.defaultDyn || !f.defaultDyn.kind) return;
       var v = saisieValues[f.id];
       if (v !== undefined && v !== '' && v !== null) return;
-      var d = fv.resolveDefault(f, { user: { id: me.id, email: me.email, label: me.label || me.nom || [me.firstname, me.lastname].filter(Boolean).join(' ') }, site: site });
+      // Correctif lot 3 (prod) : identité { id, label } (nom, jamais l'e-mail) ; le champ de saisie affiche le nom,
+      // le serveur pose lui-même { id, label } quand le champ est en lecture seule.
+      var d = fv.resolveDefault(f, { user: { id: me.id, label: me.label || me.nom, firstname: me.firstname, lastname: me.lastname, first_name: me.first_name, last_name: me.last_name }, site: site });
+      if (d && typeof d === 'object') d = d.label;
       if (d !== undefined && d !== '') saisieValues[f.id] = d;
     });
   }
