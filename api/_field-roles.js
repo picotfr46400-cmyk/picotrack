@@ -54,7 +54,18 @@ function hiddenKeys(fieldsIn, viewer) {
     if (f.field_key) out.add(String(f.field_key));
     if (f.key) out.add(String(f.key));
   }
+  // Lot 2 : un groupe répétable dont un enfant est masqué est masqué en bloc pour les chemins
+  // qui raisonnent par clé (historique, mails, étiquettes, actions base). redactValues, lui,
+  // garde le groupe et retire l'enfant ligne par ligne (partialRepeatGroups).
+  for (const g of partialRepeatGroups(fields, v)) { out.add(String(g.id)); if (g.field_key) out.add(String(g.field_key)); if (g.key) out.add(String(g.key)); }
   return out;
+}
+
+/* Groupes répétables visibles par ce lecteur mais contenant au moins un enfant masqué. */
+function partialRepeatGroups(fields, v) {
+  if (!v || v.all) return [];
+  return fields.filter(g => fv.isRepeatGroup(g) && fv.roleAllowed(g, fields, v)
+    && fields.some(c => c && String(c.groupId) === String(g.id) && !fv.roleAllowed(c, fields, v)));
 }
 
 /* Définition sans les champs masqués (groupes compris). */
@@ -70,6 +81,7 @@ function visibleFields(fieldsIn, viewer) {
 function redactValues(fieldsIn, values, viewer) {
   if (!values || typeof values !== 'object' || Array.isArray(values)) return values;
   const hidden = viewer === HIDE_ALL ? null : hiddenKeys(fieldsIn, viewer);
+  if (hidden) for (const g of partialRepeatGroups(fv.flattenFields(fieldsIn || []), viewer || AUTOMATED_VIEWER)) { hidden.delete(String(g.id)); if (g.field_key) hidden.delete(String(g.field_key)); if (g.key) hidden.delete(String(g.key)); }
   if (hidden && !hidden.size) return values;
   const out = {};
   const known = new Set(fv.flattenFields(fieldsIn || []).map(f => f && f.id != null ? String(f.id) : '').filter(Boolean));
@@ -77,7 +89,9 @@ function redactValues(fieldsIn, values, viewer) {
     if (hidden === null) { if (k.startsWith('_') && !known.has(k)) out[k] = values[k]; continue; }
     if (!hidden.has(k)) out[k] = values[k];
   }
-  return out;
+  // Lot 2 : groupes répétables — les enfants masqués sont aussi retirés de chaque ligne.
+  if (hidden === null) return out;
+  return fv.redactRepeatRows(fv.flattenFields(fieldsIn || []), out, (id) => hidden.has(id));
 }
 
 /* Timeline / historique : retire les changements portant sur un champ masqué (avant ET après),

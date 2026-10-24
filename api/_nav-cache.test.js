@@ -118,6 +118,7 @@ test('cache-buster : clé AAAAMMJJ-N absente du registre des clés servies', () 
   assertFreshCache(revs, 'style.css', 'style.css');
   assertFreshCache(revs, 'ergo-shell.js', 'assets/ergo-shell.js');
   assertFreshCache(revs, 'field-lot1.js', 'assets/field-lot1.js');
+  assertFreshCache(revs, 'field-lot2.js', 'assets/field-lot2.js');
 });
 
 test('registre des clés servies : trié, sans doublon, et contient tout ce que sert main (prod)', () => {
@@ -150,7 +151,7 @@ test('index.html : Babel absent, React conservé, cache-buster 20261023-1 sur le
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261024-7/g) || []).length, 2);
+  assert.equal((html.match(/app\.secured\.js\?v=20261024-8/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261024-6/);
   assert.match(html, /pad-device\.js\?v=20261023-2/);
   assert.equal(html.includes('20260916c'), false);
