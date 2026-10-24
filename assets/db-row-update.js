@@ -34,7 +34,7 @@
     { v: 'all', l: 'Traiter toutes les lignes trouvées' }
   ];
   var DELETE_MODES = [
-    { v: 'archive', l: 'Mettre à la corbeille (restaurable)' },
+    { v: 'archive', l: 'Mettre à la corbeille (copie complète gardée)' },
     { v: 'purge', l: 'Supprimer définitivement (ancienne valeur gardée au journal)' }
   ];
   function crit(c){ c = O(c); return { column: S(c.column || c.dbFieldId), source: c.source === 'fixed' || c.sourceType === 'fixed' ? 'fixed' : 'field', fieldId: S(c.fieldId || c.sourceFieldId || ''), value: S(c.value || '') }; }
@@ -383,7 +383,7 @@
     '<p><b>Choisir la bonne ligne</b> : « La ligne liée » reprend la ligne ajoutée par ce dossier ou cette saisie. « Les lignes trouvées par des critères de recherche » retient les lignes où tous les critères sont vrais (ET), par exemple N° de lot = champ « Lot » ET Site = « Lyon ». Chaque critère prend un champ ou une valeur fixe. Une valeur recherchée vide arrête l’opération sans rien toucher.</p>' +
     '<p><b>Valeurs écrites</b> (modification) : pour chaque colonne, un champ, une valeur fixe, la date du jour (heure de Paris) ou l’utilisateur connecté (nom posé par le serveur). Les autres colonnes ne changent pas.</p>' +
     '<p><b>Plusieurs lignes trouvées</b> : par défaut, rien n’est fait, un message l’indique et les opérations suivantes du bouton ne sont pas exécutées (le plus sûr). Vous pouvez choisir à la place de traiter la plus ancienne ligne, ou toutes les lignes trouvées. <b>Aucune ligne</b> : la modification ne fait rien et continue, ou crée la ligne selon le réglage ; la suppression ne fait rien.</p>' +
-    '<p><b>Suppression</b> : « Mettre à la corbeille » garde une copie complète de la ligne, restaurable ; « Supprimer définitivement » ne garde que le journal. Dans les deux cas, le journal conserve l’ancienne valeur.</p>' +
+    '<p><b>Suppression</b> : « Mettre à la corbeille » garde une copie complète de la ligne (récupérable sur demande) ; « Supprimer définitivement » ne garde que le journal. Dans les deux cas, le journal conserve l’ancienne valeur.</p>' +
     '<p><b>Sécurité et traçabilité</b> : tout est fait par le serveur en une seule opération, uniquement dans votre environnement et si votre rôle peut modifier le dossier ou la saisie. Chaque modification, création ou suppression est enregistrée dans un journal avec l’ancienne et la nouvelle valeur, l’auteur et la date.</p></div>';
   function injectAcademy(){
     var w = document.getElementById('academy-wrap');
