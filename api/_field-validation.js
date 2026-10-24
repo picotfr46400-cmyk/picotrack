@@ -29,6 +29,80 @@
   function isMissing(v) { return isEmpty(v) || v === false; }
   function label(f) { return String((f && (f.nom || f.label || f.name)) || (f && f.id) || 'Champ'); }
 
+  /* ---------- Lot 2 : saisie rapide sur tablette ----------
+     - groupe répétable : f.repeat = { on, min, max, auto, title } ; valeur = tableau de lignes
+       { idEnfant: valeur } rangé sous l'id du groupe ;
+     - nombre en curseur / intervalle : f.numStyle = 'slider' | 'span', bornes f.scale = { min, max, step } ;
+       intervalle = { low, high } ;
+     - conditions : comparaisons de nombres (lt, lte, gt, gte) et repères « maintenant + N »
+       (before_now, after_now) sur les dates et heures. */
+  var REPEAT_HARD_MAX = 100;
+  var SCALE_DEFAULT = { min: 0, max: 100, step: 1 };
+  function isRepeatGroup(f) { return isGroup(f) && !!(f.repeat && f.repeat.on); }
+  function repeatLimits(f) {
+    var r = (f && f.repeat) || {};
+    var min = Math.max(0, Math.floor(+r.min || 0));
+    var max = Math.floor(+r.max || 0);
+    if (!(max > 0)) max = 10;
+    max = Math.min(max, REPEAT_HARD_MAX);
+    if (min > max) min = max;
+    return { min: min, max: max };
+  }
+  function numStyle(f) { var s = lower(f && f.numStyle); return s === 'slider' || s === 'span' ? s : ''; }
+  function scaleOf(f) {
+    var sc = (f && f.scale) || {};
+    var min = isFinite(+sc.min) && sc.min !== '' && sc.min != null ? +sc.min : SCALE_DEFAULT.min;
+    var max = isFinite(+sc.max) && sc.max !== '' && sc.max != null ? +sc.max : SCALE_DEFAULT.max;
+    var step = +sc.step > 0 ? +sc.step : SCALE_DEFAULT.step;
+    if (max < min) { var t = min; min = max; max = t; }
+    return { min: min, max: max, step: step };
+  }
+  function onStep(n, sc) {
+    var q = (n - sc.min) / sc.step;
+    return Math.abs(q - Math.round(q)) < 1e-6;
+  }
+  function scaleErrors(f, n) {
+    var sc = scaleOf(f), errs = [];
+    if (n < sc.min) errs.push('pas en dessous de ' + sc.min);
+    if (n > sc.max) errs.push('pas au-dessus de ' + sc.max);
+    if (n >= sc.min && n <= sc.max && !onStep(n, sc)) errs.push('par pas de ' + sc.step + ' depuis ' + sc.min);
+    return errs;
+  }
+  function spanOf(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    var keys = Object.keys(v);
+    if (keys.some(function (k) { return k !== 'low' && k !== 'high'; })) return null;
+    return { low: numberOf(v.low), high: numberOf(v.high) };
+  }
+  /* Repère « maintenant + N » : N avec unité facultative (j, h, min) ; défaut selon le type comparé. */
+  function relativeTarget(type, raw, now) {
+    var m = /^\s*([+-]?\d{1,6})\s*(j|h|min|m)?\s*$/i.exec(String(raw == null ? '' : raw));
+    var n = m ? parseInt(m[1], 10) : 0;
+    var t = lower(type);
+    var unit = m && m[2] ? lower(m[2]) : (t === 'date' ? 'j' : t === 'datetime' ? 'h' : 'min');
+    if (unit === 'm') unit = 'min';
+    var ms = unit === 'j' ? n * 86400000 : unit === 'h' ? n * 3600000 : n * 60000;
+    var p = parisParts(new Date((now || Date.now()) + ms));
+    var d = p.y + '-' + pad2(p.m) + '-' + pad2(p.d), hm = pad2(p.h) + ':' + pad2(p.mi);
+    return t === 'date' ? d : (t === 'heure' || t === 'time') ? hm : d + 'T' + hm;
+  }
+  function compareCond(op, srcField, v, val, now) {
+    var t = lower(srcField && srcField.type);
+    if (op === 'lt' || op === 'lte' || op === 'gt' || op === 'gte') {
+      var a = numberOf(v), b = numberOf(val);
+      if (!isFinite(a) || !isFinite(b)) return false;
+      return op === 'lt' ? a < b : op === 'lte' ? a <= b : op === 'gt' ? a > b : a >= b;
+    }
+    if (op === 'before_now' || op === 'after_now') {
+      var s = typeof v === 'string' ? v.trim() : '';
+      if (!s) return false;
+      var target = relativeTarget(t, val, now);
+      var cut = t === 'date' ? s.slice(0, 10) : (t === 'heure' || t === 'time') ? s.slice(0, 5) : s.slice(0, 16);
+      return op === 'before_now' ? cut < target : cut > target;
+    }
+    return null;
+  }
+
 
   /* ---------- Lot 1 : vocabulaire PicoTrack (codes internes + libellés à nous) ----------
      Les règles sont identifiées par un code stable. Les anciens noms enregistrés dans les
@@ -170,6 +244,23 @@
     var hidden = {};
     fields.forEach(function (f) { if (f && f.id != null && !roleAllowed(f, fields, viewer)) hidden[String(f.id)] = 1; });
     Object.keys(values).forEach(function (k) { if (!hidden[k]) out[k] = values[k]; });
+    return redactRepeatRows(fields, out, function (id) { return !!hidden[id]; });
+  }
+  /* Groupes répétables : retire, dans chaque ligne, les champs enfants masqués. isHidden(idEnfant) → bool. */
+  function redactRepeatRows(fieldsFlat, values, isHidden) {
+    if (!values || typeof values !== 'object') return values;
+    var out = values, copied = false;
+    fieldsFlat.forEach(function (g) {
+      if (!isRepeatGroup(g) || !own(values, String(g.id)) || !Array.isArray(values[String(g.id)])) return;
+      var kids = fieldsFlat.filter(function (c) { return String(groupOf(c)) === String(g.id); });
+      var drop = kids.filter(function (c) { return isHidden(String(c.id)); }).map(function (c) { return String(c.id); });
+      if (!drop.length) return;
+      if (!copied) { out = {}; Object.keys(values).forEach(function (k) { out[k] = values[k]; }); copied = true; }
+      out[String(g.id)] = values[String(g.id)].map(function (row) {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+        var r = {}; Object.keys(row).forEach(function (k) { if (drop.indexOf(k) < 0) r[k] = row[k]; }); return r;
+      });
+    });
     return out;
   }
 
@@ -379,6 +470,8 @@
       var src = condSource(fields, c);
       if (!src) return true;
       var v = values[String(src.id)];
+      var rel = compareCond(c.op, src, v, c.val);
+      if (rel !== null) return rel;
       var o = Array.isArray(v) ? v.join(',') : v === true ? 'true' : v === false ? 'false' : v == null ? '' : String(v);
       var val = String(c.val == null ? '' : c.val);
       return c.op === '=' ? o === val : c.op === '!=' ? o !== val : c.op === 'contains' ? o.indexOf(val) >= 0 : c.op === 'empty' ? !o : true;
@@ -435,6 +528,7 @@
     var t = lower(f.type);
     if (isEmpty(v)) return '';
     var dup = !!(f.duplicable || f.dup);
+    if (dup && t === 'number' && numStyle(f)) dup = false;
     if (dup && Array.isArray(v) && ['text', 'textarea', 'number', 'date', 'heure', 'time', 'datetime'].indexOf(t) >= 0) {
       for (var i = 0; i < v.length; i++) { var e = typeError({ type: f.type, valeurs: f.valeurs }, v[i]); if (e) return e; }
       return '';
@@ -443,6 +537,11 @@
       case 'text': case 'textarea':
         return (typeof v === 'string' || typeof v === 'number') ? '' : 'texte attendu';
       case 'number':
+        if (numStyle(f) === 'span') {
+          var sp = spanOf(v);
+          if (!sp || !isFinite(sp.low) || !isFinite(sp.high)) return 'intervalle attendu (deux nombres)';
+          return sp.low <= sp.high ? '' : 'intervalle inversé (début après la fin)';
+        }
         return isFinite(numberOf(v)) ? '' : 'nombre attendu';
       case 'checkbox':
         return (v === true || v === false || v === 'true' || v === 'false') ? '' : 'case à cocher : oui ou non attendu';
@@ -481,7 +580,11 @@
     var errs = [], empty = isEmpty(v);
     var s = Array.isArray(v) ? v.join(',') : (typeof v === 'object' && v) ? '' : String(v == null ? '' : v);
     var t = lower(f.type);
-    if (t === 'number' && !empty) {
+    if (t === 'number' && !empty && numStyle(f)) {
+      var sv = numStyle(f) === 'span' ? spanOf(v) : null;
+      var pts = sv ? [sv.low, sv.high] : [numberOf(v)];
+      pts.forEach(function (num) { if (isFinite(num)) scaleErrors(f, num).forEach(function (m) { if (errs.indexOf(m) < 0) errs.push(m); }); });
+    } else if (t === 'number' && !empty) {
       var nums = Array.isArray(v) ? v.map(numberOf) : [numberOf(v)];
       nums.forEach(function (num) {
         if (!isFinite(num)) return;
@@ -539,6 +642,58 @@
     return d === undefined ? '' : d;
   }
 
+  /* Groupe répétable : nombre de lignes (min/max), clés connues, rôle, lecture seule,
+     visibilité par ligne (conditions évaluées avec les valeurs de la ligne), obligatoire, règles. */
+  function validateRepeat(g, fields, clean, previous, viewer, choices, channel) {
+    var gk = String(g.id), lim = repeatLimits(g), errors = [];
+    var rows = clean[gk];
+    var prevRows = previous && Array.isArray(previous[gk]) ? previous[gk] : [];
+    var gl = label(g);
+    if (rows === undefined || rows === null || rows === '') rows = [];
+    if (!Array.isArray(rows)) return { rows: null, errors: [{ field: gk, label: gl, code: 'invalid', message: 'lignes du groupe illisibles' }] };
+    if (rows.length > lim.max) return { rows: null, errors: [{ field: gk, label: gl, code: 'invalid', message: 'au plus ' + lim.max + ' ligne' + (lim.max > 1 ? 's' : '') }] };
+    if (rows.length < lim.min) errors.push({ field: gk, label: gl, code: lim.min && !rows.length && g.obligatoire ? 'required' : 'invalid', message: 'au moins ' + lim.min + ' ligne' + (lim.min > 1 ? 's' : '') });
+    else if (g.obligatoire && !rows.length) errors.push({ field: gk, label: gl, code: 'required', message: 'au moins une ligne' });
+    var kids = fields.filter(function (c) { return String(groupOf(c)) === gk && !isLayout(c.type); });
+    var byKid = {}; kids.forEach(function (c) { byKid[String(c.id)] = c; });
+    var out = [];
+    rows.forEach(function (row, i) {
+      var tag = gk + '[' + (i + 1) + ']';
+      if (!row || typeof row !== 'object' || Array.isArray(row)) { errors.push({ field: tag, label: gl + ' — ligne ' + (i + 1), code: 'invalid', message: 'ligne illisible' }); return; }
+      var prev = prevRows[i] && typeof prevRows[i] === 'object' && !Array.isArray(prevRows[i]) ? prevRows[i] : null;
+      var r = {};
+      Object.keys(row).forEach(function (ck) {
+        if (!byKid[ck]) { errors.push({ field: tag + '.' + ck, label: gl + ' — ligne ' + (i + 1), code: 'unknown', message: 'champ inconnu du groupe' }); return; }
+        r[ck] = row[ck];
+      });
+      var scope = {}; Object.keys(clean).forEach(function (k) { scope[k] = clean[k]; }); Object.keys(r).forEach(function (k) { scope[k] = r[k]; });
+      kids.forEach(function (c) {
+        var ck = String(c.id), lab = label(c) + ' (ligne ' + (i + 1) + ')', fk = tag + '.' + ck;
+        var v = r[ck];
+        var rowChanged = !prev || !same(v, prev[ck]);
+        if (!roleAllowed(c, fields, viewer)) {
+          if (own(row, ck) && rowChanged && !(!prev && isEmpty(v))) errors.push({ field: fk, label: lab, code: 'forbidden', message: 'champ non autorisé pour votre rôle' });
+          if (prev && own(prev, ck)) r[ck] = prev[ck]; else delete r[ck];
+          return;
+        }
+        if (c.lectureSeule) {
+          var ok = prev ? same(v, prev[ck]) : (isEmpty(v) || same(v, readOnlyDefault(c)));
+          if (!ok) errors.push({ field: fk, label: lab, code: 'readonly', message: 'champ en lecture seule' });
+          return;
+        }
+        if (!rowChanged) return;
+        if (!isVisible(c, fields, scope, channel)) { if (prev && own(prev, ck)) r[ck] = prev[ck]; else delete r[ck]; return; }
+        if (own(r, ck)) { var tv = applyTransforms(c, v); if (tv !== v) { r[ck] = tv; v = tv; } }
+        if (isChoice(c) && !isEmpty(v)) { errors.push({ field: fk, label: lab, code: 'invalid', message: 'liste depuis une base non prise en charge dans un groupe répétable' }); return; }
+        if ((lower(c.type) === 'signature' || lower(c.type) === 'sign') && !isEmpty(v)) { var se = signatureError(v); if (se) { errors.push({ field: fk, label: lab, code: 'invalid', message: se }); return; } }
+        if (c.obligatoire && isMissing(v)) { errors.push({ field: fk, label: lab, code: 'required', message: 'champ obligatoire' }); return; }
+        fieldErrors(c, v).forEach(function (m) { errors.push({ field: fk, label: lab, code: 'invalid', message: m }); });
+      });
+      out.push(r);
+    });
+    return { rows: out, errors: errors };
+  }
+
   /*
    * validateSubmission({ fields, values, previous, channel })
    *   fields   : form.fields relus en base
@@ -563,7 +718,7 @@
     var clean = {};
     Object.keys(values).forEach(function (k) {
       var f = byId[k];
-      if (f && isLayout(f.type)) return; // mise en page : pas de donnée (comme ptStripLayoutValues)
+      if (f && isLayout(f.type) && !isRepeatGroup(f)) return; // mise en page : pas de donnée (comme ptStripLayoutValues)
       clean[k] = values[k];
     });
     // Modification : on part de la valeur stockée, jamais de remplacement complet.
@@ -576,8 +731,10 @@
     var incoming = values;
 
     // Rôle : un champ que ce rôle ne voit pas n'est jamais écrit (403), sa valeur stockée reste.
+    var inRepeat = function (f) { var g = groupOf(f); return g != null && g !== '' && fields.some(function (t) { return isRepeatGroup(t) && String(t.id) === String(g); }); };
     fields.forEach(function (f) {
-      if (!f || f.id == null || isLayout(f.type)) return;
+      if (!f || f.id == null || (isLayout(f.type) && !isRepeatGroup(f))) return;
+      if (inRepeat(f)) return; // valeurs rangées dans les lignes du groupe
       var k = String(f.id);
       if (roleAllowed(f, fields, viewer)) return;
       var sent = own(incoming, k);
@@ -594,8 +751,28 @@
     });
 
     fields.forEach(function (f) {
-      if (!f || f.id == null || isLayout(f.type)) return;
+      if (!f || f.id == null) return;
       var k = String(f.id);
+      if (inRepeat(f)) {
+        // Une valeur d'enfant de groupe répétable n'a pas sa place à la racine.
+        if (own(incoming, k) && !isEmpty(incoming[k]) && changed(k)) errors.push({ field: k, label: label(f), code: 'invalid', message: 'valeur attendue dans une ligne du groupe' });
+        if (previous && own(previous, k)) clean[k] = previous[k]; else delete clean[k];
+        return;
+      }
+      if (isRepeatGroup(f)) {
+        if (!roleAllowed(f, fields, viewer)) return;
+        if (!changed(k)) return;
+        if (!isVisible(f, fields, clean, channel)) {
+          if (previous && own(previous, k)) { clean[k] = previous[k]; removed.push(k); }
+          else if (own(clean, k)) { delete clean[k]; removed.push(k); }
+          return;
+        }
+        var rg = validateRepeat(f, fields, clean, previous, viewer, choices, channel);
+        rg.errors.forEach(function (e) { errors.push(e); });
+        if (rg.rows) clean[k] = rg.rows; else delete clean[k];
+        return;
+      }
+      if (isLayout(f.type)) return;
       var v = clean[k];
       if (!roleAllowed(f, fields, viewer)) return; // déjà traité ci-dessus
       // Défaut dynamique « utilisateur connecté » / « site » en lecture seule : posé par le serveur à la création.
@@ -707,6 +884,15 @@
     signatureError: signatureError,
     fieldErrors: fieldErrors,
     validateSubmission: validateSubmission,
+    isRepeatGroup: isRepeatGroup,
+    repeatLimits: repeatLimits,
+    REPEAT_HARD_MAX: REPEAT_HARD_MAX,
+    numStyle: numStyle,
+    scaleOf: scaleOf,
+    spanOf: spanOf,
+    compareCond: compareCond,
+    relativeTarget: relativeTarget,
+    redactRepeatRows: redactRepeatRows,
     assertValidSubmission: assertValidSubmission,
     errorMessage: errorMessage,
     RULE_LABELS: RULE_LABELS,
