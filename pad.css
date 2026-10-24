@@ -213,12 +213,7 @@ body.pad-mode #pad-profile-view {
 }
 
 /* ─── Scrollbar plus discrète sur mobile ──────── */
-body.pad-mode ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-body.pad-mode ::-webkit-scrollbar-track { background: transparent; }
-body.pad-mode ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+/* Barre de défilement : règle globale de style.css + tokens PAD (tokens.css) */
 /* Contrôle des vues PAD — priorité absolue */
 body.pad-mode .view { display: none !important; }
 body.pad-mode .view.on { display: block !important; }
