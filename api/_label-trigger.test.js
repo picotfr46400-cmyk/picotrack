@@ -61,7 +61,7 @@ test('bundle : plus de liste en dur, le sélecteur vient de labels.js et l’act
   assert.ok(app.includes('React.createElement(window.PtLabelTriggerPicker,{value:y.printLabel,onChange:e=>S("printLabel",e)})'));
   assert.equal((app.match(/window\.ptRunPrintLabelTrigger\(e,[np]\)/g) || []).length, 2, 'saisie directe et saisie via service');
   const html = read('index.html');
-  assert.match(html, /labels\.js\?v=20261024-4/);
+  assert.match(html, /labels\.js\?v=20261024-5/);
 });
 
 test('sélecteur : tous les modèles de l’environnement, mis à jour sans recharger, état vide sinon', async () => {

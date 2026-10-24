@@ -147,7 +147,7 @@ test('index.html : Babel absent, React conservé, cache-buster 20261023-1 sur le
   assert.equal(/@babel\/standalone|babel\.min\.js|text\/babel/i.test(html), false);
   assert.match(html, /react@18\.3\.1\/umd\/react\.production\.min\.js/);
   assert.match(html, /react-dom@18\.3\.1\/umd\/react-dom\.production\.min\.js/);
-  assert.equal((html.match(/app\.secured\.js\?v=20261024-3/g) || []).length, 2);
+  assert.equal((html.match(/app\.secured\.js\?v=20261024-4/g) || []).length, 2);
   assert.match(html, /core-supervision\.js\?v=20261023-6/);
   assert.match(html, /pad-device\.js\?v=20261023-2/);
   assert.equal(html.includes('20260916c'), false);
