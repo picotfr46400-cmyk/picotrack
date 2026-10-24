@@ -1178,7 +1178,9 @@
       setKpiValue(wrap, /pad|terrain/i, padCount, 'licences PAD');
       setKpiValue(wrap, /service|workflow/i, serviceCount, instances.length + (instances.length > 1 ? ' dossiers' : ' dossier'));
       setKpiValue(wrap, /utilisateur|licence/i, userCount, (users.supervision || 0) + ' supervision');
-      setKpiValue(wrap, /base/i, (typeof DATABASES_DATA !== 'undefined' ? DATABASES_DATA.filter(notInternalDb).length : 0), 'tables métier');
+      var dbAuto = (typeof DATABASES_DATA !== 'undefined' ? DATABASES_DATA.filter(notInternalDb).length : 0);
+      // Vocabulaire unique : bases autonomes (Studio > Bases) + bases de formulaires (une par formulaire actif, Données).
+      setKpiValue(wrap, /base/i, dbAuto + formActive, dbAuto + (dbAuto > 1 ? ' autonomes' : ' autonome') + ' · ' + formActive + ' de formulaires');
       var act = wrap.querySelector('.v4-activity p');
       if (act) act.textContent = window.ptLatestActivityLabel(instances, typeof SUBMISSIONS_DATA !== 'undefined' ? SUBMISSIONS_DATA : []);
     } catch (err) {

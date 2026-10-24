@@ -378,13 +378,13 @@
   function paintLabels() {
     var root = document.getElementById('labels-wrap'); if (!root) return;
     if (editor) return paintEditor();
-    var head = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap"><div><h2 style="margin:0;font-size:18px">Modèles d’étiquettes</h2>' +
-      '<div style="font-size:12.5px;color:var(--tl,#64748b)">Un modèle relie les champs d’un formulaire à ce qui s’imprime sur l’étiquette.</div></div>' +
+    var head = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap"><div style="font-size:13px;color:var(--tl,#64748b);display:flex;align-items:center;gap:6px">' + state.templates.length + ' modèle(s) ' + (window.ptUi ? window.ptUi.tip('Un modèle relie les champs d’un formulaire à ce qui s’imprime sur l’étiquette.') : '') + '</div>' +
       (state.canManage ? '<button type="button" class="btn btn-p" data-new>＋ Nouveau modèle</button>' : '') + '</div>';
     var body;
     if (!state.loaded && !state.error) body = '<div style="' + card + ';color:var(--tl,#64748b);font-size:13px">Chargement…</div>';
     else if (!state.templates.length) body = '<div style="' + card + ';text-align:center;padding:36px;color:var(--tl,#64748b)"><div style="font-size:30px">🏷️</div><b>Aucun modèle d’étiquette</b><div style="font-size:12.5px;margin-top:4px">' +
-      (state.canManage ? 'Créez votre premier modèle : choisissez un formulaire, un format, puis placez les champs.' : 'Aucun modèle n’a encore été créé.') + '</div></div>';
+      (state.canManage ? 'Créez votre premier modèle : choisissez un formulaire, un format, puis placez les champs.' : 'Aucun modèle n’a encore été créé.') + '</div>' +
+      (state.canManage ? '<button type="button" class="btn btn-p" data-new style="margin-top:14px">＋ Créer un modèle</button>' : '') + '</div>';
     else body = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">' + state.templates.map(function (t) {
       var f = formById(t.form_id), pr = printerById(t.printer_profile_id);
       return '<div style="' + card + '"><div style="display:flex;justify-content:space-between;gap:8px"><b>' + esc(t.name) + '</b><span style="font-size:11.5px;color:var(--tl,#64748b)">' + t.width_mm + ' × ' + t.height_mm + ' mm</span></div>' +
@@ -396,7 +396,7 @@
     }).join('') + '</div>';
     root.innerHTML = head + notice() + body;
     bindRetry(root, paintLabels);
-    var n = root.querySelector('[data-new]'); if (n) n.onclick = function () { openEditor(null); };
+    root.querySelectorAll('[data-new]').forEach(function (n) { n.onclick = function () { openEditor(null); }; });
     root.querySelectorAll('[data-edit]').forEach(function (b) { b.onclick = function () { openEditor(tplById(b.getAttribute('data-edit'))); }; });
     root.querySelectorAll('[data-batch]').forEach(function (b) { b.onclick = function () { openBatch(tplById(b.getAttribute('data-batch'))); }; });
     root.querySelectorAll('[data-del]').forEach(function (b) {
@@ -596,12 +596,12 @@
   function paintPrinters(editing) {
     var root = document.getElementById('printers-wrap'); if (!root) return;
     var poste = posteDefault();
-    var head = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap"><div><h2 style="margin:0;font-size:18px">Imprimantes</h2>' +
-      '<div style="font-size:12.5px;color:var(--tl,#64748b)">Système : fenêtre d’impression de l’ordinateur ou de la tablette. Bluetooth et TCP/IP : envoi direct depuis l’application PicoTrack PAD sur Android. FTP : envoi par le serveur PicoTrack.</div></div>' +
+    var head = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap"><div style="font-size:13px;color:var(--tl,#64748b);display:flex;align-items:center;gap:6px">' + state.printers.length + ' imprimante(s) ' + (window.ptUi ? window.ptUi.tip('Système : fenêtre d’impression de l’ordinateur ou de la tablette. Bluetooth et TCP/IP : envoi direct depuis l’application PicoTrack PAD sur Android. FTP : envoi par le serveur PicoTrack.') : '') + '</div>' +
       (state.canManage ? '<button type="button" class="btn btn-p" data-new>＋ Ajouter une imprimante</button>' : '') + '</div>';
     var body;
     if (!state.loaded && !state.error) body = '<div style="' + card + ';font-size:13px;color:var(--tl,#64748b)">Chargement…</div>';
-    else if (!state.printers.length) body = '<div style="' + card + ';text-align:center;padding:36px;color:var(--tl,#64748b)"><div style="font-size:30px">🖨️</div><b>Aucune imprimante réglée</b><div style="font-size:12.5px;margin-top:4px">Sans réglage, l’impression s’ouvre au format du modèle. Ajoutez une imprimante pour fixer son format, ses marges et lancer une page de test.</div></div>';
+    else if (!state.printers.length) body = '<div style="' + card + ';text-align:center;padding:36px;color:var(--tl,#64748b)"><div style="font-size:30px">🖨️</div><b>Aucune imprimante réglée</b><div style="font-size:12.5px;margin-top:4px">Sans réglage, l’impression s’ouvre au format du modèle. Ajoutez une imprimante pour fixer son format, ses marges et lancer une page de test.</div>' +
+      (state.canManage ? '<button type="button" class="btn btn-p" data-new style="margin-top:14px">＋ Ajouter une imprimante</button>' : '') + '</div>';
     else body = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">' + state.printers.map(function (p) {
       return '<div style="' + card + '"><div style="display:flex;justify-content:space-between;gap:8px"><b>' + esc(p.name) + '</b><span style="font-size:11px;padding:2px 7px;border-radius:99px;background:' + (connOf(p) !== 'system' ? '#ede9fe' : p.kind === 'zpl' ? '#fef3c7' : '#e0f2fe') + '">' + (connOf(p) !== 'system' ? CONN_LABEL[connOf(p)] : p.kind === 'zpl' ? 'Système · fichier ZPL' : 'Système') + '</span></div>' +
         '<div style="font-size:12px;color:var(--tl,#64748b);margin:6px 0">' + p.width_mm + ' × ' + p.height_mm + ' mm · marge ' + p.margin_mm + ' mm · ' + p.dpi + ' dpi' + (Number(p.rotation) ? ' · rotation ' + p.rotation + '°' : '') + (p.is_default ? ' · <b>par défaut</b>' : '') + (String(p.id) === poste ? ' · <b>ce poste</b>' : '') + '</div>' +
@@ -615,7 +615,7 @@
     }).join('') + '</div>';
     root.innerHTML = head + notice() + (editing ? printerForm(editing) : '') + body;
     bindRetry(root, paintPrinters);
-    var n = root.querySelector('[data-new]'); if (n) n.onclick = function () { paintPrinters({ name: '', kind: 'system', connection: 'system', address: '', port: null, site: '', rotation: 0, ftp_user: '', ftp_dir: '', width_mm: 100, height_mm: 50, margin_mm: 0, dpi: 203, notes: '', is_default: !state.printers.length }); };
+    root.querySelectorAll('[data-new]').forEach(function (n) { n.onclick = function () { paintPrinters({ name: '', kind: 'system', connection: 'system', address: '', port: null, site: '', rotation: 0, ftp_user: '', ftp_dir: '', width_mm: 100, height_mm: 50, margin_mm: 0, dpi: 203, notes: '', is_default: !state.printers.length }); }; });
     root.querySelectorAll('[data-test]').forEach(function (b) { b.onclick = function () { testPage(printerById(b.getAttribute('data-test'))); }; });
     root.querySelectorAll('[data-poste]').forEach(function (b) { b.onclick = function () { setPosteDefault(b.getAttribute('data-poste')); toast('s', 'Imprimante choisie pour ce poste.'); paintPrinters(); }; });
     var up = root.querySelector('[data-unposte]'); if (up) up.onclick = function () { setPosteDefault(''); paintPrinters(); };
