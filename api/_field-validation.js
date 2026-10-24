@@ -734,7 +734,7 @@
       var v = values[String(src.id)];
       var rel = compareCond(c.op, src, v, c.val);
       if (rel !== null) return rel;
-      var o = Array.isArray(v) ? v.join(',') : v === true ? 'true' : v === false ? 'false' : v == null ? '' : String(v);
+      var o = Array.isArray(v) ? v.map(function (x) { return x && typeof x === 'object' ? (x.label || '') : x; }).join(',') : v === true ? 'true' : v === false ? 'false' : v == null ? '' : String(typeof v === 'object' ? (v.label || '') : v);
       var val = String(c.val == null ? '' : c.val);
       return c.op === '=' ? o === val : c.op === '!=' ? o !== val : c.op === 'contains' ? o.indexOf(val) >= 0 : c.op === 'empty' ? !o : true;
     });
