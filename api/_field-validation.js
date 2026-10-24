@@ -301,13 +301,23 @@
       return { y: +o.year, m: +o.month, d: +o.day, h: +o.hour, mi: +o.minute };
     } catch (e) { return { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes() }; }
   }
+  /* Correctif lot 3 (prod) : « personne connectée » = { id, label } avec le nom, jamais l'e-mail. */
+  function meIdentity(u) {
+    u = u || {};
+    var clean = function (v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim(); };
+    var noMail = function (v) { var c = clean(v); return c && c.indexOf('@') < 0 ? c : ''; };
+    var name = clean([u.firstname || u.first_name, u.lastname || u.last_name].filter(Boolean).join(' '));
+    var label = noMail(u.display_name) || noMail(u.full_name) || noMail(u.label) || noMail(u.nom) || noMail(name) || noMail(u.login_user) || noMail(u.username) || 'Utilisateur';
+    var id = u.id != null && u.id !== '' ? String(u.id) : '';
+    return id ? { id: id, label: label } : label;
+  }
   function resolveDefault(f, ctx) {
     var dyn = f && f.defaultDyn;
     if (!dyn || !dyn.kind) return undefined;
     ctx = ctx || {};
     var t = lower(f.type), off = parseInt(dyn.offset, 10) || 0;
     var now = ctx.now ? new Date(ctx.now) : new Date();
-    if (dyn.kind === 'me') { var u = ctx.user || {}; return String(u.label || u.email || u.id || ''); }
+    if (dyn.kind === 'me') return meIdentity(ctx.user);
     if (dyn.kind === 'site') return String(ctx.site || '');
     if (dyn.kind === 'today' || dyn.kind === 'now') {
       var shifted;
@@ -1190,7 +1200,7 @@
     makeViewer: makeViewer,
     roleAllowed: roleAllowed,
     redactValues: redactValues,
-    resolveDefault: resolveDefault,
+    resolveDefault: resolveDefault, meIdentity: meIdentity,
     isChoice: isChoice,
     isMultiChoice: isMultiChoice,
     cleanSource: cleanSource,

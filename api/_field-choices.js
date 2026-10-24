@@ -128,7 +128,10 @@ async function listOptions(ctx, form, fieldId, values) {
 
 /* Valeurs par défaut posées par le serveur (utilisateur connecté, site). */
 function defaultsCtx(profile, site) {
-  return { user: meOf(profile), site: site || '' };
+  // Correctif lot 3 (prod) : noms transmis pour que « personne connectée » donne { id, label } sans e-mail.
+  const p = profile || {};
+  const names = { firstname: p.firstname, first_name: p.first_name, lastname: p.lastname, last_name: p.last_name, login_user: p.login_user, username: p.username };
+  return { user: Object.assign(names, meOf(profile)), site: site || '' };
 }
 
 module.exports = { viewerFor, sourceRows, optionsFor, choicesFor, listOptions, defaultsCtx, meOf, fieldsOf, USER_COLUMNS, MAX_ROWS };

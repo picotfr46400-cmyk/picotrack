@@ -1194,7 +1194,11 @@ function canSeeInternalNotes(profile, catalog, services, form) {
   if (role === 'operateur' || role === 'operator') return false;
   if (!form || form.id == null || form.id === '') return false;
   const level = access.formLevel(profile, catalog, form.id, services);
-  if (level === 'hidden' || level === 'read') return false;
+  if (level === 'write') return true;
+  if (level !== 'normal') return false; // hidden, read, ou niveau inconnu : échec fermé
+  // Correctif lot 3 (prod) : sans permission d'édition configurée sur le formulaire (ou colonne absente
+  // de la réponse), « normal » ne suffit plus : note réservée au niveau 'write' et à l'administrateur.
+  if (!permissionRolesForRecord('forms', form, 'edit').length) return false;
   return recordAllowedForProfile('forms', form, 'edit', profile);
 }
 
@@ -2433,12 +2437,23 @@ async function handleExportSubmissionPdf(req, body) {
     environmentDisplayName(req, env)
   ]);
   const safeForm = form && normalizeEnvCode(form.environment_code) === env ? form : null;
+  // Correctif lot 3 (prod) : recherches et calculs dépendants recalculés avec les droits de CE lecteur
+  // (comme records / pad-sync). Échec du recalcul : export refusé, jamais la valeur de l'auteur.
+  const pdfFields = Array.isArray(safeForm?.fields) ? safeForm.fields : [];
+  const pdfViewer = fieldChoices.viewerFor(profile, catalog);
+  let pdfValues = fieldValidation.redactValues(pdfFields, submission.values, pdfViewer);
+  try {
+    pdfValues = (await fieldLookup.refreshRowForReader({ read: path => readStrictRows(req, path), env, profile, catalog, services, viewer: pdfViewer }, pdfFields, pdfValues, { now: submission.created_at || undefined })).values;
+  } catch (_) {
+    throw Object.assign(new Error('Export PDF indisponible pour le moment.'), { status: 503 });
+  }
   let exportRow = null;
   let lineSets = [[]];
   try {
     const packed = await submissionAudit.prepareExportTrace(req, {
       serviceRest, user, profile, env, submissionId: id, submission,
-      hidden: fieldRoles.hiddenKeys(safeForm ? fieldRoles.fieldsOf(safeForm) : [], fieldRoles.viewerFor(profile, catalog))
+      // Historique : anciennes valeurs dérivées calculées avec les droits de leur auteur → retirées.
+      hidden: new Set([...fieldRoles.hiddenKeys(safeForm ? fieldRoles.fieldsOf(safeForm) : [], pdfViewer), ...fieldRoles.authorDependentKeys(safeForm ? fieldRoles.fieldsOf(safeForm) : [])])
     });
     exportRow = packed.row;
     lineSets = packed.lineSets || [packed.lines || []];
@@ -2450,7 +2465,7 @@ async function handleExportSubmissionPdf(req, body) {
     environmentCode: env,
     formName: safeForm?.nom || safeForm?.name || 'Formulaire',
     fields: Array.isArray(safeForm?.fields) ? safeForm.fields : [],
-    values: fieldValidation.redactValues(Array.isArray(safeForm?.fields) ? safeForm.fields : [], submission.values, fieldChoices.viewerFor(profile, catalog)),
+    values: pdfValues,
     createdAt: submission.created_at,
     device: submission.device,
     author: workflow.author,
@@ -2535,7 +2550,7 @@ async function handler(req, res) {
           assertRecordAllowed,
           hiddenFields: async (request, profile, env, formIds) => fieldRoles.hiddenForForms(
             (path) => serviceRest(path, { method: 'GET', prefer: '', req: request }), env, formIds,
-            fieldRoles.viewerFor(profile, await catalogFor(request, profile))),
+            fieldRoles.viewerFor(profile, await catalogFor(request, profile)), { authorDependent: true }),
           assertInstanceVisible: async (request, profile, row) => {
             const catalog = await catalogFor(request, profile);
             access.assertLevel(access.instanceLevel(profile, catalog, row), 'read');
@@ -2602,7 +2617,22 @@ async function handler(req, res) {
           const servicesIdx = () => (servicesP = servicesP || loadServicesIndex(req, profile, normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO')));
           result = await handleQueue(req, body, profile, {
             instanceVisible: async row => access.instanceLevel(profile, await catalog(), row) !== 'hidden',
-            formVisible: async formId => access.formLevel(profile, await catalog(), formId, await servicesIdx()) !== 'hidden'
+            formVisible: async formId => access.formLevel(profile, await catalog(), formId, await servicesIdx()) !== 'hidden',
+            // Correctif lot 3 (prod) : étiquette manuelle, valeurs dérivées recalculées avec les droits du lecteur.
+            readerValues: async (serviceId, values, createdAt) => {
+              const env = normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO');
+              const read = path => readStrictRows(req, path);
+              const svc = await read(`services?id=eq.${encodeURIComponent(serviceId)}&environment_code=eq.${encodeURIComponent(env)}&select=id,form_id&limit=1`);
+              const formId = svc[0] && svc[0].form_id;
+              if (formId == null || formId === '') return null;
+              const forms = await read(`forms?id=eq.${encodeURIComponent(formId)}&environment_code=eq.${encodeURIComponent(env)}&select=id,fields&limit=1`);
+              if (!forms[0]) return null;
+              const fields = fieldRoles.fieldsOf(forms[0]);
+              const cat = await catalog();
+              const viewer = fieldChoices.viewerFor(profile, cat);
+              const visible = fieldValidation.redactValues(fields, values, viewer);
+              return fieldLookup.refreshRowForReader({ read, env, profile, catalog: cat, services: await servicesIdx(), viewer }, fields, visible, { now: createdAt || undefined });
+            }
           });
         }
         break;
@@ -2657,5 +2687,6 @@ handler.effectiveEnvironmentCode = effectiveEnvironmentCode;
 handler.redactRecordsPayload = redactRecordsPayload;
 handler.READ_COLUMNS = READ_COLUMNS;
 handler.redactFieldRolesInResult = redactFieldRolesInResult;
+handler.canSeeInternalNotes = canSeeInternalNotes;
 handler.WRITE_COLUMNS = WRITE_COLUMNS;
 module.exports = handler;

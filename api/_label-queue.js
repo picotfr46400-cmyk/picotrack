@@ -501,10 +501,18 @@ async function handleQueue(req, body, profile, opts) {
     const allowed = await assertFieldMap(req, env, opts, inst.service_id, fieldMap);
     const snap = applyFieldMap(templateSnapshot(tpl), fieldMap);
     const fd = inst.form_data && typeof inst.form_data === 'object' ? inst.form_data : {};
-    const values = fd.values && typeof fd.values === 'object' ? fd.values : fd;
+    let values = fd.values && typeof fd.values === 'object' ? fd.values : fd;
+    // Correctif lot 3 (prod) : impression demandée par un utilisateur → recherches et calculs dépendants
+    // recalculés avec SES droits ; seules ces valeurs recalculées sont rendues imprimables.
+    // Sans recalcul possible : elles restent masquées (règle des envois automatiques).
+    let hidden = await labelHidden(req, env, inst.service_id);
+    if (hidden && !hidden.all && typeof opts.readerValues === 'function') {
+      const r = await opts.readerValues(inst.service_id, values, inst.created_at).catch(() => null);
+      if (r && r.values) { values = r.values; hidden = new Set([...hidden].filter(k => !r.recomputed.has(k))); }
+    }
     const job = {
       environment_code: env, printer_id: printerId, template_id: tpl.id, template_name: str(tpl.name, 120), template: snap,
-      context: contextFor(snap, values, { submissionId: inst.submission_id, createdAt: inst.created_at, reference: inst.reference || inst.ref || '' }, allowed, await labelHidden(req, env, inst.service_id)),
+      context: contextFor(snap, values, { submissionId: inst.submission_id, createdAt: inst.created_at, reference: inst.reference || inst.ref || '' }, allowed, hidden),
       copies: copiesOf(body.copies, 1), status: 'pending', source: 'manual', service_id: String(inst.service_id || ''), instance_id: String(inst.id),
       submission_id: String(inst.submission_id || ''), reference: str(inst.reference || inst.ref || '', 80),
       created_by: /^[0-9a-f-]{36}$/i.test(String(profile.id || '')) ? profile.id : null, created_by_name: personName(profile),

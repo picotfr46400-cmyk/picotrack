@@ -103,7 +103,7 @@ test('conditions : comparaisons de nombres et date/heure par rapport à maintena
 
 test('écran : réglages lot 2 branchés et clés de cache', () => {
   const html = read('index.html');
-  assert.match(html, /field-lot1\.js\?v=20261024-7" defer><\/script><script src="\/assets\/field-lot2\.js\?v=20261024-8" defer>/);
+  assert.match(html, /field-lot1\.js\?v=20261024-11" defer><\/script><script src="\/assets\/field-lot2\.js\?v=20261024-8" defer>/);
   assert.ok(read('build.js').includes("'field-lot2.js'"));
   const app = read('assets/app.secured.js');
   assert.ok(app.includes('ptLot2Panel') && app.includes('PtLot2FormSettings'));
