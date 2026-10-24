@@ -22,7 +22,7 @@ const BASELINE = path.join(__dirname, 'baseline.sql');
 const MIGRATIONS = path.join(ROOT, 'supabase', 'migrations');
 const FORBIDDEN_REFS = new Set(['jcanufkmcslxwmheqccp', 'ukucbfxyvyvtlglujoht']); // EFC, DEMO
 const RESERVED_ENVS = new Set(['GLOBAL', 'DEMO', 'EFC', 'GIT', 'PROSPECT']);
-const BASELINE_UNTIL = '20261024120000';
+const BASELINE_UNTIL = '20261024160000';
 
 class GuardError extends Error {}
 function guard(msg) { throw new GuardError(msg); }

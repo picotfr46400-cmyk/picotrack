@@ -10,6 +10,7 @@ const { assertQuotaAvailable, updateAddsActiveSeat, prepareCompanionLicenseChang
 const { assertWritableEmail } = require('./_email');
 const access = require('./_access');
 const { handleLabels } = require('./_labels');
+const { handleQueue } = require('./_label-queue');
 const fieldValidation = require('./_field-validation');
 const dbRowUpdate = require('./_db-row-update');
 
@@ -2359,6 +2360,8 @@ async function handler(req, res) {
     if (!cronAuthorized(req)) return json(res, 401, { error: 'Non autorisé' });
     try {
       const drained = await runDailyMailQueue({ deadline: mailDeadline, mailEnv: process.env });
+      // Étiquettes terminées depuis plus de 90 jours : purge quotidienne, sans bloquer la file mail.
+      try { await require('./_label-queue').purgeOldJobs(req); } catch (_) {}
       return json(res, 200, { ok: true, pending: !!(drained && drained.pending) });
     } catch (err) {
       return json(res, 500, { error: 'File mail indisponible' });
@@ -2439,6 +2442,33 @@ async function handler(req, res) {
         const profile = await getUserProfile(user.id, req);
         req.picoReaderProfile = profile;
         result = await handleLabels(req, body, profile);
+        break;
+      }
+      case 'labels_queue_list':
+      case 'labels_queue_claim':
+      case 'labels_queue_done':
+      case 'labels_queue_cancel':
+      case 'labels_queue_requeue':
+      case 'labels_queue_reprint':
+      case 'labels_queue_manual':
+      case 'labels_rules_list':
+      case 'labels_rules_save':
+      case 'labels_rules_delete':
+      case 'labels_defaults_list':
+      case 'labels_defaults_save': {
+        const user = await requireAuth(req);
+        const profile = await getUserProfile(user.id, req);
+        req.picoReaderProfile = profile;
+        {
+          // Mêmes règles que la lecture : dossier (workflow + statut) et formulaire masqués pour le rôle = refus.
+          let catalogP = null; let servicesP = null;
+          const catalog = () => (catalogP = catalogP || catalogFor(req, profile));
+          const servicesIdx = () => (servicesP = servicesP || loadServicesIndex(req, profile, normalizeEnvRecordValue(effectiveEnvironmentCode(profile, profile?.environment_code), 'DEMO')));
+          result = await handleQueue(req, body, profile, {
+            instanceVisible: async row => access.instanceLevel(profile, await catalog(), row) !== 'hidden',
+            formVisible: async formId => access.formLevel(profile, await catalog(), formId, await servicesIdx()) !== 'hidden'
+          });
+        }
         break;
       }
       case 'mail_rules_list':
