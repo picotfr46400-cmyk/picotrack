@@ -176,7 +176,9 @@
   }
 
   // ZPL II (imprimantes Zebra et compatibles). ^CI28 = UTF-8.
-  function zplEscape(s) { return String(s == null ? '' : s).replace(/[\^~\\]/g, ' '); }
+  // Données de champ ^FD : ni préfixe de commande (^ ~), ni \ (^FH), ni caractère de contrôle
+  // (retour ligne, NUL…) qui pourrait couper ou injecter une commande ; longueur bornée.
+  function zplEscape(s) { return String(s == null ? '' : s).replace(/[\^~\\\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').slice(0, 3000); }
   var ZPL_DPIS = [152, 203, 300, 600];
   var ZPL_ORIENT = { 0: 'N', 90: 'R', 180: 'I', 270: 'B' };
   // Boîte (x, y, w, h) du modèle → position sur le support une fois tournée (sens horaire).

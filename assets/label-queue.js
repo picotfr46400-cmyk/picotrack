@@ -115,7 +115,7 @@
     var ui = U();
     if (!ui) return Promise.reject(new Error('Étiquettes indisponibles'));
     q.busy[job.id] = true;
-    return api('labels_queue_claim', { job_id: job.id, station: station() }).then(function (res) {
+    return api('labels_queue_claim', { job_id: job.id, station: station(), takeover: !!(opts && opts.takeover) }).then(function (res) {
       if (!res || !res.claimed) { toast('w', 'Cette étiquette est déjà prise par un autre poste.'); return 'taken'; }
       var j = res.job;
       var ctx = Object.assign({ origin: location.origin }, j.context || {});
@@ -161,7 +161,7 @@
   }
   // Plusieurs étiquettes : prise une par une (un seul poste par étiquette), puis une seule fenêtre
   // pour toutes celles en « Système » ; les autres connexions gardent leur envoi direct.
-  function printBatch(jobs) {
+  function printBatch(jobs, opts) {
     var ui = U();
     if (!ui) return Promise.reject(new Error('Étiquettes indisponibles'));
     jobs = (jobs || []).filter(function (j) { return j && !q.busy[j.id]; });
@@ -170,7 +170,7 @@
     var release = function () { jobs.forEach(function (j) { delete q.busy[j.id]; }); };
     return jobs.reduce(function (p, job) {
       return p.then(function () {
-        return api('labels_queue_claim', { job_id: job.id, station: station() }).then(function (res) {
+        return api('labels_queue_claim', { job_id: job.id, station: station(), takeover: !!(opts && opts.takeover) }).then(function (res) {
           if (!res || !res.claimed) { result.taken++; return; }
           var j = res.job, pr = ui.printerById(j.printer_id) || null;
           var ctx = Object.assign({ origin: location.origin }, j.context || {});
@@ -181,7 +181,7 @@
             var ok = mode !== 'error'; result[ok ? 'printed' : 'failed']++;
             return api('labels_queue_done', { job_id: j.id, ok: ok, mode: String(mode || ''), error: ok ? '' : 'Envoi à l’imprimante impossible.' });
           });
-        }).catch(function () { result.failed++; });
+        }).catch(function (e) { result.failed++; result.error = result.error || (e && e.message); });
       });
     }, Promise.resolve()).then(function () {
       if (!batch.length) return;
@@ -194,6 +194,7 @@
       }, Promise.resolve());
     }).then(function () {
       release();
+      if (result.error) toast('e', result.error);
       if (result.taken) toast('w', result.taken + ' étiquette(s) déjà prise(s) par un autre poste.');
       if (result.printed) toast('s', result.printed + ' étiquette(s) imprimée(s)' + (result.windows ? ' (une seule fenêtre d’impression).' : '.'));
       return result;
@@ -297,6 +298,7 @@
       return '<div>' + esc(frDateTime(h.at)) + ' · ' + esc(HIST_LABEL[h.kind] || h.kind) + (h.kind === 'claimed' && h.station ? ' ' + esc(h.station) : '') + (h.by ? ' · ' + esc(h.by) : '') + (h.error ? ' · ' + esc(h.error) : '') + '</div>';
     }).join('');
   }
+  function isManager() { return !!(q.canManage || (U() && U().state && U().state.canManage)); }
   function pendingJobs() { return q.jobs.filter(function (j) { return j.status === 'pending' && !q.busy[j.id]; }); }
   function jobRow(j) {
     var actions = [];
@@ -331,10 +333,10 @@
     box.querySelector('[data-qprinter]').onchange = function () { q.printer = this.value; q.jobs = []; loadQueue(); };
     box.querySelector('[data-qscope]').onchange = function () { q.scope = this.value; q.jobs = []; loadQueue(); };
     box.querySelector('[data-qrefresh]').onclick = function () { loadQueue(); };
-    var all = box.querySelector('[data-qall]'); if (all) all.onclick = function () { all.disabled = true; printBatch(pendingJobs()).catch(function (e) { toast('e', e.message); }).then(loadQueue); };
+    var all = box.querySelector('[data-qall]'); if (all) all.onclick = function () { all.disabled = true; printBatch(pendingJobs(), { takeover: isManager() }).catch(function (e) { toast('e', e.message); }).then(loadQueue); };
     var rt = box.querySelector('[data-qretry]'); if (rt) rt.onclick = function () { loadQueue(); };
     var byId = function (id) { return q.jobs.filter(function (j) { return String(j.id) === String(id); })[0]; };
-    box.querySelectorAll('[data-qprint]').forEach(function (b) { b.onclick = function () { b.disabled = true; printJob(byId(b.getAttribute('data-qprint'))).then(loadQueue); }; });
+    box.querySelectorAll('[data-qprint]').forEach(function (b) { b.onclick = function () { b.disabled = true; printJob(byId(b.getAttribute('data-qprint')), { takeover: isManager() }).then(loadQueue); }; });
     var simple = function (attr, action, msg, confirmMsg) {
       box.querySelectorAll('[' + attr + ']').forEach(function (b) {
         b.onclick = function () {
@@ -360,7 +362,7 @@
         box.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
         api('labels_queue_reprint', { job_id: job.id, printer_id: box.querySelector('[data-rp]').value || null, copies: box.querySelector('[data-rc]').value }).then(function (res) {
           close();
-          if (now && res && res.job) return printJob(res.job).then(function (r) { if (r === 'printed') toast('s', 'Étiquette réimprimée.'); });
+          if (now && res && res.job) return printJob(res.job, { takeover: isManager() }).then(function (r) { if (r === 'printed') toast('s', 'Étiquette réimprimée.'); });
           toast('s', 'Réimpression ajoutée à la file.');
         }).catch(function (e) { toast('e', e.message); box.querySelectorAll('button').forEach(function (b) { b.disabled = false; }); }).then(function () { if (after) after(); });
       }

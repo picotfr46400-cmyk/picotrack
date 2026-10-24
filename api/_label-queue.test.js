@@ -15,6 +15,7 @@ let responder = () => [];
 function mock() { calls.length = 0; ss.serviceRest = async (p, o) => { calls.push({ path: p, opts: o || {} }); return responder(p, o || {}); }; }
 test.after(() => { ss.serviceRest = realRest; });
 
+const VIS = { instanceVisible: async () => true, formVisible: async () => true };
 const UID = '11111111-1111-1111-1111-111111111111';
 const admin = { id: UID, role: 'admin', environment_code: 'GIT', active: true, email: 'a@x.fr' };
 const operator = { id: '22222222-2222-2222-2222-222222222222', role: 'operateur', environment_code: 'GIT', active: true };
@@ -193,19 +194,20 @@ test('file : prise atomique, fin, annulation par l’auteur seulement, réimpres
     if (p.startsWith('label_print_jobs') && o.method === 'POST') return [Object.assign({ id: 9 }, o.body)];
     if (p.startsWith('label_print_jobs')) return [job];
     if (p.startsWith('printer_profiles')) return [{ id: 4 }];
+    if (p.startsWith('label_printer_defaults') && p.includes('Quai%202')) return [{ printer_id: 4 }];
     return [];
   };
-  const c = await Q.handleQueue({}, { action: 'labels_queue_claim', job_id: '8', station: 'Quai 2' }, operator);
+  const c = await Q.handleQueue({}, { action: 'labels_queue_claim', job_id: '8', station: 'Quai 2' }, operator, VIS);
   assert.equal(c.claimed, true);
   assert.equal(c.job.claimed_by, 'Quai 2');
   assert.ok(calls.some(x => x.opts.method === 'PATCH' && x.path.includes('&status=eq.pending') && x.path.includes('environment_code=eq.GIT')));
-  const again = await Q.handleQueue({}, { action: 'labels_queue_claim', job_id: '8' }, admin);
+  const again = await Q.handleQueue({}, { action: 'labels_queue_claim', job_id: '8', takeover: true }, admin, VIS);
   assert.equal(again.claimed, false, 'un seul poste prend l’étiquette');
-  const d = await Q.handleQueue({}, { action: 'labels_queue_done', job_id: '8', ok: true, mode: 'system' }, operator);
+  const d = await Q.handleQueue({}, { action: 'labels_queue_done', job_id: '8', ok: true, mode: 'system' }, operator, VIS);
   assert.equal(d.job.status, 'printed');
   assert.deepEqual(d.job.history.map(h => h.kind), ['claimed', 'printed']);
-  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_cancel', job_id: '8' }, Object.assign({}, operator, { id: '44444444-4444-4444-4444-444444444444' })), e => e.status === 403);
-  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_cancel', job_id: '8' }, operator), e => e.status === 409, 'déjà imprimée');
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_cancel', job_id: '8' }, Object.assign({}, operator, { id: '44444444-4444-4444-4444-444444444444' }), VIS), e => e.status === 403);
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_cancel', job_id: '8' }, operator, VIS), e => e.status === 409, 'déjà imprimée');
   const r = await Q.handleQueue({}, { action: 'labels_queue_reprint', job_id: '8', copies: 1 }, operator, { instanceVisible: async () => true });
   const posted = calls.filter(x => x.opts.method === 'POST').pop().opts.body;
   assert.equal(posted.source, 'reprint');
@@ -352,7 +354,10 @@ test('réimpression : mêmes droits que la lecture du dossier (workflow et statu
 
 test('records.js branche la règle de lecture des dossiers', () => {
   const rec = fs.readFileSync(path.join(__dirname, 'records.js'), 'utf8');
-  assert.match(rec, /handleQueue\(req, body, profile, \{[\s\S]{0,200}instanceVisible: async row => access\.instanceLevel\(profile, await catalogFor\(req, profile\), row\) !== 'hidden'/);
+  assert.match(rec, /instanceVisible: async row => access\.instanceLevel\(profile, await catalog\(\), row\) !== 'hidden'/);
+  assert.match(rec, /formVisible: async formId => access\.formLevel\(profile, await catalog\(\), formId, await servicesIdx\(\)\) !== 'hidden'/);
+  assert.match(rec, /catalogFor\(req, profile\)/);
+  assert.match(rec, /purgeOldJobs\(req\)/);
 });
 
 test('navigateur : imprimante Système = une seule fenêtre pour toutes les étiquettes', async () => {
@@ -385,4 +390,134 @@ test('navigateur : association des zones = nom du champ, jamais l’identifiant'
   assert.equal(QB.fieldName('1792742022097'), 'N° de lot');
   assert.equal(QB.fieldName('x2'), 'Poids');
   assert.equal(QB.fieldName('disparu'), 'champ supprimé');
+});
+
+/* ---------- tests d'attaque (relecture #58) ---------- */
+function attackDb(over) {
+  const db = Object.assign({
+    jobs: [
+      { id: 1, status: 'pending', printer_id: 4, instance_id: '77', service_id: '4', reference: 'SVC-SECRET', history: [{ kind: 'created' }], created_by: operator.id, template: { name: 'T', elements: [] }, context: { reference: 'SVC-SECRET', submission: { values: { lot: 'confidentiel' } } } },
+      { id: 2, status: 'pending', printer_id: 4, instance_id: '78', service_id: '4', reference: 'SVC-OK', history: [], created_by: operator.id, template: { name: 'T', elements: [] }, context: { reference: 'SVC-OK' } },
+      { id: 3, status: 'pending', printer_id: 4, instance_id: '', service_id: '99', reference: '', history: [], created_by: operator.id, template: { name: 'T', elements: [] }, context: {} },
+      { id: 4, status: 'pending', printer_id: 5, instance_id: '78', service_id: '4', reference: 'SVC-OK', history: [], created_by: admin.id, template: { name: 'T', elements: [] }, context: {} },
+      { id: 5, status: 'pending', printer_id: null, instance_id: '78', service_id: '4', reference: 'SVC-OK', history: [], created_by: admin.id, template: { name: 'T', elements: [] }, context: {} }
+    ],
+    instances: { 77: { id: 77, service_id: 4, current_status_id: 's-secret' }, 78: { id: 78, service_id: 4, current_status_id: 's1' } },
+    stations: { 'Quai 2': 4, 'Bureau': 5 }
+  }, over || {});
+  mock();
+  responder = (p, o) => {
+    if (p.startsWith('service_instances')) {
+      const m = p.match(/id=in\.\(([^)]*)\)/) || p.match(/id=eq\.([^&]+)/);
+      const ids = m ? decodeURIComponent(m[1]).split(',') : [];
+      return ids.map(i => db.instances[i]).filter(Boolean);
+    }
+    if (p.startsWith('label_printer_defaults')) {
+      const k = decodeURIComponent((p.match(/scope_key=eq\.([^&]+)/) || [])[1] || '');
+      return db.stations[k] ? [{ printer_id: db.stations[k] }] : [];
+    }
+    if (p.startsWith('label_print_jobs')) {
+      const id = (p.match(/id=eq\.(\d+)/) || [])[1];
+      if (o.method === 'PATCH') { const j = db.jobs.find(x => String(x.id) === id); if (!j || (p.includes('status=eq.pending') && j.status !== 'pending')) return []; Object.assign(j, o.body); return [j]; }
+      return id ? db.jobs.filter(x => String(x.id) === id) : db.jobs.slice();
+    }
+    return [];
+  };
+  return db;
+}
+// Rôle de test : statut « s-secret » et workflow 99 masqués.
+const ROLE = { instanceVisible: async row => String(row.current_status_id || '') !== 's-secret' && String(row.service_id) !== '99' && String(row.service_id) !== '', formVisible: async id => String(id) !== 'f-secret' };
+
+test('attaque : la file n’expose ni référence, ni id, ni historique d’un dossier masqué', async () => {
+  attackDb();
+  const res = await Q.handleQueue({}, { action: 'labels_queue_list' }, operator, ROLE);
+  const ids = res.jobs.map(j => j.id);
+  assert.deepEqual(ids, [2, 4, 5]);
+  assert.ok(!JSON.stringify(res).includes('SVC-SECRET'));
+  assert.ok(calls.some(c => c.path.startsWith('service_instances?id=in.(') && c.path.includes('environment_code=eq.GIT')), 'dossiers relus en une requête, dans l’environnement');
+  // Sans règle fournie : rien de lié à un dossier ne sort.
+  const none = await Q.handleQueue({}, { action: 'labels_queue_list' }, operator);
+  assert.deepEqual(none.jobs, []);
+  // Historique : même filtre.
+  const hist = await Q.handleQueue({}, { action: 'labels_queue_list', scope: 'history' }, operator, ROLE);
+  assert.ok(!hist.jobs.some(j => j.id === 1 || j.id === 3));
+});
+
+test('attaque : prise d’une étiquette de dossier masqué = 404, contexte jamais renvoyé, rien modifié', async () => {
+  const db = attackDb();
+  for (const id of ['1', '3']) {
+    await assert.rejects(Q.handleQueue({ headers: { 'x-pt-station': 'Quai%202' } }, { action: 'labels_queue_claim', job_id: id, takeover: true }, admin, ROLE), e => e.status === 404 && !/SECRET|confidentiel/.test(e.message));
+  }
+  assert.equal(calls.filter(c => c.opts.method === 'PATCH').length, 0);
+  assert.equal(db.jobs[0].status, 'pending');
+  // done / annuler / remettre en file sur un dossier masqué : 404 aussi.
+  attackDb();
+  for (const action of ['labels_queue_done', 'labels_queue_cancel', 'labels_queue_requeue']) {
+    await assert.rejects(Q.handleQueue({}, { action, job_id: '1' }, admin, ROLE), e => e.status === 404, action);
+  }
+});
+
+test('attaque : un poste ne prend que les étiquettes de son imprimante, un admin prend la main explicitement', async () => {
+  const req = st => ({ headers: { 'x-pt-station': encodeURIComponent(st) } });
+  attackDb();
+  // Poste « Bureau » (imprimante 5) sur une étiquette de l'imprimante 4.
+  await assert.rejects(Q.handleQueue(req('Bureau'), { action: 'labels_queue_claim', job_id: '2' }, operator, ROLE), e => e.status === 403);
+  // Poste inconnu, ou station usurpée dans le corps sans imprimante associée.
+  await assert.rejects(Q.handleQueue(req('Inconnu'), { action: 'labels_queue_claim', job_id: '2' }, operator, ROLE), e => e.status === 403);
+  // takeover ignoré pour un non-admin.
+  await assert.rejects(Q.handleQueue(req('Bureau'), { action: 'labels_queue_claim', job_id: '2', takeover: true }, operator, ROLE), e => e.status === 403);
+  // Étiquette sans imprimante créée par quelqu'un d'autre.
+  await assert.rejects(Q.handleQueue(req('Quai 2'), { action: 'labels_queue_claim', job_id: '5' }, operator, ROLE), e => e.status === 403);
+  assert.equal(calls.filter(c => c.opts.method === 'PATCH').length, 0);
+  // Bon poste : accepté, contexte renvoyé.
+  const ok = await Q.handleQueue(req('Quai 2'), { action: 'labels_queue_claim', job_id: '2' }, operator, ROLE);
+  assert.equal(ok.claimed, true);
+  assert.equal(ok.job.claimed_by, 'Quai 2');
+  // Admin sans prise de main : même règle ; avec : accepté et tracé.
+  await assert.rejects(Q.handleQueue(req('Quai 2'), { action: 'labels_queue_claim', job_id: '4' }, admin, ROLE), e => e.status === 403);
+  const t = await Q.handleQueue(req('Quai 2'), { action: 'labels_queue_claim', job_id: '4', takeover: true }, admin, ROLE);
+  assert.equal(t.claimed, true);
+  assert.equal(t.job.history.at(-1).takeover, true);
+  // Réponses d'action (hors prise) : jamais le contenu de l'étiquette.
+  const patches = calls.filter(c => c.opts.method === 'PATCH');
+  assert.ok(patches.every(c => /select=[^&]*template,|select=[^&]*context/.test(c.path) === (c.path.includes('status=eq.pending') || c.path.includes('status=eq.claimed&claimed_at'))));
+});
+
+test('attaque : association manuelle vers un champ hors formulaire ou formulaire masqué refusée', async () => {
+  const base = (formId, fields) => (p, o) => {
+    if (p.startsWith('service_instances')) return [{ id: 78, service_id: 4, current_status_id: 's1', form_data: { lot: 'L1', secret_interne: 'X', autre: 'Y' } }];
+    if (p.startsWith('label_templates')) return [TEMPLATE];
+    if (p.startsWith('services')) return [{ id: 4, form_id: formId }];
+    if (p.startsWith('forms')) return [{ id: formId, fields }];
+    if (p.startsWith('printer_profiles')) return [{ id: 9, is_default: true }];
+    if (o.method === 'POST') return [Object.assign({ id: 50 }, o.body)];
+    return [];
+  };
+  const fields = [{ id: 'lot', label: 'Lot', type: 'text' }, { id: 'sep', type: 'separator' }];
+  mock(); responder = base('f1', fields);
+  for (const target of ['secret_interne', 'sep', '__proto__']) {
+    await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_manual', instance_id: '78', template_id: '5', field_map: { 0: target } }, operator, ROLE), e => e.status === 400, target);
+  }
+  assert.equal(calls.filter(c => c.opts.method === 'POST').length, 0);
+  mock(); responder = base('f-secret', fields);
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_queue_manual', instance_id: '78', template_id: '5', field_map: { 0: 'lot' } }, operator, ROLE), e => e.status === 404);
+  // Champ autorisé : seules les valeurs des champs du formulaire partent (le modèle vise « a », absent → rien).
+  mock(); responder = base('f1', fields);
+  await Q.handleQueue({}, { action: 'labels_queue_manual', instance_id: '78', template_id: '5', field_map: { 0: 'lot' } }, operator, ROLE);
+  const job = calls.find(c => c.opts.method === 'POST').opts.body;
+  assert.deepEqual(job.context.submission.values, { lot: 'L1' });
+  // Règle enregistrée par un admin : même contrôle.
+  mock(); responder = base('f1', fields);
+  await assert.rejects(Q.handleQueue({}, { action: 'labels_rules_save', rule: { event: 'workflow.status', service_id: '4', template_id: '5', field_map: { 0: 'secret_interne' } } }, admin, ROLE), e => e.status === 400);
+});
+
+test('purge : étiquettes terminées depuis plus de 90 jours, via le cron', async () => {
+  mock(); responder = () => [{ id: 1 }, { id: 2 }];
+  const now = Date.parse('2026-10-24T02:00:00Z');
+  const r = await Q.purgeOldJobs({}, now);
+  assert.equal(r.deleted, 2);
+  const c = calls[0];
+  assert.equal(c.opts.method, 'DELETE');
+  assert.match(c.path, /^label_print_jobs\?status=in\.\(printed,cancelled,failed\)&updated_at=lt\.2026-07-26T02%3A00%3A00\.000Z/);
+  assert.ok(!/pending|claimed/.test(c.path), 'jamais une étiquette en file');
 });
