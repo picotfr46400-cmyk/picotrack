@@ -328,7 +328,7 @@ test('navigateur : les éditeurs n’affichent que des réglages qui fonctionnen
   assert.match(ctx.PT_DB_ROW_UPDATE.academyHtml, /plus ancienne/);
 });
 
-test('branchements : opérations de service, actions après validation, script chargé avec la clé 20261024-2', () => {
+test('branchements : opérations de service, actions après validation, script chargé avec la clé 20261024-4', () => {
   const app = fs.readFileSync(path.join(__dirname, '..', 'assets', 'app.secured.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
   assert.match(app, /window\.PT_DB_ROW_UPDATE\.runForInstance\(inst, service, action, effect, index\)/);
@@ -336,7 +336,7 @@ test('branchements : opérations de service, actions après validation, script c
   assert.match(app, /\{v:'delete_db_row',l:'Supprimer une ligne dans une base'\}/);
   assert.match(app, /effect\.type === 'update_db_row' \|\| effect\.type === 'delete_db_row'\) extra = \(typeof window\.ptRenderDbRowUpdateEffect/);
   assert.match(app, /React\.createElement\(window\.PtDbRowUpdateTrigger,\{triggers:y,set:S,databases:k,fields:w\}\)/);
-  assert.match(html, /<script src="\/assets\/db-row-update\.js\?v=20261024-2" defer><\/script>/);
+  assert.match(html, /<script src="\/assets\/db-row-update\.js\?v=20261024-4" defer><\/script>/);
   assert.ok(html.indexOf('db-row-update.js') > html.indexOf('core-supervision.js'));
 });
 
